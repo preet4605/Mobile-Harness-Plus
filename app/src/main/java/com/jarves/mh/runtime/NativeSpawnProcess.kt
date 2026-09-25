@@ -14,6 +14,7 @@ internal class NativeSpawnProcess private constructor(
     private val stdin: OutputStream,
     private val outputPump: Thread? = null,
 ) : Process() {
+    val processPid: Int get() = pid
     @Volatile private var result: Int? = null
     @Volatile private var cachedInputStream: InputStream? = null
 
@@ -71,6 +72,8 @@ internal class NativeSpawnProcess private constructor(
     override fun isAlive(): Boolean = runCatching { exitValue(); false }.getOrDefault(true)
 
     companion object {
+        const val MAX_OUTPUT_BYTES: Long = 5L * 1024 * 1024 // 5 MB
+
         fun start(
             argv: List<String>,
             environment: Map<String, String>,
@@ -97,7 +100,27 @@ internal class NativeSpawnProcess private constructor(
                 Thread({
                     runCatching {
                         ParcelFileDescriptor.AutoCloseInputStream(ParcelFileDescriptor.adoptFd(outputFd)).use { source ->
-                            FileOutputStream(outputFile, false).use { destination -> source.copyTo(destination) }
+                            FileOutputStream(outputFile, false).use { destination ->
+                                val buffer = ByteArray(8192)
+                                var totalWritten = 0L
+                                var bytesRead: Int
+                                while (source.read(buffer).also { bytesRead = it } != -1) {
+                                    if (totalWritten < MAX_OUTPUT_BYTES) {
+                                        val toWrite = if (totalWritten + bytesRead > MAX_OUTPUT_BYTES) {
+                                            (MAX_OUTPUT_BYTES - totalWritten).toInt()
+                                        } else {
+                                            bytesRead
+                                        }
+                                        destination.write(buffer, 0, toWrite)
+                                        destination.flush()
+                                        totalWritten += toWrite
+                                        if (totalWritten >= MAX_OUTPUT_BYTES) {
+                                            destination.write("\n\n[Mobile-Harness: Process output truncated at 5MB limit]\n".toByteArray())
+                                            destination.flush()
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }, "pocket-pty-output").apply {
@@ -107,14 +130,23 @@ internal class NativeSpawnProcess private constructor(
             }
             return NativeSpawnProcess(spawned[0], outputFile, input, pump)
         }
+
+        fun isPidAlive(targetPid: Int): Boolean {
+            if (targetPid <= 1) return false
+            return runCatching {
+                NativeSpawn.kill(targetPid, 0) == 0
+            }.getOrDefault(false)
+        }
     }
 }
 
-private object NativeSpawn {
+internal object NativeSpawn {
     const val STILL_RUNNING = -2
 
     init {
-        System.loadLibrary("pocketspawn")
+        runCatching {
+            System.loadLibrary("pocketspawn")
+        }
     }
 
     external fun spawn(
