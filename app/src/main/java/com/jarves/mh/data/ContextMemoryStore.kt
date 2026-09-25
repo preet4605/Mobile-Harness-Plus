@@ -20,6 +20,7 @@ class ContextMemoryStore(private val baseDir: File) {
     val repository: ContextMemoryRepository by lazy { ContextMemoryRepository(db) }
     val taskRepository: TaskStateRepository by lazy { TaskStateRepository(db) }
     val retriever: MemoryRetriever by lazy { MemoryRetriever(repository, taskRepository) }
+    val brainKnowledgeRepository: BrainKnowledgeRepository by lazy { BrainKnowledgeRepository(db) }
 
     companion object {
         const val MAX_ENTRIES_PER_PROJECT = 50

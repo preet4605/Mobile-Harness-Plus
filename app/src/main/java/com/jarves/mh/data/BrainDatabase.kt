@@ -1,5 +1,6 @@
 package com.jarves.mh.data
 
+import com.jarves.mh.model.brain.BrainKnowledgeEntry
 import java.io.Closeable
 
 class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
@@ -284,6 +285,35 @@ class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
     }
 
     fun syncFtsUpdate(entry: MemoryEntry) {
+        if (!isFts5Supported) return
+        try {
+            syncFtsDelete(entry.id)
+            syncFtsInsert(entry)
+        } catch (_: Throwable) {
+            // Ignore FTS sync errors to ensure failure safety
+        }
+    }
+
+    fun syncFtsInsert(entry: BrainKnowledgeEntry) {
+        if (!isFts5Supported) return
+        try {
+            driver.execute(
+                "INSERT INTO memory_fts(id, project_id, key, value, summary, tags) VALUES (?, ?, ?, ?, ?, ?)",
+                listOf(
+                    entry.id,
+                    entry.projectId,
+                    entry.key,
+                    entry.content,
+                    entry.summary ?: "",
+                    entry.tags.joinToString(" ")
+                )
+            )
+        } catch (_: Throwable) {
+            // Ignore FTS sync errors to ensure failure safety
+        }
+    }
+
+    fun syncFtsUpdate(entry: BrainKnowledgeEntry) {
         if (!isFts5Supported) return
         try {
             syncFtsDelete(entry.id)
