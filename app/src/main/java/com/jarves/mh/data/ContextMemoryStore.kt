@@ -18,7 +18,15 @@ class ContextMemoryStore(private val baseDir: File) {
     }
 
     private fun fileForProject(projectId: String): File {
-        return File(memoryDir, "$projectId.json")
+        val sanitizedId = projectId.trim().replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        require(sanitizedId.isNotBlank() && !sanitizedId.contains("..")) {
+            "Invalid projectId: $projectId"
+        }
+        val file = File(memoryDir, "$sanitizedId.json")
+        require(file.canonicalFile.toPath().startsWith(memoryDir.canonicalFile.toPath())) {
+            "Project memory file escapes memory directory: ${file.path}"
+        }
+        return file
     }
 
     @Synchronized
@@ -70,7 +78,7 @@ class ContextMemoryStore(private val baseDir: File) {
     fun save(memory: ContextMemory) {
         memoryDir.mkdirs()
         val destination = fileForProject(memory.projectId)
-        val temporary = File(memoryDir, ".${memory.projectId}.json.tmp")
+        val temporary = File(memoryDir, ".${destination.nameWithoutExtension}.json.tmp")
 
         val root = JSONObject().apply {
             put("projectId", memory.projectId)

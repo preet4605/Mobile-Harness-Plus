@@ -12,6 +12,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
 import java.util.UUID
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONArray
 import org.json.JSONObject
@@ -43,6 +44,10 @@ class AntigravityGatewayServer(
     private val server = ServerSocket(0, 32, InetAddress.getByName("127.0.0.1"))
     val url: String = "http://127.0.0.1:${server.localPort}"
 
+    private val requestExecutor = Executors.newFixedThreadPool(16) { runnable ->
+        Thread(runnable, "antigravity-req").apply { isDaemon = true }
+    }
+
     fun start(): AntigravityGatewayServer = apply {
         Thread({ acceptLoop() }, "antigravity-gateway").apply {
             isDaemon = true
@@ -53,6 +58,7 @@ class AntigravityGatewayServer(
     override fun close() {
         if (running.compareAndSet(true, false)) {
             runCatching { server.close() }
+            runCatching { requestExecutor.shutdownNow() }
         }
     }
 
@@ -61,13 +67,14 @@ class AntigravityGatewayServer(
             runCatching { server.accept() }.getOrNull()?.let { socket ->
                 socket.soTimeout = 30_000
                 socket.tcpNoDelay = true
-                Thread({
+                if (!running.get()) {
+                    runCatching { socket.close() }
+                    return
+                }
+                requestExecutor.execute {
                     socket.use { s ->
                         runCatching { handle(s) }
                     }
-                }, "antigravity-req").apply {
-                    isDaemon = true
-                    start()
                 }
             }
         }
@@ -213,8 +220,6 @@ class AntigravityGatewayServer(
                 attempts++
                 continue
             }
-            accountManager.recordUsage(account.id)
-
             val upstreamUrl = if (stream) {
                 "$upstreamBaseUrl/v1internal:streamGenerateContent?alt=sse"
             } else {

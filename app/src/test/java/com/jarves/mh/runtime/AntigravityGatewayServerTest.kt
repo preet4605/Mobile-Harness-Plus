@@ -13,6 +13,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -240,6 +241,37 @@ class AntigravityGatewayServerTest {
         val openAi = AntigravityProtocolAdapter.toOpenAiResponse(upstreamWrapped, "deepseek-v4-flash")
         assertEquals("chat.completion", openAi.getString("object"))
         assertEquals("Response from Cloud Code PA", openAi.getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content"))
+    }
+
+    @Test
+    fun parseGeminiChunkHandlesThoughtBooleanProperly() {
+        val nonThinkingPayload = JSONObject()
+            .put("candidates", JSONArray().apply {
+                put(JSONObject().put("content", JSONObject().put("parts", JSONArray().apply {
+                    put(JSONObject().put("thought", false).put("text", "Actual answer without thinking"))
+                })))
+            })
+        val nonThinkingParts = AntigravityProtocolAdapter.parseGeminiChunk(nonThinkingPayload)
+        assertEquals(1, nonThinkingParts.size)
+        assertEquals("Actual answer without thinking", nonThinkingParts[0].text)
+        assertNull(nonThinkingParts[0].thinking)
+
+        val thinkingPayload = JSONObject()
+            .put("candidates", JSONArray().apply {
+                put(JSONObject().put("content", JSONObject().put("parts", JSONArray().apply {
+                    put(JSONObject().put("thought", true).put("text", "Internal chain of thought"))
+                })))
+            })
+        val thinkingParts = AntigravityProtocolAdapter.parseGeminiChunk(thinkingPayload)
+        assertEquals(1, thinkingParts.size)
+        assertEquals("Internal chain of thought", thinkingParts[0].thinking)
+        assertNull(thinkingParts[0].text)
+
+        val anthropicResp = AntigravityProtocolAdapter.toAnthropicResponse(nonThinkingPayload, "claude-3-7-sonnet")
+        val contentArr = anthropicResp.getJSONArray("content")
+        assertEquals(1, contentArr.length())
+        assertEquals("text", contentArr.getJSONObject(0).getString("type"))
+        assertEquals("Actual answer without thinking", contentArr.getJSONObject(0).getString("text"))
     }
 
     @Test

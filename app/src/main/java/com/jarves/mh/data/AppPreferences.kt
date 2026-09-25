@@ -16,6 +16,9 @@ import com.jarves.mh.model.AntigravityAccount
 import com.jarves.mh.model.AntigravityAccountStatus
 import com.jarves.mh.model.AntigravityLoadBalancingStrategy
 import com.jarves.mh.model.ModelQuota
+import com.jarves.mh.model.CustomizationScopeMode
+import com.jarves.mh.model.LinkedSkillReference
+import com.jarves.mh.model.ProjectCustomizationConfig
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -462,6 +465,9 @@ class AppPreferences(private val context: Context) {
                     }
                 })
                 put("workedMillis", m.workedMillis)
+                if (m.activeSkill != null) {
+                    put("activeSkill", m.activeSkill)
+                }
                 put("workItems", JSONArray().apply {
                     m.workItems.forEach { item ->
                         put(JSONObject().apply {
@@ -536,9 +542,94 @@ class AppPreferences(private val context: Context) {
                             }.getOrNull()
                         }
                     }.orEmpty(),
+                    activeSkill = obj.optString("activeSkill").takeIf { it.isNotBlank() },
                 )
             }
         }.getOrDefault(emptyList())
+    }
+
+    fun saveProjectCustomizationConfig(config: ProjectCustomizationConfig) {
+        val key = "customization_config_${config.projectId}"
+        val json = JSONObject().apply {
+            put("projectId", config.projectId)
+            put("scopeMode", config.scopeMode.name)
+            put("enabledRuleIds", JSONArray(config.enabledRuleIds))
+            put("disabledRuleIds", JSONArray(config.disabledRuleIds))
+            put("enabledSkillIds", JSONArray(config.enabledSkillIds))
+            put("disabledSkillIds", JSONArray(config.disabledSkillIds))
+            val linksArr = JSONArray()
+            config.linkedSkills.forEach { ref ->
+                linksArr.put(JSONObject().apply {
+                    put("id", ref.id)
+                    put("sourceProjectId", ref.sourceProjectId)
+                    put("sourceProjectName", ref.sourceProjectName)
+                    put("skillName", ref.skillName)
+                    put("relativeSkillPath", ref.relativeSkillPath)
+                    put("enabledAtMillis", ref.enabledAtMillis)
+                })
+            }
+            put("linkedSkills", linksArr)
+        }
+        preferences.edit().putString(key, json.toString()).apply()
+    }
+
+    fun loadProjectCustomizationConfig(projectId: String): ProjectCustomizationConfig {
+        val key = "customization_config_$projectId"
+        val raw = preferences.getString(key, null)
+            ?: preferences.getString("skill_config_$projectId", null)
+            ?: return ProjectCustomizationConfig(projectId)
+        return runCatching {
+            val obj = JSONObject(raw)
+            val scopeMode = runCatching {
+                CustomizationScopeMode.valueOf(obj.optString("scopeMode", CustomizationScopeMode.INHERIT_AND_MERGE.name))
+            }.getOrDefault(CustomizationScopeMode.INHERIT_AND_MERGE)
+
+            val enabledRules = mutableSetOf<String>()
+            obj.optJSONArray("enabledRuleIds")?.let { arr ->
+                for (i in 0 until arr.length()) enabledRules.add(arr.getString(i))
+            }
+
+            val disabledRules = mutableSetOf<String>()
+            obj.optJSONArray("disabledRuleIds")?.let { arr ->
+                for (i in 0 until arr.length()) disabledRules.add(arr.getString(i))
+            }
+
+            val enabledSkills = mutableSetOf<String>()
+            obj.optJSONArray("enabledSkillIds")?.let { arr ->
+                for (i in 0 until arr.length()) enabledSkills.add(arr.getString(i))
+            }
+
+            val disabledSkills = mutableSetOf<String>()
+            obj.optJSONArray("disabledSkillIds")?.let { arr ->
+                for (i in 0 until arr.length()) disabledSkills.add(arr.getString(i))
+            }
+
+            val links = mutableListOf<LinkedSkillReference>()
+            obj.optJSONArray("linkedSkills")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val item = arr.getJSONObject(i)
+                    links.add(
+                        LinkedSkillReference(
+                            id = item.optString("id", java.util.UUID.randomUUID().toString()),
+                            sourceProjectId = item.getString("sourceProjectId"),
+                            sourceProjectName = item.optString("sourceProjectName", "Other Project"),
+                            skillName = item.getString("skillName"),
+                            relativeSkillPath = item.getString("relativeSkillPath"),
+                            enabledAtMillis = item.optLong("enabledAtMillis", System.currentTimeMillis()),
+                        )
+                    )
+                }
+            }
+            ProjectCustomizationConfig(
+                projectId = projectId,
+                scopeMode = scopeMode,
+                enabledRuleIds = enabledRules,
+                disabledRuleIds = disabledRules,
+                enabledSkillIds = enabledSkills,
+                disabledSkillIds = disabledSkills,
+                linkedSkills = links,
+            )
+        }.getOrDefault(ProjectCustomizationConfig(projectId))
     }
 
     private fun String.toChatTitle(): String {

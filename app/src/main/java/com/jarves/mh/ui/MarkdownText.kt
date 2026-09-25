@@ -51,7 +51,7 @@ import com.jarves.mh.ui.theme.PocketOrange
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private sealed interface MarkdownBlock {
+internal sealed interface MarkdownBlock {
     data class Header(val level: Int, val text: String) : MarkdownBlock
     data class CodeBlock(val language: String, val code: String) : MarkdownBlock
     data class BulletItem(val depth: Int, val text: String) : MarkdownBlock
@@ -261,6 +261,146 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
     }
 }
 
+internal fun buildInlineMarkdown(
+    text: String,
+    primaryColor: Color,
+    codeBg: Color,
+    codeColor: Color,
+): AnnotatedString {
+    return buildAnnotatedString {
+        var i = 0
+        val len = text.length
+
+        while (i < len) {
+            when {
+                // Inline Code: `code`
+                text[i] == '`' -> {
+                    val end = text.indexOf('`', i + 1)
+                    if (end != -1) {
+                        val codeContent = text.substring(i + 1, end)
+                        val nextChar = text.getOrNull(end + 1)
+                        val hasTrailingPunctuation = nextChar != null && nextChar in ":,.;!?)'\""
+                        val trailingSpace = if (hasTrailingPunctuation) "" else " "
+                        withStyle(
+                            SpanStyle(
+                                fontFamily = FontFamily.Monospace,
+                                background = codeBg,
+                                color = codeColor,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            ),
+                        ) {
+                            append(" $codeContent$trailingSpace")
+                        }
+                        i = end + 1
+                    } else {
+                        append(text[i])
+                        i++
+                    }
+                }
+                // Bold & Italic: ***text***
+                text.startsWith("***", i) -> {
+                    val end = text.indexOf("***", i + 3)
+                    if (end != -1) {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
+                            append(text.substring(i + 3, end))
+                        }
+                        i = end + 3
+                    } else {
+                        append(text[i])
+                        i++
+                    }
+                }
+                // Bold: **text** or __text__
+                text.startsWith("**", i) -> {
+                    val end = text.indexOf("**", i + 2)
+                    if (end != -1) {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                            append(text.substring(i + 2, end))
+                        }
+                        i = end + 2
+                    } else {
+                        append(text[i])
+                        i++
+                    }
+                }
+                text.startsWith("__", i) -> {
+                    val end = text.indexOf("__", i + 2)
+                    if (end != -1) {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                            append(text.substring(i + 2, end))
+                        }
+                        i = end + 2
+                    } else {
+                        append(text[i])
+                        i++
+                    }
+                }
+                // Italic: *text* (avoiding single bullet at start)
+                text[i] == '*' -> {
+                    val end = text.indexOf('*', i + 1)
+                    if (end != -1 && end > i + 1) {
+                        withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+                            append(text.substring(i + 1, end))
+                        }
+                        i = end + 1
+                    } else {
+                        append(text[i])
+                        i++
+                    }
+                }
+                // Strikethrough: ~~text~~
+                text.startsWith("~~", i) -> {
+                    val end = text.indexOf("~~", i + 2)
+                    if (end != -1) {
+                        withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
+                            append(text.substring(i + 2, end))
+                        }
+                        i = end + 2
+                    } else {
+                        append(text[i])
+                        i++
+                    }
+                }
+                // Link: [label](url)
+                text[i] == '[' -> {
+                    val closeBracket = text.indexOf(']', i + 1)
+                    val openParen = if (closeBracket != -1) text.indexOf('(', closeBracket) else -1
+                    val closeParen = if (openParen == closeBracket + 1) text.indexOf(')', openParen) else -1
+
+                    if (closeBracket != -1 && openParen == closeBracket + 1 && closeParen != -1) {
+                        val rawLabel = text.substring(i + 1, closeBracket)
+                        val isCodeLabel = rawLabel.startsWith("`") && rawLabel.endsWith("`") && rawLabel.length >= 2
+                        val label = if (isCodeLabel) rawLabel.removeSurrounding("`") else rawLabel
+
+                        withStyle(
+                            SpanStyle(
+                                color = primaryColor,
+                                textDecoration = TextDecoration.Underline,
+                                fontWeight = if (isCodeLabel) FontWeight.SemiBold else FontWeight.Medium,
+                                fontFamily = if (isCodeLabel) FontFamily.Monospace else null,
+                                background = if (isCodeLabel) codeBg.copy(alpha = 0.45f) else Color.Transparent,
+                            ),
+                        ) {
+                            if (isCodeLabel) append(" ")
+                            append(label)
+                            if (isCodeLabel) append(" ")
+                        }
+                        i = closeParen + 1
+                    } else {
+                        append(text[i])
+                        i++
+                    }
+                }
+                else -> {
+                    append(text[i])
+                    i++
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun formatInlineMarkdown(text: String): AnnotatedString {
     val codeBg = MaterialTheme.colorScheme.surfaceVariant
@@ -268,125 +408,11 @@ private fun formatInlineMarkdown(text: String): AnnotatedString {
     val primaryColor = MaterialTheme.colorScheme.primary
 
     return remember(text, codeBg, codeColor, primaryColor) {
-        buildAnnotatedString {
-            var i = 0
-            val len = text.length
-
-            while (i < len) {
-                when {
-                    // Inline Code: `code`
-                    text[i] == '`' -> {
-                        val end = text.indexOf('`', i + 1)
-                        if (end != -1) {
-                            withStyle(
-                                SpanStyle(
-                                    fontFamily = FontFamily.Monospace,
-                                    background = codeBg,
-                                    color = codeColor,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                ),
-                            ) {
-                                append(" ${text.substring(i + 1, end)} ")
-                            }
-                            i = end + 1
-                        } else {
-                            append(text[i])
-                            i++
-                        }
-                    }
-                    // Bold & Italic: ***text***
-                    text.startsWith("***", i) -> {
-                        val end = text.indexOf("***", i + 3)
-                        if (end != -1) {
-                            withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
-                                append(text.substring(i + 3, end))
-                            }
-                            i = end + 3
-                        } else {
-                            append(text[i])
-                            i++
-                        }
-                    }
-                    // Bold: **text** or __text__
-                    text.startsWith("**", i) -> {
-                        val end = text.indexOf("**", i + 2)
-                        if (end != -1) {
-                            withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                                append(text.substring(i + 2, end))
-                            }
-                            i = end + 2
-                        } else {
-                            append(text[i])
-                            i++
-                        }
-                    }
-                    text.startsWith("__", i) -> {
-                        val end = text.indexOf("__", i + 2)
-                        if (end != -1) {
-                            withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                                append(text.substring(i + 2, end))
-                            }
-                            i = end + 2
-                        } else {
-                            append(text[i])
-                            i++
-                        }
-                    }
-                    // Italic: *text* (avoiding single bullet at start)
-                    text[i] == '*' -> {
-                        val end = text.indexOf('*', i + 1)
-                        if (end != -1 && end > i + 1) {
-                            withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
-                                append(text.substring(i + 1, end))
-                            }
-                            i = end + 1
-                        } else {
-                            append(text[i])
-                            i++
-                        }
-                    }
-                    // Strikethrough: ~~text~~
-                    text.startsWith("~~", i) -> {
-                        val end = text.indexOf("~~", i + 2)
-                        if (end != -1) {
-                            withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
-                                append(text.substring(i + 2, end))
-                            }
-                            i = end + 2
-                        } else {
-                            append(text[i])
-                            i++
-                        }
-                    }
-                    // Link: [label](url)
-                    text[i] == '[' -> {
-                        val closeBracket = text.indexOf(']', i + 1)
-                        val openParen = if (closeBracket != -1) text.indexOf('(', closeBracket) else -1
-                        val closeParen = if (openParen == closeBracket + 1) text.indexOf(')', openParen) else -1
-
-                        if (closeBracket != -1 && openParen == closeBracket + 1 && closeParen != -1) {
-                            val label = text.substring(i + 1, closeBracket)
-                            withStyle(SpanStyle(color = primaryColor, textDecoration = TextDecoration.Underline, fontWeight = FontWeight.Medium)) {
-                                append(label)
-                            }
-                            i = closeParen + 1
-                        } else {
-                            append(text[i])
-                            i++
-                        }
-                    }
-                    else -> {
-                        append(text[i])
-                        i++
-                    }
-                }
-            }
-        }
+        buildInlineMarkdown(text, primaryColor, codeBg, codeColor)
     }
 }
 
-private fun parseMarkdown(raw: String): List<MarkdownBlock> {
+internal fun parseMarkdown(raw: String): List<MarkdownBlock> {
     val lines = raw.lines()
     val blocks = mutableListOf<MarkdownBlock>()
     var inCodeBlock = false
@@ -406,6 +432,7 @@ private fun parseMarkdown(raw: String): List<MarkdownBlock> {
 
     for (line in lines) {
         val trimmed = line.trim()
+        val leadingSpaces = line.takeWhile { it.isWhitespace() }.length
 
         if (trimmed.startsWith("```")) {
             if (inCodeBlock) {
@@ -455,10 +482,11 @@ private fun parseMarkdown(raw: String): List<MarkdownBlock> {
             continue
         }
 
-        // Unordered List (- item, * item, + item)
-        if (trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("+ ")) {
+        // Unordered List (- item, * item, + item, • item)
+        val isUnordered = trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("+ ") || trimmed.startsWith("• ")
+        if (isUnordered) {
             flushParagraph()
-            val indent = line.takeWhile { it.isWhitespace() }.length / 2
+            val indent = (leadingSpaces / 2).coerceAtMost(4)
             val text = trimmed.substring(2).trim()
             blocks.add(MarkdownBlock.BulletItem(indent, text))
             continue
@@ -472,6 +500,26 @@ private fun parseMarkdown(raw: String): List<MarkdownBlock> {
             val text = orderedMatch.groupValues[2]
             blocks.add(MarkdownBlock.NumberedItem(num, text))
             continue
+        }
+
+        // Indented continuation of list item or blockquote
+        if (leadingSpaces >= 2 && currentParagraphLines.isEmpty() && blocks.isNotEmpty()) {
+            val lastBlock = blocks.last()
+            when (lastBlock) {
+                is MarkdownBlock.BulletItem -> {
+                    blocks[blocks.lastIndex] = lastBlock.copy(text = "${lastBlock.text}\n$trimmed")
+                    continue
+                }
+                is MarkdownBlock.NumberedItem -> {
+                    blocks[blocks.lastIndex] = lastBlock.copy(text = "${lastBlock.text}\n$trimmed")
+                    continue
+                }
+                is MarkdownBlock.BlockQuote -> {
+                    blocks[blocks.lastIndex] = lastBlock.copy(text = "${lastBlock.text}\n$trimmed")
+                    continue
+                }
+                else -> {}
+            }
         }
 
         // Normal paragraph text

@@ -64,6 +64,7 @@ class RuntimeExecutionService : Service() {
                 failed = true,
             )
             ACTION_CANCELLED -> {
+                RuntimeTaskController.stopAction = null
                 taskRunning = false
                 releaseWakeLock()
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -71,7 +72,7 @@ class RuntimeExecutionService : Service() {
             }
             else -> {
                 taskRunning = true
-                startForeground(
+                startSpecialUseForeground(
                     RUNNING_NOTIFICATION_ID,
                     runningNotification("Claude Code is working in $projectName", includeStop = canStop),
                 )
@@ -104,6 +105,7 @@ class RuntimeExecutionService : Service() {
     }
 
     private fun finishTask(title: String, detail: String, failed: Boolean) {
+        RuntimeTaskController.stopAction = null
         taskRunning = false
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -119,6 +121,19 @@ class RuntimeExecutionService : Service() {
             .build()
         getSystemService(NotificationManager::class.java).notify(RESULT_NOTIFICATION_ID, notification)
         stopSelf()
+    }
+
+    private fun startSpecialUseForeground(id: Int, notification: android.app.Notification) {
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            androidx.core.app.ServiceCompat.startForeground(
+                this,
+                id,
+                notification,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } else {
+            startForeground(id, notification)
+        }
     }
 
     private fun openAppIntent(): PendingIntent = PendingIntent.getActivity(
@@ -143,6 +158,7 @@ class RuntimeExecutionService : Service() {
     }
 
     override fun onDestroy() {
+        RuntimeTaskController.stopAction = null
         releaseWakeLock()
         super.onDestroy()
     }

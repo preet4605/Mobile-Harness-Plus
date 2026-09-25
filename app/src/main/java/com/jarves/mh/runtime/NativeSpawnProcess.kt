@@ -15,9 +15,15 @@ internal class NativeSpawnProcess private constructor(
     private val outputPump: Thread? = null,
 ) : Process() {
     @Volatile private var result: Int? = null
+    @Volatile private var cachedInputStream: InputStream? = null
 
     override fun getOutputStream(): OutputStream = stdin
-    override fun getInputStream(): InputStream = FileInputStream(outputFile)
+
+    @Synchronized
+    override fun getInputStream(): InputStream {
+        return cachedInputStream ?: FileInputStream(outputFile).also { cachedInputStream = it }
+    }
+
     override fun getErrorStream(): InputStream = ByteArrayInputStream(ByteArray(0))
 
     @Synchronized
@@ -43,6 +49,7 @@ internal class NativeSpawnProcess private constructor(
 
     override fun destroy() {
         NativeSpawn.kill(pid, 15)
+        closeStreams()
     }
 
     /** Send the same interrupt signal produced by Ctrl+C in a real terminal. */
@@ -52,7 +59,13 @@ internal class NativeSpawnProcess private constructor(
 
     override fun destroyForcibly(): Process {
         NativeSpawn.kill(pid, 9)
+        closeStreams()
         return this
+    }
+
+    private fun closeStreams() {
+        runCatching { stdin.close() }
+        runCatching { cachedInputStream?.close() }
     }
 
     override fun isAlive(): Boolean = runCatching { exitValue(); false }.getOrDefault(true)

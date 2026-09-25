@@ -335,6 +335,7 @@ data class ChatMessage(
     val attachments: List<ChatAttachment> = emptyList(),
     val workItems: List<ActivityItem> = emptyList(),
     val workedMillis: Long = 0L,
+    val activeSkill: String? = null,
 )
 
 data class ChatAttachment(
@@ -486,10 +487,67 @@ data class SlashCommand(
 )
 
 enum class SkillSource(val title: String) {
-    PROJECT("Project"),
-    GLOBAL("Global"),
-    BUNDLED("Built-in"),
+    PROJECT("Project Local"),
+    LINKED("Linked from Other Project"),
+    GLOBAL("Global Library"),
+    BUNDLED("Built-in System"),
+    OTHER_PROJECT("Available in Other Project");
 }
+
+data class LinkedSkillReference(
+    val id: String = UUID.randomUUID().toString(),
+    val sourceProjectId: String,
+    val sourceProjectName: String,
+    val skillName: String,
+    val relativeSkillPath: String, // e.g. ".agents/skills/my-skill"
+    val enabledAtMillis: Long = System.currentTimeMillis(),
+)
+
+enum class CustomizationScopeMode(val title: String, val description: String) {
+    INHERIT_AND_MERGE(
+        "Inherit & Merge (Recommended)",
+        "Combines global rules and skills with project-specific customizations. Project definitions take precedence."
+    ),
+    PROJECT_ONLY(
+        "Project Isolated",
+        "Strictly uses rules and skills defined inside this project workspace. Global settings are ignored."
+    ),
+    GLOBAL_ONLY(
+        "Global Baseline Only",
+        "Enforces global personas and tools across the project, ignoring local workspace rules."
+    ),
+    CUSTOM(
+        "Custom Selection",
+        "Individually select which global and project rules to apply to this workspace."
+    );
+}
+
+enum class RuleSource(val title: String) {
+    PROJECT("Project"),
+    GLOBAL("Global Config"),
+    BUNDLED("Built-in System");
+}
+
+data class RuleInfo(
+    val id: String,
+    val name: String,
+    val title: String,
+    val description: String,
+    val filePath: String,
+    val source: RuleSource,
+    val isEnabled: Boolean = true,
+    val content: String = "",
+)
+
+data class ProjectCustomizationConfig(
+    val projectId: String,
+    val scopeMode: CustomizationScopeMode = CustomizationScopeMode.INHERIT_AND_MERGE,
+    val enabledRuleIds: Set<String> = emptySet(),
+    val disabledRuleIds: Set<String> = emptySet(),
+    val enabledSkillIds: Set<String> = emptySet(),
+    val disabledSkillIds: Set<String> = emptySet(),
+    val linkedSkills: List<LinkedSkillReference> = emptyList(),
+)
 
 data class SkillInfo(
     val id: String,
@@ -499,6 +557,10 @@ data class SkillInfo(
     val source: SkillSource,
     val isEnabled: Boolean = true,
     val markdownContent: String? = null,
+    val sourceProjectId: String? = null,
+    val sourceProjectName: String? = null,
+    val isReadOnly: Boolean = false,
+    val isMissingSource: Boolean = false,
 )
 
 data class ProjectRule(

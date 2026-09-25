@@ -1,6 +1,7 @@
 package com.jarves.mh.runtime
 
 import com.jarves.mh.model.AgentKind
+import com.jarves.mh.model.SkillInfo
 import com.jarves.mh.model.SlashCommand
 import com.jarves.mh.model.SlashCommandCategory
 import java.util.Locale
@@ -52,9 +53,17 @@ object SlashCommandEngine {
         ),
         SlashCommand(
             name = "skills",
-            description = "View and manage active skills and workspace project rules",
+            description = "View and manage active, linked, and global skills",
             category = SlashCommandCategory.CONFIG,
             isLocalOnly = true,
+            parameterHint = "[link | unlink | import | promote]",
+        ),
+        SlashCommand(
+            name = "rules",
+            description = "View and manage active rules, scope policies, and personas",
+            category = SlashCommandCategory.CONFIG,
+            isLocalOnly = true,
+            parameterHint = "[scope <mode>]",
         ),
         SlashCommand(
             name = "memory",
@@ -190,6 +199,25 @@ object SlashCommandEngine {
     }
 
     /**
+     * Filters available skills matching the user's query and active state.
+     */
+    fun filterSkills(rawQuery: String, skills: List<SkillInfo>): List<SkillInfo> {
+        val query = rawQuery.trim().removePrefix("/").trim().lowercase(Locale.ROOT)
+        return skills.filter { skill ->
+            skill.isEnabled && (
+                query.isBlank() ||
+                skill.name.lowercase(Locale.ROOT).contains(query) ||
+                skill.description.lowercase(Locale.ROOT).contains(query)
+            )
+        }.sortedWith(
+            compareBy(
+                { !it.name.lowercase(Locale.ROOT).startsWith(query) },
+                { it.name },
+            )
+        )
+    }
+
+    /**
      * Checks if the text starts with a slash command and extracts (command, arguments).
      */
     fun parseCommand(input: String): Pair<SlashCommand, String>? {
@@ -200,6 +228,40 @@ object SlashCommandEngine {
         val args = parts.getOrNull(1).orEmpty().trim()
         val command = ALL_SLASH_COMMANDS.firstOrNull { it.name.equals(cmdName, ignoreCase = true) } ?: return null
         return command to args
+    }
+
+    /**
+     * Checks if the text starts with a slash skill invocation and extracts (skill, arguments).
+     */
+    fun parseSkillInvocation(input: String, activeSkills: List<SkillInfo>): Pair<SkillInfo, String>? {
+        val trimmed = input.trim()
+        if (!trimmed.startsWith("/")) return null
+        val parts = trimmed.substring(1).split(Regex("\\s+"), limit = 2)
+        val candidateName = parts[0].lowercase(Locale.ROOT)
+        val args = parts.getOrNull(1).orEmpty().trim()
+        val skill = activeSkills.firstOrNull {
+            it.isEnabled && it.name.equals(candidateName, ignoreCase = true)
+        } ?: return null
+        return skill to args
+    }
+
+    /**
+     * Constructs a specialized prompt for an explicitly triggered skill.
+     */
+    fun buildPromptForSkill(skill: SkillInfo, args: String, skillContent: String): String {
+        return buildString {
+            appendLine("<active_skill name=\"${skill.name}\" source=\"${skill.source.name}\">")
+            appendLine(skillContent.trim())
+            appendLine("</active_skill>")
+            appendLine()
+            appendLine("[USER DIRECTIVE - ACTIVE SKILL APPLIED: ${skill.name}]")
+            appendLine("The user explicitly invoked the '${skill.name}' skill for this task.")
+            appendLine("Carefully read and strictly adhere to the guidelines, runbooks, and instructions specified in the <active_skill> block above.")
+            appendLine()
+            appendLine("User Request:")
+            val effectiveArgs = args.ifBlank { "Please analyze this project workspace and apply the instructions and guidelines from the ${skill.name} skill." }
+            appendLine(effectiveArgs)
+        }
     }
 
     /**

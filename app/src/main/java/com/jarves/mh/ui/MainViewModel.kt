@@ -76,6 +76,12 @@ import com.jarves.mh.model.ProjectRule
 import com.jarves.mh.model.ScheduledTimerInfo
 import com.jarves.mh.model.SessionTokenMetrics
 import com.jarves.mh.model.SkillInfo
+import com.jarves.mh.model.CustomizationScopeMode
+import com.jarves.mh.model.LinkedSkillReference
+import com.jarves.mh.model.ProjectCustomizationConfig
+import com.jarves.mh.model.RuleInfo
+import com.jarves.mh.model.RuleSource
+import com.jarves.mh.model.SkillSource
 import com.jarves.mh.model.SlashCommand
 import com.jarves.mh.model.SubagentInfo
 import com.jarves.mh.runtime.DiagnosticsHelper
@@ -277,7 +283,14 @@ data class AppUiState(
     val slashCommandsVisible: Boolean = false,
     val slashCommandQuery: String = "",
     val filteredSlashCommands: List<SlashCommand> = emptyList(),
+    val filteredSkills: List<SkillInfo> = emptyList(),
+    val activeCustomizationConfig: ProjectCustomizationConfig = ProjectCustomizationConfig(""),
     val activeSkills: List<SkillInfo> = emptyList(),
+    val otherProjectsSkills: Map<Project, List<SkillInfo>> = emptyMap(),
+    val globalSkills: List<SkillInfo> = emptyList(),
+    val activeRules: List<RuleInfo> = emptyList(),
+    val projectRulesList: List<RuleInfo> = emptyList(),
+    val globalRulesList: List<RuleInfo> = emptyList(),
     val projectRules: List<ProjectRule> = emptyList(),
     val subagents: List<SubagentInfo> = emptyList(),
     val backgroundTasks: List<BackgroundTaskInfo> = emptyList(),
@@ -2944,6 +2957,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun reloadCustomizations(project: Project) {
+        val rootfsDir = runCatching { installer.installedRuntime().rootfs }.getOrNull()
+        val workspacesBase = File(getApplication<Application>().filesDir, "workspaces")
+        val workspaceDir = projectWorkspaceRoot(project)
+
+        val config = preferences.loadProjectCustomizationConfig(project.id)
+        val allRules = skillManager.discoverRules(workspaceDir, rootfsDir)
+        val projectRulesList = allRules.filter { it.source == RuleSource.PROJECT }
+        val globalRulesList = allRules.filter { it.source != RuleSource.PROJECT }
+        val activeRules = skillManager.resolveActiveRules(projectRulesList, globalRulesList, config)
+
+        val otherSkills = skillManager.discoverAllProjectsSkills(_state.value.projects, project.id, workspacesBase)
+        val globalSkills = skillManager.discoverGlobalAndLinuxSkills(rootfsDir) + skillManager.discoverBundledSkills()
+        val activeSkills = skillManager.compileActiveProjectSkills(project, config, _state.value.projects, workspacesBase, rootfsDir)
+        val legacyRules = skillManager.loadProjectRules(workspaceDir)
+
+        _state.update {
+            it.copy(
+                activeCustomizationConfig = config,
+                activeRules = activeRules,
+                projectRulesList = projectRulesList,
+                globalRulesList = globalRulesList,
+                activeSkills = activeSkills,
+                otherProjectsSkills = otherSkills,
+                globalSkills = globalSkills,
+                projectRules = legacyRules,
+            )
+        }
+    }
+
     fun refreshProjectFiles() {
         val project = _state.value.activeProject ?: return
         _state.update { it.copy(filesLoading = true) }
@@ -2952,17 +2995,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val entries = withContext(Dispatchers.IO) { readWorkspace(project) }
             val suggestedRoot = withContext(Dispatchers.IO) { if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null }
             val androidProjectDetected = withContext(Dispatchers.IO) { findAndroidGradleProjectRoot(workspaceDir) != null }
-            val skills = withContext(Dispatchers.IO) { skillManager.discoverSkills(workspaceDir) }
-            val rules = withContext(Dispatchers.IO) { skillManager.loadProjectRules(workspaceDir) }
             if (_state.value.activeProject?.id == project.id) {
+                withContext(Dispatchers.IO) { reloadCustomizations(project) }
                 _state.update {
                     it.copy(
                         workspaceFiles = entries,
                         filesLoading = false,
                         suggestedProjectRoot = suggestedRoot,
                         androidProjectDetected = androidProjectDetected,
-                        activeSkills = skills,
-                        projectRules = rules,
                     )
                 }
             }
@@ -3202,17 +3242,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return clean.ifBlank { "attachment-${UUID.randomUUID().toString().take(8)}" }
     }
 
-    fun onPromptChanged(newPrompt: String) {
-        val trigger = TriggerParser.parseTrigger(newPrompt)
+    fun onPromptChanged(newPrompt: String, cursorPosition: Int = newPrompt.length) {
+        val trigger = TriggerParser.parseTrigger(newPrompt, cursorPosition)
         when (trigger.type) {
             TriggerType.SLASH_COMMAND -> {
                 val query = trigger.query
-                val filtered = SlashCommandEngine.filterCommands(query, _state.value.agentKind)
+                val filteredCmds = SlashCommandEngine.filterCommands(query, _state.value.agentKind)
+                val filteredSkills = SlashCommandEngine.filterSkills(query, _state.value.activeSkills)
                 _state.update {
                     it.copy(
-                        slashCommandsVisible = filtered.isNotEmpty(),
+                        slashCommandsVisible = filteredCmds.isNotEmpty() || filteredSkills.isNotEmpty(),
                         slashCommandQuery = query,
-                        filteredSlashCommands = filtered,
+                        filteredSlashCommands = filteredCmds,
+                        filteredSkills = filteredSkills,
                         mentionMenuVisible = false,
                     )
                 }
@@ -3227,6 +3269,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         mentionMenuVisible = files.isNotEmpty(),
                         filteredMentionEntries = files,
                         slashCommandsVisible = false,
+                        filteredSkills = emptyList(),
                     )
                 }
             }
@@ -3234,6 +3277,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update {
                     it.copy(
                         slashCommandsVisible = false,
+                        filteredSkills = emptyList(),
                         mentionMenuVisible = false,
                     )
                 }
@@ -3246,7 +3290,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun dismissSlashCommands() {
-        _state.update { it.copy(slashCommandsVisible = false) }
+        _state.update { it.copy(slashCommandsVisible = false, filteredSkills = emptyList()) }
     }
 
     fun toggleAuxiliaryInspector(visible: Boolean? = null) {
@@ -3295,12 +3339,131 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(modelPickerVisible = visible ?: !it.modelPickerVisible) }
     }
 
+    fun setCustomizationScopeMode(mode: CustomizationScopeMode) {
+        val project = _state.value.activeProject ?: return
+        val currentConfig = _state.value.activeCustomizationConfig
+        val newConfig = currentConfig.copy(scopeMode = mode)
+        preferences.saveProjectCustomizationConfig(newConfig)
+        reloadCustomizations(project)
+    }
+
+    fun toggleRule(ruleId: String) {
+        val project = _state.value.activeProject ?: return
+        val currentConfig = _state.value.activeCustomizationConfig
+        val newConfig = if (currentConfig.scopeMode == CustomizationScopeMode.CUSTOM) {
+            val enabled = currentConfig.enabledRuleIds.toMutableSet()
+            if (enabled.contains(ruleId)) enabled.remove(ruleId) else enabled.add(ruleId)
+            currentConfig.copy(enabledRuleIds = enabled)
+        } else {
+            val disabled = currentConfig.disabledRuleIds.toMutableSet()
+            if (disabled.contains(ruleId)) disabled.remove(ruleId) else disabled.add(ruleId)
+            currentConfig.copy(disabledRuleIds = disabled)
+        }
+        preferences.saveProjectCustomizationConfig(newConfig)
+        reloadCustomizations(project)
+    }
+
     fun toggleSkill(skillId: String) {
-        _state.update { current ->
-            val updated = current.activeSkills.map { skill ->
-                if (skill.id == skillId) skill.copy(isEnabled = !skill.isEnabled) else skill
+        val project = _state.value.activeProject ?: return
+        val currentConfig = _state.value.activeCustomizationConfig
+        val newConfig = if (currentConfig.scopeMode == CustomizationScopeMode.CUSTOM) {
+            val enabled = currentConfig.enabledSkillIds.toMutableSet()
+            if (enabled.contains(skillId)) enabled.remove(skillId) else enabled.add(skillId)
+            currentConfig.copy(enabledSkillIds = enabled)
+        } else {
+            val disabled = currentConfig.disabledSkillIds.toMutableSet()
+            if (disabled.contains(skillId)) disabled.remove(skillId) else disabled.add(skillId)
+            currentConfig.copy(disabledSkillIds = disabled)
+        }
+        preferences.saveProjectCustomizationConfig(newConfig)
+        reloadCustomizations(project)
+    }
+
+    fun linkSkill(sourceProjectId: String, skillName: String, relativeSkillPath: String = ".agents/skills/$skillName") {
+        val project = _state.value.activeProject ?: return
+        val sourceProj = _state.value.projects.firstOrNull { it.id == sourceProjectId }
+        val sourceProjectName = sourceProj?.name ?: "Other Project"
+        val currentConfig = _state.value.activeCustomizationConfig
+        if (currentConfig.linkedSkills.any { it.sourceProjectId == sourceProjectId && it.skillName.equals(skillName, ignoreCase = true) }) {
+            _state.update { it.copy(toastMessage = "Skill '$skillName' is already linked.") }
+            return
+        }
+        val newRef = LinkedSkillReference(
+            sourceProjectId = sourceProjectId,
+            sourceProjectName = sourceProjectName,
+            skillName = skillName,
+            relativeSkillPath = relativeSkillPath,
+        )
+        val newConfig = currentConfig.copy(linkedSkills = currentConfig.linkedSkills + newRef)
+        preferences.saveProjectCustomizationConfig(newConfig)
+        reloadCustomizations(project)
+        _state.update { it.copy(toastMessage = "Linked '$skillName' from $sourceProjectName.") }
+    }
+
+    fun unlinkSkill(linkIdOrSkillName: String) {
+        val project = _state.value.activeProject ?: return
+        val currentConfig = _state.value.activeCustomizationConfig
+        val newLinks = currentConfig.linkedSkills.filter {
+            it.id != linkIdOrSkillName && !it.skillName.equals(linkIdOrSkillName, ignoreCase = true) &&
+                "linked:${it.sourceProjectId}:${it.skillName}" != linkIdOrSkillName
+        }
+        val newConfig = currentConfig.copy(linkedSkills = newLinks)
+        preferences.saveProjectCustomizationConfig(newConfig)
+        reloadCustomizations(project)
+        _state.update { it.copy(toastMessage = "Unlinked skill.") }
+    }
+
+    fun importSkill(sourceSkillDir: File, skillName: String) {
+        val project = _state.value.activeProject ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val workspace = projectWorkspaceRoot(project)
+                skillManager.importSkillToProject(sourceSkillDir, workspace, skillName)
+                withContext(Dispatchers.Main) {
+                    reloadCustomizations(project)
+                    _state.update { it.copy(toastMessage = "Imported '$skillName' into workspace.") }
+                }
+            }.onFailure { err ->
+                withContext(Dispatchers.Main) {
+                    _state.update { it.copy(toastMessage = "Failed to import skill: ${err.message}") }
+                }
             }
-            current.copy(activeSkills = updated)
+        }
+    }
+
+    fun promoteSkillToGlobal(sourceSkillDir: File, skillName: String) {
+        val project = _state.value.activeProject ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val rootfsDir = runCatching { installer.installedRuntime().rootfs }.getOrNull()
+                skillManager.promoteSkillToGlobal(sourceSkillDir, skillName, rootfsDir)
+                withContext(Dispatchers.Main) {
+                    reloadCustomizations(project)
+                    _state.update { it.copy(toastMessage = "Promoted '$skillName' to Global Library.") }
+                }
+            }.onFailure { err ->
+                withContext(Dispatchers.Main) {
+                    _state.update { it.copy(toastMessage = "Failed to promote skill: ${err.message}") }
+                }
+            }
+        }
+    }
+
+    fun promoteRuleToGlobal(sourceRuleFile: File, ruleFileName: String) {
+        val project = _state.value.activeProject ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val rootfsDir = runCatching { installer.installedRuntime().rootfs }.getOrNull()
+                skillManager.promoteRuleToGlobal(sourceRuleFile, ruleFileName, rootfsDir)
+                withContext(Dispatchers.Main) {
+                    reloadCustomizations(project)
+                    _state.update { it.copy(toastMessage = "Promoted rule '$ruleFileName' to Global Library.") }
+                }
+            }.onFailure { err ->
+                withContext(Dispatchers.Main) {
+                    _state.update { it.copy(toastMessage = "Failed to promote rule: ${err.message}") }
+                }
+            }
         }
     }
 
@@ -3309,22 +3472,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val workspace = projectWorkspaceRoot(project)
             val file = File(workspace, fileName)
-            skillManager.saveProjectRule(file, content)
-            val rules = skillManager.loadProjectRules(workspace)
+            skillManager.saveProjectRule(file, content, workspace)
             withContext(Dispatchers.Main) {
-                _state.update { it.copy(projectRules = rules, toastMessage = "Saved $fileName.") }
+                reloadCustomizations(project)
+                _state.update { it.copy(toastMessage = "Saved $fileName.") }
             }
         }
     }
 
     fun createGlobalSkill(name: String, description: String, instructions: String) {
+        val project = _state.value.activeProject ?: return
         viewModelScope.launch(Dispatchers.IO) {
             skillManager.createGlobalSkill(name, description, instructions)
-            val project = _state.value.activeProject
-            val workspace = project?.let { projectWorkspaceRoot(it) }
-            val skills = skillManager.discoverSkills(workspace)
             withContext(Dispatchers.Main) {
-                _state.update { it.copy(activeSkills = skills, toastMessage = "Skill '$name' created.") }
+                reloadCustomizations(project)
+                _state.update { it.copy(toastMessage = "Skill '$name' created.") }
             }
         }
     }
@@ -3403,23 +3565,148 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 persistMessages()
             }
             "skills", "skill" -> {
+                val trimmedArgs = args.trim()
+                val parts = trimmedArgs.split("\\s+".toRegex()).filter { it.isNotBlank() }
                 val project = _state.value.activeProject
-                val workspaceDir = project?.let { File(getApplication<Application>().filesDir, "workspaces/${it.id}") }
-                val skills = skillManager.discoverSkills(workspaceDir)
-                val skillsText = buildString {
-                    appendLine("### Available Skills (${skills.size})")
-                    if (skills.isEmpty()) {
-                        appendLine("No skills found in workspace or built-in directory.")
-                    } else {
-                        skills.forEach { s ->
-                            appendLine("- **${s.name}** (${s.source.title}): ${s.description}")
+                val replyText = when {
+                    parts.isEmpty() -> {
+                        val active = _state.value.activeSkills
+                        val scope = _state.value.activeCustomizationConfig.scopeMode.title
+                        buildString {
+                            appendLine("### Skills & Customizations Hub")
+                            appendLine("- **Scope Policy:** $scope")
+                            appendLine("- **Active In Project:** ${active.count { it.isEnabled }} of ${active.size}")
+                            appendLine()
+                            if (active.isEmpty()) {
+                                appendLine("No active skills configured.")
+                            } else {
+                                active.forEach { s ->
+                                    val status = if (s.isEnabled) "✓" else "✕"
+                                    val badge = when (s.source) {
+                                        SkillSource.PROJECT -> "Project Local"
+                                        SkillSource.LINKED -> "Linked: ${s.sourceProjectName ?: "Other"}"
+                                        SkillSource.GLOBAL -> "Global Library"
+                                        SkillSource.BUNDLED -> "Built-in"
+                                        SkillSource.OTHER_PROJECT -> "Available"
+                                    }
+                                    appendLine("- [$status] **${s.name}** (`$badge`): ${s.description}")
+                                }
+                            }
+                            appendLine()
+                            appendLine("*Available commands:*")
+                            appendLine("- `/skill link <projectName> <skillName>`")
+                            appendLine("- `/skill unlink <skillName>`")
+                            appendLine("- `/skill import <projectName> <skillName>`")
+                            appendLine("- `/skill promote <skillName>`")
                         }
                     }
+                    parts[0].equals("link", ignoreCase = true) && parts.size >= 3 -> {
+                        val sourceTarget = parts[1]
+                        val skillName = parts[2]
+                        val sourceProj = _state.value.projects.firstOrNull {
+                            it.name.equals(sourceTarget, ignoreCase = true) || it.slug.equals(sourceTarget, ignoreCase = true) || it.id == sourceTarget
+                        }
+                        if (sourceProj == null) {
+                            "Error: Project '$sourceTarget' not found in registered projects."
+                        } else {
+                            linkSkill(sourceProj.id, skillName)
+                            "✓ Linked skill '$skillName' from project '${sourceProj.name}' into current workspace."
+                        }
+                    }
+                    parts[0].equals("unlink", ignoreCase = true) && parts.size >= 2 -> {
+                        val skillName = parts[1]
+                        unlinkSkill(skillName)
+                        "✓ Unlinked skill '$skillName' from workspace."
+                    }
+                    parts[0].equals("import", ignoreCase = true) && parts.size >= 3 -> {
+                        val sourceTarget = parts[1]
+                        val skillName = parts[2]
+                        val sourceProj = _state.value.projects.firstOrNull {
+                            it.name.equals(sourceTarget, ignoreCase = true) || it.slug.equals(sourceTarget, ignoreCase = true) || it.id == sourceTarget
+                        }
+                        if (sourceProj == null) {
+                            "Error: Project '$sourceTarget' not found."
+                        } else {
+                            val sourceSkillDir = File(getApplication<Application>().filesDir, "workspaces/${sourceProj.id}/.agents/skills/$skillName")
+                            if (!sourceSkillDir.isDirectory) {
+                                "Error: Skill directory not found at ${sourceSkillDir.path}"
+                            } else {
+                                importSkill(sourceSkillDir, skillName)
+                                "✓ Importing '$skillName' from '${sourceProj.name}' into `.agents/skills/$skillName`…"
+                            }
+                        }
+                    }
+                    parts[0].equals("promote", ignoreCase = true) && parts.size >= 2 -> {
+                        val skillName = parts[1]
+                        if (project == null) {
+                            "Error: No active workspace."
+                        } else {
+                            val workspace = projectWorkspaceRoot(project)
+                            val sourceSkillDir = File(workspace, ".agents/skills/$skillName")
+                            if (!sourceSkillDir.isDirectory) {
+                                "Error: Local workspace skill '$skillName' not found at ${sourceSkillDir.path}"
+                            } else {
+                                promoteSkillToGlobal(sourceSkillDir, skillName)
+                                "✓ Promoted '$skillName' to Global Library."
+                            }
+                        }
+                    }
+                    else -> "Invalid syntax. Usage: `/skill [link <project> <skill> | unlink <skill> | import <project> <skill> | promote <skill>]`"
                 }
                 _state.update {
                     it.copy(
-                        messages = it.messages + ChatMessage(fromUser = true, text = "/skills") +
-                            ChatMessage(fromUser = false, text = skillsText),
+                        messages = it.messages + ChatMessage(fromUser = true, text = "/skills $trimmedArgs".trim()) +
+                            ChatMessage(fromUser = false, text = replyText),
+                    )
+                }
+                persistMessages()
+            }
+            "rules", "rule" -> {
+                val trimmedArgs = args.trim()
+                val parts = trimmedArgs.split("\\s+".toRegex()).filter { it.isNotBlank() }
+                val replyText = when {
+                    parts.isEmpty() -> {
+                        val active = _state.value.activeRules
+                        val scope = _state.value.activeCustomizationConfig.scopeMode.title
+                        buildString {
+                            appendLine("### Rules & Operational Guidelines")
+                            appendLine("- **Scope Policy:** $scope")
+                            appendLine("- **Active Rules:** ${active.count { it.isEnabled }} of ${active.size}")
+                            appendLine()
+                            if (active.isEmpty()) {
+                                appendLine("No active rules loaded.")
+                            } else {
+                                active.forEach { r ->
+                                    val status = if (r.isEnabled) "✓" else "✕"
+                                    appendLine("- [$status] **${r.title}** (`${r.name}` - ${r.source.title}): ${r.description}")
+                                }
+                            }
+                            appendLine()
+                            appendLine("*Available commands:*")
+                            appendLine("- `/rules scope <inherit | project | global | custom>`")
+                        }
+                    }
+                    parts[0].equals("scope", ignoreCase = true) && parts.size >= 2 -> {
+                        val requestedMode = when (parts[1].lowercase()) {
+                            "inherit", "inherit_and_merge", "merge" -> CustomizationScopeMode.INHERIT_AND_MERGE
+                            "project", "project_only", "isolated" -> CustomizationScopeMode.PROJECT_ONLY
+                            "global", "global_only", "baseline" -> CustomizationScopeMode.GLOBAL_ONLY
+                            "custom" -> CustomizationScopeMode.CUSTOM
+                            else -> null
+                        }
+                        if (requestedMode == null) {
+                            "Invalid scope mode. Options: `inherit`, `project`, `global`, `custom`."
+                        } else {
+                            setCustomizationScopeMode(requestedMode)
+                            "✓ Customization scope updated to: **${requestedMode.title}**"
+                        }
+                    }
+                    else -> "Invalid syntax. Usage: `/rules [scope <inherit | project | global | custom>]`"
+                }
+                _state.update {
+                    it.copy(
+                        messages = it.messages + ChatMessage(fromUser = true, text = "/rules $trimmedArgs".trim()) +
+                            ChatMessage(fromUser = false, text = replyText),
                     )
                 }
                 persistMessages()
@@ -3526,37 +3813,70 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        // If user typed a slash command that does not exist, reject locally without burning tokens
-        if (parsedCmd == null && trimmed.startsWith("/")) {
+        // Check if input is a skill invocation
+        val parsedSkill = if (parsedCmd == null) {
+            SlashCommandEngine.parseSkillInvocation(trimmed, _state.value.activeSkills)
+        } else null
+
+        // If user typed a slash command that does not exist and is not an available skill, reject locally without burning tokens
+        if (parsedCmd == null && parsedSkill == null && trimmed.startsWith("/")) {
             val cmdToken = trimmed.substringBefore(' ')
             _state.update {
                 it.copy(
                     messages = it.messages + ChatMessage(fromUser = true, text = trimmed) +
-                        ChatMessage(fromUser = false, text = "Unknown command `$cmdToken`. Type `/help` for available commands."),
+                        ChatMessage(fromUser = false, text = "Unknown command or skill `$cmdToken`. Type `/help` for available commands or `/` to view skills."),
+                    slashCommandsVisible = false,
+                    filteredSkills = emptyList(),
                 )
             }
             persistMessages()
             return
         }
 
-        // Format agent workflow command or use plain prompt
-        val effectivePrompt = if (parsedCmd != null) {
-            SlashCommandEngine.buildPromptForCommand(parsedCmd.first, parsedCmd.second, _state.value.agentKind)
-        } else {
-            trimmed.ifBlank { "Please review the attached files." }
+        // Format agent workflow command, skill invocation, or use plain prompt
+        val effectivePrompt = when {
+            parsedCmd != null -> {
+                SlashCommandEngine.buildPromptForCommand(parsedCmd.first, parsedCmd.second, _state.value.agentKind)
+            }
+            parsedSkill != null -> {
+                val skill = parsedSkill.first
+                val skillContent = skill.markdownContent?.takeIf { it.isNotBlank() }
+                    ?: runCatching { File(skill.filePath).readText() }.getOrNull()
+                    ?: skill.description
+                SlashCommandEngine.buildPromptForSkill(skill, parsedSkill.second, skillContent)
+            }
+            else -> {
+                trimmed.ifBlank { "Please review the attached files." }
+            }
         }
 
         val requestText = effectivePrompt
         updateActiveChatTitle(requestText)
         _state.update {
             val startedAt = System.currentTimeMillis()
+            val skillName = parsedSkill?.first?.name
             it.copy(
-                messages = it.messages + ChatMessage(fromUser = true, text = prompt.trim(), attachments = attachments),
+                messages = it.messages + ChatMessage(
+                    fromUser = true,
+                    text = prompt.trim(),
+                    attachments = attachments,
+                    activeSkill = skillName,
+                ),
                 pendingAttachments = emptyList(),
                 isRunning = true,
                 slashCommandsVisible = false,
-                activity = listOf(ActivityItem("Understanding your request", "Preparing a safe plan", false)) + it.activity,
-                liveProcess = listOf(ActivityItem("Think", requestPlanningSummary(requestText, it.agentKind), false)),
+                filteredSkills = emptyList(),
+                activity = listOf(ActivityItem(
+                    if (skillName != null) "Applying skill: $skillName" else "Understanding your request",
+                    if (skillName != null) "Executing skill directives" else "Preparing a safe plan",
+                    false
+                )) + it.activity,
+                liveProcess = listOf(ActivityItem(
+                    "Think",
+                    if (skillName != null) "Applying skill: $skillName - ${requestPlanningSummary(requestText, it.agentKind)}"
+                    else requestPlanningSummary(requestText, it.agentKind),
+                    false
+                )),
                 liveThinking = true,
                 activeThinkingBlockId = null,
                 taskStartedAtMillis = startedAt,
@@ -3569,9 +3889,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persistMessages()
         val history = state.value.messages // includes all messages up to now
 
-        // Inject skills progressive disclosure index
+        // Inject active rules and skills progressive disclosure index
+        val rulesBlock = skillManager.buildRulesBlock(_state.value.activeRules)
         val skillsIndex = skillManager.buildProgressiveDisclosureIndex(_state.value.activeSkills)
-        val withSkillsText = if (skillsIndex.isNotBlank()) "$skillsIndex\n\n$requestText" else requestText
+        val envelopePrefix = buildString {
+            if (rulesBlock.isNotBlank()) {
+                appendLine(rulesBlock)
+                appendLine()
+            }
+            if (skillsIndex.isNotBlank()) {
+                appendLine(skillsIndex)
+                appendLine()
+            }
+        }
+        val withSkillsText = if (envelopePrefix.isNotBlank()) "$envelopePrefix$requestText" else requestText
 
         val runtimePrompt = if (attachments.isEmpty()) withSkillsText else buildString {
             appendLine(withSkillsText)

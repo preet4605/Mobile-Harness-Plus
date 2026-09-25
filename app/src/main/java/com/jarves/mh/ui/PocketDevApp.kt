@@ -116,6 +116,7 @@ import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Warning
 import com.jarves.mh.model.BackgroundTaskStatus
 import com.jarves.mh.model.SessionTokenMetrics
+import com.jarves.mh.model.SkillInfo
 import com.jarves.mh.model.SlashCommand
 import com.jarves.mh.model.SubagentState
 import androidx.compose.material.icons.filled.Visibility
@@ -218,6 +219,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.AnnotatedString
 import com.jarves.mh.network.ConnectionValidation
 import com.jarves.mh.network.DiscoveredModel
@@ -226,7 +229,13 @@ import com.jarves.mh.network.GitHubRepository
 import com.jarves.mh.ui.theme.PocketBlue
 import com.jarves.mh.ui.theme.PocketGreen
 import com.jarves.mh.ui.theme.PocketOrange
+import com.jarves.mh.ui.theme.PocketRadius
+import com.jarves.mh.ui.theme.PocketSpacing
+import com.jarves.mh.ui.theme.BentoTile
+import com.jarves.mh.ui.theme.StatusPill
+import com.jarves.mh.ui.theme.softCard
 import java.io.ByteArrayInputStream
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -377,7 +386,14 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
             onSelectTaskForLogs = viewModel::selectTaskForLogs,
             onOpenSkills = { viewModel.toggleSkillsManager(true) },
             onCloseSkills = { viewModel.toggleSkillsManager(false) },
+            onSetCustomizationScopeMode = viewModel::setCustomizationScopeMode,
             onToggleSkill = viewModel::toggleSkill,
+            onToggleRule = viewModel::toggleRule,
+            onLinkSkill = viewModel::linkSkill,
+            onUnlinkSkill = viewModel::unlinkSkill,
+            onImportSkill = viewModel::importSkill,
+            onPromoteSkillToGlobal = viewModel::promoteSkillToGlobal,
+            onPromoteRuleToGlobal = viewModel::promoteRuleToGlobal,
             onSaveProjectRule = viewModel::saveProjectRule,
             onCreateSkill = viewModel::createGlobalSkill,
             onOpenModelPicker = { viewModel.toggleModelPicker(true) },
@@ -3186,66 +3202,85 @@ private fun ProjectsScreen(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(18.dp),
+            contentPadding = PaddingValues(start = 18.dp, top = 18.dp, end = 18.dp, bottom = 88.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                Text("Build from your phone", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text("Chat, review changes, and preview your project.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Projects & Workspaces",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.3).sp,
+                )
+                Text(
+                    "Local developer harness & autonomous coding environment.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp,
+                )
+                Spacer(Modifier.height(14.dp))
+
+                // Bento-inspired modular tiles
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    BentoTile(
+                        modifier = Modifier.weight(1f),
+                        title = "Quick Project",
+                        value = "Instant Chat",
+                        subtitle = "Ephemeral scratch workspace",
+                        icon = Icons.Default.AutoAwesome,
+                        iconTint = PocketOrange,
+                        badgeText = "Fast",
+                        badgeColor = PocketOrange,
+                        onClick = onCreateQuickProject,
+                    )
+                    val liveSubagentsCount = state.subagents.count { !it.state.isTerminal }
+                    BentoTile(
+                        modifier = Modifier.weight(1f),
+                        title = "Active Engine",
+                        value = if (state.agentKind == AgentKind.ANTIGRAVITY) "Antigravity" else state.provider.kind.title,
+                        subtitle = if (liveSubagentsCount > 0) "$liveSubagentsCount subagents live" else "CLI parity ready",
+                        icon = Icons.Default.SmartToy,
+                        iconTint = PocketBlue,
+                        badgeText = if (liveSubagentsCount > 0) "Live" else "Ready",
+                        badgeColor = if (liveSubagentsCount > 0) PocketGreen else PocketBlue,
+                        onClick = onSettings,
+                    )
+                }
+
+                Spacer(Modifier.height(10.dp))
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Button(
-                        onClick = onCreateQuickProject,
-                        modifier = Modifier.weight(1f).height(48.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Chat,
-                            contentDescription = null,
-                            modifier = Modifier.size(17.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = "Quick project",
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 13.sp,
-                            maxLines = 1,
-                            softWrap = false,
-                        )
-                    }
-                    OutlinedButton(
                         onClick = { showCreate = true },
-                        modifier = Modifier.weight(1f).height(48.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                        shape = RoundedCornerShape(PocketRadius.md),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 1.dp, pressedElevation = 0.dp),
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            text = "New project",
+                            text = "New workspace",
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 13.sp,
-                            maxLines = 1,
-                            softWrap = false,
                         )
                     }
                 }
                 Spacer(Modifier.height(10.dp))
                 val isImportExpanded = importExpanded || state.projectImporting || state.gitCloneRunning
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .softCard(
+                            shape = RoundedCornerShape(PocketRadius.lg),
+                            elevation = 1.dp,
+                        ),
                 ) {
                     Column {
                         Row(
@@ -3352,15 +3387,35 @@ private fun ProjectsScreen(
                     }
                 }
             }
-            item { Text("Your projects", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Your Workspaces",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                    )
+                    StatusPill(
+                        text = "${projects.size} active",
+                        color = PocketOrange,
+                    )
+                }
+            }
             if (projects.isEmpty()) {
                 item {
-                    Card(
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 10.dp),
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
+                            .softCard(
+                                shape = RoundedCornerShape(PocketRadius.xl),
+                                elevation = 1.dp,
+                            ),
                     ) {
                         Column(
                             modifier = Modifier
@@ -3370,32 +3425,33 @@ private fun ProjectsScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Surface(
-                                shape = CircleShape,
-                                color = PocketOrange.copy(alpha = 0.15f),
-                                modifier = Modifier.size(56.dp),
+                                shape = RoundedCornerShape(PocketRadius.md),
+                                color = PocketOrange.copy(alpha = 0.12f),
+                                modifier = Modifier.size(52.dp),
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         Icons.Default.Folder,
                                         contentDescription = null,
                                         tint = PocketOrange,
-                                        modifier = Modifier.size(28.dp),
+                                        modifier = Modifier.size(26.dp),
                                     )
                                 }
                             }
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "No projects yet",
+                                "No workspaces yet",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 textAlign = TextAlign.Center,
                             )
                             Text(
-                                "Create a named project or start instantly with a Quick Project.",
+                                "Create a starter project or launch instantly with Quick Project.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center,
-                                lineHeight = 20.sp,
+                                lineHeight = 19.sp,
+                                fontSize = 12.5.sp,
                             )
                         }
                     }
@@ -3724,25 +3780,48 @@ private fun ProjectCard(
     var showRename by rememberSaveable(project.id) { mutableStateOf(false) }
     var showDelete by rememberSaveable(project.id) { mutableStateOf(false) }
     var renameText by rememberSaveable(project.id) { mutableStateOf(project.name) }
-    Card(Modifier.fillMaxWidth().clickable(onClick = onOpen), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-        Row(Modifier.padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                Icon(Icons.Default.Folder, null, Modifier.padding(13.dp), tint = PocketOrange)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .softCard(
+                shape = RoundedCornerShape(PocketRadius.lg),
+                elevation = 1.dp,
+                onClick = onOpen,
+            ),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                shape = RoundedCornerShape(PocketRadius.md),
+                color = if (project.kind == ProjectKind.QUICK_PROJECT) PocketOrange.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.size(42.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = if (project.kind == ProjectKind.QUICK_PROJECT) Icons.Default.AutoAwesome else Icons.Default.Folder,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = if (project.kind == ProjectKind.QUICK_PROJECT) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
-            Spacer(Modifier.width(13.dp))
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         project.name,
                         modifier = Modifier.weight(1f, fill = false),
                         fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.5.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     if (taskRunning || terminalRunning) {
                         Spacer(Modifier.width(8.dp))
-                        CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(5.dp))
+                        CircularProgressIndicator(Modifier.size(11.dp), strokeWidth = 1.8.dp)
+                        Spacer(Modifier.width(4.dp))
                         Text(
                             if (taskRunning) "Task running" else "Terminal running",
                             color = MaterialTheme.colorScheme.primary,
@@ -3751,17 +3830,40 @@ private fun ProjectCard(
                         )
                     }
                 }
+                Spacer(Modifier.height(2.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    StatusPill(
+                        text = if (project.language.isNotBlank()) project.language else "Workspace",
+                        color = PocketBlue,
+                    )
+                    Text(
+                        "/workspace/${project.slug}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 10.5.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(Modifier.height(2.dp))
                 Text(
-                    if (project.kind == ProjectKind.QUICK_PROJECT) "Quick project" else project.description,
+                    project.formattedUpdatedAt,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp,
-                    maxLines = 1,
+                    fontSize = 10.5.sp,
                 )
-                Text("/workspace/${project.slug}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                Text("${project.language} · ${project.formattedUpdatedAt}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
             }
             Box {
-                IconButton(onClick = { menuOpen = true }) { Icon(Icons.Default.MoreVert, "Project options") }
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "Project options",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
                         text = { Text("Rename project") },
@@ -3926,7 +4028,14 @@ private fun WorkspaceScreen(
     onSelectTaskForLogs: (com.jarves.mh.model.BackgroundTaskInfo?) -> Unit = {},
     onOpenSkills: () -> Unit = {},
     onCloseSkills: () -> Unit = {},
+    onSetCustomizationScopeMode: (com.jarves.mh.model.CustomizationScopeMode) -> Unit = {},
     onToggleSkill: (String) -> Unit = {},
+    onToggleRule: (String) -> Unit = {},
+    onLinkSkill: (String, String, String) -> Unit = { _, _, _ -> },
+    onUnlinkSkill: (String) -> Unit = {},
+    onImportSkill: (java.io.File, String) -> Unit = { _, _ -> },
+    onPromoteSkillToGlobal: (java.io.File, String) -> Unit = { _, _ -> },
+    onPromoteRuleToGlobal: (java.io.File, String) -> Unit = { _, _ -> },
     onSaveProjectRule: (String, String) -> Unit = { _, _ -> },
     onCreateSkill: (String, String, String) -> Unit = { _, _, _ -> },
     onOpenModelPicker: () -> Unit = {},
@@ -4096,9 +4205,21 @@ private fun WorkspaceScreen(
     }
     if (state.skillsManagerVisible) {
         SkillsManagerDialog(
-            skills = state.activeSkills,
-            rules = state.projectRules,
+            config = state.activeCustomizationConfig,
+            activeSkills = state.activeSkills,
+            otherProjectsSkills = state.otherProjectsSkills,
+            globalSkills = state.globalSkills,
+            activeRules = state.activeRules,
+            projectRules = state.projectRulesList,
+            globalRules = state.globalRulesList,
+            onSetScopeMode = onSetCustomizationScopeMode,
             onToggleSkill = onToggleSkill,
+            onToggleRule = onToggleRule,
+            onLinkSkill = onLinkSkill,
+            onUnlinkSkill = onUnlinkSkill,
+            onImportSkill = onImportSkill,
+            onPromoteSkill = onPromoteSkillToGlobal,
+            onPromoteRule = onPromoteRuleToGlobal,
             onSaveRule = onSaveProjectRule,
             onCreateSkill = onCreateSkill,
             onDismiss = onCloseSkills,
@@ -4124,77 +4245,83 @@ private fun WorkspaceScreen(
     }
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column(Modifier.fillMaxWidth()) {
-                        Text(
-                            state.activeProject?.name.orEmpty(),
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.combinedClickable(
-                                onClick = {},
-                                onLongClick = {
-                                    Toast.makeText(context, state.activeProject?.name.orEmpty(), Toast.LENGTH_LONG).show()
-                                },
-                            ),
-                        )
-                        Text(
-                            "${activeChat?.title ?: "Chat"} · ${if (state.agentKind == AgentKind.ANTIGRAVITY) state.agentKind.title else state.provider.kind.title}",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                        )
-                    }
-                },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Projects") } },
-                actions = {
-                    if (isAndroidProject) {
-                        IconButton(
-                            onClick = {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                                    !context.packageManager.canRequestPackageInstalls()) {
-                                    unknownAppsLauncher.launch(
-                                        Intent(
-                                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                                            Uri.parse("package:${context.packageName}"),
-                                        ),
-                                    )
-                                } else {
-                                    onBuildAndRunAndroid()
-                                }
-                            },
-                            enabled = !state.androidBuildRunning && !state.isRunning && !state.projectTerminalRunning,
-                        ) {
-                            if (state.androidBuildRunning) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                            else Icon(Icons.Default.PlayArrow, "Build and run Android app")
-                        }
-                    }
-                    IconButton(onClick = onOpenMemoryViewer) {
-                        BadgedBox(
-                            badge = {
-                                if (state.contextMemory.entries.isNotEmpty()) {
-                                    Badge(
-                                        containerColor = com.jarves.mh.ui.theme.PocketOrange,
-                                        contentColor = Color.White,
-                                    ) {
-                                        Text("${state.contextMemory.entries.size}")
-                                    }
-                                }
-                            }
-                        ) {
-                            Icon(
-                                Icons.Default.Psychology,
-                                contentDescription = "Persistent Memory",
-                                tint = if (state.contextMemory.entries.isNotEmpty()) com.jarves.mh.ui.theme.PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+            Column {
+                TopAppBar(
+                    title = {
+                        Column(Modifier.fillMaxWidth()) {
+                            Text(
+                                state.activeProject?.name.orEmpty(),
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 15.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.combinedClickable(
+                                    onClick = {},
+                                    onLongClick = {
+                                        Toast.makeText(context, state.activeProject?.name.orEmpty(), Toast.LENGTH_LONG).show()
+                                    },
+                                ),
+                            )
+                            Text(
+                                "${activeChat?.title ?: "Chat"} · ${if (state.agentKind == AgentKind.ANTIGRAVITY) state.agentKind.title else state.provider.kind.title}",
+                                fontSize = 10.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
-                    }
-                    IconButton(onClick = { showChats = true }) { Icon(Icons.Default.History, "Project chats") }
-                    if (state.isRunning) CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-            )
+                    },
+                    navigationIcon = { IconButton(onClick = onBack, modifier = Modifier.size(38.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Projects") } },
+                    actions = {
+                        if (isAndroidProject) {
+                            IconButton(
+                                onClick = {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                                        !context.packageManager.canRequestPackageInstalls()) {
+                                        unknownAppsLauncher.launch(
+                                            Intent(
+                                                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                                Uri.parse("package:${context.packageName}"),
+                                            ),
+                                        )
+                                    } else {
+                                        onBuildAndRunAndroid()
+                                    }
+                                },
+                                enabled = !state.androidBuildRunning && !state.isRunning && !state.projectTerminalRunning,
+                                modifier = Modifier.size(38.dp),
+                            ) {
+                                if (state.androidBuildRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                else Icon(Icons.Default.PlayArrow, "Build and run Android app")
+                            }
+                        }
+                        IconButton(onClick = onOpenMemoryViewer, modifier = Modifier.size(38.dp)) {
+                            BadgedBox(
+                                badge = {
+                                    if (state.contextMemory.entries.isNotEmpty()) {
+                                        Badge(
+                                            containerColor = com.jarves.mh.ui.theme.PocketOrange,
+                                            contentColor = Color.White,
+                                        ) {
+                                            Text("${state.contextMemory.entries.size}")
+                                        }
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    Icons.Default.Psychology,
+                                    contentDescription = "Persistent Memory",
+                                    tint = if (state.contextMemory.entries.isNotEmpty()) com.jarves.mh.ui.theme.PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        IconButton(onClick = { showChats = true }, modifier = Modifier.size(38.dp)) { Icon(Icons.Default.History, "Project chats") }
+                        if (state.isRunning) CircularProgressIndicator(Modifier.padding(horizontal = 8.dp).size(18.dp), strokeWidth = 2.dp)
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+            }
         },
         bottomBar = {
             if (!keyboardVisible) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
@@ -4246,6 +4373,7 @@ private fun WorkspaceScreen(
                     },
                     slashCommands = state.filteredSlashCommands,
                     slashCommandsVisible = state.slashCommandsVisible,
+                    skills = state.filteredSkills,
                     onPromptChanged = onPromptChanged,
                     tokenMetrics = state.tokenMetrics,
                     onOpenInspector = onOpenInspector,
@@ -4739,6 +4867,7 @@ private fun ChatTab(
     onContinueHere: () -> Unit = {},
     slashCommands: List<SlashCommand> = emptyList(),
     slashCommandsVisible: Boolean = false,
+    skills: List<SkillInfo> = emptyList(),
     onPromptChanged: (String) -> Unit = {},
     tokenMetrics: SessionTokenMetrics = SessionTokenMetrics(),
     onOpenInspector: () -> Unit = {},
@@ -4892,6 +5021,7 @@ private fun ChatTab(
                 if (slashCommandsVisible) {
                     SlashCommandMenu(
                         commands = slashCommands,
+                        skills = skills,
                         onSelect = { cmd ->
                             if (cmd.isLocalOnly && cmd.parameterHint == null) {
                                 // Local instant commands: dispatch immediately and clear input
@@ -4922,6 +5052,29 @@ private fun ChatTab(
                                 )
                                 onPromptChanged(newText)
                             }
+                        },
+                        onSelectSkill = { skill ->
+                            val currentText = inputState.text
+                            val cursorPos = inputState.selection.end
+                            val slashIdx = currentText.lastIndexOf('/', cursorPos)
+                            val skillSyntax = "/${skill.name}"
+                            val newText = if (slashIdx >= 0) {
+                                val before = currentText.substring(0, slashIdx)
+                                val after = currentText.substring(cursorPos)
+                                "${before}${skillSyntax} ${after}"
+                            } else {
+                                "${skillSyntax} "
+                            }
+                            val newCursorPos = if (slashIdx >= 0) {
+                                slashIdx + skillSyntax.length + 1
+                            } else {
+                                newText.length
+                            }
+                            inputState = TextFieldValue(
+                                text = newText,
+                                selection = TextRange(newCursorPos),
+                            )
+                            onPromptChanged(newText)
                         },
                         modifier = Modifier.padding(bottom = 6.dp),
                     )
@@ -5475,7 +5628,7 @@ private fun rememberLiveElapsedSeconds(startedAtMillis: Long): Int {
     return seconds
 }
 
-private fun formatDuration(totalSeconds: Long): String = when {
+internal fun formatDuration(totalSeconds: Long): String = when {
     totalSeconds >= 3_600 -> "${totalSeconds / 3_600}h ${(totalSeconds % 3_600) / 60}m"
     totalSeconds >= 60 -> "${totalSeconds / 60}m ${totalSeconds % 60}s"
     else -> "${totalSeconds}s"
@@ -5483,15 +5636,63 @@ private fun formatDuration(totalSeconds: Long): String = when {
 
 @Composable
 private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Unit, onOpenAttachment: (ChatAttachment) -> Unit) {
+    val clipboardManager = LocalClipboardManager.current
+    val hapticFeedback = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+    var isCopied by remember(message.id) { mutableStateOf(false) }
+    var resetJob by remember { mutableStateOf<Job?>(null) }
+
+    val copyAction = {
+        if (message.text.isNotBlank()) {
+            clipboardManager.setText(AnnotatedString(message.text))
+            try {
+                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+            } catch (_: Exception) {}
+            isCopied = true
+            resetJob?.cancel()
+            resetJob = scope.launch {
+                delay(2000L)
+                isCopied = false
+            }
+        }
+    }
+
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.fromUser) Arrangement.End else Arrangement.Start) {
         Surface(
             color = if (message.fromUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(18.dp),
-            modifier = Modifier.fillMaxWidth(if (message.fromUser) .82f else .92f),
+            modifier = Modifier.fillMaxWidth(if (message.fromUser) 0.85f else 1f),
         ) {
             Column(Modifier.padding(top = 12.dp)) {
                 SelectionContainer {
                     if (message.fromUser) {
+                        if (message.activeSkill != null) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = PocketBlue.copy(alpha = 0.18f),
+                                border = BorderStroke(1.dp, PocketBlue.copy(alpha = 0.35f)),
+                                modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 6.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(
+                                        Icons.Default.AutoAwesome,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(12.dp),
+                                        tint = PocketBlue,
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        "Skill: ${message.activeSkill}",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = PocketBlue,
+                                    )
+                                }
+                            }
+                        }
                         Text(
                             text = message.text,
                             modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 8.dp),
@@ -5507,14 +5708,6 @@ private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Uni
                         )
                     }
                 }
-                if (!message.fromUser && message.workedMillis > 0L) {
-                    Text(
-                        text = "Worked for ${formatDuration((message.workedMillis / 1_000L).coerceAtLeast(1L))}",
-                        modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 10.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 11.sp,
-                    )
-                }
                 if (message.attachments.isNotEmpty()) {
                     Column(
                         Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
@@ -5525,7 +5718,49 @@ private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Uni
                         }
                     }
                 }
-                Spacer(Modifier.height(4.dp))
+                if (message.text.isNotBlank()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                start = 14.dp,
+                                end = if (message.fromUser) 8.dp else 10.dp,
+                                bottom = 6.dp,
+                            ),
+                        horizontalArrangement = if (message.fromUser) Arrangement.End else Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (!message.fromUser) {
+                            if (message.workedMillis > 0L) {
+                                Text(
+                                    text = "Worked for ${formatDuration((message.workedMillis / 1_000L).coerceAtLeast(1L))}",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 11.sp,
+                                )
+                            } else {
+                                Spacer(Modifier.width(1.dp))
+                            }
+                        }
+                        IconButton(
+                            onClick = copyAction,
+                            modifier = Modifier.size(28.dp),
+                        ) {
+                            Icon(
+                                imageVector = if (isCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                                contentDescription = if (isCopied) "Message copied to clipboard" else "Copy entire message",
+                                tint = when {
+                                    isCopied && message.fromUser -> PocketGreen
+                                    isCopied -> PocketOrange
+                                    message.fromUser -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.55f)
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+                                },
+                                modifier = Modifier.size(15.dp),
+                            )
+                        }
+                    }
+                } else {
+                    Spacer(Modifier.height(4.dp))
+                }
             }
         }
     }

@@ -394,16 +394,15 @@ object AntigravityProtocolAdapter {
                     val argsStr = part.optJSONObject("functionCall")?.optJSONObject("args")?.toString() ?: "{}"
                     results.add(ParsedPart(toolCall = AntigravityToolCall(id = id, name = call.optString("name"), argsJson = argsStr)))
                 }
-                part.optBoolean("thought") || part.has("thought") || part.has("thinking") -> {
-                    val isThoughtBool = part.optBoolean("thought", false)
-                    val thought = if (isThoughtBool) {
-                        part.optString("text")
-                    } else {
-                        part.optString("thought").ifBlank {
-                            part.optString("thinking").ifBlank { part.optString("text") }
-                        }
-                    }
+                part.optBoolean("thought", false) -> {
+                    val thought = part.optString("text")
                     if (thought.isNotEmpty()) results.add(ParsedPart(thinking = thought))
+                }
+                part.optString("thinking").isNotBlank() -> {
+                    results.add(ParsedPart(thinking = part.optString("thinking")))
+                }
+                part.has("thought") && part.opt("thought") !is Boolean && part.optString("thought").isNotBlank() -> {
+                    results.add(ParsedPart(thinking = part.optString("thought")))
                 }
                 part.has("text") -> {
                     val text = part.optString("text")

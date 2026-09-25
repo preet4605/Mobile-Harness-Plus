@@ -138,4 +138,23 @@ class ContextMemoryStoreTest {
         assertTrue(rendered.contains("- ui-framework: Compose"))
         assertTrue(rendered.trimEnd().endsWith("</persistent_memory>"))
     }
+
+    @Test
+    fun `load and save reject path traversal in projectId`() {
+        var loadBlocked = false
+        try {
+            store.load("../../etc/passwd")
+        } catch (e: IllegalArgumentException) {
+            loadBlocked = true
+        }
+        assertTrue("Must block path traversal in load", loadBlocked)
+
+        var saveBlocked = false
+        try {
+            store.save(ContextMemory(projectId = "../../../evil"))
+        } catch (e: IllegalArgumentException) {
+            saveBlocked = true
+        }
+        assertTrue("Must block path traversal in save", saveBlocked)
+    }
 }

@@ -251,7 +251,7 @@ class RuntimeSetupService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        startForeground(NOTIFICATION_ID, setupNotification(RuntimeSetupController.snapshot.value))
+        startSpecialUseForeground(NOTIFICATION_ID, setupNotification(RuntimeSetupController.snapshot.value))
         acquireWakeLock()
         if (installJob?.isActive != true) {
             val stacks = intent?.getStringExtra(EXTRA_STACKS).orEmpty().split(',')
@@ -347,6 +347,19 @@ class RuntimeSetupService : Service() {
         wakeLock = getSystemService(PowerManager::class.java)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "com.jarves.mh:runtime-setup")
             .apply { acquire(MAX_WAKE_LOCK_MS) }
+    }
+
+    private fun startSpecialUseForeground(id: Int, notification: android.app.Notification) {
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            androidx.core.app.ServiceCompat.startForeground(
+                this,
+                id,
+                notification,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } else {
+            startForeground(id, notification)
+        }
     }
 
     private fun releaseWakeLock() {

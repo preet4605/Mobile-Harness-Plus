@@ -28,15 +28,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import java.io.File
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
@@ -92,6 +95,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.AnnotatedString
@@ -103,10 +111,17 @@ import androidx.compose.ui.unit.sp
 import com.jarves.mh.model.ArtifactInfo
 import com.jarves.mh.model.BackgroundTaskInfo
 import com.jarves.mh.model.BackgroundTaskStatus
+import com.jarves.mh.model.CustomizationScopeMode
+import com.jarves.mh.model.LinkedSkillReference
+import com.jarves.mh.model.Project
+import com.jarves.mh.model.ProjectCustomizationConfig
 import com.jarves.mh.model.ProjectRule
+import com.jarves.mh.model.RuleInfo
+import com.jarves.mh.model.RuleSource
 import com.jarves.mh.model.ScheduledTimerInfo
 import com.jarves.mh.model.SessionTokenMetrics
 import com.jarves.mh.model.SkillInfo
+import com.jarves.mh.model.SkillSource
 import com.jarves.mh.model.SlashCommand
 import com.jarves.mh.model.SubagentInfo
 import com.jarves.mh.model.SubagentState
@@ -123,13 +138,15 @@ import kotlinx.coroutines.launch
 @Composable
 fun SlashCommandMenu(
     commands: List<SlashCommand>,
+    skills: List<SkillInfo> = emptyList(),
     onSelect: (SlashCommand) -> Unit,
+    onSelectSkill: ((SkillInfo) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
-    if (commands.isEmpty()) return
+    if (commands.isEmpty() && skills.isEmpty()) return
 
     val configuration = LocalConfiguration.current
-    val maxMenuHeight = (configuration.screenHeightDp.dp * 0.28f).coerceIn(120.dp, 190.dp)
+    val maxMenuHeight = (configuration.screenHeightDp.dp * 0.32f).coerceIn(140.dp, 240.dp)
 
     Surface(
         modifier = modifier
@@ -141,45 +158,48 @@ fun SlashCommandMenu(
         shadowElevation = 8.dp,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
     ) {
-        Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Default.Code,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                    tint = PocketOrange,
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "Slash Commands",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = maxMenuHeight),
-            ) {
-                items(commands, key = { it.name }) { cmd ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = maxMenuHeight)
+                .padding(vertical = 4.dp),
+        ) {
+            if (commands.isNotEmpty()) {
+                item(key = "header_commands") {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Default.Code,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = PocketOrange,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Commands (${commands.size})",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                }
+                items(commands, key = { "cmd_${it.name}" }) { cmd ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { onSelect(cmd) }
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
-                            modifier = Modifier.size(32.dp),
+                            modifier = Modifier.size(30.dp),
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Text(
@@ -225,6 +245,90 @@ fun SlashCommandMenu(
                             }
                             Text(
                                 cmd.description,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (skills.isNotEmpty()) {
+                item(key = "header_skills") {
+                    if (commands.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                    }
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = PocketBlue,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Available Skills (${skills.size})",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                }
+                items(skills, key = { "skill_${it.id}" }) { skill ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectSkill?.invoke(skill) }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = PocketBlue.copy(alpha = 0.15f),
+                            modifier = Modifier.size(30.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = PocketBlue,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "/${skill.name}",
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = PocketBlue.copy(alpha = 0.12f),
+                                ) {
+                                    Text(
+                                        skill.source.title,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                        fontSize = 10.sp,
+                                        color = PocketBlue,
+                                    )
+                                }
+                            }
+                            Text(
+                                skill.description,
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
@@ -809,108 +913,620 @@ private fun TimersView(timers: List<ScheduledTimerInfo>) {
 }
 
 /**
- * Skills & Rules Manager Dialog.
+ * Comprehensive Skills & Selective Rules Federation Hub.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SkillsManagerDialog(
-    skills: List<SkillInfo>,
-    rules: List<ProjectRule>,
-    onToggleSkill: (String) -> Unit,
-    onSaveRule: (String, String) -> Unit,
-    onCreateSkill: (String, String, String) -> Unit,
+    config: ProjectCustomizationConfig = ProjectCustomizationConfig(""),
+    activeSkills: List<SkillInfo> = emptyList(),
+    otherProjectsSkills: Map<Project, List<SkillInfo>> = emptyMap(),
+    globalSkills: List<SkillInfo> = emptyList(),
+    activeRules: List<RuleInfo> = emptyList(),
+    projectRules: List<RuleInfo> = emptyList(),
+    globalRules: List<RuleInfo> = emptyList(),
+    onSetScopeMode: (CustomizationScopeMode) -> Unit = {},
+    onToggleSkill: (String) -> Unit = {},
+    onToggleRule: (String) -> Unit = {},
+    onLinkSkill: (String, String, String) -> Unit = { _, _, _ -> },
+    onUnlinkSkill: (String) -> Unit = {},
+    onImportSkill: (File, String) -> Unit = { _, _ -> },
+    onPromoteSkill: (File, String) -> Unit = { _, _ -> },
+    onPromoteRule: (File, String) -> Unit = { _, _ -> },
+    onSaveRule: (String, String) -> Unit = { _, _ -> },
+    onCreateSkill: (String, String, String) -> Unit = { _, _, _ -> },
     onDismiss: () -> Unit,
 ) {
-    var tabIndex by remember { mutableIntStateOf(0) }
+    var mainTabIndex by remember { mutableIntStateOf(0) }
+    var skillsSubTab by remember { mutableIntStateOf(0) }
+    var skillSearchQuery by remember { mutableStateOf("") }
     var showCreateSkillDialog by remember { mutableStateOf(false) }
+    var editingRule by remember { mutableStateOf<RuleInfo?>(null) }
+    var showNewRuleDialog by remember { mutableStateOf(false) }
+    var expandedRuleId by remember { mutableStateOf<String?>(null) }
+    var expandedSkillId by remember { mutableStateOf<String?>(null) }
+    val clipboardManager = LocalClipboardManager.current
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.AutoAwesome, null, tint = PocketOrange, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Skills & Customizations")
+            Column(Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.AutoAwesome, null, tint = PocketOrange, modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Skills & Rules Hub", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                }
+                Spacer(Modifier.height(8.dp))
+                // Scope Mode Selector
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    CustomizationScopeMode.entries.forEach { mode ->
+                        val selected = config.scopeMode == mode
+                        FilterChip(
+                            selected = selected,
+                            onClick = { onSetScopeMode(mode) },
+                            label = { Text(mode.title, fontSize = 11.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = PocketBlue.copy(alpha = 0.25f),
+                                selectedLabelColor = PocketBlue,
+                            ),
+                        )
+                    }
+                }
+                Text(
+                    text = config.scopeMode.description,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         },
         text = {
-            Column(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
-                PrimaryTabRow(selectedTabIndex = tabIndex) {
+            Column(Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
+                ScrollableTabRow(
+                    selectedTabIndex = mainTabIndex,
+                    edgePadding = 0.dp,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Tab(
-                        selected = tabIndex == 0,
-                        onClick = { tabIndex = 0 },
-                        text = { Text("Skills (${skills.size})", fontSize = 12.sp) },
+                        selected = mainTabIndex == 0,
+                        onClick = { mainTabIndex = 0 },
+                        text = { Text("Project Rules (${projectRules.size})", fontSize = 12.sp) },
                     )
                     Tab(
-                        selected = tabIndex == 1,
-                        onClick = { tabIndex = 1 },
-                        text = { Text("Project Rules (${rules.size})", fontSize = 12.sp) },
+                        selected = mainTabIndex == 1,
+                        onClick = { mainTabIndex = 1 },
+                        text = { Text("Global Personas (${globalRules.size})", fontSize = 12.sp) },
+                    )
+                    Tab(
+                        selected = mainTabIndex == 2,
+                        onClick = { mainTabIndex = 2 },
+                        text = { Text("Skills Hub (${activeSkills.size})", fontSize = 12.sp) },
+                    )
+                    Tab(
+                        selected = mainTabIndex == 3,
+                        onClick = { mainTabIndex = 3 },
+                        text = { Text("Prompt Preview", fontSize = 12.sp) },
                     )
                 }
                 Spacer(Modifier.height(10.dp))
 
-                if (tabIndex == 0) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("Active Skills", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                        TextButton(onClick = { showCreateSkillDialog = true }) {
-                            Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("New Skill", fontSize = 12.sp)
+                when (mainTabIndex) {
+                    // TAB 0: Project Rules
+                    0 -> {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Workspace Rules", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            TextButton(onClick = { showNewRuleDialog = true }) {
+                                Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("New Rule", fontSize = 12.sp)
+                            }
                         }
-                    }
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(skills, key = { it.id }) { skill ->
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Row(
-                                    Modifier.padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                ) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(skill.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                        Text(skill.description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                        Text("Source: ${skill.source.title}", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
+                        if (projectRules.isEmpty()) {
+                            Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                                Text("No project rules found in workspace.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        } else {
+                            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                items(projectRules, key = { it.id }) { rule ->
+                                    val isExpanded = expandedRuleId == rule.id
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Column(Modifier.padding(10.dp)) {
+                                            Row(
+                                                Modifier.fillMaxWidth(),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                            ) {
+                                                Column(Modifier.weight(1f)) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Text(rule.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                        Spacer(Modifier.width(6.dp))
+                                                        Surface(
+                                                            shape = RoundedCornerShape(4.dp),
+                                                            color = PocketBlue.copy(alpha = 0.2f),
+                                                        ) {
+                                                            Text("Project", fontSize = 9.sp, color = PocketBlue, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                                                        }
+                                                    }
+                                                    Text(rule.title, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                }
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    IconButton(onClick = { editingRule = rule }, modifier = Modifier.size(28.dp)) {
+                                                        Icon(Icons.Default.Edit, "Edit rule", modifier = Modifier.size(16.dp))
+                                                    }
+                                                    IconButton(
+                                                        onClick = { onPromoteRule(File(rule.filePath), rule.name) },
+                                                        modifier = Modifier.size(28.dp),
+                                                    ) {
+                                                        Icon(Icons.Default.AutoAwesome, "Promote to Global", tint = PocketOrange, modifier = Modifier.size(16.dp))
+                                                    }
+                                                    IconButton(
+                                                        onClick = { expandedRuleId = if (isExpanded) null else rule.id },
+                                                        modifier = Modifier.size(28.dp),
+                                                    ) {
+                                                        Icon(
+                                                            if (isExpanded) Icons.Default.Close else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                                            "Expand",
+                                                            modifier = Modifier.size(16.dp),
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            if (isExpanded && rule.content.isNotBlank()) {
+                                                HorizontalDivider(Modifier.padding(vertical = 6.dp), thickness = 0.5.dp)
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                ) {
+                                                    Text(
+                                                        text = rule.content.take(600) + if (rule.content.length > 600) "…" else "",
+                                                        fontSize = 10.sp,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        modifier = Modifier.padding(8.dp),
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
-                                    Switch(
-                                        checked = skill.isEnabled,
-                                        onCheckedChange = { onToggleSkill(skill.id) },
-                                        modifier = Modifier.size(36.dp),
-                                    )
                                 }
                             }
                         }
                     }
-                } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(rules, key = { it.fileName }) { rule ->
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                modifier = Modifier.fillMaxWidth(),
+
+                    // TAB 1: Global Personas & Rules
+                    1 -> {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Discipline Personas & Global Rules", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(globalRules, key = { it.id }) { rule ->
+                                val isEnabled = activeRules.any { it.name.equals(rule.name, ignoreCase = true) }
+                                val isExpanded = expandedRuleId == rule.id
+                                val domainColor = when {
+                                    rule.name.contains("coding") || rule.name.contains("architect") -> PocketBlue
+                                    rule.name.contains("design") -> PocketOrange
+                                    rule.name.contains("debug") -> PocketGreen
+                                    rule.name.contains("perf") -> Color(0xFFAB47BC)
+                                    rule.name.contains("sec") -> Color(0xFFEF5350)
+                                    else -> MaterialTheme.colorScheme.primary
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Column(Modifier.padding(10.dp)) {
+                                        Row(
+                                            Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                        ) {
+                                            Column(Modifier.weight(1f)) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(rule.title, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Surface(
+                                                        shape = RoundedCornerShape(4.dp),
+                                                        color = domainColor.copy(alpha = 0.2f),
+                                                    ) {
+                                                        Text(rule.name, fontSize = 9.sp, color = domainColor, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                                                    }
+                                                }
+                                                Text(
+                                                    rule.description,
+                                                    fontSize = 11.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = if (isExpanded) 10 else 2,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            }
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Switch(
+                                                    checked = isEnabled,
+                                                    onCheckedChange = { onToggleRule(rule.id) },
+                                                    modifier = Modifier.size(36.dp),
+                                                )
+                                                IconButton(
+                                                    onClick = { expandedRuleId = if (isExpanded) null else rule.id },
+                                                    modifier = Modifier.size(28.dp),
+                                                ) {
+                                                    Icon(
+                                                        if (isExpanded) Icons.Default.Close else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                                        "Expand",
+                                                        modifier = Modifier.size(16.dp),
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        if (isExpanded && rule.content.isNotBlank()) {
+                                            HorizontalDivider(Modifier.padding(vertical = 6.dp), thickness = 0.5.dp)
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                                                modifier = Modifier.fillMaxWidth(),
+                                            ) {
+                                                Text(
+                                                    text = rule.content.take(800) + if (rule.content.length > 800) "…" else "",
+                                                    fontSize = 10.sp,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    modifier = Modifier.padding(8.dp),
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // TAB 2: Skills Hub (Active, Global Library, Other Projects)
+                    2 -> {
+                        Column(Modifier.fillMaxWidth()) {
+                            // Sub-navigation for skills
+                            Row(
+                                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
-                                Column(Modifier.padding(12.dp)) {
+                                FilterChip(
+                                    selected = skillsSubTab == 0,
+                                    onClick = { skillsSubTab = 0 },
+                                    label = { Text("Active (${activeSkills.size})", fontSize = 11.sp) },
+                                )
+                                FilterChip(
+                                    selected = skillsSubTab == 1,
+                                    onClick = { skillsSubTab = 1 },
+                                    label = { Text("Global Library (${globalSkills.size})", fontSize = 11.sp) },
+                                )
+                                val totalOther = otherProjectsSkills.values.sumOf { it.size }
+                                FilterChip(
+                                    selected = skillsSubTab == 2,
+                                    onClick = { skillsSubTab = 2 },
+                                    label = { Text("Other Projects ($totalOther)", fontSize = 11.sp) },
+                                )
+                            }
+                            Spacer(Modifier.height(6.dp))
+
+                            // Search bar
+                            OutlinedTextField(
+                                value = skillSearchQuery,
+                                onValueChange = { skillSearchQuery = it },
+                                placeholder = { Text("Search skills…", fontSize = 11.sp) },
+                                modifier = Modifier.fillMaxWidth().height(46.dp),
+                                singleLine = true,
+                                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
+                            )
+                            Spacer(Modifier.height(8.dp))
+
+                            when (skillsSubTab) {
+                                // Sub-tab 0: Active in Project
+                                0 -> {
+                                    val filteredActive = activeSkills.filter {
+                                        skillSearchQuery.isBlank() || it.name.contains(skillSearchQuery, ignoreCase = true) || it.description.contains(skillSearchQuery, ignoreCase = true)
+                                    }
+                                    if (filteredActive.isEmpty()) {
+                                        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                                            Text("No skills active in current workspace.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    } else {
+                                        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            items(filteredActive, key = { it.id }) { skill ->
+                                                val isExpanded = expandedSkillId == skill.id
+                                                val badgeColor = when (skill.source) {
+                                                    SkillSource.PROJECT -> PocketBlue
+                                                    SkillSource.LINKED -> PocketGreen
+                                                    SkillSource.GLOBAL -> PocketOrange
+                                                    SkillSource.BUNDLED -> MaterialTheme.colorScheme.secondary
+                                                    SkillSource.OTHER_PROJECT -> MaterialTheme.colorScheme.primary
+                                                }
+                                                val badgeLabel = when (skill.source) {
+                                                    SkillSource.PROJECT -> "Local Workspace"
+                                                    SkillSource.LINKED -> "Linked: ${skill.sourceProjectName ?: "Other"}"
+                                                    SkillSource.GLOBAL -> "Global Library"
+                                                    SkillSource.BUNDLED -> "Built-in"
+                                                    SkillSource.OTHER_PROJECT -> "Other Project"
+                                                }
+                                                Surface(
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                ) {
+                                                    Column(Modifier.padding(10.dp)) {
+                                                        Row(
+                                                            Modifier.fillMaxWidth(),
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                        ) {
+                                                            Column(Modifier.weight(1f)) {
+                                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                                    Text(skill.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                                    Spacer(Modifier.width(6.dp))
+                                                                    Surface(
+                                                                        shape = RoundedCornerShape(4.dp),
+                                                                        color = badgeColor.copy(alpha = 0.2f),
+                                                                    ) {
+                                                                        Text(badgeLabel, fontSize = 9.sp, color = badgeColor, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                                                                    }
+                                                                }
+                                                                Text(skill.description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = if (isExpanded) 10 else 2, overflow = TextOverflow.Ellipsis)
+                                                            }
+                                                            Switch(
+                                                                checked = skill.isEnabled,
+                                                                onCheckedChange = { onToggleSkill(skill.id) },
+                                                                modifier = Modifier.size(36.dp),
+                                                            )
+                                                        }
+                                                        Row(
+                                                            Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.End,
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                        ) {
+                                                            if (skill.source == SkillSource.PROJECT) {
+                                                                TextButton(
+                                                                    onClick = { onPromoteSkill(File(skill.filePath).parentFile ?: File(skill.filePath), skill.name) },
+                                                                ) {
+                                                                    Text("Make Global", fontSize = 10.sp, color = PocketOrange)
+                                                                }
+                                                            } else if (skill.source == SkillSource.LINKED) {
+                                                                TextButton(
+                                                                    onClick = { onImportSkill(File(skill.filePath).parentFile ?: File(skill.filePath), skill.name) },
+                                                                ) {
+                                                                    Text("Copy to Workspace", fontSize = 10.sp, color = PocketBlue)
+                                                                }
+                                                                TextButton(
+                                                                    onClick = { onUnlinkSkill(skill.id) },
+                                                                ) {
+                                                                    Text("Unlink", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
+                                                                }
+                                                            }
+                                                            IconButton(
+                                                                onClick = { expandedSkillId = if (isExpanded) null else skill.id },
+                                                                modifier = Modifier.size(28.dp),
+                                                            ) {
+                                                                Icon(
+                                                                    if (isExpanded) Icons.Default.Close else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                                                    "Expand",
+                                                                    modifier = Modifier.size(16.dp),
+                                                                )
+                                                            }
+                                                        }
+                                                        if (isExpanded && skill.markdownContent != null) {
+                                                            HorizontalDivider(Modifier.padding(vertical = 4.dp), thickness = 0.5.dp)
+                                                            Surface(
+                                                                shape = RoundedCornerShape(6.dp),
+                                                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                            ) {
+                                                                Text(
+                                                                    text = skill.markdownContent.take(600) + if (skill.markdownContent.length > 600) "…" else "",
+                                                                    fontSize = 10.sp,
+                                                                    fontFamily = FontFamily.Monospace,
+                                                                    modifier = Modifier.padding(8.dp),
+                                                                )
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Sub-tab 1: Global Library
+                                1 -> {
                                     Row(
                                         Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        Text(rule.fileName, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                        Text(if (rule.exists) "Active" else "Not created", fontSize = 11.sp, color = if (rule.exists) PocketGreen else MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text("Global & System Library", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                                        TextButton(onClick = { showCreateSkillDialog = true }) {
+                                            Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("New Skill", fontSize = 11.sp)
+                                        }
                                     }
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(
-                                        if (rule.exists && rule.content.isNotBlank()) rule.content.take(120) + "…" else "No rules defined yet.",
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
+                                    val filteredGlobal = globalSkills.filter {
+                                        skillSearchQuery.isBlank() || it.name.contains(skillSearchQuery, ignoreCase = true) || it.description.contains(skillSearchQuery, ignoreCase = true)
+                                    }
+                                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        items(filteredGlobal, key = { it.id }) { skill ->
+                                            val isEnabled = activeSkills.any { it.name.equals(skill.name, ignoreCase = true) && it.isEnabled }
+                                            Surface(
+                                                shape = RoundedCornerShape(10.dp),
+                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                                modifier = Modifier.fillMaxWidth(),
+                                            ) {
+                                                Row(
+                                                    Modifier.padding(10.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                ) {
+                                                    Column(Modifier.weight(1f)) {
+                                                        Text(skill.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                        Text(skill.description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                                        Text("Source: ${skill.source.title}", fontSize = 10.sp, color = PocketOrange)
+                                                    }
+                                                    Switch(
+                                                        checked = isEnabled,
+                                                        onCheckedChange = { onToggleSkill(skill.id) },
+                                                        modifier = Modifier.size(36.dp),
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Sub-tab 2: Other Projects Browser
+                                2 -> {
+                                    if (otherProjectsSkills.isEmpty()) {
+                                        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                                            Text("No other registered projects have skills.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    } else {
+                                        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            otherProjectsSkills.forEach { (project, skills) ->
+                                                val matching = skills.filter {
+                                                    skillSearchQuery.isBlank() || it.name.contains(skillSearchQuery, ignoreCase = true) || it.description.contains(skillSearchQuery, ignoreCase = true)
+                                                }
+                                                if (matching.isNotEmpty()) {
+                                                    item(key = project.id) {
+                                                        Surface(
+                                                            shape = RoundedCornerShape(10.dp),
+                                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                        ) {
+                                                            Column(Modifier.padding(10.dp)) {
+                                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                                    Icon(Icons.Default.Folder, null, tint = PocketBlue, modifier = Modifier.size(16.dp))
+                                                                    Spacer(Modifier.width(6.dp))
+                                                                    Text("Project: ${project.name}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                                                    Spacer(Modifier.width(4.dp))
+                                                                    Text("(${matching.size})", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                                }
+                                                                Spacer(Modifier.height(8.dp))
+                                                                matching.forEach { skill ->
+                                                                    Surface(
+                                                                        shape = RoundedCornerShape(8.dp),
+                                                                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                                                                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                                                    ) {
+                                                                        Column(Modifier.padding(8.dp)) {
+                                                                            Text(skill.name, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                                                            Text(skill.description, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                                                                            Spacer(Modifier.height(6.dp))
+                                                                            Row(
+                                                                                Modifier.fillMaxWidth(),
+                                                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                                            ) {
+                                                                                OutlinedButton(
+                                                                                    onClick = { onLinkSkill(project.id, skill.name, ".agents/skills/${skill.name}") },
+                                                                                    modifier = Modifier.height(28.dp),
+                                                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                                                                ) {
+                                                                                    Text("🔗 Link", fontSize = 10.sp)
+                                                                                }
+                                                                                OutlinedButton(
+                                                                                    onClick = { onImportSkill(File(skill.filePath).parentFile ?: File(skill.filePath), skill.name) },
+                                                                                    modifier = Modifier.height(28.dp),
+                                                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                                                                ) {
+                                                                                    Text("⤓ Copy", fontSize = 10.sp)
+                                                                                }
+                                                                                OutlinedButton(
+                                                                                    onClick = { onPromoteSkill(File(skill.filePath).parentFile ?: File(skill.filePath), skill.name) },
+                                                                                    modifier = Modifier.height(28.dp),
+                                                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                                                                ) {
+                                                                                    Text("★ Global", fontSize = 10.sp)
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // TAB 3: Prompt Preview
+                    3 -> {
+                        val previewText = buildString {
+                            val rulesEnabled = activeRules.filter { it.isEnabled }
+                            if (rulesEnabled.isNotEmpty()) {
+                                appendLine("<user_rules>")
+                                rulesEnabled.forEach { r ->
+                                    appendLine("<RULE[${r.name}]>")
+                                    appendLine(r.content.trim())
+                                    appendLine("</RULE[${r.name}]>")
+                                }
+                                appendLine("</user_rules>")
+                                appendLine()
+                            }
+                            val skillsEnabled = activeSkills.filter { it.isEnabled }
+                            if (skillsEnabled.isNotEmpty()) {
+                                appendLine("<skills>")
+                                appendLine("Available skills:")
+                                skillsEnabled.forEach { s ->
+                                    appendLine("- ${s.name} (${s.filePath}): ${s.description}")
+                                }
+                                appendLine("</skills>")
+                            }
+                            if (rulesEnabled.isEmpty() && skillsEnabled.isEmpty()) {
+                                appendLine("(No rules or skills active for injection under current scope)")
+                            }
+                        }
+                        Column(Modifier.fillMaxWidth()) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text("Injected Prompt Envelopes", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                                TextButton(onClick = { clipboardManager.setText(AnnotatedString(previewText)) }) {
+                                    Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Copy", fontSize = 11.sp)
+                                }
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+                                modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp),
+                            ) {
+                                LazyColumn(Modifier.padding(10.dp)) {
+                                    item {
+                                        Text(
+                                            text = previewText,
+                                            fontSize = 10.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -932,6 +1548,79 @@ fun SkillsManagerDialog(
             onDismiss = { showCreateSkillDialog = false },
         )
     }
+
+    editingRule?.let { rule ->
+        EditRuleDialog(
+            rule = rule,
+            onSave = { name, content ->
+                onSaveRule(name, content)
+                editingRule = null
+            },
+            onDismiss = { editingRule = null },
+        )
+    }
+
+    if (showNewRuleDialog) {
+        EditRuleDialog(
+            rule = RuleInfo(
+                id = "",
+                name = "NEW_RULE.md",
+                title = "New Rule",
+                description = "",
+                filePath = "",
+                source = RuleSource.PROJECT,
+                content = "# Custom Project Rule\n\nSpecify guidelines here.\n",
+            ),
+            onSave = { name, content ->
+                onSaveRule(name, content)
+                showNewRuleDialog = false
+            },
+            onDismiss = { showNewRuleDialog = false },
+        )
+    }
+}
+
+@Composable
+private fun EditRuleDialog(
+    rule: RuleInfo,
+    onSave: (String, String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var fileName by remember { mutableStateOf(rule.name.let { if (it.endsWith(".md")) it else "$it.md" }) }
+    var content by remember { mutableStateOf(rule.content) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (rule.id.isBlank()) "Create Project Rule" else "Edit ${rule.name}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = fileName,
+                    onValueChange = { fileName = it },
+                    label = { Text("File Name (e.g. GEMINI.md, coding.md)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = content,
+                    onValueChange = { content = it },
+                    label = { Text("Rule Content (Markdown)") },
+                    modifier = Modifier.fillMaxWidth().height(200.dp),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(fileName, content) },
+                enabled = fileName.isNotBlank() && content.isNotBlank(),
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable

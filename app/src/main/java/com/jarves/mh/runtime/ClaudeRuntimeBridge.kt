@@ -212,76 +212,79 @@ class ClaudeRuntimeBridge(
             if (userStopRequested) process.destroy()
             coroutineScope {
                 val permissionWatcher = launch { watchPermissionRequests(sessionId) }
-                var lastDiagnostic = ""
-                val pendingOutput = StringBuilder()
-                val nativeProcess = process as? NativeSpawnProcess
-                    ?: error("Unsupported Android runtime process")
-                var outputOffset = 0L
-                while (process.isAlive || nativeProcess.outputFile.length() > outputOffset) {
-                    val available = nativeProcess.outputFile.length() - outputOffset
-                    if (available <= 0) {
-                        delay(50)
-                        continue
-                    }
-                    val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
-                    val count = RandomAccessFile(nativeProcess.outputFile, "r").use { file ->
-                        file.seek(outputOffset)
-                        file.read(bytes)
-                    }
-                    if (count > 0) {
-                        outputOffset += count
-                        pendingOutput.append(bytes.decodeToString(0, count))
-                        var newline = pendingOutput.indexOf("\n")
-                        while (newline >= 0) {
-                            val line = pendingOutput.substring(0, newline).trimEnd('\r')
-                            pendingOutput.delete(0, newline + 1)
-                            if (line.isNotBlank()) {
-                                Log.d("ClaudeBridge", "OUTPUT: $line")
-                                ProviderRuntimeErrorDetector.detect(line)?.let { reason ->
-                                    process.destroyForcibly()
-                                    throw ProviderSessionException(reason)
-                                }
-                                if (!consumeClaudeEvent(sessionId, line)) {
-                                    lastDiagnostic = line.takeLast(500)
-                                    terminalStatus(line)?.let { (title, detail) ->
-                                        eventBus.emit(RuntimeEvent.RuntimeLog(sessionId, title, detail))
+                try {
+                    var lastDiagnostic = ""
+                    val pendingOutput = StringBuilder()
+                    val nativeProcess = process as? NativeSpawnProcess
+                        ?: error("Unsupported Android runtime process")
+                    var outputOffset = 0L
+                    while (process.isAlive || nativeProcess.outputFile.length() > outputOffset) {
+                        val available = nativeProcess.outputFile.length() - outputOffset
+                        if (available <= 0) {
+                            delay(50)
+                            continue
+                        }
+                        val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
+                        val count = RandomAccessFile(nativeProcess.outputFile, "r").use { file ->
+                            file.seek(outputOffset)
+                            file.read(bytes)
+                        }
+                        if (count > 0) {
+                            outputOffset += count
+                            pendingOutput.append(bytes.decodeToString(0, count))
+                            var newline = pendingOutput.indexOf("\n")
+                            while (newline >= 0) {
+                                val line = pendingOutput.substring(0, newline).trimEnd('\r')
+                                pendingOutput.delete(0, newline + 1)
+                                if (line.isNotBlank()) {
+                                    Log.d("ClaudeBridge", "OUTPUT: $line")
+                                    ProviderRuntimeErrorDetector.detect(line)?.let { reason ->
+                                        process.destroyForcibly()
+                                        throw ProviderSessionException(reason)
+                                    }
+                                    if (!consumeClaudeEvent(sessionId, line)) {
+                                        lastDiagnostic = line.takeLast(500)
+                                        terminalStatus(line)?.let { (title, detail) ->
+                                            eventBus.emit(RuntimeEvent.RuntimeLog(sessionId, title, detail))
+                                        }
                                     }
                                 }
+                                newline = pendingOutput.indexOf("\n")
                             }
-                            newline = pendingOutput.indexOf("\n")
                         }
                     }
-                }
-                pendingOutput.toString().trim().takeIf(String::isNotBlank)?.let { line ->
-                    Log.d("ClaudeBridge", "TRAILING OUTPUT: $line")
-                    if (!consumeClaudeEvent(sessionId, line)) lastDiagnostic = line.takeLast(500)
-                }
-                val exit = process.waitFor()
-                Log.d("ClaudeBridge", "Process exited with code $exit")
-                permissionWatcher.cancelAndJoin()
-                pending.values.filter { it.request.sessionId == sessionId }.forEach { permission ->
-                    permission.response.writeText("deny")
-                    pending.remove(permission.request.approvalId)
-                }
-                val changed = changedFiles(workspace, before)
-                if (changed.isNotEmpty()) {
-                    Log.d("ClaudeBridge", "Changed files: $changed")
-                    saveChangedPaths(projectId, changed)
-                    val details = loadPendingChanges(projectId)
-                    eventBus.emit(RuntimeEvent.FilesChanged(sessionId, details))
-                } else if (!File(checkpointDir(projectId), "changes.json").isFile) {
-                    acceptLastChanges(projectId)
-                }
-                if (exit == 0) {
-                    emitCompletedOnce(sessionId)
-                    finishForegroundRuntime(
-                        completed = true,
-                        projectName = projectSlug,
-                        detail = "Claude Code finished the task in $projectSlug.",
-                    )
-                } else {
-                    if (userStopRequested) throw ProviderSessionException("Stopped by user")
-                    error(lastDiagnostic.ifBlank { "Claude Code stopped with exit code $exit" })
+                    pendingOutput.toString().trim().takeIf(String::isNotBlank)?.let { line ->
+                        Log.d("ClaudeBridge", "TRAILING OUTPUT: $line")
+                        if (!consumeClaudeEvent(sessionId, line)) lastDiagnostic = line.takeLast(500)
+                    }
+                    val exit = process.waitFor()
+                    Log.d("ClaudeBridge", "Process exited with code $exit")
+                    val changed = changedFiles(workspace, before)
+                    if (changed.isNotEmpty()) {
+                        Log.d("ClaudeBridge", "Changed files: $changed")
+                        saveChangedPaths(projectId, changed)
+                        val details = loadPendingChanges(projectId)
+                        eventBus.emit(RuntimeEvent.FilesChanged(sessionId, details))
+                    } else if (!File(checkpointDir(projectId), "changes.json").isFile) {
+                        acceptLastChanges(projectId)
+                    }
+                    if (exit == 0) {
+                        emitCompletedOnce(sessionId)
+                        finishForegroundRuntime(
+                            completed = true,
+                            projectName = projectSlug,
+                            detail = "Claude Code finished the task in $projectSlug.",
+                        )
+                    } else {
+                        if (userStopRequested) throw ProviderSessionException("Stopped by user")
+                        error(lastDiagnostic.ifBlank { "Claude Code stopped with exit code $exit" })
+                    }
+                } finally {
+                    permissionWatcher.cancelAndJoin()
+                    pending.values.filter { it.request.sessionId == sessionId }.forEach { permission ->
+                        runCatching { permission.response.writeText("deny") }
+                        pending.remove(permission.request.approvalId)
+                    }
                 }
             }
         }.onFailure { error ->

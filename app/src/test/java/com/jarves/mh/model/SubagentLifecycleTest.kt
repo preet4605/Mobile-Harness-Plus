@@ -319,5 +319,13 @@ class SubagentLifecycleTest {
         // Trailing space after command (dismisses popup)
         val t4 = TriggerParser.parseTrigger("/plan ")
         assertEquals(TriggerType.NONE, t4.type)
+
+        // Mid-sentence trigger matching with cursorPosition
+        val text = "Please /plan for this feature"
+        val cursorAtPlan = 12 // after "/plan"
+        val t5 = TriggerParser.parseTrigger(text, cursorAtPlan)
+        assertEquals(TriggerType.SLASH_COMMAND, t5.type)
+        assertEquals("plan", t5.query)
+        assertEquals(7, t5.triggerStartIndex)
     }
 }

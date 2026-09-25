@@ -45,7 +45,12 @@ internal class LocalFormatGateway(
             val split = line.indexOf(':')
             if (split > 0) headers[line.substring(0, split).lowercase()] = line.substring(split + 1).trim()
         }
+        val output = BufferedOutputStream(socket.getOutputStream())
         val length = headers["content-length"]?.toIntOrNull() ?: 0
+        if (length < 0 || length > 16 * 1024 * 1024) {
+            writeJson(output, 413, errorJson("invalid_request_error", "Payload too large"))
+            return
+        }
         val bodyBytes = ByteArray(length)
         var offset = 0
         while (offset < length) {
@@ -53,8 +58,8 @@ internal class LocalFormatGateway(
             if (count < 0) break
             offset += count
         }
+        if (offset < length) return
         val path = requestLine.split(' ').getOrNull(1).orEmpty().substringBefore('?')
-        val output = BufferedOutputStream(socket.getOutputStream())
         if (path.endsWith("/count_tokens")) {
             val approximate = bodyBytes.decodeToString().length / 4 + 1
             writeJson(output, 200, JSONObject().put("input_tokens", approximate).toString())

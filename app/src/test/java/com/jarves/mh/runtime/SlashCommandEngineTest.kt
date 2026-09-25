@@ -63,9 +63,10 @@ class SlashCommandEngineTest {
         assertTrue(allAgy.any { it.name == "browser" })
         assertTrue(allDsh.none { it.name == "browser" })
 
-        // Status and skills exist
+        // Status, skills, and rules exist
         assertTrue(allAgy.any { it.name == "status" })
         assertTrue(allAgy.any { it.name == "skills" })
+        assertTrue(allAgy.any { it.name == "rules" })
     }
 
     @Test
@@ -84,5 +85,104 @@ class SlashCommandEngineTest {
         val browserPrompt = SlashCommandEngine.buildPromptForCommand(browserCmd, "https://developer.android.com", AgentKind.ANTIGRAVITY)
         assertTrue(browserPrompt.contains("[WORKFLOW: WEB RESEARCH]"))
         assertTrue(browserPrompt.contains("https://developer.android.com"))
+    }
+
+    @Test
+    fun filterSkills_matchesQueryAndRanksPrefixMatchesFirst() {
+        val skills = listOf(
+            com.jarves.mh.model.SkillInfo(
+                id = "s1",
+                name = "android-developer",
+                description = "Android Gradle and Compose development",
+                filePath = "/path/to/android-developer",
+                source = com.jarves.mh.model.SkillSource.BUNDLED,
+                isEnabled = true,
+            ),
+            com.jarves.mh.model.SkillInfo(
+                id = "s2",
+                name = "code-reviewer",
+                description = "Code review and quality audit for Android",
+                filePath = "/path/to/code-reviewer",
+                source = com.jarves.mh.model.SkillSource.BUNDLED,
+                isEnabled = true,
+            ),
+            com.jarves.mh.model.SkillInfo(
+                id = "s3",
+                name = "git-expert",
+                description = "Git commits and branches",
+                filePath = "/path/to/git-expert",
+                source = com.jarves.mh.model.SkillSource.BUNDLED,
+                isEnabled = false, // disabled
+            ),
+        )
+
+        // Query "android" should return android-developer first (prefix match on name), and code-reviewer second (description match)
+        val filtered = SlashCommandEngine.filterSkills("/android", skills)
+        assertEquals(2, filtered.size)
+        assertEquals("android-developer", filtered[0].name)
+        assertEquals("code-reviewer", filtered[1].name)
+
+        // Disabled skill is excluded
+        val gitFiltered = SlashCommandEngine.filterSkills("/git", skills)
+        assertTrue(gitFiltered.isEmpty())
+
+        // Blank query returns all enabled skills sorted by name
+        val allFiltered = SlashCommandEngine.filterSkills("/", skills)
+        assertEquals(2, allFiltered.size)
+        assertEquals("android-developer", allFiltered[0].name)
+        assertEquals("code-reviewer", allFiltered[1].name)
+    }
+
+    @Test
+    fun parseSkillInvocation_extractsSkillAndArgs() {
+        val skill = com.jarves.mh.model.SkillInfo(
+            id = "s1",
+            name = "android-developer",
+            description = "Android expert",
+            filePath = "/path/to/android",
+            source = com.jarves.mh.model.SkillSource.BUNDLED,
+            isEnabled = true,
+        )
+        val activeSkills = listOf(skill)
+
+        val result1 = SlashCommandEngine.parseSkillInvocation("/android-developer Fix AAPT2 error", activeSkills)
+        assertNotNull(result1)
+        assertEquals("android-developer", result1!!.first.name)
+        assertEquals("Fix AAPT2 error", result1.second)
+
+        // Case insensitivity
+        val result2 = SlashCommandEngine.parseSkillInvocation("/ANDROID-DEVELOPER", activeSkills)
+        assertNotNull(result2)
+        assertEquals("android-developer", result2!!.first.name)
+        assertEquals("", result2.second)
+
+        // Non-existent skill returns null
+        val result3 = SlashCommandEngine.parseSkillInvocation("/unknown-skill some task", activeSkills)
+        assertNull(result3)
+
+        // Normal text returns null
+        val result4 = SlashCommandEngine.parseSkillInvocation("android-developer check gradle", activeSkills)
+        assertNull(result4)
+    }
+
+    @Test
+    fun buildPromptForSkill_formatsSkillEnvelopeAndDirectives() {
+        val skill = com.jarves.mh.model.SkillInfo(
+            id = "s1",
+            name = "android-developer",
+            description = "Android expert",
+            filePath = "/path/to/android",
+            source = com.jarves.mh.model.SkillSource.BUNDLED,
+            isEnabled = true,
+        )
+
+        val promptWithArgs = SlashCommandEngine.buildPromptForSkill(skill, "Resolve build timeout", "# Guide\nRun gradle --daemon")
+        assertTrue(promptWithArgs.contains("<active_skill name=\"android-developer\" source=\"BUNDLED\">"))
+        assertTrue(promptWithArgs.contains("Run gradle --daemon"))
+        assertTrue(promptWithArgs.contains("[USER DIRECTIVE - ACTIVE SKILL APPLIED: android-developer]"))
+        assertTrue(promptWithArgs.contains("Resolve build timeout"))
+
+        val promptWithoutArgs = SlashCommandEngine.buildPromptForSkill(skill, "", "Instructions")
+        assertTrue(promptWithoutArgs.contains("Please analyze this project workspace and apply the instructions and guidelines from the android-developer skill."))
     }
 }

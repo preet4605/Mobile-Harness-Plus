@@ -145,8 +145,10 @@ object TriggerParser {
     val slashTriggerRegex = Regex("""(?:^|\s)/([a-zA-Z0-9_-]*)$""")
     val mentionTriggerRegex = Regex("""(?:^|\s)@([a-zA-Z0-9_./-]*)$""")
 
-    fun parseTrigger(text: String): InputTriggerState {
-        val slashMatch = slashTriggerRegex.find(text)
+    fun parseTrigger(text: String, cursorPosition: Int = text.length): InputTriggerState {
+        val boundedCursor = cursorPosition.coerceIn(0, text.length)
+        val textBeforeCursor = text.substring(0, boundedCursor)
+        val slashMatch = slashTriggerRegex.find(textBeforeCursor)
         if (slashMatch != null) {
             val query = slashMatch.groupValues[1]
             val startIndex = slashMatch.range.first + (slashMatch.value.length - query.length - 1)
@@ -156,7 +158,7 @@ object TriggerParser {
                 triggerStartIndex = startIndex,
             )
         }
-        val mentionMatch = mentionTriggerRegex.find(text)
+        val mentionMatch = mentionTriggerRegex.find(textBeforeCursor)
         if (mentionMatch != null) {
             val query = mentionMatch.groupValues[1]
             val startIndex = mentionMatch.range.first + (mentionMatch.value.length - query.length - 1)
