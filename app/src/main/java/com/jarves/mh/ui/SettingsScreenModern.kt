@@ -437,6 +437,33 @@ fun SettingsScreen(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            "What's New in Mobile Harness+",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "• Multi-Engine Runtime: Google Antigravity CLI, Claude Code & DeepSeek Harness\n" +
+                            "• Live Subagent & Background Task Inspector with manual controls\n" +
+                            "• Cross-Engine Persistent Context Memory (\"AI Brain\")\n" +
+                            "• Global PRoot & project skills with 5 engineering discipline rules\n" +
+                            "• 1-tap chat message copy button with haptics & slash commands",
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

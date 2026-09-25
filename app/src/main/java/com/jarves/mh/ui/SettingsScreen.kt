@@ -793,6 +793,13 @@ private fun LegacySettingsScreen(
                                 tint = PocketBlue,
                             )
                         }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "What's new: Multi-engine support (Antigravity CLI, Claude Code, DeepSeek Harness), live subagent inspector, persistent AI brain memory, skills federation, and 1-tap message copy.",
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
                 Spacer(Modifier.height(16.dp))

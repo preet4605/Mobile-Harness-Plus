@@ -36,6 +36,29 @@
 > ### 🌟 Upstream Fork & Creator Credits
 > **Mobile Harness+** is an enhanced fork of the original [**Mobile Harness**](https://github.com/techjarves/Mobile-Harness) created by [**Tech Jarves**](https://github.com/techjarves) ([@techjarves on YouTube](https://www.youtube.com/techjarves)).  
 > All foundational architecture, the PRoot Linux userspace subsystem, C++ process bridge, and original mobile development UX were conceived and developed by Tech Jarves. Full credit and gratitude go to Tech Jarves and the original contributors!
+>
+> **Key Additions in this Fork:**
+> - 🤖 **Multi-Engine AI Runtime**: Native support for **Google Antigravity CLI (`agy`)**, **Claude Code (`claude`)**, and **DeepSeek Harness (`dsh`)** with runtime adapter parity.
+> - 👥 **Subagent Orchestration & Inspector**: Real-time tracking of active subagents and background tasks with dedicated controls in the Auxiliary Inspector Sheet.
+> - 🧠 **Persistent Context Memory ("AI Brain")**: Retains project rules, tech stack, and architectural decisions across engine switches and restarts.
+> - 🧩 **Skills & Persona Federation**: Supports project-level and PRoot global skills, plus multi-axis personas for coding, design, debugging, performance, and security.
+> - ⚡ **Mobile Touch Ergonomics**: 1-tap chat message copy button with haptics, slash commands (`/goal`, `/schedule`, `/plan`), and responsive Compose controls.
+
+<br />
+
+## 🚀 What's New in Mobile Harness+ (Fork vs. Original)
+
+Mobile Harness+ builds upon Tech Jarves' pioneering foundation to turn mobile devices into full-fledged, multi-agent AI engineering environments:
+
+| Feature Dimension | Original Upstream Mobile Harness | Mobile Harness+ (This Fork) |
+|---|---|---|
+| **AI Coding Engines** | Primarily optimized for Anthropic Claude Code | **Tri-Engine Support**: Native bridges for **Google Antigravity CLI (`agy`)** (with Google OAuth failover and Gemini 3.8/2.5/Claude models), **Claude Code**, and **DeepSeek Harness (`dsh`)**. |
+| **Subagents & Delegation** | Single linear agent process | **Protocol-level Subagents**: Spawn, monitor, and coordinate background subagents (`invoke_subagent`, `manage_subagents`) with fuzzy conversation ID matching and lifecycle safeguards. |
+| **Live Task Inspection** | Terminal output streaming only | **Auxiliary Inspector Sheet**: Visual bottom sheet for live monitoring of active subagents and async tasks, including manual `Stop` and `Clear finished` controls. |
+| **Context Continuity** | Session-bound; cold restart when switching harnesses or providers | **Cross-Engine Persistent Memory ("AI Brain")**: Structured facts (languages, frameworks, build systems, deployment guidelines) survive across harness swaps without chat token bloat. |
+| **Skills & Rules Federation** | Project-scoped configs | **Federation Hub**: Discovers workspace, global Android, and PRoot Linux guest skills (`.agents/skills`, `.gemini/config/skills`). Includes 5 core engineering discipline rules. |
+| **Mobile Touch Ergonomics** | Manual text selection drag handles | **1-Tap Message Copying**: Dedicated copy button on all chat message bubbles with visual checkmark and haptic feedback for frictionless prompt/code sharing. |
+| **Scheduling & Async Tasks** | Foreground command executions | **Reactive Background Scheduling**: Integrated `schedule` tool for one-shot timers and recurring tasks with event-driven wakeups. |
 
 <br />
 
