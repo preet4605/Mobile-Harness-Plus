@@ -83,8 +83,9 @@ class ClaudeRuntimeBridge(
     private val toolNames = ConcurrentHashMap<String, String>()
     private val seenToolCalls = ConcurrentHashMap.newKeySet<String>()
     private val finishedSessions = ConcurrentHashMap.newKeySet<String>()
-    private val projectRoots = ConcurrentHashMap<String, String>()
+    private val checkpoints = WorkspaceCheckpoints(context.filesDir)
     @Volatile private var activeProcess: Process? = null
+    override val isRunning: Boolean get() = activeProcess?.isAlive == true
     @Volatile private var activeSessionId: String? = null
     @Volatile private var userStopRequested: Boolean = false
     @Volatile private var activeProjectSlug: String? = null
@@ -106,8 +107,14 @@ class ClaudeRuntimeBridge(
         conversationHistory: List<ChatMessage>,
         provider: ProviderProfile,
         memory: ContextMemory,
+        taskId: String?,
     ): String = withContext(Dispatchers.IO + NonCancellable) {
         val sessionId = UUID.randomUUID().toString()
+        if (taskId != null) {
+            runCatching {
+                com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).bindSession(taskId, sessionId)
+            }
+        }
         finishedSessions.remove(sessionId)
         activeSessionId = sessionId
         userStopRequested = false
@@ -159,7 +166,7 @@ class ClaudeRuntimeBridge(
                     }.start()
                 }
             }
-            startForegroundRuntime(projectSlug)
+            startForegroundRuntime(projectSlug, taskId)
             // Setup and release checks happen once in the app-start loading flow.
             // Sending a prompt must never perform network update checks or put setup
             // messages into the conversation.
@@ -209,6 +216,17 @@ class ClaudeRuntimeBridge(
                 guestWorkspacePath = guestWorkspacePath,
             )
             activeProcess = process
+            val nativePid = (process as? NativeSpawnProcess)?.processPid
+            val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
+            val bound = supervisor.bindProcess(
+                taskId = taskId ?: sessionId,
+                sessionId = sessionId,
+                process = process,
+                pid = nativePid
+            )
+            if (!bound) {
+                Log.w("ClaudeBridge", "Process binding failed for task $taskId / session $sessionId (PID: $nativePid)")
+            }
             if (userStopRequested) process.destroy()
             coroutineScope {
                 val permissionWatcher = launch { watchPermissionRequests(sessionId) }
@@ -218,12 +236,19 @@ class ClaudeRuntimeBridge(
                     val nativeProcess = process as? NativeSpawnProcess
                         ?: error("Unsupported Android runtime process")
                     var outputOffset = 0L
+                    var lastOutputTime = System.currentTimeMillis()
                     while (process.isAlive || nativeProcess.outputFile.length() > outputOffset) {
                         val available = nativeProcess.outputFile.length() - outputOffset
                         if (available <= 0) {
+                            if (finishedSessions.contains(sessionId) && (System.currentTimeMillis() - lastOutputTime >= 1500L)) {
+                                Log.i("ClaudeBridge", "Session completed and output drained; stopping lingering process")
+                                if (process.isAlive) process.destroy()
+                                break
+                            }
                             delay(50)
                             continue
                         }
+                        lastOutputTime = System.currentTimeMillis()
                         val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
                         val count = RandomAccessFile(nativeProcess.outputFile, "r").use { file ->
                             file.seek(outputOffset)
@@ -244,6 +269,11 @@ class ClaudeRuntimeBridge(
                                     }
                                     if (!consumeClaudeEvent(sessionId, line)) {
                                         lastDiagnostic = line.takeLast(500)
+                                        runCatching {
+                                            val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
+                                            supervisor.getOutputBuffer(sessionId).appendLine(line)
+                                            supervisor.healthMonitor.onOutputReceived()
+                                        }
                                         terminalStatus(line)?.let { (title, detail) ->
                                             eventBus.emit(RuntimeEvent.RuntimeLog(sessionId, title, detail))
                                         }
@@ -289,6 +319,7 @@ class ClaudeRuntimeBridge(
             }
         }.onFailure { error ->
             Log.e("ClaudeBridge", "Session failed", error)
+            activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
             val message = friendlyError(error)
             emitFailureOnce(sessionId, message)
             if (userStopRequested) {
@@ -299,6 +330,14 @@ class ClaudeRuntimeBridge(
                     projectName = projectSlug,
                     detail = message,
                 )
+            }
+            if (!userStopRequested) {
+                formatGateway?.close()
+                antigravityGateway?.close()
+                activeProcess = null
+                activeSessionId = null
+                RuntimeTaskController.stopAction = null
+                throw error
             }
         }
         formatGateway?.close()
@@ -430,7 +469,7 @@ class ClaudeRuntimeBridge(
                     File(file.parentFile, "$approvalId.response").writeText("allow")
                 }
             }
-            delay(50)
+            delay(250)
         }
     }
 
@@ -849,236 +888,40 @@ class ClaudeRuntimeBridge(
         return sb.toString()
     }
 
-    private fun ensureWorkspace(projectId: String): File {
-        val base = File(context.filesDir, "workspaces/$projectId").apply { mkdirs() }.canonicalFile
-        val rootPath = projectRoots[projectId].orEmpty()
-        if (rootPath.isBlank()) return base
-        val selected = File(base, rootPath).canonicalFile
-        require(selected.toPath().startsWith(base.toPath())) { "Unsafe project root" }
-        return selected.apply { mkdirs() }
-    }
+    private fun ensureWorkspace(projectId: String): File = checkpoints.ensureWorkspace(projectId)
 
     fun configureProjectRoot(projectId: String, rootPath: String) {
-        val normalized = rootPath.trim().trim('/')
-        require(normalized.isBlank() || (!normalized.contains("..") && !normalized.startsWith('/'))) {
-            "Unsafe project root"
-        }
-        val previous = projectRoots.put(projectId, normalized).orEmpty()
-        if (previous != normalized) checkpointDir(projectId).deleteRecursively()
+        checkpoints.configureProjectRoot(projectId, rootPath)
     }
 
-    private fun checkpointDir(projectId: String) = File(context.filesDir, "checkpoints/$projectId/latest")
+    private fun checkpointDir(projectId: String): File = checkpoints.checkpointDir(projectId)
 
     private fun createCheckpoint(projectId: String, workspace: File) {
-        val checkpoint = checkpointDir(projectId)
-        // Keep the original baseline until every pending file is accepted or undone.
-        if (File(checkpoint, "project").isDirectory && File(checkpoint, "changes.json").isFile) return
-        checkpoint.deleteRecursively()
-        val backup = File(checkpoint, "project").apply { mkdirs() }
-        val workspacePath = workspace.canonicalFile.toPath()
-        workspace.walkTopDown()
-            .onEnter { directory ->
-                directory == workspace || (
-                    !java.nio.file.Files.isSymbolicLink(directory.toPath()) &&
-                        runCatching { directory.canonicalFile.toPath().startsWith(workspacePath) }.getOrDefault(false)
-                    )
-            }
-            .filter {
-                it.isFile &&
-                    !isInternalRuntimePath(it.relativeTo(workspace).invariantSeparatorsPath) &&
-                    !java.nio.file.Files.isSymbolicLink(it.toPath())
-            }
-            .forEach { source ->
-                val relative = source.relativeTo(workspace).invariantSeparatorsPath
-                val destination = safeWorkspaceFile(backup, relative)
-                destination.parentFile?.mkdirs()
-                source.copyTo(destination, overwrite = true)
-            }
+        checkpoints.createCheckpoint(projectId, workspace)
     }
 
     private fun saveChangedPaths(projectId: String, paths: List<String>) {
-        val manifest = File(checkpointDir(projectId), "changes.json")
-        manifest.parentFile?.mkdirs()
-        val merged = (readChangedPaths(projectId) + paths)
-            .filterNot(::isInternalRuntimePath)
-            .distinct()
-            .sorted()
-        manifest.writeText(JSONArray(merged).toString())
+        checkpoints.saveChangedPaths(projectId, paths)
     }
 
-    private fun readChangedPaths(projectId: String): List<String> {
-        val manifest = File(checkpointDir(projectId), "changes.json")
-        if (!manifest.isFile) return emptyList()
-        return runCatching {
-            val array = JSONArray(manifest.readText())
-            (0 until array.length()).map(array::getString)
-        }.getOrDefault(emptyList())
-    }
+    private fun readChangedPaths(projectId: String): List<String> = checkpoints.readChangedPaths(projectId)
 
     private fun removeChangedPath(projectId: String, path: String) {
-        val remaining = readChangedPaths(projectId).filterNot { it == path }
-        if (remaining.isEmpty()) {
-            checkpointDir(projectId).deleteRecursively()
-        } else {
-            File(checkpointDir(projectId), "changes.json").writeText(JSONArray(remaining).toString())
-        }
+        checkpoints.removeChangedPath(projectId, path)
     }
 
-    private fun buildChangeDetails(projectId: String, workspace: File, paths: List<String>): List<ChangeItem> {
-        val backup = File(checkpointDir(projectId), "project")
-        return paths.map { path ->
-            val before = safeWorkspaceFile(backup, path).takeIf(File::isFile)?.readBytes() ?: ByteArray(0)
-            val after = safeWorkspaceFile(workspace, path).takeIf(File::isFile)?.readBytes() ?: ByteArray(0)
-            val binary = before.any { it == 0.toByte() } || after.any { it == 0.toByte() }
-            val (additions, deletions) = lineChanges(before, after)
-            ChangeItem(
-                path = path,
-                additions = additions,
-                deletions = deletions,
-                diffLines = buildDiffLines(before, after),
-                binary = binary,
-            )
-        }
-    }
+    private fun buildChangeDetails(projectId: String, workspace: File, paths: List<String>): List<ChangeItem> =
+        checkpoints.buildChangeDetails(projectId, workspace, paths)
 
-    private fun buildDiffLines(beforeBytes: ByteArray, afterBytes: ByteArray): List<DiffLine> {
-        if (beforeBytes.any { it == 0.toByte() } || afterBytes.any { it == 0.toByte() }) {
-            return listOf(DiffLine(DiffLineType.INFO, "Binary file changed"))
-        }
-        val before = textLines(beforeBytes)
-        val after = textLines(afterBytes)
-        if (before.size > MAX_RENDERED_DIFF_LINES || after.size > MAX_RENDERED_DIFF_LINES) {
-            return listOf(
-                DiffLine(
-                    DiffLineType.INFO,
-                    "Diff is too large to display (${before.size} → ${after.size} lines). Undo and Keep still work.",
-                ),
-            )
-        }
+    private fun safeWorkspaceFile(root: File, relative: String): File =
+        checkpoints.safeWorkspaceFile(root, relative)
 
-        val lcs = Array(before.size + 1) { IntArray(after.size + 1) }
-        for (oldIndex in before.lastIndex downTo 0) {
-            for (newIndex in after.lastIndex downTo 0) {
-                lcs[oldIndex][newIndex] = if (before[oldIndex] == after[newIndex]) {
-                    lcs[oldIndex + 1][newIndex + 1] + 1
-                } else {
-                    maxOf(lcs[oldIndex + 1][newIndex], lcs[oldIndex][newIndex + 1])
-                }
-            }
-        }
+    private fun snapshot(root: File): Map<String, String> = checkpoints.snapshot(root)
 
-        val result = mutableListOf<DiffLine>()
-        var oldIndex = 0
-        var newIndex = 0
-        while (oldIndex < before.size || newIndex < after.size) {
-            when {
-                oldIndex < before.size && newIndex < after.size && before[oldIndex] == after[newIndex] -> {
-                    result += DiffLine(DiffLineType.CONTEXT, before[oldIndex], oldIndex + 1, newIndex + 1)
-                    oldIndex++
-                    newIndex++
-                }
-                newIndex < after.size && (oldIndex == before.size || lcs[oldIndex][newIndex + 1] >= lcs[oldIndex + 1][newIndex]) -> {
-                    result += DiffLine(DiffLineType.ADDITION, after[newIndex], null, newIndex + 1)
-                    newIndex++
-                }
-                oldIndex < before.size -> {
-                    result += DiffLine(DiffLineType.DELETION, before[oldIndex], oldIndex + 1, null)
-                    oldIndex++
-                }
-            }
-        }
-        return collapseUnchangedLines(result)
-    }
+    private fun changedFiles(root: File, before: Map<String, String>): List<String> =
+        checkpoints.changedFiles(root, before)
 
-    private fun collapseUnchangedLines(lines: List<DiffLine>): List<DiffLine> {
-        val changedIndexes = lines.indices.filter { lines[it].type != DiffLineType.CONTEXT }
-        if (changedIndexes.isEmpty()) return lines
-        val visible = BooleanArray(lines.size)
-        changedIndexes.forEach { changed ->
-            for (index in maxOf(0, changed - DIFF_CONTEXT_LINES)..minOf(lines.lastIndex, changed + DIFF_CONTEXT_LINES)) {
-                visible[index] = true
-            }
-        }
-        val result = mutableListOf<DiffLine>()
-        var index = 0
-        while (index < lines.size) {
-            if (visible[index]) {
-                result += lines[index++]
-            } else {
-                val start = index
-                while (index < lines.size && !visible[index]) index++
-                result += DiffLine(DiffLineType.INFO, "… ${index - start} unchanged lines …")
-            }
-        }
-        return result
-    }
-
-    private fun lineChanges(beforeBytes: ByteArray, afterBytes: ByteArray): Pair<Int, Int> {
-        if (beforeBytes.any { it == 0.toByte() } || afterBytes.any { it == 0.toByte() }) {
-            return (if (afterBytes.isNotEmpty()) 1 else 0) to (if (beforeBytes.isNotEmpty()) 1 else 0)
-        }
-        val before = textLines(beforeBytes)
-        val after = textLines(afterBytes)
-        if (before.size > MAX_DIFF_LINES || after.size > MAX_DIFF_LINES) {
-            return maxOf(0, after.size - before.size) to maxOf(0, before.size - after.size)
-        }
-        var previous = IntArray(after.size + 1)
-        before.forEach { oldLine ->
-            val current = IntArray(after.size + 1)
-            after.forEachIndexed { index, newLine ->
-                current[index + 1] = if (oldLine == newLine) {
-                    previous[index] + 1
-                } else {
-                    maxOf(previous[index + 1], current[index])
-                }
-            }
-            previous = current
-        }
-        val common = previous[after.size]
-        return (after.size - common) to (before.size - common)
-    }
-
-    private fun textLines(bytes: ByteArray): List<String> {
-        if (bytes.isEmpty()) return emptyList()
-        val lines = bytes.decodeToString().split('\n')
-        return if (lines.lastOrNull().isNullOrEmpty()) lines.dropLast(1) else lines
-    }
-
-    private fun safeWorkspaceFile(root: File, relative: String): File {
-        require(relative.isNotBlank() && !relative.startsWith('/')) { "Unsafe workspace path" }
-        val file = File(root, relative)
-        val rootPath = root.canonicalFile.toPath()
-        val parentPath = (file.parentFile ?: root).canonicalFile.toPath()
-        require(parentPath.startsWith(rootPath)) { "Workspace path escapes project" }
-        return file
-    }
-
-    private fun snapshot(root: File): Map<String, String> = root.walkTopDown()
-        .filter { it.isFile && !isInternalRuntimePath(it.relativeTo(root).invariantSeparatorsPath) }
-        .associate { it.relativeTo(root).path to digest(it) }
-
-    private fun changedFiles(root: File, before: Map<String, String>): List<String> {
-        val after = snapshot(root)
-        return (before.keys + after.keys).distinct().filter { before[it] != after[it] }.sorted()
-    }
-
-    private fun isInternalRuntimePath(path: String): Boolean {
-        val normalized = path.replace('\\', '/')
-        return normalized == ".claude" || normalized == ".claude.json" || normalized.startsWith(".claude/")
-    }
-
-    private fun digest(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                digest.update(buffer, 0, read)
-            }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
-    }
+    private fun isInternalRuntimePath(path: String): Boolean = checkpoints.isInternalRuntimePath(path)
 
     private fun classifyRisk(tool: String, command: String?): RiskLevel {
         val preview = "${tool.lowercase()} ${command.orEmpty().lowercase()}"
@@ -1148,12 +991,13 @@ class ClaudeRuntimeBridge(
         }.apply { isDaemon = true }.start()
     }
 
-    private fun startForegroundRuntime(projectName: String) {
+    private fun startForegroundRuntime(projectName: String, taskId: String? = null) {
         ContextCompat.startForegroundService(
             context,
             android.content.Intent(context, RuntimeExecutionService::class.java)
                 .setAction(RuntimeExecutionService.ACTION_START)
-                .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName),
+                .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName)
+                .apply { if (taskId != null) putExtra(RuntimeExecutionService.EXTRA_TASK_ID, taskId) },
         )
     }
 
@@ -1162,18 +1006,13 @@ class ClaudeRuntimeBridge(
         if (foregroundResultPosted) return
         foregroundResultPosted = true
         runCatching {
-            context.startService(
-                android.content.Intent(context, RuntimeExecutionService::class.java)
-                    .setAction(
-                        if (completed) RuntimeExecutionService.ACTION_COMPLETE
-                        else RuntimeExecutionService.ACTION_FAILED,
-                    )
-                    .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName)
-                    .putExtra(RuntimeExecutionService.EXTRA_DETAIL, detail),
+            RuntimeExecutionService.finish(
+                context = context,
+                title = if (completed) "Task completed" else "Task needs attention",
+                detail = detail,
+                failed = !completed,
+                projectName = projectName,
             )
-        }.onFailure { error ->
-            Log.w("ClaudeBridge", "Could not post task result notification", error)
-            context.stopService(android.content.Intent(context, RuntimeExecutionService::class.java))
         }
     }
 
@@ -1181,12 +1020,7 @@ class ClaudeRuntimeBridge(
         if (foregroundResultPosted) return
         foregroundResultPosted = true
         runCatching {
-            context.startService(
-                android.content.Intent(context, RuntimeExecutionService::class.java)
-                    .setAction(RuntimeExecutionService.ACTION_CANCELLED),
-            )
-        }.onFailure {
-            context.stopService(android.content.Intent(context, RuntimeExecutionService::class.java))
+            RuntimeExecutionService.cancel(context)
         }
     }
 

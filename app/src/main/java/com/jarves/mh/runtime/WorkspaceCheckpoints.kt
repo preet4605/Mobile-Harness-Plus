@@ -5,6 +5,7 @@ import com.jarves.mh.model.DiffLine
 import com.jarves.mh.model.DiffLineType
 import java.io.File
 import java.security.MessageDigest
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONArray
 
@@ -48,21 +49,28 @@ class WorkspaceCheckpoints(private val filesDir: File) {
         val workspacePath = workspace.canonicalFile.toPath()
         workspace.walkTopDown()
             .onEnter { directory ->
-                directory == workspace || (
-                    !java.nio.file.Files.isSymbolicLink(directory.toPath()) &&
-                        runCatching { directory.canonicalFile.toPath().startsWith(workspacePath) }.getOrDefault(false)
-                    )
+                if (directory == workspace) return@onEnter true
+                val dirName = directory.name.lowercase(Locale.ROOT)
+                if (dirName in IGNORED_DIRECTORY_NAMES) return@onEnter false
+                val relative = directory.relativeTo(workspace).invariantSeparatorsPath
+                if (isInternalRuntimePath(relative)) return@onEnter false
+                if (java.nio.file.Files.isSymbolicLink(directory.toPath())) return@onEnter false
+                runCatching { directory.canonicalFile.toPath().startsWith(workspacePath) }.getOrDefault(false)
             }
             .filter {
                 it.isFile &&
                     !isInternalRuntimePath(it.relativeTo(workspace).invariantSeparatorsPath) &&
-                    !java.nio.file.Files.isSymbolicLink(it.toPath())
+                    !java.nio.file.Files.isSymbolicLink(it.toPath()) &&
+                    it.length() <= MAX_CHECKPOINT_COPY_BYTES &&
+                    runCatching { it.canonicalFile.toPath().startsWith(workspacePath) }.getOrDefault(false)
             }
             .forEach { source ->
-                val relative = source.relativeTo(workspace).invariantSeparatorsPath
-                val destination = safeWorkspaceFile(backup, relative)
-                destination.parentFile?.mkdirs()
-                source.copyTo(destination, overwrite = true)
+                runCatching {
+                    val relative = source.relativeTo(workspace).invariantSeparatorsPath
+                    val destination = safeWorkspaceFile(backup, relative)
+                    destination.parentFile?.mkdirs()
+                    source.copyTo(destination, overwrite = true)
+                }
             }
     }
 
@@ -97,18 +105,73 @@ class WorkspaceCheckpoints(private val filesDir: File) {
     fun buildChangeDetails(projectId: String, workspace: File, paths: List<String>): List<ChangeItem> {
         val backup = File(checkpointDir(projectId), "project")
         return paths.map { path ->
-            val before = safeWorkspaceFile(backup, path).takeIf(File::isFile)?.readBytes() ?: ByteArray(0)
-            val after = safeWorkspaceFile(workspace, path).takeIf(File::isFile)?.readBytes() ?: ByteArray(0)
-            val binary = before.any { it == 0.toByte() } || after.any { it == 0.toByte() }
-            val (additions, deletions) = lineChanges(before, after)
-            ChangeItem(
-                path = path,
-                additions = additions,
-                deletions = deletions,
-                diffLines = buildDiffLines(before, after),
-                binary = binary,
-            )
+            val beforeFile = safeWorkspaceFile(backup, path).takeIf(File::isFile)
+            val afterFile = safeWorkspaceFile(workspace, path).takeIf(File::isFile)
+            val beforeLength = beforeFile?.length() ?: 0L
+            val afterLength = afterFile?.length() ?: 0L
+            val isKnownBin = isKnownBinaryPath(path)
+            val isTooLarge = beforeLength > MAX_DIFF_FILE_BYTES || afterLength > MAX_DIFF_FILE_BYTES
+
+            if (isKnownBin || isTooLarge || isBinaryFile(beforeFile) || isBinaryFile(afterFile)) {
+                val binary = isKnownBin || isBinaryFile(beforeFile) || isBinaryFile(afterFile)
+                val displaySize = afterLength.takeIf { it > 0 } ?: beforeLength
+                val infoText = when {
+                    binary -> "Binary file changed (${formatFileSize(displaySize)})"
+                    else -> "Diff omitted: file too large (${formatFileSize(displaySize)})"
+                }
+                ChangeItem(
+                    path = path,
+                    additions = if (afterFile != null) 1 else 0,
+                    deletions = if (beforeFile != null) 1 else 0,
+                    diffLines = listOf(DiffLine(DiffLineType.INFO, infoText)),
+                    binary = binary,
+                )
+            } else {
+                val beforeBytes = beforeFile?.readBytes() ?: ByteArray(0)
+                val afterBytes = afterFile?.readBytes() ?: ByteArray(0)
+                val binary = beforeBytes.any { it == 0.toByte() } || afterBytes.any { it == 0.toByte() }
+                if (binary) {
+                    ChangeItem(
+                        path = path,
+                        additions = if (afterBytes.isNotEmpty()) 1 else 0,
+                        deletions = if (beforeBytes.isNotEmpty()) 1 else 0,
+                        diffLines = listOf(DiffLine(DiffLineType.INFO, "Binary file changed")),
+                        binary = true,
+                    )
+                } else {
+                    val (additions, deletions) = lineChanges(beforeBytes, afterBytes)
+                    ChangeItem(
+                        path = path,
+                        additions = additions,
+                        deletions = deletions,
+                        diffLines = buildDiffLines(beforeBytes, afterBytes),
+                        binary = false,
+                    )
+                }
+            }
         }
+    }
+
+    private fun isBinaryFile(file: File?): Boolean {
+        if (file == null || !file.isFile || file.length() == 0L) return false
+        return runCatching {
+            file.inputStream().use { stream ->
+                val buffer = ByteArray(8192)
+                val read = stream.read(buffer)
+                if (read <= 0) false else (0 until read).any { buffer[it] == 0.toByte() }
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun isKnownBinaryPath(path: String): Boolean {
+        val ext = path.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        return ext in BINARY_EXTENSIONS
+    }
+
+    private fun formatFileSize(bytes: Long): String = when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> "%.1f KB".format(Locale.ROOT, bytes / 1024.0)
+        else -> "%.1f MB".format(Locale.ROOT, bytes / (1024.0 * 1024.0))
     }
 
     fun buildDiffLines(beforeBytes: ByteArray, afterBytes: ByteArray): List<DiffLine> {
@@ -223,9 +286,27 @@ class WorkspaceCheckpoints(private val filesDir: File) {
         return file
     }
 
-    fun snapshot(root: File): Map<String, String> = root.walkTopDown()
-        .filter { it.isFile && !isInternalRuntimePath(it.relativeTo(root).invariantSeparatorsPath) }
-        .associate { it.relativeTo(root).path to digest(it) }
+    fun snapshot(root: File): Map<String, String> {
+        if (!root.isDirectory) return emptyMap()
+        val rootPath = root.canonicalFile.toPath()
+        return root.walkTopDown()
+            .onEnter { directory ->
+                if (directory == root) return@onEnter true
+                val dirName = directory.name.lowercase(Locale.ROOT)
+                if (dirName in IGNORED_DIRECTORY_NAMES) return@onEnter false
+                val relative = directory.relativeTo(root).invariantSeparatorsPath
+                if (isInternalRuntimePath(relative)) return@onEnter false
+                if (java.nio.file.Files.isSymbolicLink(directory.toPath())) return@onEnter false
+                runCatching { directory.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
+            }
+            .filter {
+                it.isFile &&
+                    !isInternalRuntimePath(it.relativeTo(root).invariantSeparatorsPath) &&
+                    !java.nio.file.Files.isSymbolicLink(it.toPath()) &&
+                    runCatching { it.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
+            }
+            .associate { it.relativeTo(root).invariantSeparatorsPath to digest(it) }
+    }
 
     fun changedFiles(root: File, before: Map<String, String>): List<String> {
         val after = snapshot(root)
@@ -233,11 +314,18 @@ class WorkspaceCheckpoints(private val filesDir: File) {
     }
 
     fun isInternalRuntimePath(path: String): Boolean {
-        val normalized = path.replace('\\', '/')
-        return normalized == ".claude" || normalized == ".claude.json" || normalized.startsWith(".claude/")
+        val normalized = path.replace('\\', '/').trimStart('/')
+        if (normalized.isEmpty()) return false
+        val segments = normalized.split('/')
+        return segments.any { it in IGNORED_DIRECTORY_NAMES } ||
+            normalized == ".claude.json" ||
+            normalized.endsWith(".apk.part")
     }
 
     private fun digest(file: File): String {
+        if (file.length() > MAX_HASH_FILE_BYTES) {
+            return "${file.length()}_${file.lastModified()}"
+        }
         val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -254,5 +342,21 @@ class WorkspaceCheckpoints(private val filesDir: File) {
         private const val MAX_DIFF_LINES = 2_000
         private const val MAX_RENDERED_DIFF_LINES = 600
         private const val DIFF_CONTEXT_LINES = 3
+        const val MAX_DIFF_FILE_BYTES = 512 * 1024L // 512 KB
+        const val MAX_HASH_FILE_BYTES = 10 * 1024 * 1024L // 10 MB
+        const val MAX_CHECKPOINT_COPY_BYTES = 25 * 1024 * 1024L // 25 MB
+
+        val IGNORED_DIRECTORY_NAMES = setOf(
+            ".git", ".claude", ".gradle", ".idea", ".next", ".cache",
+            "node_modules", ".venv", "venv", "__pycache__", "build",
+            "dist", ".gemini",
+        )
+
+        val BINARY_EXTENSIONS = setOf(
+            "apk", "aab", "jar", "aar", "so", "zip", "tar", "gz", "zst",
+            "7z", "bz2", "xz", "png", "jpg", "jpeg", "webp", "gif", "ico",
+            "class", "dex", "pyc", "exe", "bin", "pdf", "woff", "woff2",
+            "ttf", "otf", "mp3", "mp4", "wav", "ogg",
+        )
     }
 }

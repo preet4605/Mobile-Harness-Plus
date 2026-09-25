@@ -52,6 +52,7 @@ class DshRuntimeBridge(
     override val events: Flow<RuntimeEvent> = eventBus
     private val finishedSessions = ConcurrentHashMap.newKeySet<String>()
     @Volatile private var activeProcess: Process? = null
+    override val isRunning: Boolean get() = activeProcess?.isAlive == true
     @Volatile private var activeSessionId: String? = null
     @Volatile private var userStopRequested: Boolean = false
     @Volatile private var activeProjectSlug: String? = null
@@ -68,8 +69,14 @@ class DshRuntimeBridge(
         conversationHistory: List<ChatMessage>,
         provider: ProviderProfile,
         memory: ContextMemory,
+        taskId: String?,
     ): String = withContext(Dispatchers.IO + NonCancellable) {
         val sessionId = UUID.randomUUID().toString()
+        if (taskId != null) {
+            runCatching {
+                com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).bindSession(taskId, sessionId)
+            }
+        }
         finishedSessions.remove(sessionId)
         activeSessionId = sessionId
         userStopRequested = false
@@ -122,7 +129,7 @@ class DshRuntimeBridge(
                     }.start()
                 }
             }
-            startForegroundRuntime(projectSlug)
+            startForegroundRuntime(projectSlug, taskId)
             val installed = installer.installedRuntime()
             check(installer.isAgentInstalled(com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS)) {
                 "DeepSeek Harness is not installed. Open Settings → Coding agent to install it."
@@ -162,6 +169,17 @@ class DshRuntimeBridge(
                 emulateHardLinks = false,
             )
             activeProcess = process
+            val nativePid = (process as? NativeSpawnProcess)?.processPid
+            val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
+            val bound = supervisor.bindProcess(
+                taskId = taskId ?: sessionId,
+                sessionId = sessionId,
+                process = process,
+                pid = nativePid
+            )
+            if (!bound) {
+                Log.w("DshBridge", "Process binding failed for task $taskId / session $sessionId (PID: $nativePid)")
+            }
             if (userStopRequested) process.destroy()
             val sdkResult = runSdkSession(
                 process = process,
@@ -195,6 +213,7 @@ class DshRuntimeBridge(
             }
         }.onFailure { error ->
             Log.e("DshBridge", "Session failed", error)
+            activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
             val message = friendlyError(error)
             emitFailureOnce(sessionId, message)
             if (userStopRequested) {
@@ -205,6 +224,13 @@ class DshRuntimeBridge(
                     projectName = projectSlug,
                     detail = message,
                 )
+            }
+            if (!userStopRequested) {
+                antigravityGateway?.close()
+                activeProcess = null
+                activeSessionId = null
+                RuntimeTaskController.stopAction = null
+                throw error
             }
         }
         antigravityGateway?.close()
@@ -653,12 +679,13 @@ class DshRuntimeBridge(
         return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
     }
 
-    private fun startForegroundRuntime(projectName: String) {
+    private fun startForegroundRuntime(projectName: String, taskId: String? = null) {
         ContextCompat.startForegroundService(
             context,
             android.content.Intent(context, RuntimeExecutionService::class.java)
                 .setAction(RuntimeExecutionService.ACTION_START)
-                .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName),
+                .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName)
+                .apply { if (taskId != null) putExtra(RuntimeExecutionService.EXTRA_TASK_ID, taskId) },
         )
     }
 
@@ -666,18 +693,13 @@ class DshRuntimeBridge(
         if (foregroundResultPosted) return
         foregroundResultPosted = true
         runCatching {
-            context.startService(
-                android.content.Intent(context, RuntimeExecutionService::class.java)
-                    .setAction(
-                        if (completed) RuntimeExecutionService.ACTION_COMPLETE
-                        else RuntimeExecutionService.ACTION_FAILED,
-                    )
-                    .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName)
-                    .putExtra(RuntimeExecutionService.EXTRA_DETAIL, detail),
+            RuntimeExecutionService.finish(
+                context = context,
+                title = if (completed) "Task completed" else "Task needs attention",
+                detail = detail,
+                failed = !completed,
+                projectName = projectName,
             )
-        }.onFailure { error ->
-            Log.w("DshBridge", "Could not post task result notification", error)
-            context.stopService(android.content.Intent(context, RuntimeExecutionService::class.java))
         }
     }
 
@@ -685,12 +707,7 @@ class DshRuntimeBridge(
         if (foregroundResultPosted) return
         foregroundResultPosted = true
         runCatching {
-            context.startService(
-                android.content.Intent(context, RuntimeExecutionService::class.java)
-                    .setAction(RuntimeExecutionService.ACTION_CANCELLED),
-            )
-        }.onFailure {
-            context.stopService(android.content.Intent(context, RuntimeExecutionService::class.java))
+            RuntimeExecutionService.cancel(context)
         }
     }
 

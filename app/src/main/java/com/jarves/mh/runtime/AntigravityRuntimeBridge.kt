@@ -1,6 +1,7 @@
 package com.jarves.mh.runtime
 
 import android.content.Context
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.jarves.mh.data.ContextMemory
 import com.jarves.mh.data.renderMemoryBlock
@@ -343,6 +344,7 @@ class AntigravityRuntimeBridge(
     override val events: Flow<RuntimeEvent> = eventBus
     private val finished = ConcurrentHashMap.newKeySet<String>()
     @Volatile private var activeProcess: Process? = null
+    override val isRunning: Boolean get() = activeProcess?.isAlive == true
     @Volatile private var activeSessionId: String? = null
     @Volatile private var userStopRequested = false
     @Volatile private var foregroundResultPosted = false
@@ -469,8 +471,14 @@ class AntigravityRuntimeBridge(
         conversationHistory: List<ChatMessage>,
         provider: ProviderProfile,
         memory: ContextMemory,
+        taskId: String?,
     ): String = withContext(Dispatchers.IO + NonCancellable) {
         val sessionId = UUID.randomUUID().toString()
+        if (taskId != null) {
+            runCatching {
+                com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).bindSession(taskId, sessionId)
+            }
+        }
         activeSessionId = sessionId
         userStopRequested = false
         foregroundResultPosted = false
@@ -521,7 +529,7 @@ class AntigravityRuntimeBridge(
                     userStopRequested = true
                     activeProcess?.destroy()
                 }
-                startForegroundRuntime(projectSlug)
+                startForegroundRuntime(projectSlug, taskId)
                 val installed = installer.installedRuntime()
                 val workspace = checkpoints.ensureWorkspace(projectId)
                 checkpoints.createCheckpoint(projectId, workspace)
@@ -537,6 +545,17 @@ class AntigravityRuntimeBridge(
                     emulateHardLinks = false,
                 )
                 activeProcess = process
+                val nativePid = (process as? NativeSpawnProcess)?.processPid
+                val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
+                val bound = supervisor.bindProcess(
+                    taskId = taskId ?: sessionId,
+                    sessionId = sessionId,
+                    process = process,
+                    pid = nativePid
+                )
+                if (!bound) {
+                    Log.w("AntigravityBridge", "Process binding failed for task $taskId / session $sessionId (PID: $nativePid)")
+                }
                 if (userStopRequested) process.destroy()
                 val request = JSONObject()
                     .put("event", "user")
@@ -585,12 +604,20 @@ class AntigravityRuntimeBridge(
                         }
                     }
                 }
+                var lastOutputTime = System.currentTimeMillis()
                 while (process.isAlive || native.outputFile.length() > offset) {
                     val available = native.outputFile.length() - offset
                     if (available <= 0) {
+                        // Watchdog: If result was observed and output drained, don't hang indefinitely on Node.js event loop
+                        if (resultSeen && (System.currentTimeMillis() - lastOutputTime >= 1500L)) {
+                            Log.i("AntigravityBridge", "Result observed and output drained; closing process gracefully")
+                            if (process.isAlive) process.destroy()
+                            break
+                        }
                         delay(50)
                         continue
                     }
+                    lastOutputTime = System.currentTimeMillis()
                     val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
                     val count = RandomAccessFile(native.outputFile, "r").use { file ->
                         file.seek(offset)
@@ -609,23 +636,26 @@ class AntigravityRuntimeBridge(
                 }
                 pending.toString().trim().takeIf(String::isNotEmpty)?.let { handleLine(it) }
                 val exit = process.waitFor()
-                check(exit == 0 && resultSeen) {
-                    friendlyError(pending.toString().takeLast(1_000).ifBlank { "Antigravity exited with code $exit" })
+                val success = (exit == 0) && (resultSeen || assistantTextSeen)
+                if (success) {
+                    val paths = checkpoints.changedFiles(workspace, before)
+                    checkpoints.saveChangedPaths(projectId, paths)
+                    if (paths.isNotEmpty()) {
+                        eventBus.emit(RuntimeEvent.FilesChanged(sessionId, checkpoints.buildChangeDetails(projectId, workspace, paths)))
+                    }
+                    if (useAccount) {
+                        accountManager!!.recordUsage(account!!.id)
+                        accountManager.resetStatus(account.id)
+                        saveConversationAccount?.invoke(projectId, account.id)
+                        runCatching { accountManager.refreshAccountQuota(account.id) }
+                    }
+                    emitCompleted(sessionId)
+                    finishForegroundRuntime(true, projectSlug, "Antigravity finished the task in $projectSlug.")
+                    sessionCompleted = true
+                } else {
+                    val errDetail = pending.toString().takeLast(1_000).ifBlank { "Antigravity exited with code $exit" }
+                    throw AntigravitySessionException(friendlyError(errDetail))
                 }
-                val paths = checkpoints.changedFiles(workspace, before)
-                checkpoints.saveChangedPaths(projectId, paths)
-                if (paths.isNotEmpty()) {
-                    eventBus.emit(RuntimeEvent.FilesChanged(sessionId, checkpoints.buildChangeDetails(projectId, workspace, paths)))
-                }
-                if (useAccount) {
-                    accountManager!!.recordUsage(account!!.id)
-                    accountManager.resetStatus(account.id)
-                    saveConversationAccount?.invoke(projectId, account.id)
-                    runCatching { accountManager.refreshAccountQuota(account.id) }
-                }
-                emitCompleted(sessionId)
-                finishForegroundRuntime(true, projectSlug, "Antigravity finished the task in $projectSlug.")
-                sessionCompleted = true
             }
 
             turnResult.onFailure { error ->
@@ -650,11 +680,14 @@ class AntigravityRuntimeBridge(
                         ),
                     )
                 } else {
+                    // Ensure active process is killed so no orphaned process runs concurrently
+                    activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
                     val message = if (userStopRequested) "Stopped by user" else friendlyError(errorMsg)
                     emitFailure(sessionId, message)
                     if (userStopRequested) cancelForegroundRuntime()
                     else finishForegroundRuntime(false, projectSlug, message)
                     sessionCompleted = true
+                    throw error
                 }
             }
         }
@@ -756,12 +789,13 @@ class AntigravityRuntimeBridge(
         if (finished.add(sessionId)) eventBus.emit(RuntimeEvent.SessionFailed(sessionId, reason))
     }
 
-    private fun startForegroundRuntime(projectName: String) {
+    private fun startForegroundRuntime(projectName: String, taskId: String? = null) {
         ContextCompat.startForegroundService(
             context,
             android.content.Intent(context, RuntimeExecutionService::class.java)
                 .setAction(RuntimeExecutionService.ACTION_START)
-                .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName),
+                .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName)
+                .apply { if (taskId != null) putExtra(RuntimeExecutionService.EXTRA_TASK_ID, taskId) },
         )
     }
 
@@ -769,24 +803,22 @@ class AntigravityRuntimeBridge(
         if (foregroundResultPosted) return
         foregroundResultPosted = true
         runCatching {
-            context.startService(
-                android.content.Intent(context, RuntimeExecutionService::class.java)
-                    .setAction(if (completed) RuntimeExecutionService.ACTION_COMPLETE else RuntimeExecutionService.ACTION_FAILED)
-                    .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName)
-                    .putExtra(RuntimeExecutionService.EXTRA_DETAIL, detail),
+            RuntimeExecutionService.finish(
+                context = context,
+                title = if (completed) "Task completed" else "Task needs attention",
+                detail = detail,
+                failed = !completed,
+                projectName = projectName,
             )
-        }.onFailure { context.stopService(android.content.Intent(context, RuntimeExecutionService::class.java)) }
+        }
     }
 
     private fun cancelForegroundRuntime() {
         if (foregroundResultPosted) return
         foregroundResultPosted = true
         runCatching {
-            context.startService(
-                android.content.Intent(context, RuntimeExecutionService::class.java)
-                    .setAction(RuntimeExecutionService.ACTION_CANCELLED),
-            )
-        }.onFailure { context.stopService(android.content.Intent(context, RuntimeExecutionService::class.java)) }
+            RuntimeExecutionService.cancel(context)
+        }
     }
 
     private fun friendlyError(raw: String): String {

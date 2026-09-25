@@ -16,6 +16,7 @@ data class RuntimeLaunchConfig(
 
 interface RuntimeBridge {
     val events: Flow<RuntimeEvent>
+    val isRunning: Boolean get() = false
     suspend fun startSession(
         projectId: String,
         projectSlug: String,
@@ -24,6 +25,7 @@ interface RuntimeBridge {
         conversationHistory: List<ChatMessage>,
         provider: ProviderProfile,
         memory: com.jarves.mh.data.ContextMemory = com.jarves.mh.data.ContextMemory(projectId),
+        taskId: String? = null,
     ): String
     suspend fun respondToApproval(request: ToolRequest, approved: Boolean)
     /** Stage 1: Graceful stop (SIGINT). [force]=true skips grace period and force-kills immediately. */
