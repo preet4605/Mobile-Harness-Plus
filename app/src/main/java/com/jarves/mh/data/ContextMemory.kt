@@ -1,5 +1,6 @@
 package com.jarves.mh.data
 
+import com.jarves.mh.model.brain.BrainKnowledgeType
 import java.time.Instant
 import java.util.UUID
 
@@ -61,6 +62,8 @@ data class MemoryEntry(
     val createdAt: Instant = Instant.now(),
     val updatedAt: Instant = Instant.now(),
     val lastAccessedAt: Instant = Instant.now(),
+    val knowledgeType: BrainKnowledgeType = BrainKnowledgeType.FACT,
+    val taskId: String? = null,
 )
 
 data class TaskCheckpoint(

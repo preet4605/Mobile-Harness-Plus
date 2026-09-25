@@ -1,5 +1,6 @@
 package com.jarves.mh.data
 
+import com.jarves.mh.model.brain.BrainKnowledgeType
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -11,12 +12,26 @@ class ContextMemoryRepository(private val db: BrainDatabase) {
         val tagsStr = row.getString("tags") ?: ""
         val tags = if (tagsStr.isNotBlank()) tagsStr.split(",").map { it.trim() } else emptyList()
 
+        val scope = runCatching { MemoryScope.valueOf(row.getString("scope") ?: "") }.getOrDefault(MemoryScope.PROJECT)
+        val type = runCatching { MemoryType.valueOf(row.getString("type") ?: "") }.getOrDefault(MemoryType.PROJECT)
+        val knowledgeType = runCatching {
+            BrainKnowledgeType.valueOf(row.getString("knowledge_type") ?: "")
+        }.getOrElse {
+            when (type) {
+                MemoryType.DECISION -> BrainKnowledgeType.DECISION
+                MemoryType.TASK -> BrainKnowledgeType.TASK
+                MemoryType.EPISODIC, MemoryType.WORKING -> BrainKnowledgeType.PROGRESS
+                else -> BrainKnowledgeType.FACT
+            }
+        }
+        val taskId = row.getString("task_id")
+
         return MemoryEntry(
             id = row.getString("id") ?: "",
             projectId = row.getString("project_id") ?: "",
             sessionId = row.getString("session_id"),
-            scope = runCatching { MemoryScope.valueOf(row.getString("scope") ?: "") }.getOrDefault(MemoryScope.PROJECT),
-            type = runCatching { MemoryType.valueOf(row.getString("type") ?: "") }.getOrDefault(MemoryType.PROJECT),
+            scope = scope,
+            type = type,
             key = row.getString("key") ?: "",
             value = row.getString("value") ?: "",
             summary = row.getString("summary"),
@@ -31,6 +46,8 @@ class ContextMemoryRepository(private val db: BrainDatabase) {
             createdAt = Instant.ofEpochMilli(row.getLong("created_at") ?: System.currentTimeMillis()),
             updatedAt = Instant.ofEpochMilli(row.getLong("updated_at") ?: System.currentTimeMillis()),
             lastAccessedAt = Instant.ofEpochMilli(row.getLong("last_accessed_at") ?: System.currentTimeMillis()),
+            knowledgeType = knowledgeType,
+            taskId = taskId,
         )
     }
 
@@ -152,8 +169,9 @@ class ContextMemoryRepository(private val db: BrainDatabase) {
             INSERT INTO memory_entries (
                 id, project_id, session_id, scope, type, key, value, summary,
                 importance, confidence, source, source_reference, status,
-                version, superseded_by, tags, created_at, updated_at, last_accessed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                version, superseded_by, tags, created_at, updated_at, last_accessed_at,
+                knowledge_type, task_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.trimIndent()
 
         db.driver.execute(
@@ -177,7 +195,9 @@ class ContextMemoryRepository(private val db: BrainDatabase) {
                 entry.tags.joinToString(","),
                 entry.createdAt.toEpochMilli(),
                 entry.updatedAt.toEpochMilli(),
-                entry.lastAccessedAt.toEpochMilli()
+                entry.lastAccessedAt.toEpochMilli(),
+                entry.knowledgeType.name,
+                entry.taskId
             )
         )
         db.syncFtsInsert(entry)
@@ -190,7 +210,8 @@ class ContextMemoryRepository(private val db: BrainDatabase) {
                 session_id = ?, scope = ?, type = ?, key = ?, value = ?, summary = ?,
                 importance = ?, confidence = ?, source = ?, source_reference = ?,
                 status = ?, version = ?, superseded_by = ?, tags = ?,
-                updated_at = ?, last_accessed_at = ?
+                updated_at = ?, last_accessed_at = ?,
+                knowledge_type = ?, task_id = ?
             WHERE id = ?
         """.trimIndent()
 
@@ -213,6 +234,8 @@ class ContextMemoryRepository(private val db: BrainDatabase) {
                 entry.tags.joinToString(","),
                 entry.updatedAt.toEpochMilli(),
                 entry.lastAccessedAt.toEpochMilli(),
+                entry.knowledgeType.name,
+                entry.taskId,
                 entry.id
             )
         )

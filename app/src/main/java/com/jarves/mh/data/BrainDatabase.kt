@@ -4,6 +4,13 @@ import java.io.Closeable
 
 class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
 
+    companion object {
+        const val CURRENT_SCHEMA_VERSION = 2
+    }
+
+    var schemaVersion: Int = 1
+        private set
+
     var isFts5Supported: Boolean = false
         private set
 
@@ -35,7 +42,9 @@ class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
                     tags TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
-                    last_accessed_at INTEGER NOT NULL
+                    last_accessed_at INTEGER NOT NULL,
+                    knowledge_type TEXT NOT NULL DEFAULT 'FACT',
+                    task_id TEXT
                 )
                 """.trimIndent()
             )
@@ -106,7 +115,10 @@ class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
             driver.execute("CREATE INDEX IF NOT EXISTS idx_durable_tasks_session ON durable_task_states(session_id)")
         }
 
-        // 3. FTS5 Virtual Table initialization with graceful fallback
+        // Perform migration to V2 (canonical tasks, recovery plans, execution steps, knowledge taxonomy)
+        migrateToV2()
+
+        // FTS5 Virtual Table initialization with graceful fallback
         try {
             driver.execute(
                 """
@@ -123,6 +135,122 @@ class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
             isFts5Supported = true
         } catch (_: Throwable) {
             isFts5Supported = false
+        }
+    }
+
+    /**
+     * Non-destructive migration to Schema Version 2.
+     * Idempotently adds knowledge_type and task_id to memory_entries,
+     * backfills knowledge_type based on legacy type, and creates canonical tasks,
+     * execution steps, failure records, and recovery plan tables.
+     */
+    fun migrateToV2() {
+        driver.transaction {
+            val memoryCols = runCatching {
+                driver.query("PRAGMA table_info(memory_entries)") { it.getString("name") ?: "" }.toSet()
+            }.getOrDefault(emptySet())
+
+            if (memoryCols.isNotEmpty()) {
+                if ("knowledge_type" !in memoryCols) {
+                    driver.execute("ALTER TABLE memory_entries ADD COLUMN knowledge_type TEXT NOT NULL DEFAULT 'FACT'")
+                }
+                if ("task_id" !in memoryCols) {
+                    driver.execute("ALTER TABLE memory_entries ADD COLUMN task_id TEXT")
+                }
+
+                // Backfill knowledge_type for existing records if migrating from V1
+                driver.execute("UPDATE memory_entries SET knowledge_type = 'DECISION' WHERE type = 'DECISION' AND knowledge_type = 'FACT'")
+                driver.execute("UPDATE memory_entries SET knowledge_type = 'TASK' WHERE type = 'TASK' AND knowledge_type = 'FACT'")
+                driver.execute("UPDATE memory_entries SET knowledge_type = 'PROGRESS' WHERE type IN ('EPISODIC', 'WORKING') AND knowledge_type = 'FACT'")
+            }
+
+            driver.execute("CREATE INDEX IF NOT EXISTS idx_mem_knowledge_type ON memory_entries(project_id, knowledge_type, status)")
+            driver.execute("CREATE INDEX IF NOT EXISTS idx_mem_task_id ON memory_entries(task_id)")
+
+            // 4. Canonical tasks table
+            driver.execute(
+                """
+                CREATE TABLE IF NOT EXISTS canonical_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    project_slug TEXT NOT NULL,
+                    objective TEXT NOT NULL,
+                    constraints_json TEXT NOT NULL,
+                    acceptance_criteria_json TEXT NOT NULL,
+                    initial_workspace_sha TEXT,
+                    current_workspace_sha TEXT,
+                    outcome_json TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                """.trimIndent()
+            )
+            driver.execute("CREATE INDEX IF NOT EXISTS idx_canonical_tasks_proj ON canonical_tasks(project_id, updated_at)")
+
+            // 5. Execution steps table
+            driver.execute(
+                """
+                CREATE TABLE IF NOT EXISTS execution_steps (
+                    step_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    step_order INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    expected_files_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'PENDING',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 2,
+                    result_summary TEXT,
+                    checkpoint_tag TEXT,
+                    started_at INTEGER,
+                    completed_at INTEGER,
+                    FOREIGN KEY(task_id) REFERENCES canonical_tasks(task_id) ON DELETE CASCADE
+                )
+                """.trimIndent()
+            )
+            driver.execute("CREATE INDEX IF NOT EXISTS idx_execution_steps_task ON execution_steps(task_id, step_order)")
+
+            // 6. Task failures table
+            driver.execute(
+                """
+                CREATE TABLE IF NOT EXISTS task_failures (
+                    failure_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    step_id TEXT,
+                    classification TEXT NOT NULL,
+                    error_message TEXT NOT NULL,
+                    error_snippet TEXT,
+                    mutated_files_json TEXT NOT NULL,
+                    matched_solution_id TEXT,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES canonical_tasks(task_id) ON DELETE CASCADE
+                )
+                """.trimIndent()
+            )
+            driver.execute("CREATE INDEX IF NOT EXISTS idx_task_failures_task ON task_failures(task_id, created_at)")
+
+            // 7. Recovery plans table
+            driver.execute(
+                """
+                CREATE TABLE IF NOT EXISTS recovery_plans (
+                    recovery_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    failure_record_id TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    rationale TEXT NOT NULL,
+                    files_to_rollback_json TEXT NOT NULL,
+                    forward_fix_instructions TEXT,
+                    target_step_index INTEGER NOT NULL,
+                    approved_by_user INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES canonical_tasks(task_id) ON DELETE CASCADE
+                )
+                """.trimIndent()
+            )
+            driver.execute("CREATE INDEX IF NOT EXISTS idx_recovery_plans_task ON recovery_plans(task_id)")
+
+            driver.execute("PRAGMA user_version = 2")
+            schemaVersion = CURRENT_SCHEMA_VERSION
         }
     }
 
