@@ -20,7 +20,6 @@ class ContextMemoryRepository(private val db: BrainDatabase) {
             when (type) {
                 MemoryType.DECISION -> BrainKnowledgeType.DECISION
                 MemoryType.TASK -> BrainKnowledgeType.TASK
-                MemoryType.EPISODIC, MemoryType.WORKING -> BrainKnowledgeType.PROGRESS
                 else -> BrainKnowledgeType.FACT
             }
         }

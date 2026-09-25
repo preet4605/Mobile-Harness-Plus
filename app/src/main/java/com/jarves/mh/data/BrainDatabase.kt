@@ -158,10 +158,11 @@ class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
                     driver.execute("ALTER TABLE memory_entries ADD COLUMN task_id TEXT")
                 }
 
-                // Backfill knowledge_type for existing records if migrating from V1
+                // Backfill knowledge_type for existing records where semantic mapping is exact.
+                // Ambiguous legacy types (EPISODIC, WORKING, PROJECT, etc.) remain as neutral FACT
+                // rather than guessing PROGRESS or FAILURE without explicit evidence.
                 driver.execute("UPDATE memory_entries SET knowledge_type = 'DECISION' WHERE type = 'DECISION' AND knowledge_type = 'FACT'")
                 driver.execute("UPDATE memory_entries SET knowledge_type = 'TASK' WHERE type = 'TASK' AND knowledge_type = 'FACT'")
-                driver.execute("UPDATE memory_entries SET knowledge_type = 'PROGRESS' WHERE type IN ('EPISODIC', 'WORKING') AND knowledge_type = 'FACT'")
             }
 
             driver.execute("CREATE INDEX IF NOT EXISTS idx_mem_knowledge_type ON memory_entries(project_id, knowledge_type, status)")

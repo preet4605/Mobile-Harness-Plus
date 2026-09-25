@@ -112,6 +112,7 @@ data class BrainKnowledgeEntry(
     val createdAt: Instant = Instant.now(),
     val updatedAt: Instant = Instant.now(),
     val lastAccessedAt: Instant = Instant.now(),
+    val legacyType: MemoryType? = null,
 )
 
 /**
@@ -186,7 +187,7 @@ fun BrainKnowledgeEntry.toMemoryEntry(): MemoryEntry = MemoryEntry(
     projectId = projectId,
     sessionId = sessionId,
     scope = scope,
-    type = when (knowledgeType) {
+    type = legacyType ?: when (knowledgeType) {
         BrainKnowledgeType.FACT -> MemoryType.PROJECT
         BrainKnowledgeType.DECISION -> MemoryType.DECISION
         BrainKnowledgeType.PREFERENCE -> MemoryType.PROJECT
@@ -237,4 +238,5 @@ fun MemoryEntry.toBrainKnowledgeEntry(): BrainKnowledgeEntry = BrainKnowledgeEnt
     createdAt = createdAt,
     updatedAt = updatedAt,
     lastAccessedAt = lastAccessedAt,
+    legacyType = type,
 )
