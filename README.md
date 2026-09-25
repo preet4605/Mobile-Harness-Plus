@@ -2,7 +2,7 @@
 
   <img src="assets/readme/logo.svg" alt="Mobile Harness Logo" width="104" height="104" style="border-radius: 24px;" />
 
-  # Mobile Harness
+  # Mobile Harness+
 
   ### *The complete autonomous AI development workspace for Android.*
 
@@ -10,6 +10,8 @@
 
   <br />
 
+  [![Fork of Mobile Harness](https://img.shields.io/badge/Fork_of-techjarves%2FMobile--Harness-blue?style=flat-square&logo=github)](https://github.com/techjarves/Mobile-Harness)
+  [![Original Creator: Tech Jarves](https://img.shields.io/badge/Original_Creator-Tech_Jarves-FF5722?style=flat-square&logo=github&logoColor=white)](https://github.com/techjarves)
   [![Release v1.0.4](https://img.shields.io/badge/Release-v1.0.4-F28C52?style=flat-square&logo=github&logoColor=white)](https://github.com/techjarves/Mobile-Harness/releases/tag/v1.0.4)
   [![Android 9+](https://img.shields.io/badge/Android-9%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](#system-requirements)
   [![ARM64](https://img.shields.io/badge/CPU-ARM64-5B8DEF?style=flat-square)](#system-requirements)
@@ -18,6 +20,7 @@
 
   <br />
 
+  [**Upstream Mobile Harness**](https://github.com/techjarves/Mobile-Harness) &nbsp;•&nbsp;
   [**Download Online APK**](https://github.com/techjarves/Mobile-Harness/releases/download/v1.0.4/mobile-harness-online-v1.0.4.apk) &nbsp;•&nbsp;
   [**Download Offline APK**](https://github.com/techjarves/Mobile-Harness/releases/download/v1.0.4/mobile-harness-offline-v1.0.4.apk) &nbsp;•&nbsp;
   [**Watch Walkthrough (3 min)**](https://youtu.be/QzAau52Z7yQ) &nbsp;•&nbsp;
@@ -26,6 +29,13 @@
   [**Build from Source**](#developer-guides)
 
 </div>
+
+<br />
+
+> [!NOTE]
+> ### 🌟 Upstream Fork & Creator Credits
+> **Mobile Harness+** is an enhanced fork of the original [**Mobile Harness**](https://github.com/techjarves/Mobile-Harness) created by [**Tech Jarves**](https://github.com/techjarves) ([@techjarves on YouTube](https://www.youtube.com/techjarves)).  
+> All foundational architecture, the PRoot Linux userspace subsystem, C++ process bridge, and original mobile development UX were conceived and developed by Tech Jarves. Full credit and gratitude go to Tech Jarves and the original contributors!
 
 <br />
 
@@ -434,6 +444,16 @@ Mobile Harness is currently intended for signed direct APK distribution and priv
 
 <br />
 
+## Acknowledgements & Credits
+
+- **Original Creator & Project**: Mobile Harness was originally designed, engineered, and open-sourced by [**Tech Jarves**](https://github.com/techjarves) ([@techjarves on YouTube](https://www.youtube.com/techjarves)).
+- **Upstream Repository**: [https://github.com/techjarves/Mobile-Harness](https://github.com/techjarves/Mobile-Harness)
+- **Demo & Tutorials**: [Tech Jarves YouTube Walkthrough](https://youtu.be/QzAau52Z7yQ)
+
+Mobile Harness+ is maintained as an enhanced fork building upon Tech Jarves' pioneering foundation, bringing multi-engine support, real-time subagent inspection, and extended developer tooling.
+
+<br />
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE). Third-party runtime binaries and packages remain governed by their respective upstream licenses.
@@ -445,5 +465,6 @@ This project is licensed under the [MIT License](LICENSE). Third-party runtime b
 <div align="center">
   <sub>Crafted for developers who want a serious, uncompromised development environment wherever they go.</sub>
   <br />
-  <sub>Copyright © 2026 Tech Jarves. All rights reserved.</sub>
+  <sub>Originally created by <a href="https://github.com/techjarves">Tech Jarves</a> &bull; Mobile Harness+ Fork</sub>
 </div>
+

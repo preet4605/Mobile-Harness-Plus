@@ -1,8 +1,11 @@
 package com.jarves.mh.ui
 
 import android.content.Intent
+import android.net.Uri
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import com.jarves.mh.ui.theme.PocketBlue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -746,15 +749,50 @@ private fun LegacySettingsScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text("Mobile Harness", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text("Mobile Harness+", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                             Text("v1.0.0", color = PocketOrange, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                         }
                         Text(
-                            "Autonomous AI Developer with native on-device Linux PRoot sandbox and Claude Code integration.",
+                            "Autonomous AI Developer with native on-device Linux PRoot sandbox and multi-agent integrations.",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 18.sp,
                         )
+                        Spacer(Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    runCatching {
+                                        context.startActivity(
+                                            Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/techjarves/Mobile-Harness")),
+                                        )
+                                    }
+                                }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "Fork of Mobile Harness by Tech Jarves",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = PocketBlue,
+                                )
+                                Text(
+                                    "github.com/techjarves/Mobile-Harness",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Icon(
+                                Icons.AutoMirrored.Filled.OpenInNew,
+                                contentDescription = "Open upstream repository",
+                                modifier = Modifier.size(16.dp),
+                                tint = PocketBlue,
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.height(16.dp))
