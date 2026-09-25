@@ -1,8 +1,6 @@
 package com.jarves.mh.data
 
 import android.content.Context
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
 import java.time.Instant
 
@@ -11,13 +9,24 @@ class ContextMemoryStore(private val baseDir: File) {
     constructor(context: Context) : this(context.filesDir)
 
     private val memoryDir: File get() = File(baseDir, "memory")
+    private val dbFile: File get() = File(memoryDir, "project_brain.db")
+
+    private val db: BrainDatabase by lazy {
+        memoryDir.mkdirs()
+        val driver = BrainDatabaseDriverFactory.createDriver(dbFile)
+        BrainDatabase(driver)
+    }
+
+    val repository: ContextMemoryRepository by lazy { ContextMemoryRepository(db) }
+    val taskRepository: TaskStateRepository by lazy { TaskStateRepository(db) }
+    val retriever: MemoryRetriever by lazy { MemoryRetriever(repository, taskRepository) }
 
     companion object {
         const val MAX_ENTRIES_PER_PROJECT = 50
         const val MAX_VALUE_LENGTH = 500
     }
 
-    private fun fileForProject(projectId: String): File {
+    private fun sanitizeProjectId(projectId: String): String {
         val sanitizedId = projectId.trim().replace(Regex("[^a-zA-Z0-9._-]"), "_")
         require(sanitizedId.isNotBlank() && !sanitizedId.contains("..")) {
             "Invalid projectId: $projectId"
@@ -26,170 +35,131 @@ class ContextMemoryStore(private val baseDir: File) {
         require(file.canonicalFile.toPath().startsWith(memoryDir.canonicalFile.toPath())) {
             "Project memory file escapes memory directory: ${file.path}"
         }
-        return file
+        return sanitizedId
     }
 
     @Synchronized
     fun load(projectId: String): ContextMemory {
-        val file = fileForProject(projectId)
-        if (!file.exists() || file.length() == 0L) {
-            return ContextMemory(projectId)
-        }
+        val cleanId = sanitizeProjectId(projectId)
         return runCatching {
-            val json = JSONObject(file.readText())
-            val pId = json.optString("projectId", projectId).ifBlank { projectId }
-            val updatedAtStr = json.optString("updatedAt")
-            val updatedAt = runCatching { Instant.parse(updatedAtStr) }.getOrElse { Instant.now() }
-            val entriesArr = json.optJSONArray("entries") ?: JSONArray()
-            val entries = mutableListOf<MemoryEntry>()
-            for (i in 0 until entriesArr.length()) {
-                val obj = entriesArr.getJSONObject(i)
-                val id = obj.optString("id")
-                val key = obj.optString("key")
-                val value = obj.optString("value")
-                val sourceStr = obj.optString("source", MemorySource.AUTO.name)
-                val source = runCatching { MemorySource.valueOf(sourceStr) }.getOrDefault(MemorySource.AUTO)
-                val createdAt = runCatching { Instant.parse(obj.optString("createdAt")) }.getOrElse { Instant.now() }
-                val entryUpdatedAt = runCatching { Instant.parse(obj.optString("updatedAt")) }.getOrElse { Instant.now() }
-                if (key.isNotBlank() && value.isNotBlank()) {
-                    entries.add(
-                        MemoryEntry(
-                            id = id.ifBlank { java.util.UUID.randomUUID().toString() },
-                            key = key,
-                            value = value,
-                            source = source,
-                            createdAt = createdAt,
-                            updatedAt = entryUpdatedAt,
-                        )
-                    )
-                }
+            // Check legacy JSON file for automatic migration
+            val legacyFile = File(memoryDir, "$cleanId.json")
+            if (legacyFile.exists()) {
+                repository.migrateFromJson(legacyFile, cleanId)
             }
+
+            val entries = repository.getByProject(cleanId, MemoryStatus.ACTIVE, limit = MAX_ENTRIES_PER_PROJECT)
+            val mostRecent = entries.maxOfOrNull { it.updatedAt } ?: Instant.now()
             ContextMemory(
-                projectId = pId,
+                projectId = cleanId,
                 entries = entries,
-                updatedAt = updatedAt,
+                updatedAt = mostRecent
             )
         }.getOrElse {
-            ContextMemory(projectId)
+            ContextMemory(cleanId)
         }
     }
 
     @Synchronized
     fun save(memory: ContextMemory) {
-        memoryDir.mkdirs()
-        val destination = fileForProject(memory.projectId)
-        val temporary = File(memoryDir, ".${destination.nameWithoutExtension}.json.tmp")
-
-        val root = JSONObject().apply {
-            put("projectId", memory.projectId)
-            put("updatedAt", memory.updatedAt.toString())
-            val entriesArr = JSONArray()
+        val cleanId = sanitizeProjectId(memory.projectId)
+        runCatching {
             memory.entries.forEach { entry ->
-                entriesArr.put(
-                    JSONObject().apply {
-                        put("id", entry.id)
-                        put("key", entry.key)
-                        put("value", entry.value)
-                        put("source", entry.source.name)
-                        put("createdAt", entry.createdAt.toString())
-                        put("updatedAt", entry.updatedAt.toString())
-                    }
-                )
+                repository.save(entry.copy(projectId = cleanId))
             }
-            put("entries", entriesArr)
-        }
-
-        temporary.writeText(root.toString())
-        if (!temporary.renameTo(destination)) {
-            // Fallback for filesystems where atomic rename across files requires delete
-            destination.delete()
-            temporary.renameTo(destination)
         }
     }
 
     @Synchronized
     fun upsert(projectId: String, key: String, value: String, source: MemorySource): ContextMemory {
+        val cleanId = sanitizeProjectId(projectId)
         val cleanKey = key.trim()
         val cleanValue = value.trim().take(MAX_VALUE_LENGTH)
-        if (cleanKey.isBlank() || cleanValue.isBlank()) return load(projectId)
+        if (cleanKey.isBlank() || cleanValue.isBlank()) return load(cleanId)
 
-        val current = load(projectId)
-        val now = Instant.now()
-        val existingIndex = current.entries.indexOfFirst { it.key.equals(cleanKey, ignoreCase = true) }
+        runCatching {
+            val now = Instant.now()
+            val existing = repository.findExact(cleanId, cleanKey, MemoryStatus.ACTIVE)
 
-        val updatedEntries = current.entries.toMutableList()
-        if (existingIndex >= 0) {
-            val existing = updatedEntries[existingIndex]
-            val effectiveSource = if (existing.source == MemorySource.USER && source == MemorySource.AUTO) {
-                MemorySource.USER
-            } else {
-                source
-            }
-            updatedEntries[existingIndex] = existing.copy(
-                key = existing.key,
-                value = cleanValue,
-                source = effectiveSource,
-                updatedAt = now,
-            )
-        } else {
-            val newEntry = MemoryEntry(
-                key = cleanKey,
-                value = cleanValue,
-                source = source,
-                createdAt = now,
-                updatedAt = now,
-            )
-            updatedEntries.add(newEntry)
-        }
-
-        // Eviction policy: max 50 entries, oldest AUTO entries evicted first
-        while (updatedEntries.size > MAX_ENTRIES_PER_PROJECT) {
-            val oldestAuto = updatedEntries
-                .filter { it.source == MemorySource.AUTO }
-                .minByOrNull { it.updatedAt }
-            if (oldestAuto != null) {
-                updatedEntries.remove(oldestAuto)
-            } else {
-                val oldestUser = updatedEntries.minByOrNull { it.updatedAt }
-                if (oldestUser != null) {
-                    updatedEntries.remove(oldestUser)
+            if (existing != null) {
+                // If user wrote earlier, an auto update doesn't overwrite with lower confidence
+                val effectiveSource = if (existing.source.isUser && source.isAuto) {
+                    MemorySource.USER
                 } else {
-                    break
+                    source
+                }
+                repository.update(
+                    existing.copy(
+                        key = existing.key,
+                        value = cleanValue,
+                        source = effectiveSource,
+                        updatedAt = now,
+                        lastAccessedAt = now
+                    )
+                )
+            } else {
+                repository.insert(
+                    MemoryEntry(
+                        projectId = cleanId,
+                        key = cleanKey,
+                        value = cleanValue,
+                        source = source,
+                        importance = if (source.isUser) 0.9f else 0.7f,
+                        confidence = if (source.isUser) 0.95f else 0.8f,
+                        createdAt = now,
+                        updatedAt = now,
+                        lastAccessedAt = now
+                    )
+                )
+            }
+
+            // Eviction policy: max 50 entries, oldest AUTO entries evicted first
+            val allActive = repository.getByProject(cleanId, MemoryStatus.ACTIVE, limit = 100)
+            if (allActive.size > MAX_ENTRIES_PER_PROJECT) {
+                val oldestAuto = allActive
+                    .filter { it.source.isAuto }
+                    .minByOrNull { it.updatedAt }
+                if (oldestAuto != null) {
+                    repository.delete(oldestAuto.id)
+                } else {
+                    val oldestUser = allActive.minByOrNull { it.updatedAt }
+                    if (oldestUser != null) {
+                        repository.delete(oldestUser.id)
+                    }
                 }
             }
         }
 
-        val updatedMemory = ContextMemory(
-            projectId = projectId,
-            entries = updatedEntries,
-            updatedAt = now,
-        )
-        save(updatedMemory)
-        return updatedMemory
+        return load(cleanId)
     }
 
     @Synchronized
     fun delete(projectId: String, entryId: String): ContextMemory {
-        val current = load(projectId)
-        val filtered = current.entries.filterNot { it.id == entryId }
-        val updated = current.copy(entries = filtered, updatedAt = Instant.now())
-        save(updated)
-        return updated
+        val cleanId = sanitizeProjectId(projectId)
+        runCatching {
+            repository.delete(entryId)
+        }
+        return load(cleanId)
     }
 
     @Synchronized
     fun clear(projectId: String): ContextMemory {
-        val file = fileForProject(projectId)
-        if (file.exists()) file.delete()
-        return ContextMemory(projectId)
+        val cleanId = sanitizeProjectId(projectId)
+        runCatching {
+            repository.clearProject(cleanId)
+            taskRepository.clearCheckpoint(cleanId)
+            val legacyFile = File(memoryDir, "$cleanId.json")
+            if (legacyFile.exists()) legacyFile.delete()
+        }
+        return ContextMemory(cleanId)
     }
 
     @Synchronized
     fun clearAuto(projectId: String): ContextMemory {
-        val current = load(projectId)
-        val userOnly = current.entries.filter { it.source == MemorySource.USER }
-        val updated = current.copy(entries = userOnly, updatedAt = Instant.now())
-        save(updated)
-        return updated
+        val cleanId = sanitizeProjectId(projectId)
+        runCatching {
+            repository.clearAuto(cleanId)
+        }
+        return load(cleanId)
     }
 }
