@@ -5604,8 +5604,14 @@ private fun completedProcessSummary(
     startedAtMillis: Long?,
     finishedAtMillis: Long?,
 ): String {
-    val stopped = processItems.lastOrNull()?.title?.startsWith("Task stopped") == true
-    val outcome = if (stopped) "Task stopped" else "Task completed"
+    val lastTitle = processItems.lastOrNull()?.title.orEmpty()
+    val outcome = when {
+        lastTitle.startsWith("Service unavailable") -> "Service unavailable"
+        lastTitle.startsWith("Authentication failed") -> "Authentication failed"
+        lastTitle.startsWith("Task failed") -> "Task failed"
+        lastTitle.startsWith("Task stopped") -> "Task stopped"
+        else -> "Task completed"
+    }
     val steps = "${processItems.size} step${if (processItems.size == 1) "" else "s"}"
     val duration = startedAtMillis?.let { start ->
         val end = finishedAtMillis ?: System.currentTimeMillis()

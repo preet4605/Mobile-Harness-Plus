@@ -357,7 +357,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var lastOpenedAntigravityAuthUrl: String? = null
     private var activeRuntimeRequest: RuntimeRetryRequest? = null
     private val failedApiKeyIds = mutableSetOf<String>()
-    private val transcriptWrites = Channel<TranscriptWrite>(Channel.UNLIMITED)
+    @Volatile private var pendingTranscriptWrite: TranscriptWrite? = null
+    private var transcriptDebounceJob: kotlinx.coroutines.Job? = null
     private val initialAgentKind = AgentKind.fromStored(preferences.agentKind)
     private val initialPrimaryAgentKind = preferences.primaryAgentKind
         .takeIf(String::isNotBlank)
@@ -409,9 +410,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         vault.remove(LEGACY_GITHUB_TOKEN_KEY)
         viewModelScope.launch { refreshGitHubConnection() }
         RuntimeSetupController.restore(application)
-        viewModelScope.launch(Dispatchers.IO) {
-            for (write in transcriptWrites) {
-                preferences.saveMessages(write.projectId, write.chatId, write.messages)
+        val taskSupervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(application)
+        viewModelScope.launch {
+            taskSupervisor.activeTasks.collect { activeMap ->
+                val activeProj = _state.value.activeProject
+                if (activeProj != null) {
+                    val activeForProject = activeMap.values.firstOrNull { it.projectId == activeProj.id && it.status.isActive }
+                    if (activeForProject != null && !_state.value.isRunning) {
+                        _state.update { it.copy(isRunning = true, activeSessionId = activeForProject.sessionId) }
+                    } else if (activeForProject == null && _state.value.isRunning && !activeRuntime().isRunning) {
+                        _state.update { it.copy(isRunning = false, isStopping = false, activeSessionId = null) }
+                    }
+                }
             }
         }
         viewModelScope.launch { dshRuntime.events.collect(::onRuntimeEvent) }
@@ -3923,10 +3933,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             provider = state.value.provider,
             memory = state.value.contextMemory,
         )
-        viewModelScope.launch {
+        val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
+        val taskRecord = supervisor.createTask(
+            projectId = project.id,
+            projectSlug = project.slug,
+            chatId = state.value.activeChatId ?: "default",
+            agentKind = state.value.agentKind.name,
+            providerJson = state.value.provider.kind.name,
+            prompt = runtimePrompt
+        )
+        supervisor.executeTask(taskRecord.taskId) { task ->
             try {
                 activeRuntimeRequest?.let { request ->
-                    request.runtime.startSession(
+                    val sessionId = request.runtime.startSession(
                         request.project.id,
                         request.project.slug,
                         request.project.kind,
@@ -3934,23 +3953,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         request.history,
                         request.provider,
                         request.memory,
+                        task.taskId,
                     )
+                    supervisor.bindSession(task.taskId, sessionId)
                 }
             } catch (t: Throwable) {
-                _state.update {
-                    it.copy(
-                        isRunning = false,
-                        liveThinking = false,
-                        activeSessionId = null,
-                        toastMessage = "Failed to start session: ${t.localizedMessage ?: t.message}",
-                    )
+                val isCancelled = supervisor.processSupervisor.isCancellationRequested(task.taskId) ||
+                    t.message?.contains("stopped by user", ignoreCase = true) == true
+                val checkpoints = com.jarves.mh.runtime.WorkspaceCheckpoints(getApplication<Application>().filesDir)
+                val mutated = runCatching { checkpoints.readChangedPaths(task.projectId) }.getOrDefault(emptyList()).isNotEmpty()
+                val classification = supervisor.classifyError(t.localizedMessage ?: t.message ?: "", mutated, isCancelled)
+                val willRetry = (classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.TRANSIENT_API_ERROR ||
+                    classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.PROCESS_FAILURE) &&
+                    task.retryCount < task.maxRetries
+
+                if (!willRetry) {
+                    _state.update {
+                        it.copy(
+                            isRunning = false,
+                            liveThinking = false,
+                            activeSessionId = null,
+                            toastMessage = "Session error: ${t.localizedMessage ?: t.message}",
+                        )
+                    }
                 }
+                throw t
             }
         }
     }
 
     fun answerApproval(approved: Boolean) {
         val request = state.value.pendingApproval ?: return
+        com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).resumeFromApproval(request.sessionId)
         viewModelScope.launch { activeRuntime().respondToApproval(request, approved) }
     }
 
@@ -3976,7 +4010,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 backgroundTasks = TaskRegistry.terminate(current.backgroundTasks, "*"),
             )
         }
+        val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
         viewModelScope.launch {
+            supervisor.requestStopActive(force = false)
             activeRuntime().stopActiveSession()
             // Auto-escalate to force kill after 1500ms if still alive.
             delay(1500)
@@ -3989,8 +4025,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Stage 2: Force kill (SIGKILL). Called automatically if graceful stop times out or on re-press. */
     fun forceKillTask() {
         if (!_state.value.isRunning && !_state.value.isStopping) return
+        val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
         viewModelScope.launch {
             // Pass force=true to skip any remaining grace period and immediately kill
+            supervisor.requestStopActive(force = true)
             runCatching { activeRuntime().stopActiveSession(force = true) }
             // If the bridge still hasn't emitted SessionFailed, force-clear UI state.
             delay(500)
@@ -4256,17 +4294,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     current.copy(activity = listOf(ActivityItem(event.title, event.detail)) + current.activity),
                     ActivityItem(event.title, event.detail),
                 )
-                is RuntimeEvent.ToolRequested -> appendWorkItem(current.copy(
-                    pendingApproval = event.request,
-                    activity = listOf(ActivityItem("Waiting for approval", event.request.explanation, false)) + current.activity,
-                ), ActivityItem("Waiting for approval", event.request.explanation, false))
-                is RuntimeEvent.ToolApproved -> appendWorkItem(current.copy(
-                    pendingApproval = null,
-                    activity = listOf(ActivityItem("Applying approved changes", "Editing project files", false)) + current.activity,
-                ), ActivityItem("Action approved", "Claude is continuing the task", false))
-                is RuntimeEvent.ToolRejected -> appendWorkItem(current.copy(
-                    pendingApproval = null,
-                ), ActivityItem("Action rejected", "Claude will continue without this action"))
+                is RuntimeEvent.ToolRequested -> {
+                    com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).pauseForApproval(event.sessionId)
+                    appendWorkItem(current.copy(
+                        pendingApproval = event.request,
+                        activity = listOf(ActivityItem("Waiting for approval", event.request.explanation, false)) + current.activity,
+                    ), ActivityItem("Waiting for approval", event.request.explanation, false))
+                }
+                is RuntimeEvent.ToolApproved -> {
+                    com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).resumeFromApproval(event.sessionId)
+                    appendWorkItem(current.copy(
+                        pendingApproval = null,
+                        activity = listOf(ActivityItem("Applying approved changes", "Editing project files", false)) + current.activity,
+                    ), ActivityItem("Action approved", "Claude is continuing the task", false))
+                }
+                is RuntimeEvent.ToolRejected -> {
+                    com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).resumeFromApproval(event.sessionId)
+                    appendWorkItem(current.copy(
+                        pendingApproval = null,
+                    ), ActivityItem("Action rejected", "Claude will continue without this action"))
+                }
                 is RuntimeEvent.ToolCompleted -> {
                     val runningIndex = current.liveProcess.indexOfLast {
                         !it.isComplete && it.title == "Running ${event.toolName}"
@@ -4331,19 +4378,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 is RuntimeEvent.SessionFailed -> {
                     val finishedAt = System.currentTimeMillis()
+                    val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
+                    val activeTask = current.activeProject?.let { proj ->
+                        supervisor.activeTasks.value.values.firstOrNull { it.projectId == proj.id }
+                    }
+                    val isTransientApi = supervisor.classifyError(event.reason, false, false) ==
+                        com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.TRANSIENT_API_ERROR
+                    val willRetry = activeTask != null && activeTask.retryCount < activeTask.maxRetries && isTransientApi
+
+                    val failureTitle = when {
+                        event.reason.contains("503", ignoreCase = true) ||
+                        event.reason.contains("UNAVAILABLE", ignoreCase = true) ||
+                        event.reason.contains("service is currently unavailable", ignoreCase = true) ||
+                        event.reason.contains("overloaded", ignoreCase = true) -> "Service unavailable"
+
+                        event.reason.contains("API key", ignoreCase = true) ||
+                        event.reason.contains("authentication", ignoreCase = true) ||
+                        event.reason.contains("unauthorized", ignoreCase = true) ||
+                        event.reason.contains("user not found", ignoreCase = true) ||
+                        event.reason.contains("Google account not signed in", ignoreCase = true) -> "Authentication failed"
+
+                        event.reason.contains("Stopped by user", ignoreCase = true) || current.isStopping -> "Task stopped"
+
+                        else -> "Task failed"
+                    }
+
+                    val activityTitle = if (willRetry) {
+                        "$failureTitle (retrying attempt ${(activeTask?.retryCount ?: 0) + 1}/${activeTask?.maxRetries ?: 2})"
+                    } else {
+                        failureTitle
+                    }
+
                     // Invariant: ALL non-terminal subagents transition to ERRORED on failure.
-                    val failedSubagents = SubagentRegistry.failAll(current.subagents, event.reason, finishedAt)
-                    val failedTasks = TaskRegistry.failRunning(current.backgroundTasks)
+                    val failedSubagents = if (willRetry) current.subagents else SubagentRegistry.failAll(current.subagents, event.reason, finishedAt)
+                    val failedTasks = if (willRetry) current.backgroundTasks else TaskRegistry.failRunning(current.backgroundTasks)
                     attachTaskDuration(
                         finishWorkSegment(
-                            appendWorkItem(current, ActivityItem("Task stopped", event.reason)),
+                            appendWorkItem(current, ActivityItem(activityTitle, event.reason)),
                             finishedAt,
                         ),
                         finishedAt,
                     ).copy(
-                        isRunning = false,
+                        isRunning = willRetry,
                         isStopping = false,
-                        activeSessionId = null,
+                        activeSessionId = if (willRetry) current.activeSessionId else null,
                         pendingApproval = null,
                         subagents = failedSubagents,
                         backgroundTasks = failedTasks,
@@ -4352,9 +4430,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 reason.contains("API key", true) ||
                                 reason.contains("authentication", true)
                         },
-                        activity = listOf(ActivityItem("Task stopped", event.reason)) + current.activity,
-                        taskFinishedAtMillis = finishedAt,
-                        currentTaskRequest = null,
+                        activity = listOf(ActivityItem(activityTitle, event.reason)) + current.activity,
+                        taskFinishedAtMillis = if (willRetry) null else finishedAt,
+                        currentTaskRequest = if (willRetry) current.currentTaskRequest else null,
                     )
                 }
                 is RuntimeEvent.SubagentUpdated -> {
@@ -4392,8 +4470,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             activeRuntimeRequest = null
             failedApiKeyIds.clear()
         }
+        if (event is RuntimeEvent.SessionFailed) {
+            _state.value.activeProject?.let { project ->
+                runCatching {
+                    memoryStore.taskRepository.recordError(project.id, event.reason)
+                }
+            }
+        }
         if (event is RuntimeEvent.SessionCompleted) {
             _state.value.activeProject?.let { project ->
+                runCatching {
+                    memoryStore.taskRepository.recordSuccess(project.id, "Session completed successfully")
+                }
                 extractMemoryFromSession(project.id, _state.value.messages)
             }
         }
@@ -4404,7 +4492,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Save every visible reasoning/tool transition, not only assistant text and
         // final results. If Android kills the process, the last displayed timeline
         // is restored as an interrupted work block rather than disappearing.
-        persistMessages(includeLiveProcess = true)
+        val isTerminalEvent = event is RuntimeEvent.SessionCompleted || event is RuntimeEvent.SessionFailed
+        persistMessages(includeLiveProcess = true, immediate = isTerminalEvent)
     }
 
     private fun retryWithNextApiKey(event: RuntimeEvent.SessionFailed): Boolean {
@@ -4459,7 +4548,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         preferences.saveProjects(_state.value.projects)
     }
 
-    private fun persistMessages(includeLiveProcess: Boolean = true) {
+    private fun persistMessages(includeLiveProcess: Boolean = true, immediate: Boolean = false) {
         val current = _state.value
         val project = current.activeProject ?: return
         val chatId = current.activeChatId ?: return
@@ -4479,7 +4568,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 workedMillis = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L),
             )
         }
-        transcriptWrites.trySend(TranscriptWrite(project.id, chatId, messages))
+        val write = TranscriptWrite(project.id, chatId, messages)
+        pendingTranscriptWrite = write
+        if (immediate) {
+            transcriptDebounceJob?.cancel()
+            flushPendingTranscriptWrite()
+        } else {
+            if (transcriptDebounceJob?.isActive != true) {
+                transcriptDebounceJob = viewModelScope.launch(Dispatchers.IO) {
+                    delay(500)
+                    flushPendingTranscriptWrite()
+                }
+            }
+        }
+    }
+
+    private fun flushPendingTranscriptWrite() {
+        val write = pendingTranscriptWrite ?: return
+        pendingTranscriptWrite = null
+        runCatching {
+            preferences.saveMessages(write.projectId, write.chatId, write.messages)
+        }
+    }
+
+    override fun onCleared() {
+        flushPendingTranscriptWrite()
+        super.onCleared()
     }
 
     private fun updateActiveChatTitle(prompt: String) {
@@ -4504,13 +4618,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun extractMemoryFromSession(projectId: String, messages: List<ChatMessage>) {
-        val extracted = MemoryExtractor.extractMemories(messages)
-        if (extracted.isEmpty()) return
-        var updated = memoryStore.load(projectId)
-        extracted.forEach { (key, value) ->
-            updated = memoryStore.upsert(projectId, key, value, MemorySource.AUTO)
+        runCatching {
+            val extracted = MemoryExtractor.extractMemories(messages)
+            extracted.forEach { (key, value) ->
+                memoryStore.upsert(projectId, key, value, MemorySource.AUTO)
+            }
+            val rich = MemoryExtractor.extractRichMemories(messages, projectId)
+            rich.forEach { memoryStore.repository.save(it) }
+            val checkpoint = MemoryExtractor.extractTaskCheckpoint(messages, projectId)
+            if (checkpoint != null) {
+                memoryStore.taskRepository.saveCheckpoint(checkpoint)
+            }
+            val updated = memoryStore.load(projectId)
+            _state.update { it.copy(contextMemory = updated) }
+        }.onFailure { error ->
+            android.util.Log.w("MainViewModel", "Failed to extract session memory", error)
         }
-        _state.update { it.copy(contextMemory = updated) }
     }
 
     fun setMemoryViewerVisible(visible: Boolean) {
