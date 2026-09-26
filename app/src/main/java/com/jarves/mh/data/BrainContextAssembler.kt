@@ -40,7 +40,7 @@ data class BrainContext(
  * Transforms canonical task state and relevant persistent brain knowledge
  * into a compact, sanitized, bounded representation for agent runtime injection.
  */
-class BrainContextAssembler(
+open class BrainContextAssembler(
     private val knowledgeRepository: BrainKnowledgeRepository? = null
 ) {
     companion object {
@@ -123,7 +123,7 @@ class BrainContextAssembler(
     /**
      * Assembles a structured BrainContext from the canonical task and relevant knowledge.
      */
-    fun assemble(
+    open fun assemble(
         task: CanonicalTask? = null,
         currentStep: ExecutionStep? = null,
         projectId: String? = null,
@@ -274,7 +274,7 @@ class BrainContextAssembler(
     /**
      * Renders a BrainContext into a deterministic, bounded text block.
      */
-    fun render(context: BrainContext, maxCharacters: Int = context.maxCharacters): String {
+    open fun render(context: BrainContext, maxCharacters: Int = context.maxCharacters): String {
         val effectiveLimit = maxCharacters.coerceIn(1, DEFAULT_MAX_CONTEXT_CHARS)
 
         val wrapperStart = "[BRAIN_CONTEXT]\n\n"

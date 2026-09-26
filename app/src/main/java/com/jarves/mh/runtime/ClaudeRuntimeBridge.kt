@@ -108,6 +108,7 @@ class ClaudeRuntimeBridge(
         provider: ProviderProfile,
         memory: ContextMemory,
         taskId: String?,
+        brainSnapshot: com.jarves.mh.data.BrainContextSnapshot?,
     ): String = withContext(Dispatchers.IO + NonCancellable) {
         val sessionId = UUID.randomUUID().toString()
         if (taskId != null) {
@@ -115,6 +116,10 @@ class ClaudeRuntimeBridge(
                 com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).bindSession(taskId, sessionId)
             }
         }
+        val snapshot = brainSnapshot ?: taskId?.let {
+            runCatching { com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).getBrainSnapshot(it) }.getOrNull()
+        }
+        val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId)
         finishedSessions.remove(sessionId)
         activeSessionId = sessionId
         userStopRequested = false
@@ -190,7 +195,7 @@ class ClaudeRuntimeBridge(
 
             // Build a context-aware prompt that includes conversation history
             val guestWorkspacePath = "/workspace/$projectSlug"
-            val contextPrompt = buildContextPrompt(prompt, conversationHistory, guestWorkspacePath, projectKind, memory)
+            val contextPrompt = buildContextPrompt(injectedPrompt, conversationHistory, guestWorkspacePath, projectKind, memory)
 
             val command = buildList {
                 add(launch.executable)

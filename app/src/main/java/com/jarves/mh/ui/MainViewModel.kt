@@ -3945,6 +3945,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         supervisor.executeTask(taskRecord.taskId) { task ->
             try {
                 activeRuntimeRequest?.let { request ->
+                    val snapshot = supervisor.getBrainSnapshot(task.taskId)
                     val sessionId = request.runtime.startSession(
                         request.project.id,
                         request.project.slug,
@@ -3954,6 +3955,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         request.provider,
                         request.memory,
                         task.taskId,
+                        snapshot,
                     )
                     supervisor.bindSession(task.taskId, sessionId)
                 }

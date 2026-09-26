@@ -472,6 +472,7 @@ class AntigravityRuntimeBridge(
         provider: ProviderProfile,
         memory: ContextMemory,
         taskId: String?,
+        brainSnapshot: com.jarves.mh.data.BrainContextSnapshot?,
     ): String = withContext(Dispatchers.IO + NonCancellable) {
         val sessionId = UUID.randomUUID().toString()
         if (taskId != null) {
@@ -479,6 +480,10 @@ class AntigravityRuntimeBridge(
                 com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).bindSession(taskId, sessionId)
             }
         }
+        val snapshot = brainSnapshot ?: taskId?.let {
+            runCatching { com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).getBrainSnapshot(it) }.getOrNull()
+        }
+        val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId)
         activeSessionId = sessionId
         userStopRequested = false
         foregroundResultPosted = false
@@ -519,9 +524,9 @@ class AntigravityRuntimeBridge(
             val isStickyTurn = (useAccount && account!!.id == currentStickyAccountId && !existingConvId.isNullOrBlank())
             val targetConvId = if (isStickyTurn) existingConvId else null
             val effectivePrompt = if (!isStickyTurn && conversationHistory.isNotEmpty()) {
-                buildFailoverPrompt(projectSlug, prompt, conversationHistory, memory)
+                buildFailoverPrompt(projectSlug, injectedPrompt, conversationHistory, memory)
             } else {
-                antigravityWorkspacePrompt(projectSlug, prompt, memory)
+                antigravityWorkspacePrompt(projectSlug, injectedPrompt, memory)
             }
 
             val turnResult = runCatching {

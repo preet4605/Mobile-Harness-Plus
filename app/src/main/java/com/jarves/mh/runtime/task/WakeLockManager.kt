@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentHashMap
  * released immediately when process exits or enters terminal states, and paused while waiting
  * for user approval/input.
  */
-class WakeLockManager(private val context: Context) {
+class WakeLockManager(private val context: Context? = null) {
 
     private val lock = Any()
     private var wakeLock: PowerManager.WakeLock? = null
@@ -46,8 +46,8 @@ class WakeLockManager(private val context: Context) {
 
             if (wakeLock == null) {
                 runCatching {
-                    val pm = context.getSystemService(PowerManager::class.java)
-                    wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
+                    val pm = context?.getSystemService(PowerManager::class.java)
+                    wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)?.apply {
                         setReferenceCounted(false)
                     }
                 }.onFailure { Log.e(TAG, "Failed to create WakeLock", it) }
@@ -73,7 +73,7 @@ class WakeLockManager(private val context: Context) {
         synchronized(lock) {
             if (activeTaskIds.remove(taskId)) {
                 pausedTaskIds.add(taskId)
-                Log.d(TAG, "Paused WakeLock for task $taskId (awaiting user approval/input)")
+                runCatching { Log.d(TAG, "Paused WakeLock for task $taskId (awaiting user approval/input)") }
             }
             if (activeTaskIds.isEmpty()) {
                 releaseInternal()
@@ -95,7 +95,7 @@ class WakeLockManager(private val context: Context) {
         synchronized(lock) {
             activeTaskIds.remove(taskId)
             pausedTaskIds.remove(taskId)
-            Log.d(TAG, "Released task $taskId from WakeLockManager (remaining active: ${activeTaskIds.size})")
+            runCatching { Log.d(TAG, "Released task $taskId from WakeLockManager (remaining active: ${activeTaskIds.size})") }
             if (activeTaskIds.isEmpty()) {
                 releaseInternal()
             }

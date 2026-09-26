@@ -70,6 +70,7 @@ class DshRuntimeBridge(
         provider: ProviderProfile,
         memory: ContextMemory,
         taskId: String?,
+        brainSnapshot: com.jarves.mh.data.BrainContextSnapshot?,
     ): String = withContext(Dispatchers.IO + NonCancellable) {
         val sessionId = UUID.randomUUID().toString()
         if (taskId != null) {
@@ -77,6 +78,10 @@ class DshRuntimeBridge(
                 com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).bindSession(taskId, sessionId)
             }
         }
+        val snapshot = brainSnapshot ?: taskId?.let {
+            runCatching { com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).getBrainSnapshot(it) }.getOrNull()
+        }
+        val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId)
         finishedSessions.remove(sessionId)
         activeSessionId = sessionId
         userStopRequested = false
@@ -153,7 +158,7 @@ class DshRuntimeBridge(
             if (route.keyEnv != FALLBACK_KEY_ENV) environment.remove(FALLBACK_KEY_ENV)
 
             val guestWorkspacePath = "/workspace/$projectSlug"
-            val contextPrompt = buildContextPrompt(prompt, conversationHistory, guestWorkspacePath, projectKind, memory)
+            val contextPrompt = buildContextPrompt(injectedPrompt, conversationHistory, guestWorkspacePath, projectKind, memory)
             val command = listOf("/usr/local/bin/dsh", "--profile", "sdk")
             Log.d("DshBridge", "Route: ${route.name}, Model: ${provider.model}")
             val process = installer.process(

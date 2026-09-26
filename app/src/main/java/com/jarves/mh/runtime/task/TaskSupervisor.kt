@@ -2,10 +2,16 @@ package com.jarves.mh.runtime.task
 
 import android.content.Context
 import android.util.Log
+import com.jarves.mh.data.BrainContextAssembler
+import com.jarves.mh.data.BrainContextAssemblyException
+import com.jarves.mh.data.BrainContextSnapshot
 import com.jarves.mh.data.BrainDatabase
 import com.jarves.mh.data.BrainDatabaseDriverFactory
+import com.jarves.mh.data.BrainKnowledgeRepository
+import com.jarves.mh.data.CanonicalTaskRepository
 import com.jarves.mh.data.ContextMemoryStore
 import com.jarves.mh.model.RuntimeEvent
+import com.jarves.mh.runtime.ControlledBrainInjector
 import com.jarves.mh.runtime.RuntimeExecutionService
 import java.io.File
 import java.util.UUID
@@ -29,18 +35,32 @@ import kotlinx.coroutines.launch
  * Owns task lifecycle, process supervision, durable execution state,
  * power/wake-lock management, and crash recovery.
  */
-class TaskSupervisor private constructor(private val appContext: Context) {
+class TaskSupervisor private constructor(private val appContext: Context?) {
 
     private val supervisorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    private val dbFile = File(File(appContext.filesDir, "memory"), "project_brain.db")
-    private val database: BrainDatabase by lazy {
+    private val dbFile by lazy { File(File(appContext?.filesDir ?: File("memory"), "memory"), "project_brain.db") }
+    private var testDatabase: BrainDatabase? = null
+    val database: BrainDatabase
+        get() = testDatabase ?: defaultDatabase
+
+    private val defaultDatabase: BrainDatabase by lazy {
         dbFile.parentFile?.mkdirs()
         val driver = BrainDatabaseDriverFactory.createDriver(dbFile)
         BrainDatabase(driver)
     }
 
     val stateStore: TaskStateStore by lazy { TaskStateStore(database) }
+    val canonicalTaskRepository: CanonicalTaskRepository by lazy { CanonicalTaskRepository(database) }
+    val brainKnowledgeRepository: BrainKnowledgeRepository by lazy { BrainKnowledgeRepository(database) }
+
+    private var customBrainContextAssembler: BrainContextAssembler? = null
+    var brainContextAssembler: BrainContextAssembler
+        get() = customBrainContextAssembler ?: defaultAssembler
+        set(value) { customBrainContextAssembler = value }
+
+    private val defaultAssembler by lazy { BrainContextAssembler(brainKnowledgeRepository) }
+
     val processSupervisor: ProcessSupervisor by lazy { ProcessSupervisor() }
     val executionLock: TaskExecutionLock by lazy { TaskExecutionLock() }
     val wakeLockManager: WakeLockManager by lazy { WakeLockManager(appContext) }
@@ -48,6 +68,9 @@ class TaskSupervisor private constructor(private val appContext: Context) {
 
     private val activeJobs = ConcurrentHashMap<String, Job>()
     private val outputBuffers = ConcurrentHashMap<String, BoundedOutputBuffer>()
+
+    private val brainSnapshots = ConcurrentHashMap<String, BrainContextSnapshot>()
+    private val activeBrainSnapshots = ConcurrentHashMap<String, BrainContextSnapshot>()
 
     private val _activeTasks = MutableStateFlow<Map<String, DurableTaskRecord>>(emptyMap())
     val activeTasks: StateFlow<Map<String, DurableTaskRecord>> = _activeTasks.asStateFlow()
@@ -71,9 +94,9 @@ class TaskSupervisor private constructor(private val appContext: Context) {
         }
 
         // Visible for testing with injected BrainDatabase
-        internal fun createForTesting(context: Context, database: BrainDatabase): TaskSupervisor {
-            return TaskSupervisor(context.applicationContext).apply {
-                // Testing instance
+        internal fun createForTesting(context: Context? = null, database: BrainDatabase): TaskSupervisor {
+            return TaskSupervisor(context?.applicationContext ?: context).apply {
+                testDatabase = database
             }
         }
     }
@@ -128,8 +151,8 @@ class TaskSupervisor private constructor(private val appContext: Context) {
                 }
             }
 
-            wakeLockManager.releaseAll()
-            healthMonitor.onWakeLockChanged(false, 0)
+            wakeLockManager?.releaseAll()
+            healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
             refreshActiveTasks()
         } catch (t: Throwable) {
             Log.e(TAG, "Error during startup reconciliation", t)
@@ -204,8 +227,8 @@ class TaskSupervisor private constructor(private val appContext: Context) {
         val targetTaskId = task?.taskId ?: taskIdOrSessionId
         runCatching {
             stateStore.transition(targetTaskId, TaskExecutionStatus.WAITING_FOR_APPROVAL)
-            wakeLockManager.pause(targetTaskId)
-            healthMonitor.onWakeLockChanged(wakeLockManager.isHeld, wakeLockManager.activeTaskCount)
+            wakeLockManager?.pause(targetTaskId)
+            healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
             refreshActiveTasks()
         }.onFailure { Log.w(TAG, "Failed to pauseForApproval for task $targetTaskId", it) }
     }
@@ -215,8 +238,8 @@ class TaskSupervisor private constructor(private val appContext: Context) {
         val targetTaskId = task?.taskId ?: taskIdOrSessionId
         runCatching {
             stateStore.transition(targetTaskId, TaskExecutionStatus.RUNNING)
-            wakeLockManager.resume(targetTaskId)
-            healthMonitor.onWakeLockChanged(wakeLockManager.isHeld, wakeLockManager.activeTaskCount)
+            wakeLockManager?.resume(targetTaskId)
+            healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
             refreshActiveTasks()
         }.onFailure { Log.w(TAG, "Failed to resumeFromApproval for task $targetTaskId", it) }
     }
@@ -226,8 +249,8 @@ class TaskSupervisor private constructor(private val appContext: Context) {
         val targetTaskId = task?.taskId ?: taskIdOrSessionId
         runCatching {
             stateStore.transition(targetTaskId, TaskExecutionStatus.WAITING_FOR_INPUT)
-            wakeLockManager.pause(targetTaskId)
-            healthMonitor.onWakeLockChanged(wakeLockManager.isHeld, wakeLockManager.activeTaskCount)
+            wakeLockManager?.pause(targetTaskId)
+            healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
             refreshActiveTasks()
         }.onFailure { Log.w(TAG, "Failed to pauseForInput for task $targetTaskId", it) }
     }
@@ -237,10 +260,75 @@ class TaskSupervisor private constructor(private val appContext: Context) {
         val targetTaskId = task?.taskId ?: taskIdOrSessionId
         runCatching {
             stateStore.transition(targetTaskId, TaskExecutionStatus.RUNNING)
-            wakeLockManager.resume(targetTaskId)
-            healthMonitor.onWakeLockChanged(wakeLockManager.isHeld, wakeLockManager.activeTaskCount)
+            wakeLockManager?.resume(targetTaskId)
+            healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
             refreshActiveTasks()
         }.onFailure { Log.w(TAG, "Failed to resumeFromInput for task $targetTaskId", it) }
+    }
+
+    fun getBrainSnapshot(taskIdOrSessionId: String): BrainContextSnapshot? {
+        val task = stateStore.get(taskIdOrSessionId) ?: stateStore.getBySessionId(taskIdOrSessionId)
+        val resolvedTaskId = task?.taskId ?: taskIdOrSessionId
+        return activeBrainSnapshots[resolvedTaskId]
+    }
+
+    fun getBrainSnapshotByAttempt(attemptId: String): BrainContextSnapshot? {
+        return brainSnapshots[attemptId]
+    }
+
+    fun getOrCreateBrainSnapshot(
+        taskId: String,
+        attempt: Int = 0,
+        attemptId: String = "$taskId:attempt-$attempt",
+        projectId: String? = null,
+        query: String? = null
+    ): BrainContextSnapshot {
+        val existing = brainSnapshots[attemptId]
+        if (existing != null) {
+            activeBrainSnapshots[taskId] = existing
+            return existing
+        }
+
+        try {
+            val taskRecord = stateStore.get(taskId)
+            val effectiveProjectId = taskRecord?.projectId ?: projectId.orEmpty()
+            val effectiveQuery = query ?: taskRecord?.prompt
+
+            val canonicalTask = canonicalTaskRepository.getTask(taskId)
+            val currentStep = canonicalTask?.plan?.currentStep
+
+            val context = brainContextAssembler.assemble(
+                task = canonicalTask,
+                currentStep = currentStep,
+                projectId = effectiveProjectId,
+                query = effectiveQuery,
+                maxCharacters = BrainContextAssembler.DEFAULT_MAX_CONTEXT_CHARS - ControlledBrainInjector.WRAPPER_OVERHEAD
+            )
+            val rendered = brainContextAssembler.render(context)
+            val snapshot = BrainContextSnapshot.create(
+                taskId = taskId,
+                attemptId = attemptId,
+                context = context,
+                renderedContext = rendered
+            )
+
+            brainSnapshots[attemptId] = snapshot
+            activeBrainSnapshots[taskId] = snapshot
+
+            // Persist fingerprint and timestamp to durable state for observability
+            runCatching {
+                val currentStatus = taskRecord?.status ?: TaskExecutionStatus.STARTING
+                stateStore.transition(taskId, currentStatus) {
+                    it.copy(lastKnownStep = "brain:${snapshot.fingerprint}@${snapshot.createdAt}")
+                }
+            }
+
+            return snapshot
+        } catch (e: BrainContextAssemblyException) {
+            throw e
+        } catch (t: Throwable) {
+            throw BrainContextAssemblyException("Failed to assemble Brain context for task $taskId (attempt $attemptId): ${t.message}", t)
+        }
     }
 
     /**
@@ -324,7 +412,7 @@ class TaskSupervisor private constructor(private val appContext: Context) {
         val targetTaskId = task.taskId
 
         if (task.status.isTerminal) {
-            Log.d(TAG, "Task $targetTaskId is already in terminal state ${task.status}; ignoring finalizeTask($status)")
+            runCatching { Log.d(TAG, "Task $targetTaskId is already in terminal state ${task.status}; ignoring finalizeTask($status)") }
             return task
         }
 
@@ -335,12 +423,14 @@ class TaskSupervisor private constructor(private val appContext: Context) {
                 }
                 val completed = stateStore.transition(targetTaskId, TaskExecutionStatus.COMPLETED)
                 healthMonitor.onTaskCompleted(targetTaskId, pid ?: completed.pid)
-                RuntimeExecutionService.finish(
-                    context = appContext,
-                    title = "Task completed",
-                    detail = "Mobile Harness finished working in ${task.projectSlug}.",
-                    failed = false
-                )
+                if (appContext != null) {
+                    RuntimeExecutionService.finish(
+                        context = appContext,
+                        title = "Task completed",
+                        detail = "Mobile Harness finished working in ${task.projectSlug}.",
+                        failed = false
+                    )
+                }
                 completed
             }
             TaskExecutionStatus.FAILED -> {
@@ -352,12 +442,14 @@ class TaskSupervisor private constructor(private val appContext: Context) {
                     )
                 }
                 healthMonitor.onTaskFailed(targetTaskId, failureDetail, pid ?: failed.pid)
-                RuntimeExecutionService.finish(
-                    context = appContext,
-                    title = if (recoveryRequired) "Task needs attention" else "Task failed",
-                    detail = failureDetail,
-                    failed = true
-                )
+                if (appContext != null) {
+                    RuntimeExecutionService.finish(
+                        context = appContext,
+                        title = if (recoveryRequired) "Task needs attention" else "Task failed",
+                        detail = failureDetail,
+                        failed = true
+                    )
+                }
                 failed
             }
             TaskExecutionStatus.CANCELLED -> {
@@ -366,7 +458,9 @@ class TaskSupervisor private constructor(private val appContext: Context) {
                     it.copy(lastError = cancelDetail)
                 }
                 healthMonitor.onTaskCompleted(targetTaskId, pid ?: cancelled.pid)
-                RuntimeExecutionService.cancel(appContext)
+                if (appContext != null) {
+                    RuntimeExecutionService.cancel(appContext)
+                }
                 cancelled
             }
             TaskExecutionStatus.ABANDONED -> {
@@ -380,13 +474,13 @@ class TaskSupervisor private constructor(private val appContext: Context) {
                 abandoned
             }
             else -> {
-                Log.w(TAG, "finalizeTask called with non-terminal status $status for task $targetTaskId")
+                runCatching { Log.w(TAG, "finalizeTask called with non-terminal status $status for task $targetTaskId") }
                 stateStore.transition(targetTaskId, status) { it.copy(lastError = error) }
             }
         }
 
-        wakeLockManager.release(targetTaskId)
-        healthMonitor.onWakeLockChanged(wakeLockManager.isHeld, wakeLockManager.activeTaskCount)
+        wakeLockManager?.release(targetTaskId)
+        healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
         processSupervisor.unregister(targetTaskId)
         outputBuffers.remove(targetTaskId)
         activeJobs.remove(targetTaskId)
@@ -409,17 +503,19 @@ class TaskSupervisor private constructor(private val appContext: Context) {
                 executionLock.withExecutionLock(task.taskId, task.projectId) {
                     var current = stateStore.transition(taskId, TaskExecutionStatus.STARTING)
                     refreshActiveTasks()
-                    wakeLockManager.acquire(taskId)
+                    wakeLockManager?.acquire(taskId)
                     healthMonitor.onTaskStarted(taskId, current.pid)
-                    healthMonitor.onWakeLockChanged(wakeLockManager.isHeld, wakeLockManager.activeTaskCount)
+                    healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
 
                     // Start foreground service for notifications
-                    RuntimeExecutionService.start(
-                        context = appContext,
-                        taskId = taskId,
-                        projectName = task.projectSlug,
-                        detail = "Starting ${task.agentKind} in ${task.projectSlug}…"
-                    )
+                    if (appContext != null) {
+                        RuntimeExecutionService.start(
+                            context = appContext,
+                            taskId = taskId,
+                            projectName = task.projectSlug,
+                            detail = "Starting ${task.agentKind} in ${task.projectSlug}…"
+                        )
+                    }
 
                     var attempt = 0
                     var succeeded = false
@@ -438,6 +534,28 @@ class TaskSupervisor private constructor(private val appContext: Context) {
                                 refreshActiveTasks()
                             }
 
+                            // Pre-execution cancellation check
+                            if (processSupervisor.isCancellationRequested(taskId) || stateStore.get(taskId)?.cancellationRequested == true) {
+                                finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before launch")
+                                break
+                            }
+
+                            // Capture Brain context snapshot ONCE for this execution attempt
+                            val attemptId = "$taskId:attempt-$attempt"
+                            getOrCreateBrainSnapshot(
+                                taskId = taskId,
+                                attempt = attempt,
+                                attemptId = attemptId,
+                                projectId = current.projectId,
+                                query = current.prompt
+                            )
+
+                            // Post-snapshot pre-execution cancellation check
+                            if (processSupervisor.isCancellationRequested(taskId) || stateStore.get(taskId)?.cancellationRequested == true) {
+                                finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before launch")
+                                break
+                            }
+
                             // Run execution block
                             executionBlock(current)
                             succeeded = true
@@ -452,8 +570,8 @@ class TaskSupervisor private constructor(private val appContext: Context) {
                             // Terminate any running child process from this attempt before retrying
                             processSupervisor.terminate(taskId, force = true)
 
-                            val checkpoints = com.jarves.mh.runtime.WorkspaceCheckpoints(appContext.filesDir)
-                            val mutatedFiles = runCatching { checkpoints.readChangedPaths(task.projectId) }.getOrDefault(emptyList())
+                            val checkpoints = appContext?.filesDir?.let { com.jarves.mh.runtime.WorkspaceCheckpoints(it) }
+                            val mutatedFiles = runCatching { checkpoints?.readChangedPaths(task.projectId) }.getOrDefault(emptyList()) ?: emptyList()
                             val workspaceIsMutated = mutatedFiles.isNotEmpty()
 
                             val classification = classifyError(errorMsg, workspaceIsMutated, isCancelled)
@@ -474,7 +592,7 @@ class TaskSupervisor private constructor(private val appContext: Context) {
                                 TaskErrorClassification.TRANSIENT_API_ERROR,
                                 TaskErrorClassification.PROCESS_FAILURE -> {
                                     if (attempt <= task.maxRetries) {
-                                        Log.w(TAG, "Transient error on attempt $attempt for task $taskId: $errorMsg. Retrying in ${1000L * attempt}ms...")
+                                        runCatching { Log.w(TAG, "Transient error on attempt $attempt for task $taskId: $errorMsg. Retrying in ${1000L * attempt}ms...") }
                                     } else {
                                         val failureDetail = if (classification == TaskErrorClassification.TRANSIENT_API_ERROR) {
                                             "Service unavailable after $attempt attempts ($errorMsg)"
