@@ -59,7 +59,7 @@ class BoundedProjectKnowledgeCache(val maxEntriesPerProject: Int = 100) {
  * Backed by BrainDatabase (SQLite), with FTS5 lexical indexing, deterministic ranking,
  * LRU in-memory caching, and bounded retrieval pipelines.
  */
-class BrainKnowledgeRepository(
+open class BrainKnowledgeRepository(
     private val db: BrainDatabase,
     val cache: BoundedProjectKnowledgeCache = BoundedProjectKnowledgeCache(100)
 ) {
@@ -296,9 +296,14 @@ class BrainKnowledgeRepository(
         return newEntry
     }
 
-    fun save(incoming: BrainKnowledgeEntry): BrainKnowledgeEntry {
+    open fun save(incoming: BrainKnowledgeEntry): BrainKnowledgeEntry {
+        return saveWithResolution(incoming).first
+    }
+
+    open fun saveWithResolution(incoming: BrainKnowledgeEntry): Pair<BrainKnowledgeEntry, MemoryConflictResolver.KnowledgeResolution> {
         val existing = findByProject(incoming.projectId, status = null, limit = 500)
-        return when (val resolution = MemoryConflictResolver.resolveKnowledge(incoming, existing)) {
+        val resolution = MemoryConflictResolver.resolveKnowledge(incoming, existing)
+        val entry = when (resolution) {
             is MemoryConflictResolver.KnowledgeResolution.InsertNew -> insert(resolution.newEntry)
             is MemoryConflictResolver.KnowledgeResolution.Coexisting -> insert(resolution.newEntry)
             is MemoryConflictResolver.KnowledgeResolution.Deduplicate -> update(resolution.updated)
@@ -307,6 +312,7 @@ class BrainKnowledgeRepository(
             is MemoryConflictResolver.KnowledgeResolution.RejectedLowerTrust -> resolution.existing
             is MemoryConflictResolver.KnowledgeResolution.NoChange -> resolution.existing
         }
+        return Pair(entry, resolution)
     }
 
     fun delete(id: String) {

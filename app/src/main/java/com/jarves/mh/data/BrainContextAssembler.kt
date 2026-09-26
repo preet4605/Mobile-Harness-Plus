@@ -21,7 +21,7 @@ data class BrainContext(
     val recentFailures: List<TaskFailureRecord> = emptyList(),
     val solutions: List<BrainKnowledgeEntry> = emptyList(),
     val workspaceState: String? = null,
-    val maxCharacters: Int = BrainContextAssembler.DEFAULT_MAX_CONTEXT_CHARS,
+    val maxCharacters: Int = BrainContextAssembler.DEFAULT_BRAIN_CONTEXT_CHARS,
 ) {
     val isEmpty: Boolean
         get() = task == null &&
@@ -44,6 +44,8 @@ open class BrainContextAssembler(
     private val knowledgeRepository: BrainKnowledgeRepository? = null
 ) {
     companion object {
+        const val DEFAULT_BRAIN_CONTEXT_CHARS = 4_000
+        const val MAX_BRAIN_CONTEXT_CHARS = 8_000
         const val DEFAULT_MAX_CONTEXT_CHARS = 8_000
         const val TRUNCATION_MARKER = "...[truncated]"
         const val MAX_SINGLE_ENTRY_CHARS = 1_000
@@ -128,9 +130,9 @@ open class BrainContextAssembler(
         currentStep: ExecutionStep? = null,
         projectId: String? = null,
         query: String? = null,
-        maxCharacters: Int = DEFAULT_MAX_CONTEXT_CHARS
+        maxCharacters: Int = DEFAULT_BRAIN_CONTEXT_CHARS
     ): BrainContext {
-        val effectiveMaxChars = maxCharacters.coerceIn(1, DEFAULT_MAX_CONTEXT_CHARS)
+        val effectiveMaxChars = maxCharacters.coerceIn(1, MAX_BRAIN_CONTEXT_CHARS)
         val effectiveProjectId = task?.projectId?.trim().takeIf { !it.isNullOrBlank() }
             ?: projectId?.trim().orEmpty()
         val step = currentStep ?: task?.plan?.currentStep
@@ -275,7 +277,7 @@ open class BrainContextAssembler(
      * Renders a BrainContext into a deterministic, bounded text block.
      */
     open fun render(context: BrainContext, maxCharacters: Int = context.maxCharacters): String {
-        val effectiveLimit = maxCharacters.coerceIn(1, DEFAULT_MAX_CONTEXT_CHARS)
+        val effectiveLimit = maxCharacters.coerceIn(1, MAX_BRAIN_CONTEXT_CHARS)
 
         val wrapperStart = "[BRAIN_CONTEXT]\n\n"
         val wrapperEnd = "\n\n[/BRAIN_CONTEXT]"

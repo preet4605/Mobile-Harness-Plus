@@ -10,6 +10,14 @@ import com.jarves.mh.data.BrainDatabaseDriverFactory
 import com.jarves.mh.data.BrainKnowledgeRepository
 import com.jarves.mh.data.CanonicalTaskRepository
 import com.jarves.mh.data.ContextMemoryStore
+import com.jarves.mh.data.BrainLearningService
+import com.jarves.mh.data.MemorySource
+import com.jarves.mh.model.brain.ExecutionFeedback
+import com.jarves.mh.model.brain.ExecutionOutcome
+import com.jarves.mh.model.brain.ExecutionWorkspaceState
+import com.jarves.mh.model.brain.LearningResult
+import com.jarves.mh.model.brain.StepStatus
+import com.jarves.mh.model.brain.TaskFailureRecord
 import com.jarves.mh.model.RuntimeEvent
 import com.jarves.mh.runtime.ControlledBrainInjector
 import com.jarves.mh.runtime.RuntimeExecutionService
@@ -60,6 +68,13 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         set(value) { customBrainContextAssembler = value }
 
     private val defaultAssembler by lazy { BrainContextAssembler(brainKnowledgeRepository) }
+
+    private var customBrainLearningService: BrainLearningService? = null
+    var brainLearningService: BrainLearningService
+        get() = customBrainLearningService ?: defaultLearningService
+        set(value) { customBrainLearningService = value }
+
+    private val defaultLearningService by lazy { BrainLearningService(brainKnowledgeRepository) }
 
     val processSupervisor: ProcessSupervisor by lazy { ProcessSupervisor() }
     val executionLock: TaskExecutionLock by lazy { TaskExecutionLock() }
@@ -302,7 +317,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                 currentStep = currentStep,
                 projectId = effectiveProjectId,
                 query = effectiveQuery,
-                maxCharacters = BrainContextAssembler.DEFAULT_MAX_CONTEXT_CHARS - ControlledBrainInjector.WRAPPER_OVERHEAD
+                maxCharacters = BrainContextAssembler.DEFAULT_BRAIN_CONTEXT_CHARS - ControlledBrainInjector.WRAPPER_OVERHEAD
             )
             val rendered = brainContextAssembler.render(context)
             val snapshot = BrainContextSnapshot.create(
@@ -461,6 +476,19 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                 if (appContext != null) {
                     RuntimeExecutionService.cancel(appContext)
                 }
+                val cancelFeedback = ExecutionFeedback(
+                    taskId = targetTaskId,
+                    projectId = task.projectId,
+                    attemptId = "$targetTaskId:attempt-${task.retryCount}",
+                    outcome = ExecutionOutcome.CANCELLED,
+                    summary = cancelDetail,
+                    source = MemorySource.PROJECT_OBSERVED
+                )
+                runCatching {
+                    learnExecutionFeedback(cancelFeedback)
+                }.onFailure {
+                    runCatching { Log.e(TAG, "Brain learning persistence failed for cancelled task $targetTaskId", it) }
+                }
                 cancelled
             }
             TaskExecutionStatus.ABANDONED -> {
@@ -487,6 +515,23 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         refreshActiveTasks()
 
         return finalizedRecord
+    }
+
+    /**
+     * Authoritative execution feedback learning gateway.
+     * Extracts and persists typed knowledge into Brain database through BrainLearningService.
+     * Secondary persistence: errors are caught and logged without breaking caller workflows.
+     */
+    fun learnExecutionFeedback(feedback: ExecutionFeedback): LearningResult {
+        return try {
+            brainLearningService.learn(feedback)
+        } catch (t: Throwable) {
+            runCatching { Log.e(TAG, "Brain learning failed for task ${feedback.taskId} attempt ${feedback.attemptId}", t) }
+            LearningResult(
+                feedbackId = "execution:${feedback.taskId}:${feedback.attemptId}",
+                errors = listOf("Unexpected error during learning: ${t.message}")
+            )
+        }
     }
 
     /**
@@ -556,12 +601,45 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                 break
                             }
 
+                            // Transition to RUNNING
+                            current = stateStore.transition(taskId, TaskExecutionStatus.RUNNING)
+                            refreshActiveTasks()
+
                             // Run execution block
                             executionBlock(current)
                             succeeded = true
 
+                            // Learning: construct verified execution feedback for successful attempt
+                            val successAttemptId = attemptId
+                            val canonicalTask = runCatching { canonicalTaskRepository.getTask(taskId) }.getOrNull()
+                            val completedSteps = canonicalTask?.plan?.steps?.filter { it.status == StepStatus.COMPLETED }?.map { it.stepId } ?: emptyList()
+                            val verifiedCriteria = if (canonicalTask?.outcome?.testsPassed == true) canonicalTask.acceptanceCriteria else emptyList()
+                            val checkpoints = appContext?.filesDir?.let { com.jarves.mh.runtime.WorkspaceCheckpoints(it) }
+                            val mutatedFiles = runCatching { checkpoints?.readChangedPaths(task.projectId) }.getOrDefault(emptyList()) ?: emptyList()
+                            val wsState = if (mutatedFiles.isNotEmpty()) ExecutionWorkspaceState(modifiedFiles = mutatedFiles) else null
+
+                            val feedback = ExecutionFeedback(
+                                taskId = taskId,
+                                projectId = current.projectId,
+                                attemptId = successAttemptId,
+                                outcome = ExecutionOutcome.SUCCESS,
+                                summary = canonicalTask?.outcome?.summary ?: "Task execution completed successfully on attempt $attempt",
+                                completedStepIds = completedSteps,
+                                verifiedCriteria = verifiedCriteria,
+                                workspaceState = wsState,
+                                source = MemorySource.TOOL_VERIFIED,
+                                contextFingerprint = brainSnapshots[successAttemptId]?.fingerprint
+                            )
+                            runCatching {
+                                learnExecutionFeedback(feedback)
+                            }.onFailure {
+                                runCatching { Log.e(TAG, "Brain learning persistence failed for task $taskId attempt $successAttemptId", it) }
+                            }
+
                             finalizeTask(taskId, TaskExecutionStatus.COMPLETED)
                         } catch (t: Throwable) {
+                            val failedAttempt = attempt
+                            val failedAttemptId = "$taskId:attempt-$failedAttempt"
                             attempt++
                             val isCancelled = processSupervisor.isCancellationRequested(taskId) ||
                                 t.message?.contains("stopped by user", ignoreCase = true) == true
@@ -575,6 +653,32 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                             val workspaceIsMutated = mutatedFiles.isNotEmpty()
 
                             val classification = classifyError(errorMsg, workspaceIsMutated, isCancelled)
+
+                            // Learning: construct failure feedback for this attempt (cancellation learns authoritatively in finalizeTask)
+                            if (classification != TaskErrorClassification.USER_CANCELLED) {
+                                val failureRecord = TaskFailureRecord(
+                                    taskId = taskId,
+                                    classification = classification.name,
+                                    errorMessage = errorMsg,
+                                    mutatedFiles = mutatedFiles
+                                )
+                                val failureFeedback = ExecutionFeedback(
+                                    taskId = taskId,
+                                    projectId = current.projectId,
+                                    attemptId = failedAttemptId,
+                                    outcome = ExecutionOutcome.FAILED,
+                                    summary = errorMsg,
+                                    failures = listOf(failureRecord),
+                                    workspaceState = if (workspaceIsMutated) ExecutionWorkspaceState(modifiedFiles = mutatedFiles) else null,
+                                    source = MemorySource.TOOL_VERIFIED,
+                                    contextFingerprint = brainSnapshots[failedAttemptId]?.fingerprint
+                                )
+                                runCatching {
+                                    learnExecutionFeedback(failureFeedback)
+                                }.onFailure {
+                                    runCatching { Log.e(TAG, "Brain learning persistence failed for task $taskId attempt $failedAttemptId", it) }
+                                }
+                            }
                             when (classification) {
                                 TaskErrorClassification.USER_CANCELLED -> {
                                     finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user")
