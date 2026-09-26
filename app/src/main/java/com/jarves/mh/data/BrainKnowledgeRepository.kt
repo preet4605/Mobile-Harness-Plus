@@ -3,6 +3,7 @@ package com.jarves.mh.data
 import com.jarves.mh.model.brain.BrainKnowledgeEntry
 import com.jarves.mh.model.brain.BrainKnowledgeType
 import java.time.Instant
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -66,6 +67,33 @@ open class BrainKnowledgeRepository(
 
     private val accessTrackingExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "brain-knowledge-access-tracker").apply { isDaemon = true }
+    }
+
+    private companion object {
+        // Keep both FTS and LIKE query expressions comfortably below SQLite expression-depth limits.
+        const val MAX_SEARCH_TERMS = 24
+        const val MAX_SEARCH_TERM_LENGTH = 64
+        const val MAX_SEARCH_QUERY_CHARS = 1536
+        val SEARCH_TOKEN_SPLIT_REGEX = Regex("[^\\p{L}\\p{N}_]+")
+    }
+
+    /**
+     * Produces one deterministic, bounded term list for all lexical retrieval paths.
+     * Bounding happens before FTS/SQL expression construction.
+     */
+    private fun prepareSearchTerms(query: String): List<String> {
+        if (query.isBlank()) return emptyList()
+
+        val seen = LinkedHashSet<String>()
+        return query
+            .take(MAX_SEARCH_QUERY_CHARS)
+            .split(SEARCH_TOKEN_SPLIT_REGEX)
+            .asSequence()
+            .map { it.take(MAX_SEARCH_TERM_LENGTH) }
+            .filter { it.length >= 2 }
+            .filter { seen.add(it.lowercase(Locale.ROOT)) }
+            .take(MAX_SEARCH_TERMS)
+            .toList()
     }
 
     private fun mapRow(row: SqlRow): BrainKnowledgeEntry {
@@ -333,9 +361,9 @@ open class BrainKnowledgeRepository(
         // 1. Try FTS5 first
         if (db.isFts5Supported) {
             try {
-                val sanitizedFts = cleanQuery.replace(Regex("[^a-zA-Z0-9_]"), " ").trim()
-                if (sanitizedFts.isNotBlank()) {
-                    val ftsTerms = sanitizedFts.split(Regex("\\s+")).joinToString(" OR ") { "$it*" }
+                val preparedTerms = prepareSearchTerms(cleanQuery)
+                if (preparedTerms.isNotEmpty()) {
+                    val ftsTerms = preparedTerms.joinToString(" OR ") { "$it*" }
                     val sql = """
                         SELECT m.* FROM memory_entries m
                         INNER JOIN memory_fts f ON m.id = f.id
@@ -351,10 +379,13 @@ open class BrainKnowledgeRepository(
         }
 
         // 2. LIKE fallback across key, value, summary, tags
-        val tokens = cleanQuery.split(Regex("\\s+")).filter { it.isNotBlank() }
+        val tokens = prepareSearchTerms(cleanQuery)
+        if (tokens.isEmpty()) {
+            return findByProject(projectId, MemoryStatus.ACTIVE, limit)
+        }
         val likeClauses = tokens.map {
             "(key LIKE ? OR value LIKE ? OR summary LIKE ? OR tags LIKE ?)"
-        }.ifEmpty { listOf("(key LIKE ? OR value LIKE ? OR summary LIKE ? OR tags LIKE ?)") }
+        }
 
         val sql = """
             SELECT * FROM memory_entries
@@ -365,7 +396,7 @@ open class BrainKnowledgeRepository(
 
         val args = ArrayList<Any?>()
         args.add(projectId)
-        for (token in tokens.ifEmpty { listOf(cleanQuery) }) {
+        for (token in tokens) {
             val pattern = "%$token%"
             args.add(pattern)
             args.add(pattern)
@@ -476,9 +507,9 @@ open class BrainKnowledgeRepository(
         // 1. Try FTS5 if supported
         if (db.isFts5Supported) {
             try {
-                val sanitizedFts = cleanQuery.replace(Regex("[^a-zA-Z0-9_]"), " ").trim()
-                if (sanitizedFts.isNotBlank()) {
-                    val ftsTerms = sanitizedFts.split(Regex("\\s+")).joinToString(" OR ") { "$it*" }
+                val preparedTerms = prepareSearchTerms(cleanQuery)
+                if (preparedTerms.isNotEmpty()) {
+                    val ftsTerms = preparedTerms.joinToString(" OR ") { "$it*" }
                     val whereClauses = mutableListOf(
                         "m.project_id = ?",
                         "m.status = 'ACTIVE'",
@@ -514,10 +545,13 @@ open class BrainKnowledgeRepository(
         }
 
         // 2. LIKE fallback query
-        val tokens = cleanQuery.split(Regex("\\s+")).filter { it.isNotBlank() }
+        val tokens = prepareSearchTerms(cleanQuery)
+        if (tokens.isEmpty()) {
+            return fetchCandidatesBlankQuery(projectId, taskId, knowledgeTypes, candidateLimit)
+        }
         val tokenOrClauses = tokens.map {
             "(key LIKE ? OR value LIKE ? OR summary LIKE ? OR tags LIKE ?)"
-        }.ifEmpty { listOf("(key LIKE ? OR value LIKE ? OR summary LIKE ? OR tags LIKE ?)") }
+        }
 
         val whereClauses = mutableListOf(
             "project_id = ?",
@@ -527,7 +561,7 @@ open class BrainKnowledgeRepository(
         val args = ArrayList<Any?>()
         args.add(projectId)
 
-        for (token in tokens.ifEmpty { listOf(cleanQuery) }) {
+        for (token in tokens) {
             val pattern = "%$token%"
             args.add(pattern)
             args.add(pattern)
