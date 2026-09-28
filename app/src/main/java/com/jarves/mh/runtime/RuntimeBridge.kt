@@ -27,6 +27,7 @@ interface RuntimeBridge {
         memory: com.jarves.mh.data.ContextMemory = com.jarves.mh.data.ContextMemory(projectId),
         taskId: String? = null,
         brainSnapshot: com.jarves.mh.data.BrainContextSnapshot? = null,
+        attemptId: String? = brainSnapshot?.attemptId,
     ): String
     suspend fun respondToApproval(request: ToolRequest, approved: Boolean)
     /** Stage 1: Graceful stop (SIGINT). [force]=true skips grace period and force-kills immediately. */

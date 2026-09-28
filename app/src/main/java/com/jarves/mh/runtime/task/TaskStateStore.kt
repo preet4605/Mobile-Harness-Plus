@@ -154,6 +154,14 @@ class TaskStateStore(private val db: BrainDatabase) {
         return updated
     }
 
+    @Synchronized
+    fun update(taskId: String, block: (DurableTaskRecord) -> DurableTaskRecord): DurableTaskRecord? {
+        val existing = get(taskId) ?: return null
+        val updated = block(existing).copy(updatedAt = System.currentTimeMillis())
+        save(updated)
+        return updated
+    }
+
     /**
      * Authoritatively binds a native runtime process and PID to a task and session.
      * Guarantees that PID and session mapping are persisted atomically to SQLite.

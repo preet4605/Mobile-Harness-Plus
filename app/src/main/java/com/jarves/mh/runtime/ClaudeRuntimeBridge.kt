@@ -109,6 +109,7 @@ class ClaudeRuntimeBridge(
         memory: ContextMemory,
         taskId: String?,
         brainSnapshot: com.jarves.mh.data.BrainContextSnapshot?,
+        attemptId: String?,
     ): String = withContext(Dispatchers.IO + NonCancellable) {
         val sessionId = UUID.randomUUID().toString()
         if (taskId != null) {
@@ -119,7 +120,8 @@ class ClaudeRuntimeBridge(
         val snapshot = brainSnapshot ?: taskId?.let {
             runCatching { com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).getBrainSnapshot(it) }.getOrNull()
         }
-        val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId)
+        val effectiveAttemptId = attemptId ?: snapshot?.attemptId
+        val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId, effectiveAttemptId)
         finishedSessions.remove(sessionId)
         activeSessionId = sessionId
         userStopRequested = false

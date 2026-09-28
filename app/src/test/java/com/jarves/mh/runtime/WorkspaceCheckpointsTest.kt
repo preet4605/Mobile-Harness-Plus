@@ -104,4 +104,296 @@ class WorkspaceCheckpointsTest {
         assertEquals(2, item.additions)
         assertEquals(0, item.deletions)
     }
+
+    @Test
+    fun `TEST 1 create checkpoint with tag step-1 and verify it exists`() {
+        val filesDir = tempFolder.newFolder("cp_t1")
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = tempFolder.newFolder("ws_t1")
+        File(workspace, "Main.kt").writeText("fun main() {}")
+
+        checkpoints.createCheckpoint("proj-p", workspace, "step-1")
+
+        assertTrue(checkpoints.checkpointExists("proj-p", "step-1"))
+        val checkpointDir = checkpoints.checkpointDir("proj-p", "step-1")
+        assertTrue(File(checkpointDir, "project/Main.kt").isFile)
+        assertEquals("fun main() {}", File(checkpointDir, "project/Main.kt").readText())
+    }
+
+    @Test
+    fun `TEST 2 create step-1 and step-2 and verify both exist independently`() {
+        val filesDir = tempFolder.newFolder("cp_t2")
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = tempFolder.newFolder("ws_t2")
+        val file = File(workspace, "code.txt")
+
+        file.writeText("version 1")
+        checkpoints.createCheckpoint("proj-p", workspace, "step-1")
+
+        file.writeText("version 2")
+        checkpoints.createCheckpoint("proj-p", workspace, "step-2")
+
+        assertTrue(checkpoints.checkpointExists("proj-p", "step-1"))
+        assertTrue(checkpoints.checkpointExists("proj-p", "step-2"))
+
+        val dir1 = checkpoints.checkpointDir("proj-p", "step-1")
+        val dir2 = checkpoints.checkpointDir("proj-p", "step-2")
+
+        assertEquals("version 1", File(dir1, "project/code.txt").readText())
+        assertEquals("version 2", File(dir2, "project/code.txt").readText())
+        val list = checkpoints.listCheckpoints("proj-p")
+        assertTrue(list.contains("step-1"))
+        assertTrue(list.contains("step-2"))
+    }
+
+    @Test
+    fun `TEST 3 modify file after step-1 create step-2 modify again restore step-1`() {
+        val filesDir = tempFolder.newFolder("cp_t3")
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = tempFolder.newFolder("ws_t3")
+        val file = File(workspace, "tracked.txt")
+
+        file.writeText("step 1 content")
+        checkpoints.createCheckpoint("proj-p", workspace, "step-1")
+
+        file.writeText("step 2 content")
+        checkpoints.createCheckpoint("proj-p", workspace, "step-2")
+
+        file.writeText("step 3 content")
+        assertEquals("step 3 content", file.readText())
+
+        val restored = checkpoints.restoreCheckpoint("proj-p", workspace, "step-1")
+        assertTrue(restored)
+        assertEquals("step 1 content", file.readText())
+    }
+
+    @Test
+    fun `TEST 4 restore step-2 after creating both restores independently`() {
+        val filesDir = tempFolder.newFolder("cp_t4")
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = tempFolder.newFolder("ws_t4")
+        val file = File(workspace, "data.txt")
+
+        file.writeText("step 1 state")
+        checkpoints.createCheckpoint("proj-p", workspace, "step-1")
+
+        file.writeText("step 2 state")
+        checkpoints.createCheckpoint("proj-p", workspace, "step-2")
+
+        file.writeText("uncommitted state")
+
+        val restored = checkpoints.restoreCheckpoint("proj-p", workspace, "step-2")
+        assertTrue(restored)
+        assertEquals("step 2 state", file.readText())
+    }
+
+    @Test
+    fun `TEST 5 verify restoring step-1 does not accidentally use step-2`() {
+        val filesDir = tempFolder.newFolder("cp_t5")
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = tempFolder.newFolder("ws_t5")
+        val file = File(workspace, "config.json")
+
+        file.writeText("{\"step\": 1}")
+        checkpoints.createCheckpoint("proj-p", workspace, "step-1")
+
+        file.writeText("{\"step\": 2}")
+        checkpoints.createCheckpoint("proj-p", workspace, "step-2")
+
+        // First restore step-2
+        checkpoints.restoreCheckpoint("proj-p", workspace, "step-2")
+        assertEquals("{\"step\": 2}", file.readText())
+
+        // Now restore step-1 and assert it is strictly step-1, not step-2
+        val restored = checkpoints.restoreCheckpoint("proj-p", workspace, "step-1")
+        assertTrue(restored)
+        assertEquals("{\"step\": 1}", file.readText())
+        assertFalse(file.readText().contains("\"step\": 2"))
+    }
+
+    @Test
+    fun `TEST 6 verify invalid tags are rejected`() {
+        val filesDir = tempFolder.newFolder("cp_t6")
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = tempFolder.newFolder("ws_t6")
+
+        val invalidTags = listOf(
+            "../step",
+            "../../escape",
+            "/absolute",
+            "step/one",
+            "",
+            "   ",
+            "step\u0000tag",
+            "step\ntag",
+            "step\ttag",
+            "..",
+            ".",
+            "step\\backslash",
+        )
+
+        invalidTags.forEach { tag ->
+            try {
+                checkpoints.validateCheckpointTag(tag)
+                org.junit.Assert.fail("Expected IllegalArgumentException for tag: '$tag'")
+            } catch (e: IllegalArgumentException) {
+                // Expected
+            }
+
+            try {
+                checkpoints.checkpointDir("proj-p", tag)
+                org.junit.Assert.fail("Expected IllegalArgumentException in checkpointDir for tag: '$tag'")
+            } catch (e: IllegalArgumentException) {
+                // Expected
+            }
+
+            try {
+                checkpoints.createCheckpoint("proj-p", workspace, tag)
+                org.junit.Assert.fail("Expected IllegalArgumentException in createCheckpoint for tag: '$tag'")
+            } catch (e: IllegalArgumentException) {
+                // Expected
+            }
+
+            try {
+                checkpoints.restoreCheckpoint("proj-p", workspace, tag)
+                org.junit.Assert.fail("Expected IllegalArgumentException in restoreCheckpoint for tag: '$tag'")
+            } catch (e: IllegalArgumentException) {
+                // Expected
+            }
+        }
+    }
+
+    @Test
+    fun `TEST 7 verify checkpoint storage retention preserves task baseline and newest two steps`() {
+        val filesDir = tempFolder.newFolder("cp_t7")
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = tempFolder.newFolder("ws_t7")
+        val file = File(workspace, "feature.kt")
+
+        // 1. Create task-baseline
+        file.writeText("// Baseline")
+        checkpoints.createCheckpoint("proj-p", workspace, "task-baseline")
+        assertTrue(checkpoints.checkpointExists("proj-p", "task-baseline"))
+
+        // 2. Create step-1
+        file.writeText("// Step 1")
+        checkpoints.createCheckpoint("proj-p", workspace, "step-1")
+        assertTrue(checkpoints.checkpointExists("proj-p", "step-1"))
+
+        // 3. Create step-2
+        file.writeText("// Step 2")
+        checkpoints.createCheckpoint("proj-p", workspace, "step-2")
+        assertTrue(checkpoints.checkpointExists("proj-p", "step-1"))
+        assertTrue(checkpoints.checkpointExists("proj-p", "step-2"))
+
+        // 4. Create step-3 (total 3 step checkpoints; max retention = 2)
+        file.writeText("// Step 3")
+        checkpoints.createCheckpoint("proj-p", workspace, "step-3")
+
+        // Task baseline MUST remain intact
+        assertTrue("task-baseline must remain", checkpoints.checkpointExists("proj-p", "task-baseline"))
+        assertEquals("// Baseline", File(checkpoints.checkpointDir("proj-p", "task-baseline"), "project/feature.kt").readText())
+
+        // Newest two step checkpoints (step-2 and step-3) MUST remain
+        assertTrue("step-2 must remain", checkpoints.checkpointExists("proj-p", "step-2"))
+        assertTrue("step-3 must remain", checkpoints.checkpointExists("proj-p", "step-3"))
+        assertEquals("// Step 2", File(checkpoints.checkpointDir("proj-p", "step-2"), "project/feature.kt").readText())
+        assertEquals("// Step 3", File(checkpoints.checkpointDir("proj-p", "step-3"), "project/feature.kt").readText())
+
+        // Older step checkpoint (step-1) MUST be purged
+        assertFalse("step-1 must be purged", checkpoints.checkpointExists("proj-p", "step-1"))
+        assertFalse(checkpoints.checkpointDir("proj-p", "step-1").exists())
+
+        // 5. Create step-4: step-2 should be purged, step-3 and step-4 remain, baseline remains
+        file.writeText("// Step 4")
+        checkpoints.createCheckpoint("proj-p", workspace, "step-4")
+        assertTrue("task-baseline must remain after step-4", checkpoints.checkpointExists("proj-p", "task-baseline"))
+        assertFalse("step-2 must be purged after step-4", checkpoints.checkpointExists("proj-p", "step-2"))
+        assertTrue("step-3 must remain after step-4", checkpoints.checkpointExists("proj-p", "step-3"))
+        assertTrue("step-4 must remain after step-4", checkpoints.checkpointExists("proj-p", "step-4"))
+    }
+
+    @Test
+    fun `TEST 8 verify existing latest compatibility behavior`() {
+        val filesDir = tempFolder.newFolder("cp_t8")
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = tempFolder.newFolder("ws_t8")
+        val file = File(workspace, "Legacy.kt").apply { writeText("original content") }
+
+        // Default 1-arg createCheckpoint writes to latest
+        checkpoints.createCheckpoint("proj-p", workspace)
+        val latestDir = checkpoints.checkpointDir("proj-p")
+        assertEquals(File(filesDir, "checkpoints/proj-p/latest").canonicalPath, latestDir.canonicalPath)
+        assertTrue(File(latestDir, "project/Legacy.kt").isFile)
+
+        // Save changed paths on latest
+        checkpoints.saveChangedPaths("proj-p", listOf("Legacy.kt"))
+        assertEquals(listOf("Legacy.kt"), checkpoints.readChangedPaths("proj-p"))
+
+        // When changes.json exists, re-creating latest does not overwrite baseline
+        file.writeText("mutated content")
+        checkpoints.createCheckpoint("proj-p", workspace)
+        assertEquals("original content", File(latestDir, "project/Legacy.kt").readText())
+
+        // Remove changed path deletes directory when empty
+        checkpoints.removeChangedPath("proj-p", "Legacy.kt")
+        assertFalse(latestDir.exists())
+    }
+
+    @Test
+    fun `TEST 9 verify all restored paths remain inside workspace root`() {
+        val filesDir = tempFolder.newFolder("cp_t9")
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = tempFolder.newFolder("ws_t9")
+
+        // Unsafe path via traversal is rejected by safeWorkspaceFile
+        try {
+            checkpoints.safeWorkspaceFile(workspace, "../escaped.txt")
+            org.junit.Assert.fail("Expected IllegalArgumentException for relative traversal")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("escapes project") == true)
+        }
+
+        try {
+            checkpoints.safeWorkspaceFile(workspace, "/root/escaped.txt")
+            org.junit.Assert.fail("Expected IllegalArgumentException for absolute path")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("Unsafe workspace path") == true)
+        }
+
+        // Subdirectory restores remain inside workspace
+        val subFile = File(workspace, "sub/dir/Valid.kt").apply {
+            parentFile?.mkdirs()
+            writeText("nested code")
+        }
+        checkpoints.createCheckpoint("proj-p", workspace, "step-1")
+        subFile.writeText("changed nested code")
+
+        val restored = checkpoints.restoreCheckpoint("proj-p", workspace, "step-1")
+        assertTrue(restored)
+        assertEquals("nested code", subFile.readText())
+        assertTrue(subFile.canonicalFile.toPath().startsWith(workspace.canonicalFile.toPath()))
+    }
+
+    @Test
+    fun `test CheckpointMetadata records fingerprints and changes accurately`() {
+        val filesDir = tempFolder.newFolder("cp_meta")
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = tempFolder.newFolder("ws_meta")
+        File(workspace, "A.txt").writeText("Alpha")
+        File(workspace, "B.txt").writeText("Beta")
+
+        checkpoints.createCheckpoint("proj-meta", workspace, "step-1")
+        val metadata = checkpoints.readMetadata("proj-meta", "step-1")
+        org.junit.Assert.assertNotNull(metadata)
+        assertEquals("proj-meta", metadata?.projectId)
+        assertEquals("step-1", metadata?.checkpointTag)
+        assertEquals(listOf("A.txt", "B.txt"), metadata?.backedUpFiles?.sorted())
+        assertTrue(metadata?.fingerprints?.containsKey("A.txt") == true)
+        assertTrue(metadata?.fingerprints?.containsKey("B.txt") == true)
+
+        checkpoints.saveChangedPaths("proj-meta", listOf("A.txt"), "step-1")
+        val updated = checkpoints.readMetadata("proj-meta", "step-1")
+        assertEquals(listOf("A.txt"), updated?.changes)
+    }
 }

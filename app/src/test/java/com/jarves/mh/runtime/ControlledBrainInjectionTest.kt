@@ -293,8 +293,10 @@ class ControlledBrainInjectionTest {
                 memory: com.jarves.mh.data.ContextMemory,
                 taskId: String?,
                 brainSnapshot: BrainContextSnapshot?,
+                attemptId: String?,
             ): String {
-                val injected = ControlledBrainInjector.inject(prompt, brainSnapshot, taskId)
+                val effectiveAttemptId = attemptId ?: brainSnapshot?.attemptId
+                val injected = ControlledBrainInjector.inject(prompt, brainSnapshot, taskId, effectiveAttemptId)
                 receivedPrompt = injected
                 return "session-fake-1"
             }

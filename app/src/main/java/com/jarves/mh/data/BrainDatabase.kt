@@ -181,6 +181,10 @@ class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
                     acceptance_criteria_json TEXT NOT NULL,
                     initial_workspace_sha TEXT,
                     current_workspace_sha TEXT,
+                    current_step_index INTEGER NOT NULL DEFAULT 0,
+                    plan_id TEXT,
+                    plan_title TEXT,
+                    plan_status TEXT NOT NULL DEFAULT 'PENDING',
                     outcome_json TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
@@ -189,7 +193,24 @@ class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
             )
             driver.execute("CREATE INDEX IF NOT EXISTS idx_canonical_tasks_proj ON canonical_tasks(project_id, updated_at)")
 
-            // 5. Execution steps table
+            // 5. Execution plans table
+            driver.execute(
+                """
+                CREATE TABLE IF NOT EXISTS execution_plans (
+                    plan_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL UNIQUE,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'PENDING',
+                    current_step_index INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES canonical_tasks(task_id) ON DELETE CASCADE
+                )
+                """.trimIndent()
+            )
+            driver.execute("CREATE INDEX IF NOT EXISTS idx_execution_plans_task ON execution_plans(task_id)")
+
+            // 6. Execution steps table
             driver.execute(
                 """
                 CREATE TABLE IF NOT EXISTS execution_steps (
@@ -199,6 +220,9 @@ class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
                     title TEXT NOT NULL,
                     description TEXT NOT NULL,
                     expected_files_json TEXT NOT NULL,
+                    forbidden_files_json TEXT NOT NULL DEFAULT '[]',
+                    expected_content_json TEXT NOT NULL DEFAULT '{}',
+                    verification_command TEXT,
                     status TEXT NOT NULL DEFAULT 'PENDING',
                     attempts INTEGER NOT NULL DEFAULT 0,
                     max_attempts INTEGER NOT NULL DEFAULT 2,
@@ -206,13 +230,16 @@ class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
                     checkpoint_tag TEXT,
                     started_at INTEGER,
                     completed_at INTEGER,
+                    objective TEXT,
+                    acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+                    plan_id TEXT,
                     FOREIGN KEY(task_id) REFERENCES canonical_tasks(task_id) ON DELETE CASCADE
                 )
                 """.trimIndent()
             )
             driver.execute("CREATE INDEX IF NOT EXISTS idx_execution_steps_task ON execution_steps(task_id, step_order)")
 
-            // 6. Task failures table
+            // 7. Task failures table
             driver.execute(
                 """
                 CREATE TABLE IF NOT EXISTS task_failures (
@@ -231,7 +258,7 @@ class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
             )
             driver.execute("CREATE INDEX IF NOT EXISTS idx_task_failures_task ON task_failures(task_id, created_at)")
 
-            // 7. Recovery plans table
+            // 8. Recovery plans table
             driver.execute(
                 """
                 CREATE TABLE IF NOT EXISTS recovery_plans (
@@ -245,11 +272,84 @@ class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
                     target_step_index INTEGER NOT NULL,
                     approved_by_user INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL,
+                    step_id TEXT,
+                    checkpoint_tag TEXT,
+                    attempt_number INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'PENDING',
+                    recovery_result TEXT,
+                    next_action TEXT,
                     FOREIGN KEY(task_id) REFERENCES canonical_tasks(task_id) ON DELETE CASCADE
                 )
                 """.trimIndent()
             )
             driver.execute("CREATE INDEX IF NOT EXISTS idx_recovery_plans_task ON recovery_plans(task_id)")
+
+            // Column migrations for existing tables
+            val taskCols = runCatching {
+                driver.query("PRAGMA table_info(canonical_tasks)") { it.getString("name") ?: "" }.toSet()
+            }.getOrDefault(emptySet())
+            if (taskCols.isNotEmpty()) {
+                if ("current_step_index" !in taskCols) {
+                    driver.execute("ALTER TABLE canonical_tasks ADD COLUMN current_step_index INTEGER NOT NULL DEFAULT 0")
+                }
+                if ("plan_id" !in taskCols) {
+                    driver.execute("ALTER TABLE canonical_tasks ADD COLUMN plan_id TEXT")
+                }
+                if ("plan_title" !in taskCols) {
+                    driver.execute("ALTER TABLE canonical_tasks ADD COLUMN plan_title TEXT")
+                }
+                if ("plan_status" !in taskCols) {
+                    driver.execute("ALTER TABLE canonical_tasks ADD COLUMN plan_status TEXT NOT NULL DEFAULT 'PENDING'")
+                }
+            }
+
+            val stepCols = runCatching {
+                driver.query("PRAGMA table_info(execution_steps)") { it.getString("name") ?: "" }.toSet()
+            }.getOrDefault(emptySet())
+            if (stepCols.isNotEmpty()) {
+                if ("forbidden_files_json" !in stepCols) {
+                    driver.execute("ALTER TABLE execution_steps ADD COLUMN forbidden_files_json TEXT NOT NULL DEFAULT '[]'")
+                }
+                if ("expected_content_json" !in stepCols) {
+                    driver.execute("ALTER TABLE execution_steps ADD COLUMN expected_content_json TEXT NOT NULL DEFAULT '{}'")
+                }
+                if ("verification_command" !in stepCols) {
+                    driver.execute("ALTER TABLE execution_steps ADD COLUMN verification_command TEXT")
+                }
+                if ("objective" !in stepCols) {
+                    driver.execute("ALTER TABLE execution_steps ADD COLUMN objective TEXT")
+                }
+                if ("acceptance_criteria_json" !in stepCols) {
+                    driver.execute("ALTER TABLE execution_steps ADD COLUMN acceptance_criteria_json TEXT NOT NULL DEFAULT '[]'")
+                }
+                if ("plan_id" !in stepCols) {
+                    driver.execute("ALTER TABLE execution_steps ADD COLUMN plan_id TEXT")
+                }
+            }
+
+            val recoveryCols = runCatching {
+                driver.query("PRAGMA table_info(recovery_plans)") { it.getString("name") ?: "" }.toSet()
+            }.getOrDefault(emptySet())
+            if (recoveryCols.isNotEmpty()) {
+                if ("step_id" !in recoveryCols) {
+                    driver.execute("ALTER TABLE recovery_plans ADD COLUMN step_id TEXT")
+                }
+                if ("checkpoint_tag" !in recoveryCols) {
+                    driver.execute("ALTER TABLE recovery_plans ADD COLUMN checkpoint_tag TEXT")
+                }
+                if ("attempt_number" !in recoveryCols) {
+                    driver.execute("ALTER TABLE recovery_plans ADD COLUMN attempt_number INTEGER NOT NULL DEFAULT 1")
+                }
+                if ("status" !in recoveryCols) {
+                    driver.execute("ALTER TABLE recovery_plans ADD COLUMN status TEXT NOT NULL DEFAULT 'PENDING'")
+                }
+                if ("recovery_result" !in recoveryCols) {
+                    driver.execute("ALTER TABLE recovery_plans ADD COLUMN recovery_result TEXT")
+                }
+                if ("next_action" !in recoveryCols) {
+                    driver.execute("ALTER TABLE recovery_plans ADD COLUMN next_action TEXT")
+                }
+            }
 
             driver.execute("PRAGMA user_version = 2")
             schemaVersion = CURRENT_SCHEMA_VERSION

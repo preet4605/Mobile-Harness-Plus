@@ -160,9 +160,14 @@ class CanonicalTaskModelTest {
             RecoveryStrategy.REVERT_AND_RETRY_STEP,
             RecoveryStrategy.FORWARD_FIX_WITH_CONTEXT,
             RecoveryStrategy.SAFE_ABORT_AND_CLEANUP,
-            RecoveryStrategy.MANUAL_USER_INTERVENTION
+            RecoveryStrategy.MANUAL_USER_INTERVENTION,
+            RecoveryStrategy.RESTORE_CHECKPOINT,
+            RecoveryStrategy.RETRY_STEP,
+            RecoveryStrategy.RECREATE_WORKSPACE_STATE,
+            RecoveryStrategy.REBUILD_AND_RETEST,
+            RecoveryStrategy.TERMINAL_FAILURE
         )
-        assertEquals(5, RecoveryStrategy.values().size)
+        assertEquals(10, RecoveryStrategy.values().size)
         expectedStrategies.forEach { strategy ->
             assertNotNull(RecoveryStrategy.valueOf(strategy.name))
         }

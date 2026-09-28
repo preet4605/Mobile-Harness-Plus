@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
  * 2. Explicit trust boundary communication.
  * 3. Idempotent duplicate-injection protection across retries, resumes, and service restarts.
  * 4. Deterministic extraction and boundedness.
+ * 5. Injection identity uses taskId + attemptId to guarantee attempt isolation across retries.
  */
 object ControlledBrainInjector {
 
@@ -34,16 +35,48 @@ object ControlledBrainInjector {
 
     private val injectedAttempts = ConcurrentHashMap<String, Boolean>()
 
-    fun markAttemptInjected(attemptId: String) {
-        injectedAttempts[attemptId] = true
+    fun computeIdentity(taskId: String?, attemptId: String?): String {
+        val cleanTask = taskId?.trim().orEmpty()
+        val cleanAttempt = attemptId?.trim().orEmpty()
+        return when {
+            cleanTask.isNotEmpty() && cleanAttempt.isNotEmpty() -> {
+                if (cleanAttempt == cleanTask) cleanTask
+                else if (cleanAttempt.startsWith("$cleanTask:") || cleanAttempt.startsWith("$cleanTask-")) cleanAttempt
+                else "$cleanTask:$cleanAttempt"
+            }
+            cleanAttempt.isNotEmpty() -> cleanAttempt
+            cleanTask.isNotEmpty() -> cleanTask
+            else -> ""
+        }
     }
 
-    fun isAttemptInjected(attemptId: String): Boolean {
-        return injectedAttempts[attemptId] == true
+    fun markAttemptInjected(identity: String) {
+        if (identity.isNotBlank()) {
+            injectedAttempts[identity] = true
+        }
     }
 
-    fun clearAttempt(attemptId: String) {
-        injectedAttempts.remove(attemptId)
+    fun markAttemptInjected(taskId: String, attemptId: String) {
+        markAttemptInjected(computeIdentity(taskId, attemptId))
+    }
+
+    fun isAttemptInjected(identity: String): Boolean {
+        if (identity.isBlank()) return false
+        return injectedAttempts[identity] == true
+    }
+
+    fun isAttemptInjected(taskId: String, attemptId: String): Boolean {
+        return isAttemptInjected(computeIdentity(taskId, attemptId))
+    }
+
+    fun clearAttempt(identity: String) {
+        if (identity.isNotBlank()) {
+            injectedAttempts.remove(identity)
+        }
+    }
+
+    fun clearAttempt(taskId: String, attemptId: String) {
+        clearAttempt(computeIdentity(taskId, attemptId))
     }
 
     fun clearAll() {
@@ -54,10 +87,7 @@ object ControlledBrainInjector {
      * Determines whether [prompt] has already been wrapped with Brain Context,
      * either by checking attempt injection records or structural wrappers.
      */
-    fun isAlreadyInjected(prompt: String, attemptId: String? = null): Boolean {
-        if (attemptId != null && isAttemptInjected(attemptId)) {
-            return true
-        }
+    fun isAlreadyInjected(prompt: String, identity: String? = null): Boolean {
         val trimmed = prompt.trim()
         return trimmed.startsWith(BRAIN_CONTEXT_START) &&
                trimmed.contains(BRAIN_CONTEXT_END) &&
@@ -65,20 +95,32 @@ object ControlledBrainInjector {
                trimmed.endsWith(USER_TASK_END)
     }
 
+    fun isAlreadyInjected(prompt: String, taskId: String, attemptId: String): Boolean {
+        return isAlreadyInjected(prompt, computeIdentity(taskId, attemptId))
+    }
+
     /**
      * Injects an immutable BrainContextSnapshot into the execution prompt.
      * Guaranteed to wrap exactly once per attempt and maintain structural separation.
+     * Injection identity uses taskId + attemptId.
      */
     fun inject(
         userTask: String,
         snapshot: BrainContextSnapshot?,
+        taskId: String? = snapshot?.taskId,
         attemptId: String? = snapshot?.attemptId
     ): String {
         if (snapshot == null || snapshot.renderedContext.isBlank()) {
             return userTask
         }
-        val effectiveAttemptId = attemptId ?: snapshot.attemptId
-        if (isAlreadyInjected(userTask, effectiveAttemptId)) {
+        val effectiveTaskId = taskId ?: snapshot.taskId
+        val effectiveAttemptId = attemptId ?: snapshot.attemptId ?: effectiveTaskId.let { "$it:attempt-0" }
+        val identity = computeIdentity(effectiveTaskId, effectiveAttemptId)
+
+        if (isAlreadyInjected(userTask, identity)) {
+            if (identity.isNotBlank()) {
+                markAttemptInjected(identity)
+            }
             return userTask
         }
 
@@ -99,7 +141,9 @@ object ControlledBrainInjector {
             append(USER_TASK_END)
         }
 
-        markAttemptInjected(effectiveAttemptId)
+        if (identity.isNotBlank()) {
+            markAttemptInjected(identity)
+        }
         return injected
     }
 

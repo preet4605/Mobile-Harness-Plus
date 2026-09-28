@@ -12,16 +12,25 @@ import com.jarves.mh.data.CanonicalTaskRepository
 import com.jarves.mh.data.ContextMemoryStore
 import com.jarves.mh.data.BrainLearningService
 import com.jarves.mh.data.MemorySource
+import com.jarves.mh.model.brain.CanonicalTask
 import com.jarves.mh.model.brain.ExecutionFeedback
 import com.jarves.mh.model.brain.ExecutionOutcome
+import com.jarves.mh.model.brain.ExecutionPlan
+import com.jarves.mh.model.brain.ExecutionStep
 import com.jarves.mh.model.brain.ExecutionWorkspaceState
 import com.jarves.mh.model.brain.LearningResult
+import com.jarves.mh.model.brain.PlanStatus
+import com.jarves.mh.model.brain.RecoveryPlan
+import com.jarves.mh.model.brain.RecoveryStatus
+import com.jarves.mh.model.brain.RecoveryStrategy
 import com.jarves.mh.model.brain.StepStatus
+import com.jarves.mh.model.brain.validateExecutionPlan
 import com.jarves.mh.model.brain.TaskFailureRecord
 import com.jarves.mh.model.RuntimeEvent
 import com.jarves.mh.runtime.ControlledBrainInjector
 import com.jarves.mh.runtime.RuntimeExecutionService
 import java.io.File
+import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
@@ -76,10 +85,24 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
 
     private val defaultLearningService by lazy { BrainLearningService(brainKnowledgeRepository) }
 
+    private var customTaskDecomposer: TaskDecomposer? = null
+    var taskDecomposer: TaskDecomposer
+        get() = customTaskDecomposer ?: defaultDecomposer
+        set(value) { customTaskDecomposer = value }
+
+    private val defaultDecomposer by lazy { DefaultTaskDecomposer() }
+
     val processSupervisor: ProcessSupervisor by lazy { ProcessSupervisor() }
     val executionLock: TaskExecutionLock by lazy { TaskExecutionLock() }
     val wakeLockManager: WakeLockManager by lazy { WakeLockManager(appContext) }
     val healthMonitor: RuntimeHealthMonitor by lazy { RuntimeHealthMonitor() }
+
+    var checkpointsResolver: (() -> com.jarves.mh.runtime.WorkspaceCheckpoints)? = null
+
+    fun getCheckpoints(): com.jarves.mh.runtime.WorkspaceCheckpoints {
+        return checkpointsResolver?.invoke()
+            ?: com.jarves.mh.runtime.WorkspaceCheckpoints(appContext?.filesDir ?: File("."))
+    }
 
     private val activeJobs = ConcurrentHashMap<String, Job>()
     private val outputBuffers = ConcurrentHashMap<String, BoundedOutputBuffer>()
@@ -124,7 +147,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         val reconciled = mutableListOf<DurableTaskRecord>()
         try {
             val active = stateStore.getActiveTasks()
-            Log.d(TAG, "Reconciling ${active.size} active tasks from database on startup")
+            runCatching { Log.d(TAG, "Reconciling ${active.size} active tasks from database on startup") }
 
             for (task in active) {
                 val pid = task.pid
@@ -136,19 +159,20 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                             recoveryRequired = true
                         )
                     }
+                    reconcileCanonicalTaskStepsOnAbandonment(task.taskId, terminal.lastError ?: "Process terminated")
                     healthMonitor.onTaskAbandoned(task.taskId, pid)
                     reconciled.add(terminal)
-                    Log.i(TAG, "Reconciled dead task ${task.taskId} -> ABANDONED (recoveryRequired=true)")
+                    runCatching { Log.i(TAG, "Reconciled dead task ${task.taskId} -> ABANDONED (recoveryRequired=true)") }
                 } else {
                     // PID is alive. Verify process identity to avoid killing an innocent recycled PID.
-                    val isVerified = pid != null && processSupervisor.isVerifiedExpectedProcess(pid)
+                    val isVerified = processSupervisor.isVerifiedExpectedProcess(pid)
                     if (isVerified) {
-                        Log.w(TAG, "Found verified orphaned task process (PID $pid) for task ${task.taskId}. Terminating orphan.")
+                        runCatching { Log.w(TAG, "Found verified orphaned task process (PID $pid) for task ${task.taskId}. Terminating orphan.") }
                         runCatching {
                             com.jarves.mh.runtime.NativeSpawn.kill(pid, 9)
                         }
                     } else {
-                        Log.w(TAG, "Found task ${task.taskId} with alive PID $pid, but process identity could not be verified.")
+                        runCatching { Log.w(TAG, "Found task ${task.taskId} with alive PID $pid, but process identity could not be verified.") }
                     }
                     val terminal = stateStore.transition(task.taskId, TaskExecutionStatus.ABANDONED) { record ->
                         record.copy(
@@ -160,9 +184,10 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                             recoveryRequired = true
                         )
                     }
+                    reconcileCanonicalTaskStepsOnAbandonment(task.taskId, terminal.lastError ?: "Process terminated")
                     healthMonitor.onTaskAbandoned(task.taskId, pid)
                     reconciled.add(terminal)
-                    Log.i(TAG, "Reconciled orphaned/unverifiable task ${task.taskId} -> ABANDONED (recoveryRequired=true)")
+                    runCatching { Log.i(TAG, "Reconciled orphaned/unverifiable task ${task.taskId} -> ABANDONED (recoveryRequired=true)") }
                 }
             }
 
@@ -170,7 +195,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
             refreshActiveTasks()
         } catch (t: Throwable) {
-            Log.e(TAG, "Error during startup reconciliation", t)
+            runCatching { Log.e(TAG, "Error during startup reconciliation", t) }
         }
         return reconciled
     }
@@ -245,7 +270,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             wakeLockManager?.pause(targetTaskId)
             healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
             refreshActiveTasks()
-        }.onFailure { Log.w(TAG, "Failed to pauseForApproval for task $targetTaskId", it) }
+        }.onFailure { runCatching { Log.w(TAG, "Failed to pauseForApproval for task $targetTaskId", it) } }
     }
 
     fun resumeFromApproval(taskIdOrSessionId: String) {
@@ -256,7 +281,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             wakeLockManager?.resume(targetTaskId)
             healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
             refreshActiveTasks()
-        }.onFailure { Log.w(TAG, "Failed to resumeFromApproval for task $targetTaskId", it) }
+        }.onFailure { runCatching { Log.w(TAG, "Failed to resumeFromApproval for task $targetTaskId", it) } }
     }
 
     fun pauseForInput(taskIdOrSessionId: String) {
@@ -267,7 +292,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             wakeLockManager?.pause(targetTaskId)
             healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
             refreshActiveTasks()
-        }.onFailure { Log.w(TAG, "Failed to pauseForInput for task $targetTaskId", it) }
+        }.onFailure { runCatching { Log.w(TAG, "Failed to pauseForInput for task $targetTaskId", it) } }
     }
 
     fun resumeFromInput(taskIdOrSessionId: String) {
@@ -278,7 +303,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             wakeLockManager?.resume(targetTaskId)
             healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
             refreshActiveTasks()
-        }.onFailure { Log.w(TAG, "Failed to resumeFromInput for task $targetTaskId", it) }
+        }.onFailure { runCatching { Log.w(TAG, "Failed to resumeFromInput for task $targetTaskId", it) } }
     }
 
     fun getBrainSnapshot(taskIdOrSessionId: String): BrainContextSnapshot? {
@@ -296,7 +321,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         attempt: Int = 0,
         attemptId: String = "$taskId:attempt-$attempt",
         projectId: String? = null,
-        query: String? = null
+        query: String? = null,
+        currentStep: ExecutionStep? = null
     ): BrainContextSnapshot {
         val existing = brainSnapshots[attemptId]
         if (existing != null) {
@@ -310,11 +336,11 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             val effectiveQuery = query ?: taskRecord?.prompt
 
             val canonicalTask = canonicalTaskRepository.getTask(taskId)
-            val currentStep = canonicalTask?.plan?.currentStep
+            val effectiveStep = currentStep ?: canonicalTask?.plan?.currentStep
 
             val context = brainContextAssembler.assemble(
                 task = canonicalTask,
-                currentStep = currentStep,
+                currentStep = effectiveStep,
                 projectId = effectiveProjectId,
                 query = effectiveQuery,
                 maxCharacters = BrainContextAssembler.DEFAULT_BRAIN_CONTEXT_CHARS - ControlledBrainInjector.WRAPPER_OVERHEAD
@@ -346,8 +372,237 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         }
     }
 
+    var stepVerifier: StepVerifier = DefaultStepVerifier()
+    var recoveryEngine: RecoveryEngine = DefaultRecoveryEngine()
+
+    fun detectStepMutatedFiles(
+        projectId: String,
+        stepTag: String,
+        wsDir: File?
+    ): List<String> {
+        val checkpoints = getCheckpoints()
+        val recorded = checkpoints.readChangedPaths(projectId, stepTag).toMutableSet()
+        val meta = checkpoints.readMetadata(projectId, stepTag)
+        if (meta != null) {
+            recorded.addAll(meta.changes)
+            if (wsDir != null && wsDir.isDirectory) {
+                recorded.addAll(checkpoints.changedFiles(wsDir, meta.fingerprints))
+            }
+        }
+        return recorded.filterNot(checkpoints::isInternalRuntimePath).distinct().sorted()
+    }
+
+    private fun reconcileCanonicalTaskStepsOnAbandonment(taskId: String, reason: String) {
+        runCatching {
+            val canonical = canonicalTaskRepository.getTask(taskId) ?: return
+            val updatedSteps = canonical.plan.steps.map { s ->
+                if (s.status == StepStatus.RUNNING || s.status == StepStatus.VERIFYING || s.status == StepStatus.RECOVERING) {
+                    s.copy(
+                        status = StepStatus.FAILED,
+                        completedAt = java.time.Instant.now(),
+                        resultSummary = reason
+                    )
+                } else s
+            }
+            val updatedRecovery = canonical.activeRecoveryPlan?.let { recovery ->
+                if (recovery.status == com.jarves.mh.model.brain.RecoveryStatus.IN_PROGRESS ||
+                    recovery.status == com.jarves.mh.model.brain.RecoveryStatus.PENDING) {
+                    recovery.copy(
+                        status = com.jarves.mh.model.brain.RecoveryStatus.FAILED,
+                        recoveryResult = "Interrupted by process death / system restart",
+                        nextAction = "RETRY_STEP"
+                    )
+                } else recovery
+            }
+            canonicalTaskRepository.saveTask(
+                canonical.copy(
+                    plan = canonical.plan.copy(steps = updatedSteps),
+                    activeRecoveryPlan = updatedRecovery
+                )
+            )
+        }
+    }
+
+    var workspaceDirectoryResolver: ((projectId: String) -> File?)? = null
+
+    fun resolveWorkspaceDir(projectId: String): File? {
+        return workspaceDirectoryResolver?.invoke(projectId)
+            ?: appContext?.let { File(it.filesDir, "workspaces/$projectId") }
+            ?: File("workspaces/$projectId").takeIf { it.exists() }
+            ?: File(projectId).takeIf { it.exists() }
+    }
+
+    fun resolveWorkspaceSha(projectId: String): String? {
+        val dir = resolveWorkspaceDir(projectId)
+        return resolveGitSha(dir)
+    }
+
+    internal fun resolveGitSha(workspaceDir: File?): String? {
+        if (workspaceDir == null || !workspaceDir.exists()) return null
+        val gitEntry = File(workspaceDir, ".git")
+        val gitDir = when {
+            gitEntry.isDirectory -> gitEntry
+            gitEntry.isFile -> {
+                val content = runCatching { gitEntry.readText().trim() }.getOrNull() ?: return null
+                if (content.startsWith("gitdir:")) {
+                    val rel = content.removePrefix("gitdir:").trim()
+                    val target = if (rel.startsWith("/")) File(rel) else File(workspaceDir, rel)
+                    if (target.isDirectory) target else null
+                } else null
+            }
+            else -> null
+        } ?: return null
+
+        val headFile = File(gitDir, "HEAD")
+        if (!headFile.isFile) return null
+        val head = runCatching { headFile.readText().trim() }.getOrNull() ?: return null
+
+        if (head.startsWith("ref:")) {
+            val refPath = head.removePrefix("ref:").trim()
+            val refFile = File(gitDir, refPath)
+            if (refFile.isFile) {
+                val sha = runCatching { refFile.readText().trim() }.getOrNull()
+                if (!sha.isNullOrBlank() && sha.matches(Regex("[0-9a-fA-F]{7,40}"))) {
+                    return sha
+                }
+            }
+            // Check packed-refs
+            val packedRefs = File(gitDir, "packed-refs")
+            if (packedRefs.isFile) {
+                val lines = runCatching { packedRefs.readLines() }.getOrNull() ?: emptyList()
+                for (line in lines) {
+                    val trimmed = line.trim()
+                    if (trimmed.startsWith("#") || trimmed.startsWith("^")) continue
+                    val parts = trimmed.split("\\s+".toRegex())
+                    if (parts.size >= 2 && parts[1] == refPath) {
+                        val candidate = parts[0]
+                        if (candidate.matches(Regex("[0-9a-fA-F]{7,40}"))) {
+                            return candidate
+                        }
+                    }
+                }
+            }
+        } else if (head.matches(Regex("[0-9a-fA-F]{7,40}"))) {
+            return head
+        }
+        return null
+    }
+
+    /**
+     * Authoritative deterministic task decomposition method.
+     * Decomposes a CanonicalTask's objective into an ordered, validated ExecutionPlan.
+     * Idempotent: If task already exists and has a plan with steps, preserves existing plan without re-decomposing.
+     */
+    fun decomposeTask(
+        taskId: String,
+        objective: String? = null,
+        context: TaskDecompositionContext = TaskDecompositionContext()
+    ): CanonicalTask {
+        val existing = canonicalTaskRepository.getTask(taskId)
+        if (existing != null && existing.plan.steps.isNotEmpty()) {
+            return existing
+        }
+        val effObjective = objective ?: existing?.objective ?: "Task $taskId"
+        val effCriteria = if (context.acceptanceCriteria.isNotEmpty()) {
+            context.acceptanceCriteria
+        } else {
+            existing?.acceptanceCriteria.orEmpty()
+        }
+        val decompositionContext = context.copy(
+            projectId = if (context.projectId.isNotBlank()) context.projectId else existing?.projectId.orEmpty(),
+            projectSlug = if (context.projectSlug.isNotBlank()) context.projectSlug else existing?.projectSlug.orEmpty(),
+            acceptanceCriteria = effCriteria
+        )
+        val decomposedPlan = taskDecomposer.decompose(taskId, effObjective, decompositionContext)
+        return initializePlan(
+            taskId = taskId,
+            plan = decomposedPlan,
+            objective = effObjective,
+            acceptanceCriteria = effCriteria,
+            projectId = decompositionContext.projectId,
+            projectSlug = decompositionContext.projectSlug
+        )
+    }
+
+    /**
+     * Authoritative execution plan initialization lifecycle for executable CanonicalTasks.
+     * Ensures every executable task has exactly one valid, persisted ExecutionPlan
+     * with deterministic ordered steps.
+     * Idempotent: If already initialized, returns existing CanonicalTask without modifying or reordering.
+     */
+    fun initializePlan(
+        taskId: String,
+        plan: ExecutionPlan? = null,
+        objective: String? = null,
+        acceptanceCriteria: List<String> = emptyList(),
+        projectId: String = "default-project",
+        projectSlug: String = "default"
+    ): CanonicalTask {
+        val existing = canonicalTaskRepository.getTask(taskId)
+        if (existing != null && existing.plan.steps.isNotEmpty()) {
+            return existing
+        }
+
+        val effObjective = objective ?: existing?.objective ?: "Task $taskId"
+        val effCriteria = if (acceptanceCriteria.isNotEmpty()) {
+            acceptanceCriteria
+        } else if (existing?.acceptanceCriteria?.isNotEmpty() == true) {
+            existing.acceptanceCriteria
+        } else {
+            listOf("Fulfill objective: $effObjective")
+        }
+        val planId = plan?.planId?.ifBlank { "plan-$taskId" } ?: "plan-$taskId"
+
+        val executionPlan = if (plan != null) {
+            val validation = validateExecutionPlan(plan)
+            require(validation.isValid) { "Invalid execution plan for task $taskId: ${validation.errorMessage}" }
+            val deterministicSteps = plan.steps.mapIndexed { index, s ->
+                s.copy(
+                    stepId = s.stepId.ifBlank { "$taskId-step-$index" },
+                    stepOrder = index,
+                    objective = s.objective.ifBlank { s.description.ifBlank { s.title } },
+                    acceptanceCriteria = if (s.acceptanceCriteria.isEmpty()) effCriteria else s.acceptanceCriteria,
+                    status = s.status,
+                    checkpointTag = if (s.checkpointTag.isNullOrBlank()) "step-${index + 1}" else s.checkpointTag,
+                    planId = planId
+                )
+            }
+            plan.copy(
+                planId = planId,
+                taskId = taskId,
+                steps = deterministicSteps,
+                currentStepIndex = plan.currentStepIndex.coerceIn(0, deterministicSteps.size),
+                status = PlanStatus.PENDING
+            )
+        } else {
+            taskDecomposer.decompose(
+                taskId = taskId,
+                objective = effObjective,
+                context = TaskDecompositionContext(
+                    projectId = projectId,
+                    projectSlug = projectSlug,
+                    acceptanceCriteria = effCriteria
+                )
+            )
+        }
+
+        val canonicalTask = existing?.copy(plan = executionPlan) ?: CanonicalTask(
+            taskId = taskId,
+            projectId = projectId,
+            projectSlug = projectSlug,
+            objective = effObjective,
+            acceptanceCriteria = effCriteria,
+            plan = executionPlan
+        )
+        canonicalTaskRepository.saveTask(canonicalTask)
+        return canonicalTask
+    }
+
     /**
      * Prepares and registers a task for execution. Returns the initialized DurableTaskRecord.
+     * Persists the authoritative CanonicalTask intent and plan to SQLite before registering
+     * the runtime lifecycle record.
+     * Idempotent: Reopening/restarting loads the existing plan without recreating or reordering.
      */
     fun createTask(
         taskId: String = UUID.randomUUID().toString(),
@@ -357,9 +612,15 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         agentKind: String,
         providerJson: String,
         prompt: String,
-        maxRetries: Int = 2
+        maxRetries: Int = 2,
+        workspaceSha: String? = null,
+        constraints: List<String> = emptyList(),
+        acceptanceCriteria: List<String> = emptyList(),
+        plan: ExecutionPlan? = null,
+        objective: String? = null
     ): DurableTaskRecord {
-        val record = DurableTaskRecord(
+        val existingCanonical = canonicalTaskRepository.getTask(taskId)
+        val record = stateStore.get(taskId) ?: DurableTaskRecord(
             taskId = taskId,
             projectId = projectId,
             projectSlug = projectSlug,
@@ -370,6 +631,77 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             status = TaskExecutionStatus.CREATED,
             maxRetries = maxRetries
         )
+
+        if (existingCanonical != null && existingCanonical.plan.steps.isNotEmpty()) {
+            // Task and plan already exist: never recreate or reorder existing plan
+            stateStore.save(record)
+            refreshActiveTasks()
+            return record
+        }
+
+        val resolvedSha = workspaceSha ?: resolveWorkspaceSha(projectId)
+        val effectiveObjective = objective?.takeIf { it.isNotBlank() } ?: prompt
+        val planId = plan?.planId?.ifBlank { "plan-$taskId" } ?: "plan-$taskId"
+        val effCriteria = if (acceptanceCriteria.isNotEmpty()) {
+            acceptanceCriteria
+        } else if (existingCanonical?.acceptanceCriteria?.isNotEmpty() == true) {
+            existingCanonical.acceptanceCriteria
+        } else {
+            listOf("Fulfill objective: $effectiveObjective")
+        }
+
+        val executionPlan = if (plan != null) {
+            val validation = validateExecutionPlan(plan)
+            require(validation.isValid) { "Invalid execution plan for task $taskId: ${validation.errorMessage}" }
+            val deterministicSteps = plan.steps.mapIndexed { index, s ->
+                s.copy(
+                    stepId = s.stepId.ifBlank { "$taskId-step-$index" },
+                    stepOrder = index,
+                    objective = s.objective.ifBlank { s.description.ifBlank { s.title } },
+                    acceptanceCriteria = if (s.acceptanceCriteria.isEmpty()) effCriteria else s.acceptanceCriteria,
+                    status = s.status,
+                    checkpointTag = if (s.checkpointTag.isNullOrBlank()) "step-${index + 1}" else s.checkpointTag,
+                    planId = planId
+                )
+            }
+            plan.copy(
+                planId = planId,
+                taskId = taskId,
+                steps = deterministicSteps,
+                currentStepIndex = plan.currentStepIndex.coerceIn(0, deterministicSteps.size),
+                status = PlanStatus.PENDING
+            )
+        } else {
+            taskDecomposer.decompose(
+                taskId = taskId,
+                objective = effectiveObjective,
+                context = TaskDecompositionContext(
+                    projectId = projectId,
+                    projectSlug = projectSlug,
+                    constraints = constraints,
+                    acceptanceCriteria = effCriteria
+                )
+            )
+        }
+
+        val canonicalTask = CanonicalTask(
+            taskId = taskId,
+            projectId = projectId,
+            projectSlug = projectSlug,
+            objective = effectiveObjective,
+            constraints = constraints,
+            acceptanceCriteria = acceptanceCriteria,
+            plan = executionPlan,
+            initialWorkspaceSha = resolvedSha,
+            currentWorkspaceSha = resolvedSha,
+            failureHistory = emptyList(),
+            activeRecoveryPlan = null,
+            outcome = null
+        )
+
+        // Persist CanonicalTask and ExecutionPlan before registering runtime lifecycle state
+        canonicalTaskRepository.saveTask(canonicalTask)
+
         stateStore.save(record)
         refreshActiveTasks()
         return record
@@ -384,15 +716,20 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         TRANSIENT_API_ERROR,
         PERMANENT_AUTH_OR_CONFIG,
         WORKSPACE_MUTATED_FAILURE,
-        PROCESS_FAILURE
+        PROCESS_FAILURE,
+        STEP_VERIFICATION_FAILURE
+    }
+
+    fun isCancellationActive(taskId: String): Boolean {
+        val record = stateStore.get(taskId)
+        return processSupervisor.isCancellationRequested(taskId) ||
+            record?.cancellationRequested == true ||
+            record?.status == TaskExecutionStatus.CANCELLED
     }
 
     fun classifyError(errorMsg: String, workspaceMutated: Boolean, isCancelled: Boolean): TaskErrorClassification {
         if (isCancelled || errorMsg.contains("stopped by user", ignoreCase = true) || errorMsg.contains("cancelled", ignoreCase = true)) {
             return TaskErrorClassification.USER_CANCELLED
-        }
-        if (workspaceMutated) {
-            return TaskErrorClassification.WORKSPACE_MUTATED_FAILURE
         }
         val lower = errorMsg.lowercase()
         if (lower.contains("api key") || lower.contains("user not found") ||
@@ -400,6 +737,12 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             lower.contains("http 401") || lower.contains("http 403") ||
             lower.contains("code: 401") || lower.contains("code: 403")) {
             return TaskErrorClassification.PERMANENT_AUTH_OR_CONFIG
+        }
+        if (workspaceMutated) {
+            return TaskErrorClassification.WORKSPACE_MUTATED_FAILURE
+        }
+        if (lower.contains("verification failed") || lower.contains("step verification")) {
+            return TaskErrorClassification.STEP_VERIFICATION_FAILURE
         }
         if (lower.contains("503") || lower.contains("unavailable") || lower.contains("service is currently unavailable") ||
             lower.contains("500") || lower.contains("502") || lower.contains("504") ||
@@ -507,6 +850,15 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             }
         }
 
+        runCatching {
+            when (status) {
+                TaskExecutionStatus.COMPLETED -> canonicalTaskRepository.updatePlanStatus(targetTaskId, PlanStatus.COMPLETED)
+                TaskExecutionStatus.FAILED, TaskExecutionStatus.ABANDONED -> canonicalTaskRepository.updatePlanStatus(targetTaskId, PlanStatus.FAILED)
+                TaskExecutionStatus.CANCELLED -> canonicalTaskRepository.updatePlanStatus(targetTaskId, PlanStatus.CANCELLED)
+                else -> {}
+            }
+        }
+
         wakeLockManager?.release(targetTaskId)
         healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
         processSupervisor.unregister(targetTaskId)
@@ -537,11 +889,27 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
     /**
      * Executes a task under strict process, lifecycle, and concurrency supervision.
      */
+    /**
+     * Executes a task under strict process, lifecycle, and concurrency supervision.
+     */
     fun executeTask(
         taskId: String,
         executionBlock: suspend (task: DurableTaskRecord) -> Unit
+    ): Job = executeTaskInternal(taskId, stepExecutionBlock = null, executionBlock = executionBlock)
+
+    fun executeTask(
+        taskId: String,
+        stepExecutionBlock: suspend (task: DurableTaskRecord, step: ExecutionStep) -> Unit
+    ): Job = executeTaskInternal(taskId, stepExecutionBlock = stepExecutionBlock, executionBlock = null)
+
+    internal fun executeTaskInternal(
+        taskId: String,
+        stepExecutionBlock: (suspend (task: DurableTaskRecord, step: ExecutionStep) -> Unit)?,
+        executionBlock: (suspend (task: DurableTaskRecord) -> Unit)?
     ): Job {
         val task = stateStore.get(taskId) ?: error("Task $taskId not found in store")
+        canonicalTaskRepository.getTask(taskId)
+            ?: error("CanonicalTask $taskId not found in repository; cannot execute task without canonical record")
 
         val job = supervisorScope.launch {
             try {
@@ -568,6 +936,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                     while (!succeeded && attempt <= task.maxRetries) {
                         try {
                             if (attempt > 0) {
+                                processSupervisor.clearCancellationRequested(taskId)
                                 current = stateStore.transition(taskId, TaskExecutionStatus.RECOVERING) {
                                     it.copy(retryCount = attempt, lastError = "Retrying attempt $attempt/${task.maxRetries}...")
                                 }
@@ -580,8 +949,10 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                             }
 
                             // Pre-execution cancellation check
-                            if (processSupervisor.isCancellationRequested(taskId) || stateStore.get(taskId)?.cancellationRequested == true) {
-                                finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before launch")
+                            if (isCancellationActive(taskId)) {
+                                if (stateStore.get(taskId)?.status != TaskExecutionStatus.CANCELLED) {
+                                    finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before launch")
+                                }
                                 break
                             }
 
@@ -596,60 +967,884 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                             )
 
                             // Post-snapshot pre-execution cancellation check
-                            if (processSupervisor.isCancellationRequested(taskId) || stateStore.get(taskId)?.cancellationRequested == true) {
-                                finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before launch")
+                            if (isCancellationActive(taskId)) {
+                                if (stateStore.get(taskId)?.status != TaskExecutionStatus.CANCELLED) {
+                                    finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before launch")
+                                }
                                 break
+                            }
+
+                            val loopStatus = stateStore.get(taskId)?.status
+                            if (loopStatus in setOf(TaskExecutionStatus.WAITING_FOR_APPROVAL, TaskExecutionStatus.WAITING_FOR_INPUT)) {
+                                break
+                            }
+
+                            // Validate execution plan before execution begins
+                            var canonicalTask = canonicalTaskRepository.getTask(taskId)
+                                ?: error("CanonicalTask $taskId not found in repository")
+                            val planValidation = validateExecutionPlan(canonicalTask.plan)
+                            if (!planValidation.isValid) {
+                                finalizeTask(taskId, TaskExecutionStatus.FAILED, error = "Invalid execution plan: ${planValidation.errorMessage}")
+                                break
+                            }
+
+                            // Transition plan status to IN_PROGRESS if PENDING
+                            if (canonicalTask.plan.status == PlanStatus.PENDING) {
+                                canonicalTask = canonicalTask.copy(plan = canonicalTask.plan.copy(status = PlanStatus.IN_PROGRESS))
+                                canonicalTaskRepository.updatePlanStatus(taskId, PlanStatus.IN_PROGRESS)
                             }
 
                             // Transition to RUNNING
                             current = stateStore.transition(taskId, TaskExecutionStatus.RUNNING)
                             refreshActiveTasks()
 
-                            // Run execution block
-                            executionBlock(current)
-                            succeeded = true
+                            // Step-aware execution loop: executes strictly one step at a time
+                            while (!succeeded && !isCancellationActive(taskId)) {
+                                val preLoopStatus = stateStore.get(taskId)?.status
+                                if (preLoopStatus in setOf(TaskExecutionStatus.WAITING_FOR_APPROVAL, TaskExecutionStatus.WAITING_FOR_INPUT)) {
+                                    break
+                                }
 
-                            // Learning: construct verified execution feedback for successful attempt
-                            val successAttemptId = attemptId
-                            val canonicalTask = runCatching { canonicalTaskRepository.getTask(taskId) }.getOrNull()
-                            val completedSteps = canonicalTask?.plan?.steps?.filter { it.status == StepStatus.COMPLETED }?.map { it.stepId } ?: emptyList()
-                            val verifiedCriteria = if (canonicalTask?.outcome?.testsPassed == true) canonicalTask.acceptanceCriteria else emptyList()
-                            val checkpoints = appContext?.filesDir?.let { com.jarves.mh.runtime.WorkspaceCheckpoints(it) }
-                            val mutatedFiles = runCatching { checkpoints?.readChangedPaths(task.projectId) }.getOrDefault(emptyList()) ?: emptyList()
-                            val wsState = if (mutatedFiles.isNotEmpty()) ExecutionWorkspaceState(modifiedFiles = mutatedFiles) else null
+                                canonicalTask = canonicalTaskRepository.getTask(taskId)
+                                    ?: error("CanonicalTask $taskId not found in repository")
+                                val currentPlanSteps = canonicalTask.plan.steps
+                                val currentStepIndex = canonicalTask.plan.currentStepIndex
 
-                            val feedback = ExecutionFeedback(
-                                taskId = taskId,
-                                projectId = current.projectId,
-                                attemptId = successAttemptId,
-                                outcome = ExecutionOutcome.SUCCESS,
-                                summary = canonicalTask?.outcome?.summary ?: "Task execution completed successfully on attempt $attempt",
-                                completedStepIds = completedSteps,
-                                verifiedCriteria = verifiedCriteria,
-                                workspaceState = wsState,
-                                source = MemorySource.TOOL_VERIFIED,
-                                contextFingerprint = brainSnapshots[successAttemptId]?.fingerprint
-                            )
-                            runCatching {
-                                learnExecutionFeedback(feedback)
-                            }.onFailure {
-                                runCatching { Log.e(TAG, "Brain learning persistence failed for task $taskId attempt $successAttemptId", it) }
+                                // If all steps in the plan are already completed or skipped
+                                val allStepsDone = currentPlanSteps.isNotEmpty() && currentPlanSteps.all {
+                                    it.status == StepStatus.COMPLETED || it.status == StepStatus.SKIPPED
+                                }
+                                if (allStepsDone || currentStepIndex >= currentPlanSteps.size) {
+                                    break
+                                }
+
+                                var stepRecord = currentPlanSteps[currentStepIndex]
+                                if (stepRecord.status == StepStatus.COMPLETED || stepRecord.status == StepStatus.SKIPPED) {
+                                    val nextIndex = (currentStepIndex + 1).coerceAtMost(currentPlanSteps.size)
+                                    canonicalTask = canonicalTask.copy(
+                                        plan = canonicalTask.plan.copy(currentStepIndex = nextIndex)
+                                    )
+                                    canonicalTaskRepository.saveTask(canonicalTask)
+                                    canonicalTaskRepository.updateCurrentStepIndex(taskId, nextIndex)
+                                    continue
+                                }
+
+                                val stepIndex = currentStepIndex
+
+                                // Pre-step retry exhaustion check on restart
+                                if (stepRecord.status == StepStatus.FAILED && stepRecord.attempts >= stepRecord.maxAttempts) {
+                                    finalizeTask(
+                                        taskId,
+                                        TaskExecutionStatus.FAILED,
+                                        error = "Step '${stepRecord.title}' failed and exhausted retries (${stepRecord.attempts}/${stepRecord.maxAttempts})",
+                                        recoveryRequired = false
+                                    )
+                                    break
+                                }
+
+                                // Pre-step cancellation check
+                                if (isCancellationActive(taskId)) {
+                                    if (stateStore.get(taskId)?.status != TaskExecutionStatus.CANCELLED) {
+                                        finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before step ${stepRecord.title}")
+                                    }
+                                    break
+                                }
+
+                                val stepTag = stepRecord.checkpointTag?.takeIf { it.isNotBlank() } ?: "step-${stepRecord.stepOrder + 1}"
+                                val wsDir = resolveWorkspaceDir(current.projectId)
+                                val checkpoints = getCheckpoints()
+
+                                // Requirement 9: Restart during VERIFYING state:
+                                // Never mark COMPLETED automatically; rerun trusted verification or transition safely to failure/recovery.
+                                if (stepRecord.status == StepStatus.VERIFYING) {
+                                    val verificationResult = try {
+                                        stepVerifier.verify(canonicalTask, stepRecord, wsDir)
+                                    } catch (t: Throwable) {
+                                        StepVerificationResult(
+                                            passed = false,
+                                            summary = "",
+                                            failureReason = "Exception during step verification on restart: ${t.message}"
+                                        )
+                                    }
+
+                                    if (verificationResult.passed && !isCancellationActive(taskId)) {
+                                        val completedStep = stepRecord.copy(
+                                            status = StepStatus.COMPLETED,
+                                            completedAt = Instant.now(),
+                                            resultSummary = verificationResult.summary
+                                        )
+                                        canonicalTask = canonicalTask.copy(
+                                            plan = canonicalTask.plan.withUpdatedStep(completedStep)
+                                        )
+                                        canonicalTaskRepository.saveTask(canonicalTask)
+                                        stateStore.update(taskId) { it.copy(lastKnownStep = "step-${completedStep.stepOrder}:COMPLETED") }
+                                        refreshActiveTasks()
+
+                                        val nextStepIndex = (stepIndex + 1).coerceAtMost(canonicalTask.plan.steps.size)
+                                        canonicalTask = canonicalTask.copy(
+                                            plan = canonicalTask.plan.copy(currentStepIndex = nextStepIndex)
+                                        )
+                                        canonicalTaskRepository.saveTask(canonicalTask)
+                                        canonicalTaskRepository.updateCurrentStepIndex(taskId, nextStepIndex)
+                                        refreshActiveTasks()
+                                        continue
+                                    } else {
+                                        val failReason = verificationResult.failureReason ?: "Verification rerun failed for step ${stepRecord.title}"
+                                        val mutatedFiles = detectStepMutatedFiles(current.projectId, stepTag, wsDir)
+                                        val classification = TaskErrorClassification.STEP_VERIFICATION_FAILURE
+                                        val failureRecordId = "fail-$taskId-${stepRecord.stepId}-attempt-${stepRecord.attempts}"
+                                        val failureRecord = TaskFailureRecord(
+                                            failureId = failureRecordId,
+                                            taskId = taskId,
+                                            stepId = stepRecord.stepId,
+                                            classification = "STEP_VERIFICATION_FAILURE",
+                                            errorMessage = failReason,
+                                            mutatedFiles = mutatedFiles
+                                        )
+                                        var activeStep = stepRecord.copy(resultSummary = failReason)
+                                        canonicalTask = canonicalTask.copy(
+                                            plan = canonicalTask.plan.withUpdatedStep(activeStep),
+                                            failureHistory = canonicalTask.failureHistory + failureRecord
+                                        )
+                                        canonicalTaskRepository.saveTask(canonicalTask)
+                                        stateStore.update(taskId) { it.copy(lastError = failReason) }
+                                        refreshActiveTasks()
+
+                                        if (isCancellationActive(taskId)) {
+                                            finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user during step verification rerun")
+                                            break
+                                        }
+
+                                        val recoveryPlan = recoveryEngine.planRecovery(
+                                            canonicalTask, activeStep, classification, failReason, mutatedFiles, attemptCount = activeStep.attempts
+                                        )?.copy(
+                                            failureRecordId = failureRecord.failureId,
+                                            stepId = activeStep.stepId,
+                                            checkpointTag = stepTag,
+                                            attemptNumber = activeStep.attempts + 1,
+                                            status = com.jarves.mh.model.brain.RecoveryStatus.PENDING,
+                                            nextAction = "EXECUTE_RECOVERY"
+                                        )
+
+                                        if (recoveryPlan != null) {
+                                            activeStep = activeStep.copy(status = StepStatus.RECOVERING)
+                                            canonicalTask = canonicalTask.copy(
+                                                activeRecoveryPlan = recoveryPlan,
+                                                plan = canonicalTask.plan.withUpdatedStep(activeStep)
+                                            )
+                                            canonicalTaskRepository.saveTask(canonicalTask)
+                                            stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:RECOVERING:${recoveryPlan.strategy}") }
+                                            refreshActiveTasks()
+
+                                            if (isCancellationActive(taskId)) {
+                                                val cancelledPlan = recoveryPlan.copy(
+                                                    status = com.jarves.mh.model.brain.RecoveryStatus.CANCELLED,
+                                                    nextAction = "CANCELLED"
+                                                )
+                                                canonicalTask = canonicalTask.copy(activeRecoveryPlan = cancelledPlan)
+                                                canonicalTaskRepository.saveTask(canonicalTask)
+                                                finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before recovery execution")
+                                                break
+                                            }
+
+                                            val inProgressPlan = recoveryPlan.copy(status = com.jarves.mh.model.brain.RecoveryStatus.IN_PROGRESS)
+                                            canonicalTask = canonicalTask.copy(activeRecoveryPlan = inProgressPlan)
+                                            canonicalTaskRepository.saveTask(canonicalTask)
+
+                                            val recoveryResult = recoveryEngine.executeRecovery(
+                                                canonicalTask, activeStep, inProgressPlan, wsDir, checkpoints
+                                            )
+
+                                            if (isCancellationActive(taskId)) {
+                                                val cancelledPlan = inProgressPlan.copy(
+                                                    status = com.jarves.mh.model.brain.RecoveryStatus.CANCELLED,
+                                                    recoveryResult = recoveryResult.message,
+                                                    nextAction = "CANCELLED"
+                                                )
+                                                canonicalTask = canonicalTask.copy(activeRecoveryPlan = cancelledPlan)
+                                                canonicalTaskRepository.saveTask(canonicalTask)
+                                                finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user during recovery")
+                                                break
+                                            }
+
+                                            val finalRecoveryStatus = if (recoveryResult.success) com.jarves.mh.model.brain.RecoveryStatus.COMPLETED else com.jarves.mh.model.brain.RecoveryStatus.FAILED
+                                             val willRetry = recoveryResult.shouldRetryStep && activeStep.attempts < activeStep.maxAttempts && !isCancellationActive(taskId)
+                                            val nextAction = if (willRetry) "RETRY_STEP" else "TERMINATE"
+                                            val updatedPlan = inProgressPlan.copy(
+                                                status = finalRecoveryStatus,
+                                                recoveryResult = recoveryResult.message,
+                                                nextAction = nextAction
+                                            )
+                                            canonicalTask = canonicalTask.copy(activeRecoveryPlan = updatedPlan)
+                                            canonicalTaskRepository.saveTask(canonicalTask)
+
+                                            if (willRetry) {
+                                                stateStore.update(taskId) { it.copy(retryCount = it.retryCount + 1, lastKnownStep = "step-${activeStep.stepOrder}:RECOVERY:${recoveryPlan.strategy}") }
+                                                refreshActiveTasks()
+                                                val backoff = recoveryEngine.calculateBackoffMillis(activeStep.attempts)
+                                                if (backoff > 0) delay(backoff)
+                                                stepRecord = activeStep
+                                                continue
+                                            } else {
+                                                val terminalStatus = if (!recoveryResult.success) com.jarves.mh.model.brain.RecoveryStatus.FAILED else com.jarves.mh.model.brain.RecoveryStatus.EXHAUSTED
+                                                activeStep = activeStep.copy(
+                                                    status = StepStatus.FAILED,
+                                                    completedAt = Instant.now(),
+                                                    resultSummary = failReason
+                                                )
+                                                canonicalTask = canonicalTask.copy(
+                                                    plan = canonicalTask.plan.withUpdatedStep(activeStep),
+                                                    activeRecoveryPlan = updatedPlan.copy(status = terminalStatus, nextAction = "TERMINATE")
+                                                )
+                                                canonicalTaskRepository.saveTask(canonicalTask)
+                                                stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:FAILED") }
+                                                refreshActiveTasks()
+                                                throw StepVerificationException(activeStep, failReason)
+                                            }
+                                        } else {
+                                            activeStep = activeStep.copy(
+                                                status = StepStatus.FAILED,
+                                                completedAt = Instant.now(),
+                                                resultSummary = failReason
+                                            )
+                                            canonicalTask = canonicalTask.copy(
+                                                plan = canonicalTask.plan.withUpdatedStep(activeStep)
+                                            )
+                                            canonicalTaskRepository.saveTask(canonicalTask)
+                                            stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:FAILED") }
+                                            refreshActiveTasks()
+                                            throw StepVerificationException(activeStep, failReason)
+                                        }
+                                    }
+                                }
+
+                                // 1. Resuming interrupted recovery if present from previous restart
+                                val persistedRecovery = canonicalTask.activeRecoveryPlan
+                                if (persistedRecovery != null && persistedRecovery.targetStepIndex == stepIndex &&
+                                    persistedRecovery.status != com.jarves.mh.model.brain.RecoveryStatus.COMPLETED &&
+                                    persistedRecovery.status != com.jarves.mh.model.brain.RecoveryStatus.CANCELLED &&
+                                    persistedRecovery.status != com.jarves.mh.model.brain.RecoveryStatus.EXHAUSTED &&
+                                    persistedRecovery.nextAction != "TERMINATE") {
+                                    if (isCancellationActive(taskId)) {
+                                        val cancelledPlan = persistedRecovery.copy(
+                                            status = com.jarves.mh.model.brain.RecoveryStatus.CANCELLED,
+                                            nextAction = "CANCELLED"
+                                        )
+                                        canonicalTask = canonicalTask.copy(activeRecoveryPlan = cancelledPlan)
+                                        canonicalTaskRepository.saveTask(canonicalTask)
+                                        finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before recovery resume")
+                                        break
+                                    }
+
+                                    val inProgressRecovery = persistedRecovery.copy(status = com.jarves.mh.model.brain.RecoveryStatus.IN_PROGRESS)
+                                    canonicalTask = canonicalTask.copy(activeRecoveryPlan = inProgressRecovery)
+                                    canonicalTaskRepository.saveTask(canonicalTask)
+
+                                    val resumeResult = recoveryEngine.executeRecovery(
+                                        canonicalTask, stepRecord, inProgressRecovery, wsDir, checkpoints
+                                    )
+
+                                    if (isCancellationActive(taskId)) {
+                                        val cancelledPlan = inProgressRecovery.copy(
+                                            status = com.jarves.mh.model.brain.RecoveryStatus.CANCELLED,
+                                            recoveryResult = resumeResult.message,
+                                            nextAction = "CANCELLED"
+                                        )
+                                        canonicalTask = canonicalTask.copy(activeRecoveryPlan = cancelledPlan)
+                                        canonicalTaskRepository.saveTask(canonicalTask)
+                                        finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user during recovery resume")
+                                        break
+                                    }
+
+                                    val finalRecoveryStatus = if (resumeResult.success) com.jarves.mh.model.brain.RecoveryStatus.COMPLETED else com.jarves.mh.model.brain.RecoveryStatus.FAILED
+                                    val willRetry = resumeResult.shouldRetryStep && stepRecord.attempts < stepRecord.maxAttempts
+                                    val nextAction = if (willRetry) "RETRY_STEP" else "TERMINATE"
+                                    val resumedPlan = inProgressRecovery.copy(
+                                        status = finalRecoveryStatus,
+                                        recoveryResult = resumeResult.message,
+                                        nextAction = nextAction
+                                    )
+                                    canonicalTask = canonicalTask.copy(activeRecoveryPlan = resumedPlan)
+                                    canonicalTaskRepository.saveTask(canonicalTask)
+
+                                    if (!willRetry) {
+                                        val terminalStatus = if (!resumeResult.success) com.jarves.mh.model.brain.RecoveryStatus.FAILED else com.jarves.mh.model.brain.RecoveryStatus.EXHAUSTED
+                                        val exhaustedPlan = resumedPlan.copy(
+                                            status = terminalStatus,
+                                            nextAction = "TERMINATE"
+                                        )
+                                        val failedStep = stepRecord.copy(
+                                            status = StepStatus.FAILED,
+                                            completedAt = Instant.now(),
+                                            resultSummary = resumeResult.message
+                                        )
+                                        canonicalTask = canonicalTask.copy(
+                                            plan = canonicalTask.plan.withUpdatedStep(failedStep),
+                                            activeRecoveryPlan = exhaustedPlan
+                                        )
+                                        canonicalTaskRepository.saveTask(canonicalTask)
+                                        stateStore.update(taskId) { it.copy(lastKnownStep = "step-${stepRecord.stepOrder}:FAILED") }
+                                        refreshActiveTasks()
+                                        throw StepExecutionException(failedStep, resumeResult.message)
+                                    }
+                                }
+
+                                var stepCompleted = false
+                                while (!stepCompleted) {
+                                    // Cancellation check inside attempt loop
+                                    if (isCancellationActive(taskId)) {
+                                        if (stateStore.get(taskId)?.status != TaskExecutionStatus.CANCELLED) {
+                                            finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before step ${stepRecord.title}")
+                                        }
+                                        break
+                                    }
+
+                                    // Pre-step approval / input pause check
+                                    val preStatus = stateStore.get(taskId)?.status
+                                    if (preStatus in setOf(TaskExecutionStatus.WAITING_FOR_APPROVAL, TaskExecutionStatus.WAITING_FOR_INPUT)) {
+                                        break
+                                    }
+
+                                    val currentStepAttempt = stepRecord.attempts + 1
+
+                                    // 1. Before every step attempt, persist the step checkpoint identity/tag and attempt
+                                    if (wsDir != null) {
+                                        if (!wsDir.exists()) {
+                                            wsDir.mkdirs()
+                                        }
+                                        checkpoints.createCheckpoint(
+                                            projectId = current.projectId,
+                                            workspace = wsDir,
+                                            checkpointTag = stepTag,
+                                            taskId = taskId,
+                                            stepId = stepRecord.stepId,
+                                            attempt = currentStepAttempt
+                                        )
+                                    }
+
+                                    // Activate Step: PENDING -> RUNNING & tagged checkpoint
+                                    var activeStep = stepRecord.copy(
+                                        status = StepStatus.RUNNING,
+                                        attempts = currentStepAttempt,
+                                        checkpointTag = stepTag,
+                                        startedAt = stepRecord.startedAt ?: Instant.now()
+                                    )
+                                    canonicalTask = canonicalTask.copy(
+                                        plan = canonicalTask.plan.withUpdatedStep(activeStep).copy(currentStepIndex = stepIndex)
+                                    )
+                                    canonicalTaskRepository.saveTask(canonicalTask)
+                                    // Inject current step objective + criteria into Brain snapshot for this step attempt
+                                    val stepAttemptId = "$taskId:step-${activeStep.stepOrder}:attempt-$currentStepAttempt"
+                                    val stepSnapshot = getOrCreateBrainSnapshot(
+                                        taskId = taskId,
+                                        attempt = attempt,
+                                        attemptId = stepAttemptId,
+                                        projectId = current.projectId,
+                                        query = activeStep.objective.ifBlank { activeStep.description.ifBlank { current.prompt } },
+                                        currentStep = activeStep
+                                    )
+                                    activeBrainSnapshots[taskId] = stepSnapshot
+                                    stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:RUNNING") }
+                                    refreshActiveTasks()
+
+                                    // 2. Execute Step
+                                    var stepExecError: Throwable? = null
+                                    try {
+                                        if (stepExecutionBlock != null) {
+                                            stepExecutionBlock(current, activeStep)
+                                        } else if (executionBlock != null) {
+                                            executionBlock(current)
+                                        }
+                                    } catch (t: Throwable) {
+                                        if (t is kotlinx.coroutines.CancellationException) {
+                                            throw t
+                                        }
+                                        val isCancelled = isCancellationActive(taskId) ||
+                                            t.message?.contains("stopped by user", ignoreCase = true) == true
+                                        if (isCancelled) {
+                                            throw t
+                                        }
+                                        stepExecError = t
+                                    }
+
+                                    if (stepExecError != null) {
+                                        val errorMsg = stepExecError.localizedMessage ?: stepExecError.message ?: "Step execution error"
+                                        val mutatedFiles = detectStepMutatedFiles(current.projectId, stepTag, wsDir)
+                                        val classification = classifyError(errorMsg, mutatedFiles.isNotEmpty(), isCancellationActive(taskId))
+
+                                        if (isCancellationActive(taskId)) {
+                                            val cancelledPlan = canonicalTask.activeRecoveryPlan?.copy(
+                                                status = com.jarves.mh.model.brain.RecoveryStatus.CANCELLED,
+                                                nextAction = "CANCELLED"
+                                            )
+                                            if (cancelledPlan != null) {
+                                                canonicalTask = canonicalTask.copy(activeRecoveryPlan = cancelledPlan)
+                                                canonicalTaskRepository.saveTask(canonicalTask)
+                                            }
+                                            finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user during step execution")
+                                            break
+                                        }
+
+                                        val recoveryPlan = recoveryEngine.planRecovery(
+                                            canonicalTask, activeStep, classification, errorMsg, mutatedFiles, attemptCount = activeStep.attempts
+                                        )?.copy(
+                                            stepId = activeStep.stepId,
+                                            checkpointTag = stepTag,
+                                            attemptNumber = activeStep.attempts + 1,
+                                            status = com.jarves.mh.model.brain.RecoveryStatus.PENDING,
+                                            nextAction = "EXECUTE_RECOVERY"
+                                        )
+
+                                        val failureRecord = TaskFailureRecord(
+                                            failureId = recoveryPlan?.failureRecordId ?: "fail-$taskId-${activeStep.stepId}-attempt-${activeStep.attempts}",
+                                            taskId = taskId,
+                                            stepId = activeStep.stepId,
+                                            classification = classification.name,
+                                            errorMessage = errorMsg,
+                                            mutatedFiles = mutatedFiles
+                                        )
+
+                                        if (recoveryPlan != null) {
+                                            activeStep = activeStep.copy(status = StepStatus.RECOVERING)
+                                            canonicalTask = canonicalTask.copy(
+                                                failureHistory = canonicalTask.failureHistory + failureRecord,
+                                                activeRecoveryPlan = recoveryPlan,
+                                                plan = canonicalTask.plan.withUpdatedStep(activeStep)
+                                            )
+                                            canonicalTaskRepository.saveTask(canonicalTask)
+                                            stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:RECOVERING:${recoveryPlan.strategy}") }
+                                            refreshActiveTasks()
+
+                                            if (isCancellationActive(taskId)) {
+                                                val cancelledPlan = recoveryPlan.copy(
+                                                    status = com.jarves.mh.model.brain.RecoveryStatus.CANCELLED,
+                                                    nextAction = "CANCELLED"
+                                                )
+                                                canonicalTask = canonicalTask.copy(activeRecoveryPlan = cancelledPlan)
+                                                canonicalTaskRepository.saveTask(canonicalTask)
+                                                finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before recovery execution")
+                                                break
+                                            }
+
+                                            val inProgressPlan = recoveryPlan.copy(status = com.jarves.mh.model.brain.RecoveryStatus.IN_PROGRESS)
+                                            canonicalTask = canonicalTask.copy(activeRecoveryPlan = inProgressPlan)
+                                            canonicalTaskRepository.saveTask(canonicalTask)
+
+                                            val recoveryResult = recoveryEngine.executeRecovery(
+                                                canonicalTask, activeStep, inProgressPlan, wsDir, checkpoints
+                                            )
+
+                                            if (isCancellationActive(taskId)) {
+                                                val cancelledPlan = inProgressPlan.copy(
+                                                    status = com.jarves.mh.model.brain.RecoveryStatus.CANCELLED,
+                                                    recoveryResult = recoveryResult.message,
+                                                    nextAction = "CANCELLED"
+                                                )
+                                                canonicalTask = canonicalTask.copy(activeRecoveryPlan = cancelledPlan)
+                                                canonicalTaskRepository.saveTask(canonicalTask)
+                                                finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user during recovery")
+                                                break
+                                            }
+
+                                            val finalRecoveryStatus = if (recoveryResult.success) com.jarves.mh.model.brain.RecoveryStatus.COMPLETED else com.jarves.mh.model.brain.RecoveryStatus.FAILED
+                                            val willRetry = recoveryResult.shouldRetryStep && activeStep.attempts < activeStep.maxAttempts && !isCancellationActive(taskId)
+                                            val nextAction = if (willRetry) "RETRY_STEP" else "TERMINATE"
+                                            val updatedPlan = inProgressPlan.copy(
+                                                status = finalRecoveryStatus,
+                                                recoveryResult = recoveryResult.message,
+                                                nextAction = nextAction
+                                            )
+                                            canonicalTask = canonicalTask.copy(activeRecoveryPlan = updatedPlan)
+                                            canonicalTaskRepository.saveTask(canonicalTask)
+
+                                            if (willRetry) {
+                                                stateStore.update(taskId) { it.copy(retryCount = it.retryCount + 1, lastKnownStep = "step-${activeStep.stepOrder}:RECOVERY:${recoveryPlan.strategy}") }
+                                                refreshActiveTasks()
+                                                val backoff = recoveryEngine.calculateBackoffMillis(activeStep.attempts)
+                                                if (backoff > 0) delay(backoff)
+                                                stepRecord = activeStep
+                                                continue
+                                            } else {
+                                                val terminalStatus = if (!recoveryResult.success) com.jarves.mh.model.brain.RecoveryStatus.FAILED else com.jarves.mh.model.brain.RecoveryStatus.EXHAUSTED
+                                                val exhaustedPlan = updatedPlan.copy(
+                                                    status = terminalStatus,
+                                                    nextAction = "TERMINATE"
+                                                )
+                                                activeStep = activeStep.copy(
+                                                    status = StepStatus.FAILED,
+                                                    completedAt = Instant.now(),
+                                                    resultSummary = "Execution error: $errorMsg"
+                                                )
+                                                canonicalTask = canonicalTask.copy(
+                                                    plan = canonicalTask.plan.withUpdatedStep(activeStep),
+                                                    activeRecoveryPlan = exhaustedPlan
+                                                )
+                                                canonicalTaskRepository.saveTask(canonicalTask)
+                                                stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:FAILED") }
+                                                refreshActiveTasks()
+                                                throw StepExecutionException(activeStep, errorMsg)
+                                            }
+                                        } else {
+                                            val exhaustedPlan = canonicalTask.activeRecoveryPlan?.copy(
+                                                status = com.jarves.mh.model.brain.RecoveryStatus.EXHAUSTED,
+                                                nextAction = "TERMINATE"
+                                            ) ?: RecoveryPlan(
+                                                taskId = taskId,
+                                                failureRecordId = failureRecord.failureId,
+                                                strategy = RecoveryStrategy.SAFE_ABORT_AND_CLEANUP,
+                                                rationale = "Retries exhausted for step ${activeStep.title}",
+                                                targetStepIndex = activeStep.stepOrder,
+                                                stepId = activeStep.stepId,
+                                                checkpointTag = stepTag,
+                                                attemptNumber = activeStep.attempts,
+                                                status = com.jarves.mh.model.brain.RecoveryStatus.EXHAUSTED,
+                                                recoveryResult = errorMsg,
+                                                nextAction = "TERMINATE"
+                                            )
+                                            activeStep = activeStep.copy(
+                                                status = StepStatus.FAILED,
+                                                completedAt = Instant.now(),
+                                                resultSummary = "Execution error: $errorMsg"
+                                            )
+                                            canonicalTask = canonicalTask.copy(
+                                                plan = canonicalTask.plan.withUpdatedStep(activeStep),
+                                                activeRecoveryPlan = exhaustedPlan,
+                                                failureHistory = canonicalTask.failureHistory + failureRecord
+                                            )
+                                            canonicalTaskRepository.saveTask(canonicalTask)
+                                            stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:FAILED") }
+                                            refreshActiveTasks()
+                                            throw StepExecutionException(activeStep, errorMsg)
+                                        }
+                                    }
+
+                                    // Post-execution cancellation or approval/input pause check
+                                    if (isCancellationActive(taskId)) {
+                                        if (stateStore.get(taskId)?.status != TaskExecutionStatus.CANCELLED) {
+                                            finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user after step execution")
+                                        }
+                                        break
+                                    }
+                                    val postExecStatus = stateStore.get(taskId)?.status
+                                    if (postExecStatus in setOf(TaskExecutionStatus.WAITING_FOR_APPROVAL, TaskExecutionStatus.WAITING_FOR_INPUT)) {
+                                        break
+                                    }
+
+                                    // 3. Transition: RUNNING -> VERIFYING
+                                    activeStep = activeStep.copy(status = StepStatus.VERIFYING)
+                                    canonicalTask = canonicalTask.copy(
+                                        plan = canonicalTask.plan.withUpdatedStep(activeStep)
+                                    )
+                                    canonicalTaskRepository.saveTask(canonicalTask)
+                                    stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:VERIFYING") }
+                                    refreshActiveTasks()
+
+                                    // 4. Perform Trusted Runtime Verification
+                                    val verificationResult = try {
+                                        stepVerifier.verify(canonicalTask, activeStep, wsDir)
+                                    } catch (t: Throwable) {
+                                        StepVerificationResult(
+                                            passed = false,
+                                            summary = "",
+                                            failureReason = "Exception during step verification: ${t.message}"
+                                        )
+                                    }
+
+                                    if (verificationResult.passed) {
+                                        if (isCancellationActive(taskId)) {
+                                            finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user during step verification")
+                                            break
+                                        }
+
+                                        // Requirement 8 & 9: StepVerifier alone marks COMPLETED, persist COMPLETED before advancing currentStepIndex
+                                        activeStep = activeStep.copy(
+                                            status = StepStatus.COMPLETED,
+                                            completedAt = Instant.now(),
+                                            resultSummary = verificationResult.summary
+                                        )
+                                        canonicalTask = canonicalTask.copy(
+                                            plan = canonicalTask.plan.withUpdatedStep(activeStep)
+                                        )
+                                        canonicalTaskRepository.saveTask(canonicalTask)
+                                        stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:COMPLETED") }
+                                        refreshActiveTasks()
+
+                                        // Requirement 10: Advance currentStepIndex exactly once
+                                        val nextStepIndex = (stepIndex + 1).coerceAtMost(canonicalTask.plan.steps.size)
+                                        canonicalTask = canonicalTask.copy(
+                                            plan = canonicalTask.plan.copy(currentStepIndex = nextStepIndex)
+                                        )
+                                        canonicalTaskRepository.saveTask(canonicalTask)
+                                        canonicalTaskRepository.updateCurrentStepIndex(taskId, nextStepIndex)
+                                        refreshActiveTasks()
+
+                                        stepCompleted = true
+                                    } else {
+                                        val failReason = verificationResult.failureReason ?: "Verification failed for step ${activeStep.title}"
+                                        val mutatedFiles = detectStepMutatedFiles(current.projectId, stepTag, wsDir)
+                                        val classification = TaskErrorClassification.STEP_VERIFICATION_FAILURE
+
+                                        // Persist verification result/failure before recovery is invoked (Requirement 8)
+                                        val failureRecord = TaskFailureRecord(
+                                            failureId = "fail-$taskId-${activeStep.stepId}-attempt-${activeStep.attempts}",
+                                            taskId = taskId,
+                                            stepId = activeStep.stepId,
+                                            classification = "STEP_VERIFICATION_FAILURE",
+                                            errorMessage = failReason,
+                                            mutatedFiles = mutatedFiles
+                                        )
+                                        activeStep = activeStep.copy(resultSummary = failReason)
+                                        canonicalTask = canonicalTask.copy(
+                                            plan = canonicalTask.plan.withUpdatedStep(activeStep),
+                                            failureHistory = canonicalTask.failureHistory + failureRecord
+                                        )
+                                        canonicalTaskRepository.saveTask(canonicalTask)
+                                        stateStore.update(taskId) { it.copy(lastError = failReason) }
+                                        refreshActiveTasks()
+
+                                        if (isCancellationActive(taskId)) {
+                                            val cancelledPlan = canonicalTask.activeRecoveryPlan?.copy(
+                                                status = com.jarves.mh.model.brain.RecoveryStatus.CANCELLED,
+                                                nextAction = "CANCELLED"
+                                            )
+                                            if (cancelledPlan != null) {
+                                                canonicalTask = canonicalTask.copy(activeRecoveryPlan = cancelledPlan)
+                                                canonicalTaskRepository.saveTask(canonicalTask)
+                                            }
+                                            finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user during step verification")
+                                            break
+                                        }
+
+                                        val recoveryPlan = recoveryEngine.planRecovery(
+                                            canonicalTask, activeStep, classification, failReason, mutatedFiles, attemptCount = activeStep.attempts
+                                        )?.copy(
+                                            failureRecordId = failureRecord.failureId,
+                                            stepId = activeStep.stepId,
+                                            checkpointTag = stepTag,
+                                            attemptNumber = activeStep.attempts + 1,
+                                            status = com.jarves.mh.model.brain.RecoveryStatus.PENDING,
+                                            nextAction = "EXECUTE_RECOVERY"
+                                        )
+
+                                        if (recoveryPlan != null) {
+                                            activeStep = activeStep.copy(status = StepStatus.RECOVERING)
+                                            canonicalTask = canonicalTask.copy(
+                                                activeRecoveryPlan = recoveryPlan,
+                                                plan = canonicalTask.plan.withUpdatedStep(activeStep)
+                                            )
+                                            canonicalTaskRepository.saveTask(canonicalTask)
+                                            stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:RECOVERING:${recoveryPlan.strategy}") }
+                                            refreshActiveTasks()
+
+                                            if (isCancellationActive(taskId)) {
+                                                val cancelledPlan = recoveryPlan.copy(
+                                                    status = com.jarves.mh.model.brain.RecoveryStatus.CANCELLED,
+                                                    nextAction = "CANCELLED"
+                                                )
+                                                canonicalTask = canonicalTask.copy(activeRecoveryPlan = cancelledPlan)
+                                                canonicalTaskRepository.saveTask(canonicalTask)
+                                                finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before recovery execution")
+                                                break
+                                            }
+
+                                            val inProgressPlan = recoveryPlan.copy(status = com.jarves.mh.model.brain.RecoveryStatus.IN_PROGRESS)
+                                            canonicalTask = canonicalTask.copy(activeRecoveryPlan = inProgressPlan)
+                                            canonicalTaskRepository.saveTask(canonicalTask)
+
+                                            val recoveryResult = recoveryEngine.executeRecovery(
+                                                canonicalTask, activeStep, inProgressPlan, wsDir, checkpoints
+                                            )
+
+                                            if (isCancellationActive(taskId)) {
+                                                val cancelledPlan = inProgressPlan.copy(
+                                                    status = com.jarves.mh.model.brain.RecoveryStatus.CANCELLED,
+                                                    recoveryResult = recoveryResult.message,
+                                                    nextAction = "CANCELLED"
+                                                )
+                                                canonicalTask = canonicalTask.copy(activeRecoveryPlan = cancelledPlan)
+                                                canonicalTaskRepository.saveTask(canonicalTask)
+                                                finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user during recovery")
+                                                break
+                                            }
+
+                                            val finalRecoveryStatus = if (recoveryResult.success) com.jarves.mh.model.brain.RecoveryStatus.COMPLETED else com.jarves.mh.model.brain.RecoveryStatus.FAILED
+                                            val willRetry = recoveryResult.shouldRetryStep && activeStep.attempts < activeStep.maxAttempts && !isCancellationActive(taskId)
+                                            val nextAction = if (willRetry) "RETRY_STEP" else "TERMINATE"
+                                            val updatedPlan = inProgressPlan.copy(
+                                                status = finalRecoveryStatus,
+                                                recoveryResult = recoveryResult.message,
+                                                nextAction = nextAction
+                                            )
+                                            canonicalTask = canonicalTask.copy(activeRecoveryPlan = updatedPlan)
+                                            canonicalTaskRepository.saveTask(canonicalTask)
+
+                                            if (willRetry) {
+                                                stateStore.update(taskId) { it.copy(retryCount = it.retryCount + 1, lastKnownStep = "step-${activeStep.stepOrder}:RECOVERY:${recoveryPlan.strategy}") }
+                                                refreshActiveTasks()
+                                                val backoff = recoveryEngine.calculateBackoffMillis(activeStep.attempts)
+                                                if (backoff > 0) delay(backoff)
+                                                stepRecord = activeStep
+                                                continue
+                                            } else {
+                                                val terminalStatus = if (!recoveryResult.success) com.jarves.mh.model.brain.RecoveryStatus.FAILED else com.jarves.mh.model.brain.RecoveryStatus.EXHAUSTED
+                                                val exhaustedPlan = updatedPlan.copy(
+                                                    status = terminalStatus,
+                                                    nextAction = "TERMINATE"
+                                                )
+                                                activeStep = activeStep.copy(
+                                                    status = StepStatus.FAILED,
+                                                    completedAt = Instant.now(),
+                                                    resultSummary = verificationResult.failureReason
+                                                )
+                                                canonicalTask = canonicalTask.copy(
+                                                    plan = canonicalTask.plan.withUpdatedStep(activeStep),
+                                                    activeRecoveryPlan = exhaustedPlan
+                                                )
+                                                canonicalTaskRepository.saveTask(canonicalTask)
+                                                stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:FAILED") }
+                                                refreshActiveTasks()
+                                                throw StepVerificationException(activeStep, verificationResult.failureReason ?: "Verification failed for step ${activeStep.title}")
+                                            }
+                                        } else {
+                                            val exhaustedPlan = canonicalTask.activeRecoveryPlan?.copy(
+                                                status = com.jarves.mh.model.brain.RecoveryStatus.EXHAUSTED,
+                                                nextAction = "TERMINATE"
+                                            ) ?: RecoveryPlan(
+                                                taskId = taskId,
+                                                failureRecordId = failureRecord.failureId,
+                                                strategy = RecoveryStrategy.SAFE_ABORT_AND_CLEANUP,
+                                                rationale = "Retries exhausted for step ${activeStep.title}",
+                                                targetStepIndex = activeStep.stepOrder,
+                                                stepId = activeStep.stepId,
+                                                checkpointTag = stepTag,
+                                                attemptNumber = activeStep.attempts,
+                                                status = com.jarves.mh.model.brain.RecoveryStatus.EXHAUSTED,
+                                                recoveryResult = verificationResult.failureReason,
+                                                nextAction = "TERMINATE"
+                                            )
+                                            activeStep = activeStep.copy(
+                                                status = StepStatus.FAILED,
+                                                completedAt = Instant.now(),
+                                                resultSummary = verificationResult.failureReason
+                                            )
+                                            canonicalTask = canonicalTask.copy(
+                                                plan = canonicalTask.plan.withUpdatedStep(activeStep),
+                                                activeRecoveryPlan = exhaustedPlan
+                                            )
+                                            canonicalTaskRepository.saveTask(canonicalTask)
+                                            stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:FAILED") }
+                                            refreshActiveTasks()
+                                            throw StepVerificationException(activeStep, verificationResult.failureReason ?: "Verification failed for step ${activeStep.title}")
+                                        }
+                                    }
+                                }
                             }
 
-                            finalizeTask(taskId, TaskExecutionStatus.COMPLETED)
+                            // Check if all steps completed
+                            val finalCanonical = canonicalTaskRepository.getTask(taskId) ?: canonicalTask
+                            val allStepsCompleted = finalCanonical.plan.steps.isNotEmpty() &&
+                                finalCanonical.plan.steps.all { it.status == StepStatus.COMPLETED || it.status == StepStatus.SKIPPED }
+
+                            if (allStepsCompleted && !isCancellationActive(taskId)) {
+                                succeeded = true
+
+                                // Requirement 15: Persist plan COMPLETED
+                                canonicalTaskRepository.updatePlanStatus(taskId, PlanStatus.COMPLETED)
+                                val updatedPlan = finalCanonical.plan.copy(status = PlanStatus.COMPLETED)
+                                canonicalTaskRepository.saveTask(finalCanonical.copy(plan = updatedPlan))
+
+                                // Learning: construct verified execution feedback for successful attempt
+                                val successAttemptId = attemptId
+                                val completedSteps = finalCanonical.plan.steps.filter { it.status == StepStatus.COMPLETED }.map { it.stepId }
+                                val verifiedCriteria = if (finalCanonical.outcome?.testsPassed == true) finalCanonical.acceptanceCriteria else emptyList()
+                                val checkpoints = getCheckpoints()
+                                val mutatedFiles = runCatching { checkpoints.readChangedPaths(task.projectId) }.getOrDefault(emptyList()) ?: emptyList()
+                                val wsState = if (mutatedFiles.isNotEmpty()) ExecutionWorkspaceState(modifiedFiles = mutatedFiles) else null
+
+                                val feedback = ExecutionFeedback(
+                                    taskId = taskId,
+                                    projectId = current.projectId,
+                                    attemptId = successAttemptId,
+                                    outcome = ExecutionOutcome.SUCCESS,
+                                    summary = finalCanonical.outcome?.summary ?: "Task execution completed successfully on attempt $attempt",
+                                    completedStepIds = completedSteps,
+                                    verifiedCriteria = verifiedCriteria,
+                                    workspaceState = wsState,
+                                    source = MemorySource.TOOL_VERIFIED,
+                                    contextFingerprint = brainSnapshots[successAttemptId]?.fingerprint
+                                )
+                                runCatching {
+                                    learnExecutionFeedback(feedback)
+                                }.onFailure {
+                                    runCatching { Log.e(TAG, "Brain learning persistence failed for task $taskId attempt $successAttemptId", it) }
+                                }
+
+                                finalizeTask(taskId, TaskExecutionStatus.COMPLETED)
+                            } else {
+                                val currentStatus = stateStore.get(taskId)?.status
+                                if (currentStatus in setOf(TaskExecutionStatus.WAITING_FOR_APPROVAL, TaskExecutionStatus.WAITING_FOR_INPUT) ||
+                                    isCancellationActive(taskId)) {
+                                    break
+                                }
+                            }
                         } catch (t: Throwable) {
+                            if (t is kotlinx.coroutines.CancellationException) {
+                                throw t
+                            }
+                            if (t is StepVerificationException || t is StepExecutionException) {
+                                val failedAttempt = attempt
+                                val failedAttemptId = "$taskId:attempt-$failedAttempt"
+                                processSupervisor.terminate(taskId, force = true)
+
+                                val step = if (t is StepVerificationException) t.step else (t as StepExecutionException).step
+                                val reason = if (t is StepVerificationException) t.reason else (t as StepExecutionException).reason
+                                val classification = if (t is StepVerificationException) "STEP_VERIFICATION_FAILURE" else "STEP_EXECUTION_FAILURE"
+
+                                val failureRecord = TaskFailureRecord(
+                                    taskId = taskId,
+                                    stepId = step.stepId,
+                                    classification = classification,
+                                    errorMessage = reason,
+                                    mutatedFiles = emptyList()
+                                )
+                                val failureFeedback = ExecutionFeedback(
+                                    taskId = taskId,
+                                    projectId = current.projectId,
+                                    attemptId = failedAttemptId,
+                                    outcome = ExecutionOutcome.FAILED,
+                                    summary = "Step '${step.title}' failed: $reason",
+                                    failures = listOf(failureRecord),
+                                    source = MemorySource.TOOL_VERIFIED,
+                                    contextFingerprint = brainSnapshots[failedAttemptId]?.fingerprint
+                                )
+                                runCatching {
+                                    learnExecutionFeedback(failureFeedback)
+                                }.onFailure {
+                                    runCatching { Log.e(TAG, "Brain learning persistence failed for task $taskId attempt $failedAttemptId", it) }
+                                }
+
+                                finalizeTask(
+                                    taskId,
+                                    TaskExecutionStatus.FAILED,
+                                    error = "Step '${step.title}' failed: $reason",
+                                    recoveryRequired = false
+                                )
+                                break
+                            }
+
                             val failedAttempt = attempt
                             val failedAttemptId = "$taskId:attempt-$failedAttempt"
                             attempt++
-                            val isCancelled = processSupervisor.isCancellationRequested(taskId) ||
+                            val isCancelled = isCancellationActive(taskId) ||
                                 t.message?.contains("stopped by user", ignoreCase = true) == true
                             val errorMsg = t.localizedMessage ?: t.message ?: "Task execution failed"
 
-                            // Terminate any running child process from this attempt before retrying
-                            processSupervisor.terminate(taskId, force = true)
+                            // Terminate any running child process from this attempt before retrying (do not mark cancellation requested for retry)
+                            processSupervisor.terminate(taskId, force = true, markCancelled = false)
+                            processSupervisor.clearCancellationRequested(taskId)
 
-                            val checkpoints = appContext?.filesDir?.let { com.jarves.mh.runtime.WorkspaceCheckpoints(it) }
-                            val mutatedFiles = runCatching { checkpoints?.readChangedPaths(task.projectId) }.getOrDefault(emptyList()) ?: emptyList()
+                            val checkpoints = getCheckpoints()
+                            val mutatedFiles = runCatching { checkpoints.readChangedPaths(task.projectId) }.getOrDefault(emptyList()) ?: emptyList()
                             val workspaceIsMutated = mutatedFiles.isNotEmpty()
 
                             val classification = classifyError(errorMsg, workspaceIsMutated, isCancelled)
@@ -693,6 +1888,10 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                     finalizeTask(taskId, TaskExecutionStatus.FAILED, error = failureDetail, recoveryRequired = true)
                                     break
                                 }
+                                TaskErrorClassification.STEP_VERIFICATION_FAILURE -> {
+                                    finalizeTask(taskId, TaskExecutionStatus.FAILED, error = errorMsg, recoveryRequired = false)
+                                    break
+                                }
                                 TaskErrorClassification.TRANSIENT_API_ERROR,
                                 TaskErrorClassification.PROCESS_FAILURE -> {
                                     if (attempt <= task.maxRetries) {
@@ -713,7 +1912,9 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                 }
             } finally {
                 val currentRecord = stateStore.get(taskId)
-                if (currentRecord != null && !currentRecord.status.isTerminal) {
+                if (currentRecord != null && !currentRecord.status.isTerminal &&
+                    currentRecord.status != TaskExecutionStatus.WAITING_FOR_APPROVAL &&
+                    currentRecord.status != TaskExecutionStatus.WAITING_FOR_INPUT) {
                     val finalStatus = if (processSupervisor.isCancellationRequested(taskId)) {
                         TaskExecutionStatus.CANCELLED
                     } else {

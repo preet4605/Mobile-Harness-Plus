@@ -14,6 +14,7 @@ import com.jarves.mh.model.brain.TaskFailureRecord
 data class BrainContext(
     val task: CanonicalTask? = null,
     val currentStep: ExecutionStep? = null,
+    val globalExecutionPolicies: List<String> = emptyList(),
     val constraints: List<String> = emptyList(),
     val acceptanceCriteria: List<String> = emptyList(),
     val progress: List<String> = emptyList(),
@@ -54,6 +55,7 @@ open class BrainContextAssembler(
         const val MAX_SOLUTIONS_COUNT = 10
         const val MAX_KNOWLEDGE_COUNT = 20
 
+        const val NOMINAL_GLOBAL_POLICIES_CHARS = 1_200
         const val NOMINAL_TASK_CHARS = 700
         const val NOMINAL_STEP_CHARS = 700
         const val NOMINAL_ACCEPTANCE_CHARS = 600
@@ -65,7 +67,7 @@ open class BrainContextAssembler(
         const val NOMINAL_WORKSPACE_CHARS = 500
 
         private val SECTION_TAG_REGEX = Regex(
-            "\\[(/?(?:BRAIN_CONTEXT|TASK|CURRENT_STEP|CONSTRAINTS|ACCEPTANCE_CRITERIA|PROGRESS|RELEVANT_KNOWLEDGE|FAILURES|SOLUTIONS|WORKSPACE_STATE))\\]",
+            "\\[(/?(?:BRAIN_CONTEXT|GLOBAL_EXECUTION_POLICIES|TASK|CURRENT_STEP|CONSTRAINTS|ACCEPTANCE_CRITERIA|PROGRESS|RELEVANT_KNOWLEDGE|FAILURES|SOLUTIONS|WORKSPACE_STATE))\\]",
             RegexOption.IGNORE_CASE
         )
 
@@ -131,6 +133,22 @@ open class BrainContextAssembler(
         projectId: String? = null,
         query: String? = null,
         maxCharacters: Int = DEFAULT_BRAIN_CONTEXT_CHARS
+    ): BrainContext = assemble(
+        task = task,
+        currentStep = currentStep,
+        projectId = projectId,
+        query = query,
+        maxCharacters = maxCharacters,
+        globalExecutionPolicies = com.jarves.mh.model.brain.GlobalExecutionPolicies.DEFAULT_POLICIES
+    )
+
+    open fun assemble(
+        task: CanonicalTask? = null,
+        currentStep: ExecutionStep? = null,
+        projectId: String? = null,
+        query: String? = null,
+        maxCharacters: Int = DEFAULT_BRAIN_CONTEXT_CHARS,
+        globalExecutionPolicies: List<String> = com.jarves.mh.model.brain.GlobalExecutionPolicies.DEFAULT_POLICIES
     ): BrainContext {
         val effectiveMaxChars = maxCharacters.coerceIn(1, MAX_BRAIN_CONTEXT_CHARS)
         val effectiveProjectId = task?.projectId?.trim().takeIf { !it.isNullOrBlank() }
@@ -170,6 +188,7 @@ open class BrainContextAssembler(
         val taskConstraints = task?.constraints.orEmpty().map { sanitizeSingleLine(it) }.filter { it.isNotBlank() }
         val knowledgeConstraints = distinctEntries
             .filter { it.knowledgeType == BrainKnowledgeType.CONSTRAINT }
+            .filterNot { com.jarves.mh.model.brain.GlobalExecutionPolicies.isGlobalPolicyKey(it.key) }
             .sortedWith(knowledgeComparator)
             .map { entry ->
                 val key = sanitizeSingleLine(entry.key)
@@ -178,12 +197,13 @@ open class BrainContextAssembler(
             }
         val allConstraints = (taskConstraints + knowledgeConstraints).distinct()
 
-        // 2. Acceptance Criteria (task criteria + step expected files)
+        // 2. Acceptance Criteria (task criteria + step criteria + step expected files)
         val taskCriteria = task?.acceptanceCriteria.orEmpty().map { sanitizeSingleLine(it) }.filter { it.isNotBlank() }
+        val stepCriteria = step?.acceptanceCriteria.orEmpty().map { sanitizeSingleLine(it) }.filter { it.isNotBlank() }
         val stepExpected = if (step?.expectedFiles?.isNotEmpty() == true) {
             listOf("Expected files: ${step.expectedFiles.joinToString(", ") { sanitizeSingleLine(it) }}")
         } else emptyList()
-        val allCriteria = (taskCriteria + stepExpected).distinct()
+        val allCriteria = (taskCriteria + stepCriteria + stepExpected).distinct()
 
         // 3. Progress (completed plan steps + progress entries)
         val completedSteps = task?.plan?.steps.orEmpty()
@@ -236,6 +256,7 @@ open class BrainContextAssembler(
         )
         val allKnowledge = distinctEntries
             .filter { it.knowledgeType in generalKnowledgeTypes }
+            .filterNot { com.jarves.mh.model.brain.GlobalExecutionPolicies.isGlobalPolicyKey(it.key) }
             .sortedWith(knowledgeComparator)
             .take(MAX_KNOWLEDGE_COUNT)
 
@@ -262,6 +283,7 @@ open class BrainContextAssembler(
         return BrainContext(
             task = task,
             currentStep = step,
+            globalExecutionPolicies = globalExecutionPolicies,
             constraints = allConstraints,
             acceptanceCriteria = allCriteria,
             progress = allProgress,
@@ -290,6 +312,7 @@ open class BrainContextAssembler(
         val availableBudget = effectiveLimit - fixedOverhead
         val budgets = calculateBudgets(context, availableBudget)
 
+        val globalPoliciesStr = renderGlobalPolicies(context.globalExecutionPolicies, budgets.globalPoliciesBudget)
         val taskStr = renderTask(context.task, budgets.taskBudget)
         val stepStr = renderCurrentStep(context.currentStep, budgets.stepBudget)
         val constraintsStr = renderConstraints(context.constraints, budgets.constraintsBudget)
@@ -300,17 +323,19 @@ open class BrainContextAssembler(
         val solutionsStr = renderSolutions(context.solutions, budgets.solutionsBudget)
         val workspaceStr = renderWorkspaceState(context.workspaceState, budgets.workspaceBudget)
 
-        val sections = listOf(
-            taskStr,
-            stepStr,
-            constraintsStr,
-            acceptanceStr,
-            progressStr,
-            knowledgeStr,
-            failuresStr,
-            solutionsStr,
-            workspaceStr
-        )
+        val sections = mutableListOf<String>()
+        if (globalPoliciesStr.isNotBlank()) {
+            sections.add(globalPoliciesStr)
+        }
+        sections.add(taskStr)
+        sections.add(stepStr)
+        sections.add(constraintsStr)
+        sections.add(acceptanceStr)
+        sections.add(progressStr)
+        sections.add(knowledgeStr)
+        sections.add(failuresStr)
+        sections.add(solutionsStr)
+        sections.add(workspaceStr)
 
         val fullOutput = buildString {
             append(wrapperStart)
@@ -329,7 +354,20 @@ open class BrainContextAssembler(
         }
     }
 
+    private fun renderGlobalPolicies(policies: List<String>, budget: Int): String {
+        if (policies.isEmpty() || budget <= 0) {
+            return ""
+        }
+        val header = "[GLOBAL_EXECUTION_POLICIES]\n"
+        val items = policies.map { sanitize(it) }.filter { it.isNotBlank() }
+        val formatted = items.joinToString("\n\n") { item ->
+            if (item.startsWith("- ")) item else "- $item"
+        }
+        return fitContentWithHeader(header, formatted, budget)
+    }
+
     private data class SectionBudgets(
+        val globalPoliciesBudget: Int,
         val taskBudget: Int,
         val stepBudget: Int,
         val constraintsBudget: Int,
@@ -347,6 +385,8 @@ open class BrainContextAssembler(
     ): SectionBudgets {
         val available = maxOf(0, availableBudget)
 
+        val needGlobalPolicies = if (context.globalExecutionPolicies.isEmpty()) 0
+            else renderGlobalPolicies(context.globalExecutionPolicies, NOMINAL_GLOBAL_POLICIES_CHARS).length
         val needTask = renderTask(context.task, NOMINAL_TASK_CHARS).length
         val needStep = renderCurrentStep(context.currentStep, NOMINAL_STEP_CHARS).length
         val needConstraints = renderConstraints(context.constraints, NOMINAL_CONSTRAINTS_CHARS).length
@@ -359,12 +399,13 @@ open class BrainContextAssembler(
         val needKnowledge = renderRelevantKnowledge(context.relevantKnowledge, NOMINAL_KNOWLEDGE_CHARS).length
         val needWorkspace = renderWorkspaceState(context.workspaceState, NOMINAL_WORKSPACE_CHARS).length
 
-        val totalNeeded = needTask + needStep + needConstraints + needAcceptance +
+        val totalNeeded = needGlobalPolicies + needTask + needStep + needConstraints + needAcceptance +
                 needProgress + needFailures + needSolutions + needKnowledge + needWorkspace
 
         // If all content fits comfortably, allocate full needed budgets
         if (totalNeeded <= available) {
             return SectionBudgets(
+                globalPoliciesBudget = needGlobalPolicies,
                 taskBudget = needTask,
                 stepBudget = needStep,
                 constraintsBudget = needConstraints,
@@ -377,10 +418,14 @@ open class BrainContextAssembler(
             )
         }
 
-        // Budget pressure: Allocate strictly by priority (P0 -> P1 -> P2 -> P3)
+        // Budget pressure: Allocate strictly by priority (Mandatory Policies & P0 -> P1 -> P2 -> P3)
         var rem = available
 
-        // 1. P0 allocations (TASK, CURRENT_STEP, CONSTRAINTS, ACCEPTANCE_CRITERIA)
+        // 1. Mandatory Global Policies are allocated first to guarantee inclusion
+        val globalB = minOf(needGlobalPolicies, rem)
+        rem = maxOf(0, rem - globalB)
+
+        // 2. P0 allocations (TASK, CURRENT_STEP, CONSTRAINTS, ACCEPTANCE_CRITERIA)
         val p0Needed = needTask + needStep + needConstraints + needAcceptance
         val taskB: Int
         val stepB: Int
@@ -394,7 +439,7 @@ open class BrainContextAssembler(
             acceptB = needAcceptance
             rem -= p0Needed
         } else {
-            // Extreme budget pressure even on P0
+            // Extreme budget pressure among P0 sections
             taskB = minOf(needTask, rem / 4)
             rem = maxOf(0, rem - taskB)
             stepB = minOf(needStep, rem / 3)
@@ -433,6 +478,7 @@ open class BrainContextAssembler(
         val wsB = minOf(needWorkspace, rem)
 
         return SectionBudgets(
+            globalPoliciesBudget = globalB,
             taskBudget = taskB,
             stepBudget = stepB,
             constraintsBudget = constrB,
@@ -476,9 +522,16 @@ open class BrainContextAssembler(
         lines.add("id: ${sanitizeSingleLine(step.stepId)}")
         lines.add("order: ${step.stepOrder}")
         lines.add("title: ${sanitizeSingleLine(step.title)}")
+        val effObj = step.objective.ifBlank { step.description }
+        if (effObj.isNotBlank()) {
+            lines.add("objective: ${sanitize(effObj)}")
+        }
         lines.add("description: ${sanitize(step.description)}")
         lines.add("status: ${step.status.name}")
         lines.add("attempts: ${step.attempts}/${step.maxAttempts}")
+        if (step.acceptanceCriteria.isNotEmpty()) {
+            lines.add("acceptance_criteria: ${step.acceptanceCriteria.joinToString("; ") { sanitizeSingleLine(it) }}")
+        }
         if (step.expectedFiles.isNotEmpty()) {
             lines.add("expected_files: ${step.expectedFiles.joinToString(", ") { sanitizeSingleLine(it) }}")
         }

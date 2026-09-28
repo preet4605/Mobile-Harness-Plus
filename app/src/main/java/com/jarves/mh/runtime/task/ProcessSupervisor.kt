@@ -122,15 +122,28 @@ class ProcessSupervisor {
         userCancellationRequests.contains(resolveId(taskIdOrSessionId)) ||
             userCancellationRequests.contains(taskIdOrSessionId)
 
+    fun clearCancellationRequested(taskIdOrSessionId: String) {
+        val id = resolveId(taskIdOrSessionId)
+        userCancellationRequests.remove(id)
+        userCancellationRequests.remove(taskIdOrSessionId)
+    }
+
     /**
      * Graceful termination:
      * 1. Send SIGINT (interrupt) or destroy().
      * 2. Wait up to gracePeriodMs (default 1000ms).
      * 3. If still alive, call destroyForcibly() (SIGKILL).
      */
-    suspend fun terminate(taskIdOrSessionId: String, force: Boolean = false, gracePeriodMs: Long = 1000L): Boolean =
+    suspend fun terminate(
+        taskIdOrSessionId: String,
+        force: Boolean = false,
+        gracePeriodMs: Long = 1000L,
+        markCancelled: Boolean = true
+    ): Boolean =
         withContext(Dispatchers.IO) {
-            markCancellationRequested(taskIdOrSessionId)
+            if (markCancelled) {
+                markCancellationRequested(taskIdOrSessionId)
+            }
             val resolved = resolveId(taskIdOrSessionId)
             val tracked = trackedProcesses[resolved] ?: trackedProcesses[taskIdOrSessionId] ?: return@withContext false
             val process = tracked.process

@@ -157,6 +157,9 @@ private data class RuntimeRetryRequest(
     val history: List<ChatMessage>,
     val provider: ProviderProfile,
     val memory: ContextMemory = ContextMemory(project.id),
+    val taskId: String? = null,
+    val attemptId: String? = null,
+    val brainSnapshot: com.jarves.mh.data.BrainContextSnapshot? = null,
 )
 
 private data class TranscriptWrite(
@@ -3925,14 +3928,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendLine("</attached_files>")
         }
         failedApiKeyIds.clear()
-        activeRuntimeRequest = RuntimeRetryRequest(
-            runtime = activeRuntime(),
-            project = project,
-            prompt = runtimePrompt,
-            history = history,
-            provider = state.value.provider,
-            memory = state.value.contextMemory,
-        )
         val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
         val taskRecord = supervisor.createTask(
             projectId = project.id,
@@ -3940,12 +3935,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             chatId = state.value.activeChatId ?: "default",
             agentKind = state.value.agentKind.name,
             providerJson = state.value.provider.kind.name,
-            prompt = runtimePrompt
+            prompt = runtimePrompt,
+            objective = requestText.ifBlank { runtimePrompt }
+        )
+        activeRuntimeRequest = RuntimeRetryRequest(
+            runtime = activeRuntime(),
+            project = project,
+            prompt = runtimePrompt,
+            history = history,
+            provider = state.value.provider,
+            memory = state.value.contextMemory,
+            taskId = taskRecord.taskId,
+            attemptId = "${taskRecord.taskId}:attempt-0",
         )
         supervisor.executeTask(taskRecord.taskId) { task ->
             try {
                 activeRuntimeRequest?.let { request ->
                     val snapshot = supervisor.getBrainSnapshot(task.taskId)
+                    val effectiveAttemptId = snapshot?.attemptId ?: "${task.taskId}:attempt-${task.retryCount}"
+                    activeRuntimeRequest = request.copy(
+                        taskId = task.taskId,
+                        attemptId = effectiveAttemptId,
+                        brainSnapshot = snapshot,
+                    )
                     val sessionId = request.runtime.startSession(
                         request.project.id,
                         request.project.slug,
@@ -3956,6 +3968,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         request.memory,
                         task.taskId,
                         snapshot,
+                        effectiveAttemptId,
                     )
                     supervisor.bindSession(task.taskId, sessionId)
                 }
@@ -4519,14 +4532,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             kotlinx.coroutines.delay(300)
-            request.runtime.startSession(
-                request.project.id,
-                request.project.slug,
-                request.project.kind,
-                request.prompt,
-                request.history,
-                request.provider,
+            val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
+            val snapshot = request.brainSnapshot ?: request.taskId?.let { supervisor.getBrainSnapshot(it) }
+            val effectiveAttemptId = request.attemptId ?: snapshot?.attemptId
+            val sessionId = request.runtime.startSession(
+                projectId = request.project.id,
+                projectSlug = request.project.slug,
+                projectKind = request.project.kind,
+                prompt = request.prompt,
+                conversationHistory = request.history,
+                provider = request.provider,
+                memory = request.memory,
+                taskId = request.taskId,
+                brainSnapshot = snapshot,
+                attemptId = effectiveAttemptId,
             )
+            request.taskId?.let { supervisor.bindSession(it, sessionId) }
         }
         return true
     }

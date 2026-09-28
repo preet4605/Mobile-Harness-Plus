@@ -8,6 +8,7 @@ import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Workspace checkpoint / snapshot / diff store shared by agent bridges.
@@ -38,12 +39,54 @@ class WorkspaceCheckpoints(private val filesDir: File) {
         if (previous != normalized) checkpointDir(projectId).deleteRecursively()
     }
 
-    fun checkpointDir(projectId: String) = File(filesDir, "checkpoints/$projectId/latest")
+    fun checkpointDir(projectId: String): File = checkpointDir(projectId, DEFAULT_CHECKPOINT_TAG)
 
-    fun createCheckpoint(projectId: String, workspace: File) {
-        val checkpoint = checkpointDir(projectId)
-        // Keep the original baseline until every pending file is accepted or undone.
-        if (File(checkpoint, "project").isDirectory && File(checkpoint, "changes.json").isFile) return
+    fun checkpointDir(projectId: String, checkpointTag: String): File {
+        validateCheckpointTag(checkpointTag)
+        val projectDir = File(filesDir, "checkpoints/$projectId").canonicalFile
+        val target = File(projectDir, checkpointTag).canonicalFile
+        require(target.toPath().startsWith(projectDir.toPath())) { "Unsafe checkpoint directory" }
+        return target
+    }
+
+    fun checkpointExists(projectId: String, checkpointTag: String = DEFAULT_CHECKPOINT_TAG): Boolean {
+        if (!isValidCheckpointTag(checkpointTag)) return false
+        val checkpoint = checkpointDir(projectId, checkpointTag)
+        return File(checkpoint, "project").isDirectory
+    }
+
+    fun listCheckpoints(projectId: String): List<String> {
+        val base = File(filesDir, "checkpoints/$projectId")
+        if (!base.isDirectory) return emptyList()
+        return base.listFiles()
+            ?.filter { it.isDirectory && File(it, "project").isDirectory }
+            ?.map { it.name }
+            ?.sorted()
+            ?: emptyList()
+    }
+
+    fun createCheckpoint(projectId: String, workspace: File) =
+        createCheckpoint(projectId, workspace, DEFAULT_CHECKPOINT_TAG)
+
+    fun createCheckpoint(projectId: String, checkpointTag: String = DEFAULT_CHECKPOINT_TAG) =
+        createCheckpoint(projectId, ensureWorkspace(projectId), checkpointTag)
+
+    fun createCheckpoint(
+        projectId: String,
+        workspace: File,
+        checkpointTag: String,
+        taskId: String? = null,
+        stepId: String? = null,
+        attempt: Int? = null
+    ) {
+        validateCheckpointTag(checkpointTag)
+        val checkpoint = checkpointDir(projectId, checkpointTag)
+
+        // For the legacy default checkpoint, keep the original baseline until every pending file is accepted or undone.
+        if (checkpointTag == DEFAULT_CHECKPOINT_TAG) {
+            if (File(checkpoint, "project").isDirectory && File(checkpoint, "changes.json").isFile) return
+        }
+
         checkpoint.deleteRecursively()
         val backup = File(checkpoint, "project").apply { mkdirs() }
         val workspacePath = workspace.canonicalFile.toPath()
@@ -72,20 +115,106 @@ class WorkspaceCheckpoints(private val filesDir: File) {
                     source.copyTo(destination, overwrite = true)
                 }
             }
+
+        val snap = snapshot(backup)
+        val metadata = CheckpointMetadata(
+            projectId = projectId,
+            checkpointTag = checkpointTag,
+            createdAt = System.currentTimeMillis(),
+            backedUpFiles = snap.keys.toList().sorted(),
+            fingerprints = snap,
+            changes = readChangedPaths(projectId, checkpointTag),
+            taskId = taskId,
+            stepId = stepId,
+            attempt = attempt,
+        )
+        writeMetadata(checkpoint, metadata)
+
+        // Enforce step checkpoint retention if applicable
+        if (isStepTag(checkpointTag)) {
+            pruneStepCheckpoints(projectId)
+        }
     }
 
-    fun saveChangedPaths(projectId: String, paths: List<String>) {
-        val manifest = File(checkpointDir(projectId), "changes.json")
+    fun restoreCheckpoint(projectId: String, checkpointTag: String = DEFAULT_CHECKPOINT_TAG): Boolean =
+        restoreCheckpoint(projectId, ensureWorkspace(projectId), checkpointTag)
+
+    fun restoreCheckpoint(
+        projectId: String,
+        workspace: File,
+        checkpointTag: String = DEFAULT_CHECKPOINT_TAG
+    ): Boolean {
+        validateCheckpointTag(checkpointTag)
+        val checkpoint = checkpointDir(projectId, checkpointTag)
+        val backup = File(checkpoint, "project")
+        if (!backup.isDirectory) return false
+
+        val workspaceRoot = workspace.canonicalFile
+        val workspacePath = workspaceRoot.toPath()
+
+        // 1. Restore all tracked files from backup snapshot
+        backup.walkTopDown()
+            .onEnter { directory ->
+                if (directory == backup) return@onEnter true
+                if (java.nio.file.Files.isSymbolicLink(directory.toPath())) return@onEnter false
+                val relative = directory.relativeTo(backup).invariantSeparatorsPath
+                if (isInternalRuntimePath(relative)) return@onEnter false
+                true
+            }
+            .filter {
+                it.isFile &&
+                    !java.nio.file.Files.isSymbolicLink(it.toPath()) &&
+                    !isInternalRuntimePath(it.relativeTo(backup).invariantSeparatorsPath)
+            }
+            .forEach { source ->
+                val relative = source.relativeTo(backup).invariantSeparatorsPath
+                val target = safeWorkspaceFile(workspaceRoot, relative)
+                require(target.canonicalFile.toPath().startsWith(workspacePath)) {
+                    "Restored file escapes workspace"
+                }
+                target.parentFile?.mkdirs()
+                source.copyTo(target, overwrite = true)
+            }
+
+        // 2. Remove files that were tracked as changes created after the baseline
+        val changedPaths = readChangedPaths(projectId, checkpointTag)
+        changedPaths.forEach { relative ->
+            if (!isInternalRuntimePath(relative)) {
+                val original = safeWorkspaceFile(backup, relative)
+                if (!original.isFile) {
+                    val target = safeWorkspaceFile(workspaceRoot, relative)
+                    if (target.canonicalFile.toPath().startsWith(workspacePath) && target.isFile) {
+                        target.delete()
+                    }
+                }
+            }
+        }
+
+        return true
+    }
+
+    fun saveChangedPaths(projectId: String, paths: List<String>) =
+        saveChangedPaths(projectId, paths, DEFAULT_CHECKPOINT_TAG)
+
+    fun saveChangedPaths(projectId: String, paths: List<String>, checkpointTag: String) {
+        validateCheckpointTag(checkpointTag)
+        val checkpoint = checkpointDir(projectId, checkpointTag)
+        val manifest = File(checkpoint, "changes.json")
         manifest.parentFile?.mkdirs()
-        val merged = (readChangedPaths(projectId) + paths)
+        val merged = (readChangedPaths(projectId, checkpointTag) + paths)
             .filterNot(::isInternalRuntimePath)
             .distinct()
             .sorted()
         manifest.writeText(JSONArray(merged).toString())
+        updateMetadataChanges(projectId, checkpointTag, merged)
     }
 
-    fun readChangedPaths(projectId: String): List<String> {
-        val manifest = File(checkpointDir(projectId), "changes.json")
+    fun readChangedPaths(projectId: String): List<String> =
+        readChangedPaths(projectId, DEFAULT_CHECKPOINT_TAG)
+
+    fun readChangedPaths(projectId: String, checkpointTag: String): List<String> {
+        validateCheckpointTag(checkpointTag)
+        val manifest = File(checkpointDir(projectId, checkpointTag), "changes.json")
         if (!manifest.isFile) return emptyList()
         return runCatching {
             val array = JSONArray(manifest.readText())
@@ -93,13 +222,178 @@ class WorkspaceCheckpoints(private val filesDir: File) {
         }.getOrDefault(emptyList())
     }
 
-    fun removeChangedPath(projectId: String, path: String) {
-        val remaining = readChangedPaths(projectId).filterNot { it == path }
-        if (remaining.isEmpty()) {
-            checkpointDir(projectId).deleteRecursively()
+    fun removeChangedPath(projectId: String, path: String) =
+        removeChangedPath(projectId, path, DEFAULT_CHECKPOINT_TAG)
+
+    fun removeChangedPath(projectId: String, path: String, checkpointTag: String) {
+        validateCheckpointTag(checkpointTag)
+        val remaining = readChangedPaths(projectId, checkpointTag).filterNot { it == path }
+        val checkpoint = checkpointDir(projectId, checkpointTag)
+        if (checkpointTag == DEFAULT_CHECKPOINT_TAG) {
+            if (remaining.isEmpty()) {
+                checkpoint.deleteRecursively()
+            } else {
+                File(checkpoint, "changes.json").writeText(JSONArray(remaining).toString())
+                updateMetadataChanges(projectId, checkpointTag, remaining)
+            }
         } else {
-            File(checkpointDir(projectId), "changes.json").writeText(JSONArray(remaining).toString())
+            val manifest = File(checkpoint, "changes.json")
+            if (remaining.isEmpty()) {
+                manifest.delete()
+            } else {
+                manifest.writeText(JSONArray(remaining).toString())
+            }
+            updateMetadataChanges(projectId, checkpointTag, remaining)
         }
+    }
+
+    fun deleteCheckpoint(projectId: String, checkpointTag: String = DEFAULT_CHECKPOINT_TAG): Boolean {
+        validateCheckpointTag(checkpointTag)
+        val dir = checkpointDir(projectId, checkpointTag)
+        if (!dir.exists()) return false
+        return dir.deleteRecursively()
+    }
+
+    private fun writeMetadata(checkpointDir: File, metadata: CheckpointMetadata) {
+        runCatching {
+            val json = JSONObject().apply {
+                put("projectId", metadata.projectId)
+                put("checkpointTag", metadata.checkpointTag)
+                put("createdAt", metadata.createdAt)
+                put("backedUpFiles", JSONArray(metadata.backedUpFiles))
+                val fingerprintsObj = JSONObject()
+                metadata.fingerprints.forEach { (k, v) -> fingerprintsObj.put(k, v) }
+                put("fingerprints", fingerprintsObj)
+                put("changes", JSONArray(metadata.changes))
+                metadata.taskId?.let { put("taskId", it) }
+                metadata.stepId?.let { put("stepId", it) }
+                metadata.attempt?.let { put("attempt", it) }
+            }
+            File(checkpointDir, "metadata.json").writeText(json.toString(2))
+        }
+    }
+
+    private fun updateMetadataChanges(projectId: String, checkpointTag: String, changes: List<String>) {
+        val checkpoint = checkpointDir(projectId, checkpointTag)
+        val existing = readMetadata(projectId, checkpointTag)
+        if (existing != null) {
+            writeMetadata(checkpoint, existing.copy(changes = changes))
+        }
+    }
+
+    fun readMetadata(projectId: String, checkpointTag: String = DEFAULT_CHECKPOINT_TAG): CheckpointMetadata? {
+        val checkpoint = runCatching { checkpointDir(projectId, checkpointTag) }.getOrNull() ?: return null
+        val metaFile = File(checkpoint, "metadata.json")
+        if (metaFile.isFile) {
+            return runCatching {
+                val json = JSONObject(metaFile.readText())
+                val filesArray = json.optJSONArray("backedUpFiles") ?: JSONArray()
+                val files = (0 until filesArray.length()).map { filesArray.getString(it) }
+                val fpObj = json.optJSONObject("fingerprints") ?: JSONObject()
+                val fpMap = mutableMapOf<String, String>()
+                fpObj.keys().forEach { key -> fpMap[key] = fpObj.getString(key) }
+                val changesArray = json.optJSONArray("changes") ?: JSONArray()
+                val changes = (0 until changesArray.length()).map { changesArray.getString(it) }
+                val taskId = json.optString("taskId").takeIf { it.isNotBlank() }
+                val stepId = json.optString("stepId").takeIf { it.isNotBlank() }
+                val attempt = if (json.has("attempt")) json.optInt("attempt") else null
+                CheckpointMetadata(
+                    projectId = json.optString("projectId", projectId),
+                    checkpointTag = json.optString("checkpointTag", checkpointTag),
+                    createdAt = json.optLong("createdAt", metaFile.lastModified()),
+                    backedUpFiles = files,
+                    fingerprints = fpMap,
+                    changes = changes,
+                    taskId = taskId,
+                    stepId = stepId,
+                    attempt = attempt,
+                )
+            }.getOrNull()
+        }
+        val backup = File(checkpoint, "project")
+        if (!backup.isDirectory) return null
+        val fpMap = snapshot(backup)
+        val changes = readChangedPaths(projectId, checkpointTag)
+        return CheckpointMetadata(
+            projectId = projectId,
+            checkpointTag = checkpointTag,
+            createdAt = backup.lastModified(),
+            backedUpFiles = fpMap.keys.toList().sorted(),
+            fingerprints = fpMap,
+            changes = changes,
+        )
+    }
+
+    fun pruneStepCheckpoints(projectId: String, retainCount: Int = MAX_RETAINED_STEP_CHECKPOINTS): List<String> {
+        require(retainCount >= 0) { "retainCount must be non-negative" }
+        val projectDir = File(filesDir, "checkpoints/$projectId")
+        if (!projectDir.isDirectory) return emptyList()
+
+        val subdirs = projectDir.listFiles()?.filter { it.isDirectory } ?: return emptyList()
+        val stepDirs = subdirs.filter { isStepTag(it.name) }
+        if (stepDirs.size <= retainCount) return emptyList()
+
+        val sorted = stepDirs.sortedWith(
+            Comparator { a, b ->
+                val numA = extractStepNumber(a.name)
+                val numB = extractStepNumber(b.name)
+                if (numA != null && numB != null && numA != numB) {
+                    return@Comparator numA.compareTo(numB)
+                }
+                val metaA = readMetadata(projectId, a.name)
+                val metaB = readMetadata(projectId, b.name)
+                val timeA = metaA?.createdAt ?: a.lastModified()
+                val timeB = metaB?.createdAt ?: b.lastModified()
+                if (timeA != timeB) {
+                    return@Comparator timeA.compareTo(timeB)
+                }
+                a.name.compareTo(b.name)
+            }
+        )
+
+        val toPurge = sorted.dropLast(retainCount)
+        val purgedTags = mutableListOf<String>()
+        toPurge.forEach { dir ->
+            purgedTags.add(dir.name)
+            dir.deleteRecursively()
+        }
+        return purgedTags
+    }
+
+    fun isBaselineTag(tag: String): Boolean {
+        val lower = tag.lowercase(Locale.ROOT)
+        return lower == TASK_BASELINE_TAG || lower == "baseline" || lower.endsWith("-baseline") || lower.startsWith("baseline-") || lower.contains("baseline")
+    }
+
+    fun isStepTag(tag: String): Boolean {
+        val lower = tag.lowercase(Locale.ROOT)
+        if (isBaselineTag(lower) || lower == DEFAULT_CHECKPOINT_TAG) return false
+        return lower.startsWith("step-") || lower.startsWith("step_") || STEP_TAG_REGEX.matches(lower)
+    }
+
+    fun isValidCheckpointTag(tag: String): Boolean {
+        if (tag.isBlank()) return false
+        if (tag.contains('/') || tag.contains('\\')) return false
+        if (tag.startsWith('/') || tag.startsWith('\\')) return false
+        if (tag.contains("..")) return false
+        if (tag == "." || tag == "..") return false
+        if (tag.any { it.isISOControl() || it < ' ' || it.code == 127 }) return false
+        return CHECKPOINT_TAG_REGEX.matches(tag)
+    }
+
+    fun validateCheckpointTag(tag: String) {
+        require(tag.isNotBlank()) { "Checkpoint tag cannot be blank" }
+        require(!tag.startsWith('/') && !tag.startsWith('\\')) { "Checkpoint tag cannot be an absolute path: $tag" }
+        require(!tag.contains('/') && !tag.contains('\\')) { "Checkpoint tag cannot contain path separators: $tag" }
+        require(!tag.contains("..")) { "Checkpoint tag cannot contain path traversal: $tag" }
+        require(tag != "." && tag != "..") { "Checkpoint tag cannot be a relative directory pointer: $tag" }
+        require(!tag.any { it.isISOControl() || it < ' ' || it.code == 127 }) { "Checkpoint tag contains control characters: $tag" }
+        require(CHECKPOINT_TAG_REGEX.matches(tag)) { "Invalid checkpoint tag: $tag" }
+    }
+
+    private fun extractStepNumber(tag: String): Long? {
+        val match = Regex("\\d+").find(tag)
+        return match?.value?.toLongOrNull()
     }
 
     fun buildChangeDetails(projectId: String, workspace: File, paths: List<String>): List<ChangeItem> {
@@ -339,6 +633,13 @@ class WorkspaceCheckpoints(private val filesDir: File) {
     }
 
     companion object {
+        const val DEFAULT_CHECKPOINT_TAG = "latest"
+        const val TASK_BASELINE_TAG = "task-baseline"
+        const val MAX_RETAINED_STEP_CHECKPOINTS = 2
+
+        private val CHECKPOINT_TAG_REGEX = Regex("^[a-zA-Z0-9_-]+(\\.[a-zA-Z0-9_-]+)*$")
+        private val STEP_TAG_REGEX = Regex("^step[-_]?[0-9]+.*", RegexOption.IGNORE_CASE)
+
         private const val MAX_DIFF_LINES = 2_000
         private const val MAX_RENDERED_DIFF_LINES = 600
         private const val DIFF_CONTEXT_LINES = 3
@@ -360,3 +661,15 @@ class WorkspaceCheckpoints(private val filesDir: File) {
         )
     }
 }
+
+data class CheckpointMetadata(
+    val projectId: String,
+    val checkpointTag: String,
+    val createdAt: Long,
+    val backedUpFiles: List<String>,
+    val fingerprints: Map<String, String>,
+    val changes: List<String> = emptyList(),
+    val taskId: String? = null,
+    val stepId: String? = null,
+    val attempt: Int? = null,
+)

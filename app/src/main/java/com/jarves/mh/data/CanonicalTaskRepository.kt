@@ -3,6 +3,7 @@ package com.jarves.mh.data
 import com.jarves.mh.model.brain.CanonicalTask
 import com.jarves.mh.model.brain.ExecutionPlan
 import com.jarves.mh.model.brain.ExecutionStep
+import com.jarves.mh.model.brain.PlanStatus
 import com.jarves.mh.model.brain.RecoveryPlan
 import com.jarves.mh.model.brain.RecoveryStrategy
 import com.jarves.mh.model.brain.StepStatus
@@ -34,6 +35,26 @@ class CanonicalTaskRepository(private val db: BrainDatabase) {
         val arr = JSONArray()
         list.forEach { arr.put(it) }
         return arr.toString()
+    }
+
+    private fun mapToJson(map: Map<String, String>): String {
+        val obj = JSONObject()
+        map.forEach { (k, v) -> obj.put(k, v) }
+        return obj.toString()
+    }
+
+    private fun jsonToMap(jsonStr: String?): Map<String, String> {
+        if (jsonStr.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val obj = JSONObject(jsonStr)
+            val map = mutableMapOf<String, String>()
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                map[key] = obj.getString(key)
+            }
+            map
+        }.getOrDefault(emptyMap())
     }
 
     private fun outcomeToJson(outcome: TaskOutcome?): String? {
@@ -82,10 +103,14 @@ class CanonicalTaskRepository(private val db: BrainDatabase) {
                 INSERT OR REPLACE INTO canonical_tasks (
                     task_id, project_id, project_slug, objective,
                     constraints_json, acceptance_criteria_json,
-                    initial_workspace_sha, current_workspace_sha, outcome_json,
+                    initial_workspace_sha, current_workspace_sha,
+                    current_step_index, plan_id, plan_title, plan_status, outcome_json,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
+
+            val effectivePlanId = task.plan.planId.ifBlank { "plan-${task.taskId}" }
+            val effectivePlanTitle = task.plan.title.ifBlank { "Execution Plan for ${task.taskId}" }
 
             db.driver.execute(
                 sql,
@@ -98,9 +123,32 @@ class CanonicalTaskRepository(private val db: BrainDatabase) {
                     listToJsonArray(task.acceptanceCriteria),
                     task.initialWorkspaceSha,
                     task.currentWorkspaceSha,
+                    task.plan.currentStepIndex,
+                    effectivePlanId,
+                    effectivePlanTitle,
+                    task.plan.status.name,
                     outcomeToJson(task.outcome),
                     task.createdAt.toEpochMilli(),
                     task.updatedAt.toEpochMilli()
+                )
+            )
+
+            // Save plan in execution_plans table
+            val planSql = """
+                INSERT OR REPLACE INTO execution_plans (
+                    plan_id, task_id, title, status, current_step_index, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """.trimIndent()
+            db.driver.execute(
+                planSql,
+                listOf(
+                    effectivePlanId,
+                    task.taskId,
+                    effectivePlanTitle,
+                    task.plan.status.name,
+                    task.plan.currentStepIndex,
+                    task.plan.createdAt.toEpochMilli(),
+                    task.plan.updatedAt.toEpochMilli()
                 )
             )
 
@@ -109,28 +157,38 @@ class CanonicalTaskRepository(private val db: BrainDatabase) {
             val stepSql = """
                 INSERT INTO execution_steps (
                     step_id, task_id, step_order, title, description,
-                    expected_files_json, status, attempts, max_attempts,
-                    result_summary, checkpoint_tag, started_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    expected_files_json, forbidden_files_json, expected_content_json,
+                    verification_command, status, attempts, max_attempts,
+                    result_summary, checkpoint_tag, started_at, completed_at,
+                    objective, acceptance_criteria_json, plan_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
 
             task.plan.steps.forEachIndexed { index, step ->
+                val effObj = step.objective.ifBlank { step.description.ifBlank { step.title } }
+                val effDesc = step.description.ifBlank { effObj }
                 db.driver.execute(
                     stepSql,
                     listOf(
-                        step.stepId,
+                        step.stepId.ifBlank { "${task.taskId}-step-$index" },
                         task.taskId,
-                        index,
+                        step.stepOrder,
                         step.title,
-                        step.description,
+                        effDesc,
                         listToJsonArray(step.expectedFiles),
+                        listToJsonArray(step.forbiddenFiles),
+                        mapToJson(step.expectedContent),
+                        step.verificationCommand,
                         step.status.name,
                         step.attempts,
                         step.maxAttempts,
                         step.resultSummary,
-                        step.checkpointTag,
+                        step.checkpointTag ?: "step-${index + 1}",
                         step.startedAt?.toEpochMilli(),
-                        step.completedAt?.toEpochMilli()
+                        step.completedAt?.toEpochMilli(),
+                        effObj,
+                        listToJsonArray(step.acceptanceCriteria),
+                        effectivePlanId
                     )
                 )
             }
@@ -167,8 +225,10 @@ class CanonicalTaskRepository(private val db: BrainDatabase) {
                     INSERT OR REPLACE INTO recovery_plans (
                         recovery_id, task_id, failure_record_id, strategy,
                         rationale, files_to_rollback_json, forward_fix_instructions,
-                        target_step_index, approved_by_user, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        target_step_index, approved_by_user, created_at,
+                        step_id, checkpoint_tag, attempt_number, status,
+                        recovery_result, next_action
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """.trimIndent()
 
                 db.driver.execute(
@@ -183,7 +243,13 @@ class CanonicalTaskRepository(private val db: BrainDatabase) {
                         recovery.forwardFixInstructions,
                         recovery.targetStepIndex,
                         if (recovery.approvedByUser) 1 else 0,
-                        recovery.createdAt.toEpochMilli()
+                        recovery.createdAt.toEpochMilli(),
+                        recovery.stepId,
+                        recovery.checkpointTag,
+                        recovery.attemptNumber,
+                        recovery.status.name,
+                        recovery.recoveryResult,
+                        recovery.nextAction
                     )
                 )
             }
@@ -204,23 +270,53 @@ class CanonicalTaskRepository(private val db: BrainDatabase) {
                 acceptanceCriteria = jsonArrayToList(row.getString("acceptance_criteria_json")),
                 initialWorkspaceSha = row.getString("initial_workspace_sha"),
                 currentWorkspaceSha = row.getString("current_workspace_sha"),
+                currentStepIndex = row.getInt("current_step_index") ?: 0,
+                planId = row.getString("plan_id"),
+                planTitle = row.getString("plan_title"),
+                planStatus = runCatching {
+                    PlanStatus.valueOf(row.getString("plan_status") ?: "PENDING")
+                }.getOrDefault(PlanStatus.PENDING),
                 outcome = jsonToOutcome(row.getString("outcome_json")),
                 createdAt = Instant.ofEpochMilli(row.getLong("created_at") ?: System.currentTimeMillis()),
                 updatedAt = Instant.ofEpochMilli(row.getLong("updated_at") ?: System.currentTimeMillis()),
             )
         }.firstOrNull() ?: return null
 
+        // Fetch execution plan if persisted in execution_plans table
+        val planRow = db.driver.query(
+            "SELECT * FROM execution_plans WHERE task_id = ? LIMIT 1",
+            listOf(taskId)
+        ) { row ->
+            ExecutionPlanRow(
+                planId = row.getString("plan_id") ?: "",
+                taskId = row.getString("task_id") ?: "",
+                title = row.getString("title") ?: "",
+                status = runCatching {
+                    PlanStatus.valueOf(row.getString("status") ?: "PENDING")
+                }.getOrDefault(PlanStatus.PENDING),
+                currentStepIndex = row.getInt("current_step_index") ?: 0,
+                createdAt = Instant.ofEpochMilli(row.getLong("created_at") ?: System.currentTimeMillis()),
+                updatedAt = Instant.ofEpochMilli(row.getLong("updated_at") ?: System.currentTimeMillis()),
+            )
+        }.firstOrNull()
+
         // Fetch execution steps
         val steps = db.driver.query(
             "SELECT * FROM execution_steps WHERE task_id = ? ORDER BY step_order ASC",
             listOf(taskId)
         ) { row ->
+            val desc = row.getString("description") ?: ""
+            val obj = row.getString("objective")?.takeIf { it.isNotBlank() } ?: desc
+            val criteria = jsonArrayToList(row.getString("acceptance_criteria_json"))
             ExecutionStep(
                 stepId = row.getString("step_id") ?: "",
                 stepOrder = row.getInt("step_order") ?: 0,
                 title = row.getString("title") ?: "",
-                description = row.getString("description") ?: "",
+                description = desc.ifBlank { obj },
                 expectedFiles = jsonArrayToList(row.getString("expected_files_json")),
+                forbiddenFiles = jsonArrayToList(row.getString("forbidden_files_json")),
+                expectedContent = jsonToMap(row.getString("expected_content_json")),
+                verificationCommand = row.getString("verification_command"),
                 status = runCatching {
                     StepStatus.valueOf(row.getString("status") ?: "PENDING")
                 }.getOrDefault(StepStatus.PENDING),
@@ -230,6 +326,9 @@ class CanonicalTaskRepository(private val db: BrainDatabase) {
                 checkpointTag = row.getString("checkpoint_tag"),
                 startedAt = row.getLong("started_at")?.let { Instant.ofEpochMilli(it) },
                 completedAt = row.getLong("completed_at")?.let { Instant.ofEpochMilli(it) },
+                objective = obj,
+                acceptanceCriteria = criteria,
+                planId = row.getString("plan_id") ?: planRow?.planId ?: taskRow.planId ?: "plan-$taskId"
             )
         }
 
@@ -269,17 +368,33 @@ class CanonicalTaskRepository(private val db: BrainDatabase) {
                 targetStepIndex = row.getInt("target_step_index") ?: 0,
                 approvedByUser = (row.getInt("approved_by_user") ?: 0) == 1,
                 createdAt = Instant.ofEpochMilli(row.getLong("created_at") ?: System.currentTimeMillis()),
+                stepId = row.getString("step_id"),
+                checkpointTag = row.getString("checkpoint_tag"),
+                attemptNumber = row.getInt("attempt_number") ?: 1,
+                status = runCatching {
+                    com.jarves.mh.model.brain.RecoveryStatus.valueOf(row.getString("status") ?: "PENDING")
+                }.getOrDefault(com.jarves.mh.model.brain.RecoveryStatus.PENDING),
+                recoveryResult = row.getString("recovery_result"),
+                nextAction = row.getString("next_action"),
             )
         }.firstOrNull()
 
+        val effectivePlanId = planRow?.planId ?: taskRow.planId ?: "plan-$taskId"
+        val effectivePlanTitle = planRow?.title ?: taskRow.planTitle ?: "Plan for: ${taskRow.objective.take(40)}"
+        val effectivePlanStatus = planRow?.status ?: taskRow.planStatus
+        val effectiveStepIndex = (planRow?.currentStepIndex ?: taskRow.currentStepIndex).coerceIn(0, steps.size)
+        val effectiveCreatedAt = planRow?.createdAt ?: taskRow.createdAt
+        val effectiveUpdatedAt = planRow?.updatedAt ?: taskRow.updatedAt
+
         val plan = ExecutionPlan(
-            title = "Plan for: ${taskRow.objective.take(40)}",
+            planId = effectivePlanId,
+            taskId = taskId,
+            title = effectivePlanTitle,
             steps = steps,
-            currentStepIndex = steps.indexOfFirst { it.status == StepStatus.RUNNING || it.status == StepStatus.PENDING }.let {
-                if (it == -1) if (steps.isEmpty()) 0 else steps.size - 1 else it
-            },
-            createdAt = taskRow.createdAt,
-            updatedAt = taskRow.updatedAt
+            currentStepIndex = effectiveStepIndex,
+            status = effectivePlanStatus,
+            createdAt = effectiveCreatedAt,
+            updatedAt = effectiveUpdatedAt
         )
 
         return CanonicalTask(
@@ -370,6 +485,155 @@ class CanonicalTaskRepository(private val db: BrainDatabase) {
         )
     }
 
+    fun getPlan(taskId: String): ExecutionPlan? {
+        return getTask(taskId)?.plan
+    }
+
+    fun savePlan(taskId: String, plan: ExecutionPlan) {
+        val now = System.currentTimeMillis()
+        db.driver.transaction {
+            val planSql = """
+                INSERT OR REPLACE INTO execution_plans (
+                    plan_id, task_id, title, status, current_step_index, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """.trimIndent()
+            db.driver.execute(
+                planSql,
+                listOf(
+                    plan.planId,
+                    taskId,
+                    plan.title,
+                    plan.status.name,
+                    plan.currentStepIndex,
+                    plan.createdAt.toEpochMilli(),
+                    now
+                )
+            )
+
+            db.driver.execute(
+                "UPDATE canonical_tasks SET plan_id = ?, plan_title = ?, plan_status = ?, current_step_index = ?, updated_at = ? WHERE task_id = ?",
+                listOf(plan.planId, plan.title, plan.status.name, plan.currentStepIndex, now, taskId)
+            )
+
+            // Save steps
+            db.driver.execute("DELETE FROM execution_steps WHERE task_id = ?", listOf(taskId))
+            val stepSql = """
+                INSERT INTO execution_steps (
+                    step_id, task_id, step_order, title, description,
+                    expected_files_json, forbidden_files_json, expected_content_json,
+                    verification_command, status, attempts, max_attempts,
+                    result_summary, checkpoint_tag, started_at, completed_at,
+                    objective, acceptance_criteria_json, plan_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """.trimIndent()
+
+            plan.steps.forEachIndexed { index, step ->
+                val effObj = step.objective.ifBlank { step.description.ifBlank { step.title } }
+                val effDesc = step.description.ifBlank { effObj }
+                db.driver.execute(
+                    stepSql,
+                    listOf(
+                        step.stepId.ifBlank { "$taskId-step-$index" },
+                        taskId,
+                        step.stepOrder,
+                        step.title,
+                        effDesc,
+                        listToJsonArray(step.expectedFiles),
+                        listToJsonArray(step.forbiddenFiles),
+                        mapToJson(step.expectedContent),
+                        step.verificationCommand,
+                        step.status.name,
+                        step.attempts,
+                        step.maxAttempts,
+                        step.resultSummary,
+                        step.checkpointTag ?: "step-${index + 1}",
+                        step.startedAt?.toEpochMilli(),
+                        step.completedAt?.toEpochMilli(),
+                        effObj,
+                        listToJsonArray(step.acceptanceCriteria),
+                        plan.planId
+                    )
+                )
+            }
+        }
+    }
+
+    fun updatePlanStatus(taskId: String, status: PlanStatus) {
+        val now = System.currentTimeMillis()
+        db.driver.transaction {
+            db.driver.execute(
+                "UPDATE execution_plans SET status = ?, updated_at = ? WHERE task_id = ?",
+                listOf(status.name, now, taskId)
+            )
+            db.driver.execute(
+                "UPDATE canonical_tasks SET plan_status = ?, updated_at = ? WHERE task_id = ?",
+                listOf(status.name, now, taskId)
+            )
+        }
+    }
+
+    fun updateStep(taskId: String, step: ExecutionStep) {
+        db.driver.transaction {
+            val effObj = step.objective.ifBlank { step.description.ifBlank { step.title } }
+            val effDesc = step.description.ifBlank { effObj }
+            val stepSql = """
+                UPDATE execution_steps SET
+                    title = ?, description = ?, expected_files_json = ?,
+                    forbidden_files_json = ?, expected_content_json = ?,
+                    verification_command = ?, status = ?, attempts = ?,
+                    max_attempts = ?, result_summary = ?, checkpoint_tag = ?,
+                    started_at = ?, completed_at = ?, objective = ?,
+                    acceptance_criteria_json = ?
+                WHERE task_id = ? AND step_id = ?
+            """.trimIndent()
+            db.driver.execute(
+                stepSql,
+                listOf(
+                    step.title,
+                    effDesc,
+                    listToJsonArray(step.expectedFiles),
+                    listToJsonArray(step.forbiddenFiles),
+                    mapToJson(step.expectedContent),
+                    step.verificationCommand,
+                    step.status.name,
+                    step.attempts,
+                    step.maxAttempts,
+                    step.resultSummary,
+                    step.checkpointTag,
+                    step.startedAt?.toEpochMilli(),
+                    step.completedAt?.toEpochMilli(),
+                    effObj,
+                    listToJsonArray(step.acceptanceCriteria),
+                    taskId,
+                    step.stepId
+                )
+            )
+            val now = System.currentTimeMillis()
+            db.driver.execute(
+                "UPDATE canonical_tasks SET updated_at = ? WHERE task_id = ?",
+                listOf(now, taskId)
+            )
+            db.driver.execute(
+                "UPDATE execution_plans SET updated_at = ? WHERE task_id = ?",
+                listOf(now, taskId)
+            )
+        }
+    }
+
+    fun updateCurrentStepIndex(taskId: String, currentStepIndex: Int) {
+        val now = System.currentTimeMillis()
+        db.driver.transaction {
+            db.driver.execute(
+                "UPDATE canonical_tasks SET current_step_index = ?, updated_at = ? WHERE task_id = ?",
+                listOf(currentStepIndex, now, taskId)
+            )
+            db.driver.execute(
+                "UPDATE execution_plans SET current_step_index = ?, updated_at = ? WHERE task_id = ?",
+                listOf(currentStepIndex, now, taskId)
+            )
+        }
+    }
+
     fun completeTask(taskId: String, outcome: TaskOutcome) {
         val sql = "UPDATE canonical_tasks SET outcome_json = ?, updated_at = ? WHERE task_id = ?"
         db.driver.execute(
@@ -378,11 +642,46 @@ class CanonicalTaskRepository(private val db: BrainDatabase) {
         )
     }
 
+    fun saveRecoveryPlan(recovery: RecoveryPlan) {
+        val recoverySql = """
+            INSERT OR REPLACE INTO recovery_plans (
+                recovery_id, task_id, failure_record_id, strategy,
+                rationale, files_to_rollback_json, forward_fix_instructions,
+                target_step_index, approved_by_user, created_at,
+                step_id, checkpoint_tag, attempt_number, status,
+                recovery_result, next_action
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """.trimIndent()
+
+        db.driver.execute(
+            recoverySql,
+            listOf(
+                recovery.recoveryId,
+                recovery.taskId,
+                recovery.failureRecordId,
+                recovery.strategy.name,
+                recovery.rationale,
+                listToJsonArray(recovery.filesToRollback),
+                recovery.forwardFixInstructions,
+                recovery.targetStepIndex,
+                if (recovery.approvedByUser) 1 else 0,
+                recovery.createdAt.toEpochMilli(),
+                recovery.stepId,
+                recovery.checkpointTag,
+                recovery.attemptNumber,
+                recovery.status.name,
+                recovery.recoveryResult,
+                recovery.nextAction
+            )
+        )
+    }
+
     fun deleteTask(taskId: String) {
         db.driver.transaction {
             db.driver.execute("DELETE FROM recovery_plans WHERE task_id = ?", listOf(taskId))
             db.driver.execute("DELETE FROM task_failures WHERE task_id = ?", listOf(taskId))
             db.driver.execute("DELETE FROM execution_steps WHERE task_id = ?", listOf(taskId))
+            db.driver.execute("DELETE FROM execution_plans WHERE task_id = ?", listOf(taskId))
             db.driver.execute("DELETE FROM canonical_tasks WHERE task_id = ?", listOf(taskId))
         }
     }
@@ -396,7 +695,21 @@ class CanonicalTaskRepository(private val db: BrainDatabase) {
         val acceptanceCriteria: List<String>,
         val initialWorkspaceSha: String?,
         val currentWorkspaceSha: String?,
+        val currentStepIndex: Int = 0,
+        val planId: String? = null,
+        val planTitle: String? = null,
+        val planStatus: PlanStatus = PlanStatus.PENDING,
         val outcome: TaskOutcome?,
+        val createdAt: Instant,
+        val updatedAt: Instant,
+    )
+
+    private data class ExecutionPlanRow(
+        val planId: String,
+        val taskId: String,
+        val title: String,
+        val status: PlanStatus,
+        val currentStepIndex: Int,
         val createdAt: Instant,
         val updatedAt: Instant,
     )
