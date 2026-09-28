@@ -147,6 +147,15 @@ class DeterministicSelfRecoveryStep5Test {
         assertTrue(planSysFault.filesToRollback.isEmpty())
         assertEquals(2, planSysFault.attemptNumber)
 
+        // ENVIRONMENT_DRIFT triggers RECREATE_WORKSPACE_STATE with canonical baseline tag
+        val planDrift = engine.planRecovery(
+            task, step, TaskSupervisor.TaskErrorClassification.ENVIRONMENT_DRIFT, "environment_drift: corrupted workspace state", emptyList(), attemptCount = 1
+        )
+        assertNotNull(planDrift)
+        assertEquals(RecoveryStrategy.RECREATE_WORKSPACE_STATE, planDrift!!.strategy)
+        assertEquals(WorkspaceCheckpoints.TASK_BASELINE_TAG, planDrift.checkpointTag)
+        assertEquals(2, planDrift.attemptNumber)
+
         // Permanent failure never produces recovery plan
         val planPerm = engine.planRecovery(
             task, step, TaskSupervisor.TaskErrorClassification.PERMANENT_AUTH_OR_CONFIG, "HTTP 401", emptyList(), attemptCount = 1

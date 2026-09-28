@@ -93,6 +93,45 @@ fun validateCheckpointForStep(
 }
 
 /**
+ * Validates that a baseline checkpoint is the canonical task baseline and belongs to the task's project.
+ * Enforces canonical TASK_BASELINE_TAG ownership and prevents arbitrary checkpoint selection or cross-task/cross-project restores.
+ */
+fun validateBaselineCheckpoint(
+    task: CanonicalTask,
+    checkpointTag: String,
+    checkpoints: WorkspaceCheckpoints
+): CheckpointValidationResult {
+    if (checkpointTag != WorkspaceCheckpoints.TASK_BASELINE_TAG) {
+        return CheckpointValidationResult.Invalid(
+            "Checkpoint tag '$checkpointTag' is not canonical task baseline tag '${WorkspaceCheckpoints.TASK_BASELINE_TAG}'"
+        )
+    }
+    if (!checkpoints.isValidCheckpointTag(checkpointTag)) {
+        return CheckpointValidationResult.Invalid("Checkpoint tag '$checkpointTag' is invalid or unsafe")
+    }
+    if (!checkpoints.checkpointExists(task.projectId, checkpointTag)) {
+        return CheckpointValidationResult.Invalid(
+            "Baseline checkpoint '$checkpointTag' does not exist for project '${task.projectId}'"
+        )
+    }
+    val meta = checkpoints.readMetadata(task.projectId, checkpointTag)
+        ?: return CheckpointValidationResult.Invalid(
+            "Metadata missing for baseline checkpoint '$checkpointTag' in project '${task.projectId}'"
+        )
+    if (meta.projectId != task.projectId) {
+        return CheckpointValidationResult.Invalid(
+            "Baseline checkpoint project mismatch: owned by '${meta.projectId}', task is '${task.projectId}'"
+        )
+    }
+    if (meta.taskId != null && meta.taskId != task.taskId) {
+        return CheckpointValidationResult.Invalid(
+            "Baseline checkpoint task mismatch: owned by '${meta.taskId}', task is '${task.taskId}'"
+        )
+    }
+    return CheckpointValidationResult.Valid
+}
+
+/**
  * Authoritative interface for the deterministic self-recovery engine.
  * Determines bounded, deterministic recovery plans from trusted failure classifications
  * without arbitrary LLM decisions or unrestricted shell execution.
@@ -145,7 +184,8 @@ interface RecoveryEngine {
 class DefaultRecoveryEngine(
     val maxStepRetries: Int = 2,
     val baseBackoffMillis: Long = 50L,
-    val maxBackoffMillis: Long = 1000L
+    val maxBackoffMillis: Long = 1000L,
+    val checkpointsProvider: (() -> WorkspaceCheckpoints?)? = null
 ) : RecoveryEngine {
 
     private val executedRecoveries = ConcurrentHashMap<String, RecoveryExecutionResult>()
@@ -304,6 +344,34 @@ class DefaultRecoveryEngine(
                     )
                 }
             }
+            TaskSupervisor.TaskErrorClassification.ENVIRONMENT_DRIFT -> {
+                val lower = errorMessage.lowercase()
+                val isUnrecoverable = lower.contains("unrecoverable") ||
+                    lower.contains("fatal") ||
+                    lower.contains("hardware failure") ||
+                    lower.contains("permission denied") ||
+                    lower.contains("read-only file system") ||
+                    lower.contains("no space left on device")
+                val checkpoints = checkpointsProvider?.invoke()
+                val hasBaselinePrereq = checkpoints == null || checkpoints.checkpointExists(task.projectId, WorkspaceCheckpoints.TASK_BASELINE_TAG)
+
+                if (task.projectId.isNotBlank() && !isUnrecoverable && hasBaselinePrereq) {
+                    RecoveryPlan(
+                        recoveryId = recoveryPlanId,
+                        taskId = task.taskId,
+                        failureRecordId = failureRecordId,
+                        strategy = RecoveryStrategy.RECREATE_WORKSPACE_STATE,
+                        rationale = "Environment drift detected. Recreate clean workspace state from canonical baseline '${WorkspaceCheckpoints.TASK_BASELINE_TAG}' and retry step.",
+                        filesToRollback = mutatedFiles,
+                        targetStepIndex = step.stepOrder,
+                        stepId = step.stepId,
+                        checkpointTag = WorkspaceCheckpoints.TASK_BASELINE_TAG,
+                        attemptNumber = nextAttempt
+                    )
+                } else {
+                    null
+                }
+            }
             else -> null
         }
     }
@@ -398,32 +466,40 @@ class DefaultRecoveryEngine(
                 )
             }
             RecoveryStrategy.RECREATE_WORKSPACE_STATE -> {
-                if (workspaceDir != null && checkpoints != null) {
-                    val baselineTag = "baseline"
-                    if (checkpoints.checkpointExists(task.projectId, baselineTag)) {
-                        val restored = checkpoints.restoreCheckpoint(task.projectId, workspaceDir, baselineTag)
+                val tag = plan.checkpointTag ?: WorkspaceCheckpoints.TASK_BASELINE_TAG
+                if (workspaceDir == null || checkpoints == null) {
+                    RecoveryExecutionResult(
+                        success = false,
+                        strategy = plan.strategy,
+                        shouldRetryStep = false,
+                        message = "Cannot recreate workspace state: checkpoints or workspace directory is null"
+                    )
+                } else {
+                    val validation = validateBaselineCheckpoint(task, tag, checkpoints)
+                    if (validation !is CheckpointValidationResult.Valid) {
+                        RecoveryExecutionResult(
+                            success = false,
+                            strategy = plan.strategy,
+                            shouldRetryStep = false,
+                            message = "Baseline checkpoint validation failed: ${(validation as CheckpointValidationResult.Invalid).reason}"
+                        )
+                    } else {
+                        if (plan.filesToRollback.isNotEmpty()) {
+                            checkpoints.saveChangedPaths(task.projectId, plan.filesToRollback, tag)
+                        }
+                        val restored = checkpoints.restoreCheckpoint(task.projectId, workspaceDir, tag)
                         RecoveryExecutionResult(
                             success = restored,
                             strategy = plan.strategy,
                             checkpointRestored = restored,
                             shouldRetryStep = restored,
-                            message = if (restored) "Recreated workspace state from baseline" else "Failed to restore baseline checkpoint"
-                        )
-                    } else {
-                        RecoveryExecutionResult(
-                            success = false,
-                            strategy = plan.strategy,
-                            shouldRetryStep = false,
-                            message = "Baseline checkpoint not found"
+                            message = if (restored) {
+                                "Successfully recreated workspace state from canonical baseline '$tag' for step '${step.title}'"
+                            } else {
+                                "Failed to restore baseline checkpoint '$tag'"
+                            }
                         )
                     }
-                } else {
-                    RecoveryExecutionResult(
-                        success = false,
-                        strategy = plan.strategy,
-                        shouldRetryStep = false,
-                        message = "Workspace directory or checkpoints null"
-                    )
                 }
             }
             RecoveryStrategy.REBUILD_AND_RETEST -> {

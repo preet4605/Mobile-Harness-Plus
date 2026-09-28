@@ -29,6 +29,7 @@ import com.jarves.mh.model.brain.TaskFailureRecord
 import com.jarves.mh.model.RuntimeEvent
 import com.jarves.mh.runtime.ControlledBrainInjector
 import com.jarves.mh.runtime.RuntimeExecutionService
+import com.jarves.mh.runtime.WorkspaceCheckpoints
 import java.io.File
 import java.time.Instant
 import java.util.UUID
@@ -373,7 +374,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
     }
 
     var stepVerifier: StepVerifier = DefaultStepVerifier()
-    var recoveryEngine: RecoveryEngine = DefaultRecoveryEngine()
+    var recoveryEngine: RecoveryEngine = DefaultRecoveryEngine(checkpointsProvider = { getCheckpoints() })
 
     fun detectStepMutatedFiles(
         projectId: String,
@@ -718,7 +719,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         WORKSPACE_MUTATED_FAILURE,
         PROCESS_FAILURE,
         STEP_VERIFICATION_FAILURE,
-        TRANSIENT_SYSTEM_FAULT
+        TRANSIENT_SYSTEM_FAULT,
+        ENVIRONMENT_DRIFT
     }
 
     fun isCancellationActive(taskId: String): Boolean {
@@ -738,6 +740,14 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             lower.contains("http 401") || lower.contains("http 403") ||
             lower.contains("code: 401") || lower.contains("code: 403")) {
             return TaskErrorClassification.PERMANENT_AUTH_OR_CONFIG
+        }
+        if (lower.contains("environment_drift") || lower.contains("environment drift") ||
+            lower.contains("environment state drift") || lower.contains("workspace environment drift") ||
+            lower.contains("corrupted workspace state") || lower.contains("corrupted workspace environment") ||
+            lower.contains("inconsistent workspace state") || lower.contains("workspace state drift") ||
+            lower.contains("external workspace drift") || lower.contains("workspace drift detected") ||
+            lower.contains("environment drift detected") || lower.contains("dirty environment drift")) {
+            return TaskErrorClassification.ENVIRONMENT_DRIFT
         }
         if (workspaceMutated) {
             return TaskErrorClassification.WORKSPACE_MUTATED_FAILURE
@@ -1008,6 +1018,26 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                             // Transition to RUNNING
                             current = stateStore.transition(taskId, TaskExecutionStatus.RUNNING)
                             refreshActiveTasks()
+
+                            // Establish canonical task baseline checkpoint before step execution begins
+                            val initialWsDir = resolveWorkspaceDir(current.projectId)
+                            val initialCheckpoints = getCheckpoints()
+                            if (initialWsDir != null) {
+                                if (!initialWsDir.exists()) {
+                                    initialWsDir.mkdirs()
+                                }
+                                val existingBaselineMeta = initialCheckpoints.readMetadata(current.projectId, WorkspaceCheckpoints.TASK_BASELINE_TAG)
+                                if (existingBaselineMeta == null || existingBaselineMeta.taskId != taskId) {
+                                    initialCheckpoints.createCheckpoint(
+                                        projectId = current.projectId,
+                                        workspace = initialWsDir,
+                                        checkpointTag = WorkspaceCheckpoints.TASK_BASELINE_TAG,
+                                        taskId = taskId,
+                                        stepId = null,
+                                        attempt = attempt
+                                    )
+                                }
+                            }
 
                             // Step-aware execution loop: executes strictly one step at a time
                             while (!succeeded && !isCancellationActive(taskId)) {
@@ -1911,7 +1941,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                 }
                                 TaskErrorClassification.TRANSIENT_API_ERROR,
                                 TaskErrorClassification.PROCESS_FAILURE,
-                                TaskErrorClassification.TRANSIENT_SYSTEM_FAULT -> {
+                                TaskErrorClassification.TRANSIENT_SYSTEM_FAULT,
+                                TaskErrorClassification.ENVIRONMENT_DRIFT -> {
                                     if (attempt <= task.maxRetries) {
                                         runCatching { Log.w(TAG, "Transient error on attempt $attempt for task $taskId: $errorMsg. Retrying in ${1000L * attempt}ms...") }
                                     } else {
@@ -1919,6 +1950,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                             "Service unavailable after $attempt attempts ($errorMsg)"
                                         } else if (classification == TaskErrorClassification.TRANSIENT_SYSTEM_FAULT) {
                                             "Transient system fault after $attempt attempts ($errorMsg)"
+                                        } else if (classification == TaskErrorClassification.ENVIRONMENT_DRIFT) {
+                                            "Environment drift unrecovered after $attempt attempts ($errorMsg)"
                                         } else {
                                             "Task failed after $attempt attempts: $errorMsg"
                                         }
