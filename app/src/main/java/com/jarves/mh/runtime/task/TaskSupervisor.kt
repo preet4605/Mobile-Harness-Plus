@@ -717,7 +717,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         PERMANENT_AUTH_OR_CONFIG,
         WORKSPACE_MUTATED_FAILURE,
         PROCESS_FAILURE,
-        STEP_VERIFICATION_FAILURE
+        STEP_VERIFICATION_FAILURE,
+        TRANSIENT_SYSTEM_FAULT
     }
 
     fun isCancellationActive(taskId: String): Boolean {
@@ -743,6 +744,16 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         }
         if (lower.contains("verification failed") || lower.contains("step verification")) {
             return TaskErrorClassification.STEP_VERIFICATION_FAILURE
+        }
+        if (lower.contains("transient_system_fault") || lower.contains("transient system fault") ||
+            lower.contains("transient system failure") || lower.contains("transient system error") ||
+            lower.contains("resource temporarily unavailable") || lower.contains("device or resource busy") ||
+            lower.contains("ebusy") || lower.contains("interrupted system call") ||
+            lower.contains("sqlite_busy") || lower.contains("database is locked") ||
+            lower.contains("database locked") || lower.contains("lock acquisition timeout") ||
+            lower.contains("lock contention") || lower.contains("temporary system error") ||
+            lower.contains("transient fault") || lower.contains("system fault")) {
+            return TaskErrorClassification.TRANSIENT_SYSTEM_FAULT
         }
         if (lower.contains("503") || lower.contains("unavailable") || lower.contains("service is currently unavailable") ||
             lower.contains("500") || lower.contains("502") || lower.contains("504") ||
@@ -1117,14 +1128,16 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
 
                                         val recoveryPlan = recoveryEngine.planRecovery(
                                             canonicalTask, activeStep, classification, failReason, mutatedFiles, attemptCount = activeStep.attempts
-                                        )?.copy(
-                                            failureRecordId = failureRecord.failureId,
-                                            stepId = activeStep.stepId,
-                                            checkpointTag = stepTag,
-                                            attemptNumber = activeStep.attempts + 1,
-                                            status = com.jarves.mh.model.brain.RecoveryStatus.PENDING,
-                                            nextAction = "EXECUTE_RECOVERY"
-                                        )
+                                        )?.let { plan ->
+                                            plan.copy(
+                                                failureRecordId = failureRecord.failureId,
+                                                stepId = activeStep.stepId,
+                                                checkpointTag = if (plan.strategy == com.jarves.mh.model.brain.RecoveryStrategy.RETRY_STEP_DIRECT) null else (plan.checkpointTag ?: stepTag),
+                                                attemptNumber = activeStep.attempts + 1,
+                                                status = com.jarves.mh.model.brain.RecoveryStatus.PENDING,
+                                                nextAction = "EXECUTE_RECOVERY"
+                                            )
+                                        }
 
                                         if (recoveryPlan != null) {
                                             activeStep = activeStep.copy(status = StepStatus.RECOVERING)
@@ -1387,13 +1400,15 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
 
                                         val recoveryPlan = recoveryEngine.planRecovery(
                                             canonicalTask, activeStep, classification, errorMsg, mutatedFiles, attemptCount = activeStep.attempts
-                                        )?.copy(
-                                            stepId = activeStep.stepId,
-                                            checkpointTag = stepTag,
-                                            attemptNumber = activeStep.attempts + 1,
-                                            status = com.jarves.mh.model.brain.RecoveryStatus.PENDING,
-                                            nextAction = "EXECUTE_RECOVERY"
-                                        )
+                                        )?.let { plan ->
+                                            plan.copy(
+                                                stepId = activeStep.stepId,
+                                                checkpointTag = if (plan.strategy == com.jarves.mh.model.brain.RecoveryStrategy.RETRY_STEP_DIRECT) null else (plan.checkpointTag ?: stepTag),
+                                                attemptNumber = activeStep.attempts + 1,
+                                                status = com.jarves.mh.model.brain.RecoveryStatus.PENDING,
+                                                nextAction = "EXECUTE_RECOVERY"
+                                            )
+                                        }
 
                                         val failureRecord = TaskFailureRecord(
                                             failureId = recoveryPlan?.failureRecordId ?: "fail-$taskId-${activeStep.stepId}-attempt-${activeStep.attempts}",
@@ -1617,14 +1632,16 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
 
                                         val recoveryPlan = recoveryEngine.planRecovery(
                                             canonicalTask, activeStep, classification, failReason, mutatedFiles, attemptCount = activeStep.attempts
-                                        )?.copy(
-                                            failureRecordId = failureRecord.failureId,
-                                            stepId = activeStep.stepId,
-                                            checkpointTag = stepTag,
-                                            attemptNumber = activeStep.attempts + 1,
-                                            status = com.jarves.mh.model.brain.RecoveryStatus.PENDING,
-                                            nextAction = "EXECUTE_RECOVERY"
-                                        )
+                                        )?.let { plan ->
+                                            plan.copy(
+                                                failureRecordId = failureRecord.failureId,
+                                                stepId = activeStep.stepId,
+                                                checkpointTag = if (plan.strategy == com.jarves.mh.model.brain.RecoveryStrategy.RETRY_STEP_DIRECT) null else (plan.checkpointTag ?: stepTag),
+                                                attemptNumber = activeStep.attempts + 1,
+                                                status = com.jarves.mh.model.brain.RecoveryStatus.PENDING,
+                                                nextAction = "EXECUTE_RECOVERY"
+                                            )
+                                        }
 
                                         if (recoveryPlan != null) {
                                             activeStep = activeStep.copy(status = StepStatus.RECOVERING)
@@ -1893,12 +1910,15 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                     break
                                 }
                                 TaskErrorClassification.TRANSIENT_API_ERROR,
-                                TaskErrorClassification.PROCESS_FAILURE -> {
+                                TaskErrorClassification.PROCESS_FAILURE,
+                                TaskErrorClassification.TRANSIENT_SYSTEM_FAULT -> {
                                     if (attempt <= task.maxRetries) {
                                         runCatching { Log.w(TAG, "Transient error on attempt $attempt for task $taskId: $errorMsg. Retrying in ${1000L * attempt}ms...") }
                                     } else {
                                         val failureDetail = if (classification == TaskErrorClassification.TRANSIENT_API_ERROR) {
                                             "Service unavailable after $attempt attempts ($errorMsg)"
+                                        } else if (classification == TaskErrorClassification.TRANSIENT_SYSTEM_FAULT) {
+                                            "Transient system fault after $attempt attempts ($errorMsg)"
                                         } else {
                                             "Task failed after $attempt attempts: $errorMsg"
                                         }

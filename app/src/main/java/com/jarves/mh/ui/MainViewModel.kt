@@ -3979,7 +3979,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val mutated = runCatching { checkpoints.readChangedPaths(task.projectId) }.getOrDefault(emptyList()).isNotEmpty()
                 val classification = supervisor.classifyError(t.localizedMessage ?: t.message ?: "", mutated, isCancelled)
                 val willRetry = (classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.TRANSIENT_API_ERROR ||
-                    classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.PROCESS_FAILURE) &&
+                    classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.PROCESS_FAILURE ||
+                    classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.TRANSIENT_SYSTEM_FAULT) &&
                     task.retryCount < task.maxRetries
 
                 if (!willRetry) {

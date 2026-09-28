@@ -137,6 +137,16 @@ class DeterministicSelfRecoveryStep5Test {
         assertEquals(RecoveryStrategy.RESTORE_CHECKPOINT, planMut!!.strategy)
         assertEquals("step-1", planMut.checkpointTag)
 
+        // TRANSIENT_SYSTEM_FAULT with clean workspace triggers RETRY_STEP_DIRECT deterministically without checkpoint restoration
+        val planSysFault = engine.planRecovery(
+            task, step, TaskSupervisor.TaskErrorClassification.TRANSIENT_SYSTEM_FAULT, "Resource temporarily unavailable", emptyList(), attemptCount = 1
+        )
+        assertNotNull(planSysFault)
+        assertEquals(RecoveryStrategy.RETRY_STEP_DIRECT, planSysFault!!.strategy)
+        assertNull(planSysFault.checkpointTag)
+        assertTrue(planSysFault.filesToRollback.isEmpty())
+        assertEquals(2, planSysFault.attemptNumber)
+
         // Permanent failure never produces recovery plan
         val planPerm = engine.planRecovery(
             task, step, TaskSupervisor.TaskErrorClassification.PERMANENT_AUTH_OR_CONFIG, "HTTP 401", emptyList(), attemptCount = 1

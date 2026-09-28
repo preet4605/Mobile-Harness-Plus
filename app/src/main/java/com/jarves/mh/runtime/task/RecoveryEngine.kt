@@ -275,6 +275,35 @@ class DefaultRecoveryEngine(
                     null
                 }
             }
+            TaskSupervisor.TaskErrorClassification.TRANSIENT_SYSTEM_FAULT -> {
+                if (mutatedFiles.isNotEmpty()) {
+                    RecoveryPlan(
+                        recoveryId = recoveryPlanId,
+                        taskId = task.taskId,
+                        failureRecordId = failureRecordId,
+                        strategy = RecoveryStrategy.RESTORE_CHECKPOINT,
+                        rationale = "Transient system fault after workspace mutation. Restore checkpoint '$stepTag' and retry step.",
+                        filesToRollback = mutatedFiles,
+                        targetStepIndex = step.stepOrder,
+                        stepId = step.stepId,
+                        checkpointTag = stepTag,
+                        attemptNumber = nextAttempt
+                    )
+                } else {
+                    RecoveryPlan(
+                        recoveryId = recoveryPlanId,
+                        taskId = task.taskId,
+                        failureRecordId = failureRecordId,
+                        strategy = RecoveryStrategy.RETRY_STEP_DIRECT,
+                        rationale = "Transient system fault with clean workspace. Retry step directly without checkpoint restoration.",
+                        filesToRollback = emptyList(),
+                        targetStepIndex = step.stepOrder,
+                        stepId = step.stepId,
+                        checkpointTag = null,
+                        attemptNumber = nextAttempt
+                    )
+                }
+            }
             else -> null
         }
     }
