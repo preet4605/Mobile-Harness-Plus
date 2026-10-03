@@ -284,4 +284,71 @@ class AgentProviderPresetTest {
         assertEquals(AgentKind.CLAUDE_CODE, AgentKind.fromStored("CLAUDE_CODE"))
         assertEquals(AgentKind.DEEPSEEK_HARNESS, AgentKind.fromStored("DEEPSEEK_HARNESS"))
     }
+
+    @Test
+    fun nativeCacheDisabledForDshEnvironment() {
+        val route = DshRouteMapper.forProfile(ProviderProfile(ProviderKind.DEEPSEEK))
+        val env = DshRuntimeBridge.buildDshEnvironment(route, "secret-key-123")
+        assertEquals("1", env[DshRuntimeBridge.NARB_DISABLE_NATIVE_CACHE_ENV])
+        assertEquals(DshRuntimeBridge.DSH_HOME_GUEST_PATH, env["DSH_HOME"])
+        assertEquals("danger-full-access", env["DSH_PERMISSION_MODE"])
+        assertEquals("secret-key-123", env["DEEPSEEK_API_KEY"])
+    }
+
+    @Test
+    fun staleLoaderCacheCleanupIsTargetedAndIdempotent() {
+        val tempDir = java.io.File(System.getProperty("java.io.tmpdir", "/tmp"), "test-cache-cleanup-${System.nanoTime()}")
+        tempDir.mkdirs()
+        try {
+            val stale1 = java.io.File(tempDir, "node-addon-native-custom-loader-1").apply { mkdirs() }
+            val stale2 = java.io.File(tempDir, "node-addon-native-custom-loader-2").apply { mkdirs() }
+            java.io.File(stale1, "dummy.node").writeText("corrupted")
+            val unrelatedFile = java.io.File(tempDir, "important-data.txt").apply { writeText("keep me") }
+            val unrelatedDir = java.io.File(tempDir, "unrelated-dir").apply { mkdirs() }
+
+            val targets = listOf(tempDir)
+            fun cleanTargets(): Int {
+                var removed = 0
+                targets.forEach { dir ->
+                    dir.listFiles { file ->
+                        file.name.startsWith("node-addon-native-custom-loader-")
+                    }?.forEach { loaderDir ->
+                        if (loaderDir.deleteRecursively()) removed++
+                    }
+                }
+                return removed
+            }
+
+            val firstRun = cleanTargets()
+            assertEquals(2, firstRun)
+            assertFalse(stale1.exists())
+            assertFalse(stale2.exists())
+            assertTrue(unrelatedFile.exists())
+            assertEquals("keep me", unrelatedFile.readText())
+            assertTrue(unrelatedDir.exists())
+
+            // Idempotent second run
+            val secondRun = cleanTargets()
+            assertEquals(0, secondRun)
+            assertTrue(unrelatedFile.exists())
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun dshHostPreparationSucceedsInCurrentRuntime() {
+        val dshBinary = java.io.File("/usr/local/bin/dsh")
+        if (!dshBinary.exists()) return // skip if dsh is not on host in this runner
+
+        val pb = ProcessBuilder("/usr/local/bin/dsh", "--profile", "headless", "--help")
+        pb.environment()[DshRuntimeBridge.NARB_DISABLE_NATIVE_CACHE_ENV] = "1"
+        pb.redirectErrorStream(true)
+        val process = pb.start()
+        val output = process.inputStream.bufferedReader().readText()
+        val exitCode = process.waitFor()
+
+        assertEquals("dsh failed with output: $output", 0, exitCode)
+        assertTrue(output.contains("Usage: dsh --profile headless") || output.contains("dsh"))
+    }
 }

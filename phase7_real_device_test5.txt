@@ -1,0 +1,116 @@
+# Phase 7 — Real-Device Test 5: Environment Drift Failure Recovery
+Status: PASSED
+Date: 2026-09-28
+Package: com.jarves.mh.dev
+Source Commit: 6138d44
+APK Size: 111271002 bytes
+APK MD5: f9c4f807a7b84aaf6b6b4869622d0d65
+APK SHA256: 963eee030d7d870c37fd02694e5d08a5ceea7e73b2bc8f3fcb52dd44d1d8fd90
+Installed APK Path: /data/app/~~OLyxCt-Lo5dUSot2-aATTQ==/com.jarves.mh.dev-ZN97V_OZkmtj-bkKnmzmuw==/base.apk
+Installed APK MD5: f9c4f807a7b84aaf6b6b4869622d0d65 (VERIFIED MATCH)
+Installed APK SHA256: 963eee030d7d870c37fd02694e5d08a5ceea7e73b2bc8f3fcb52dd44d1d8fd90 (VERIFIED MATCH)
+Host App Process PID: 3065 (VmRSS: 172,292 kB, Responsive, 0 crashes, 0 ANRs)
+
+1. Pre-Execution Verification & Remediation Audit:
+- Source Commit: 6138d44 ("feat(runtime): deterministic environment drift recovery via RECREATE_WORKSPACE_STATE")
+- Unit Tests: 503/503 unit tests passed (:app:testOnlineDebugUnitTest SUCCESSFUL).
+- Git Diff: Confirmed only intended Test 5 remediation changes:
+  * TaskSupervisor.TaskErrorClassification.ENVIRONMENT_DRIFT added
+  * Evidence-based error classification rules for environment drift / corrupted workspace state added
+  * Canonical task-baseline checkpoint establishment prior to step execution loop
+  * validateBaselineCheckpoint in RecoveryEngine enforcing canonical tag and task/project ownership
+  * RecoveryEngine.planRecovery() maps ENVIRONMENT_DRIFT to RECREATE_WORKSPACE_STATE with checkpointTag = "task-baseline"
+  * RecoveryEngine.executeRecovery() validates baseline checkpoint and restores clean workspace state
+  * MainViewModel retry evaluation includes ENVIRONMENT_DRIFT
+  * Comprehensive deterministic unit test suite EnvironmentDriftRecoveryTest (9 tests) added
+- APK Assembly: :app:assembleOnlineDebug completed in 30s.
+  * Artifact copied to app-online-debug.apk and mobile-harness-dev.apk
+  * Size: 111,271,002 bytes
+  * MD5: f9c4f807a7b84aaf6b6b4869622d0d65
+  * SHA256: 963eee030d7d870c37fd02694e5d08a5ceea7e73b2bc8f3fcb52dd44d1d8fd90
+- Device Installation:
+  * Installed over com.jarves.mh.dev via adb install -r
+  * Installed APK hashes verified matching built artifact bit-for-bit.
+
+2. Controlled Real-Device Task Execution:
+- Task ID: task-p7t5-1790597202306
+- Plan ID: 24912c94-44f3-4ba3-a9fe-4cd0cf19a7cd
+- Step ID: task-p7t5-1790597202306-step-0 ("Real-Device Environment Drift Step 0")
+- Project ID: fa51b2cf-9da2-4e05-9eaf-f643aae08eca (clever-kalam)
+- Execution Environment: Physical Android Device (OnePlus/OPPO CPH2745, Android 16, ART runtime, PID 3065)
+- Pre-Execution Canonical Task Baseline:
+  * Tag: task-baseline
+  * Metadata Project ID: fa51b2cf-9da2-4e05-9eaf-f643aae08eca
+  * Metadata Task ID: task-p7t5-1790597202306
+  * Ownership: Verified matching projectId + taskId prior to execution.
+
+3. Failure & Recovery Lifecycle:
+- Failure Injection: Genuine evidence-based ENVIRONMENT_DRIFT condition:
+  * Prerequisite config corrupted: {"env": "drifted_dirty", "build_env_ready": false}
+  * Rogue drift file created: drift_anomaly.lock
+  * Exception: RuntimeException("environment_drift: corrupted workspace state - environment prerequisite mismatch")
+- Failure Record:
+  * Failure ID: fail-task-p7t5-1790597202306-task-p7t5-1790597202306-step-0-2
+  * Classification: ENVIRONMENT_DRIFT
+  * Error Message: environment_drift: corrupted workspace state - environment prerequisite mismatch
+  * Mutated Files: ["drift_anomaly.lock", "prerequisite_config.json"] (2 files)
+- Recovery Plan:
+  * Recovery ID: rec-task-p7t5-1790597202306-task-p7t5-1790597202306-step-0-2
+  * Strategy: RECREATE_WORKSPACE_STATE
+  * Checkpoint Tag: task-baseline
+  * Status: COMPLETED
+  * Next Action: RETRY_STEP
+  * Pre-Action Persistence: Verified persisted in SQLite prior to recovery execution.
+- Recovery Execution:
+  * Baseline Checkpoint Validation: Passed (validateBaselineCheckpoint verified tag task-baseline, matching project fa51b2cf-9da2-4e05-9eaf-f643aae08eca, matching task task-p7t5-1790597202306).
+  * Workspace Reconstruction: Restored clean baseline. drift_anomaly.lock removed, prerequisite_config.json restored to {"env": "clean_baseline", "build_env_ready": true}.
+  * RecoveryEngine did NOT directly complete the step.
+
+4. Retry & Final Trusted Verification:
+- Attempt 2 Execution:
+  * Step transitioned: RUNNING (attempt 2)
+  * Confirmed clean workspace restored (prereqRestored=true, rogueDriftRemoved=true).
+  * Brain context & global execution policies injected on retry.
+  * Created verified_payload.txt.
+  * Step transitioned: VERIFYING
+  * StepVerifier invoked as final completion authority.
+  * Verification Result: PASSED ("Trusted verification passed for step 'Real-Device Environment Drift Step 0'")
+  * Step-0 marked COMPLETED.
+  * currentStepIndex advanced from 0 -> 1 exactly once.
+  * Plan marked COMPLETED.
+  * Task marked COMPLETED.
+
+5. Architectural Invariant Audit:
+- Invariant 1 (Exactly one failure record): VERIFIED (count = 1)
+- Invariant 2 (Classified ENVIRONMENT_DRIFT): VERIFIED
+- Invariant 3 (Recovery Strategy RECREATE_WORKSPACE_STATE): VERIFIED
+- Invariant 4 (checkpointTag is task-baseline): VERIFIED
+- Invariant 5 (Baseline ownership matches projectId + taskId): VERIFIED
+- Invariant 6 (Drifted workspace state actually reconstructed): VERIFIED
+- Invariant 7 (Attempt 1 -> 2 exactly once): VERIFIED
+- Invariant 8 (No arbitrary checkpoint restore): VERIFIED
+- Invariant 9 (RecoveryEngine never directly completes step): VERIFIED
+- Invariant 10 (StepVerifier is completion authority): VERIFIED
+- Invariant 11 (currentStepIndex advances exactly once to 1): VERIFIED
+- Invariant 12 (Plan and task complete exactly once): VERIFIED
+- Invariant 13 (Brain context & execution policies injected on retry): VERIFIED
+- Invariant 14 (No duplicate recovery, no crash/ANR/restart loop): VERIFIED
+- Invariant 15 (SQLite remains intact, PRAGMA integrity_check = ok): VERIFIED
+
+6. Real-Device Telemetry & Environment:
+- Device: OnePlus/OPPO CPH2745, Android 16
+- Host App: com.jarves.mh.dev (PID: 3065)
+  * Total PSS: 87,867 kB (~86 MB)
+  * Total RSS: 172,292 kB (~168 MB)
+  * Java Heap Alloc: 12,558 kB
+  * Native Heap Alloc: 22,193 kB
+- Power & Thermals:
+  * Battery Level: 87%
+  * Battery Voltage: 4320 mV
+  * Phone Temperature: 35.0°C (nominal)
+  * Battery Temperature: 34.6°C (nominal)
+- SQLite Database:
+  * Database intact, 0 corruptions, PRAGMA integrity_check = ok
+
+GATE VERDICT:
+REAL-DEVICE TEST 5 PASSED

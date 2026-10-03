@@ -11,6 +11,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -19,11 +20,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -89,6 +94,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarves.mh.data.ApiKeyInfo
@@ -108,6 +114,16 @@ import com.jarves.mh.network.ModelDiscoveryResult
 import com.jarves.mh.runtime.AntigravityAuthStatus
 import com.jarves.mh.ui.theme.PocketBlue
 import com.jarves.mh.ui.theme.PocketOrange
+import com.jarves.mh.ui.theme.PocketPalette
+import com.jarves.mh.ui.theme.PocketRadius
+import com.jarves.mh.ui.theme.PocketSpacing
+import com.jarves.mh.ui.theme.glass.LiquidGlassCard
+import com.jarves.mh.ui.theme.glass.LiquidGlassMaterial
+import com.jarves.mh.ui.theme.glass.LiquidGlassPill
+import com.jarves.mh.ui.theme.glass.LiquidGlassSegmentedControl
+import com.jarves.mh.ui.theme.glass.LiquidGlassSurface
+import com.jarves.mh.ui.theme.glass.LiquidGlassTokens
+import com.jarves.mh.ui.theme.glass.LiquidGlassTopBar
 import kotlinx.coroutines.launch
 
 private data class KeyConnectionStatus(
@@ -158,6 +174,7 @@ internal fun formatAntigravityModelTier(id: String): String = when {
 @Composable
 fun AgentScreen(
     state: AppUiState,
+    bottomBarPadding: Dp = 0.dp,
     onSaveProvider: (ProviderProfile, String) -> Unit,
     onDiscoverModels: suspend (ProviderProfile, String) -> ModelDiscoveryResult,
     onValidateProvider: suspend (ProviderProfile, String, List<DiscoveredModel>) -> ConnectionValidation,
@@ -316,6 +333,8 @@ fun AgentScreen(
     }
 
     // ── Live connection status calculations ──
+    val isDark = isSystemInDarkTheme()
+    val onlineColor = if (isDark) Color(0xFF58C9A3) else Color(0xFF0D7A3E)
     val isAntigravity = state.agentKind == AgentKind.ANTIGRAVITY
     val antigravityTesting = isAntigravity && state.apiPingStatus == ApiPingStatus.PINGING
     val antigravityHelloFailed = isAntigravity && state.apiPingStatus == ApiPingStatus.FAILED
@@ -326,11 +345,11 @@ fun AgentScreen(
             antigravityTesting -> Triple(PocketOrange, "Testing…", PocketOrange.copy(alpha = 0.13f))
             state.antigravityAuth.status != AntigravityAuthStatus.SIGNED_IN || antigravityHelloFailed ->
                 Triple(MaterialTheme.colorScheme.error, "Attention", MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
-            else -> Triple(Color(0xFF58C9A3), "Online", Color(0xFF58C9A3).copy(alpha = 0.13f))
+            else -> Triple(onlineColor, "Online", onlineColor.copy(alpha = if (isDark) 0.13f else 0.12f))
         }
     } else {
         when (state.apiPingStatus) {
-            ApiPingStatus.OK -> Triple(Color(0xFF58C9A3), "Online", Color(0xFF58C9A3).copy(alpha = 0.13f))
+            ApiPingStatus.OK -> Triple(onlineColor, "Online", onlineColor.copy(alpha = if (isDark) 0.13f else 0.12f))
             ApiPingStatus.FAILED -> Triple(MaterialTheme.colorScheme.error, "Attention", MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
             ApiPingStatus.PINGING -> Triple(PocketOrange, "Testing…", PocketOrange.copy(alpha = 0.13f))
             ApiPingStatus.IDLE -> Triple(MaterialTheme.colorScheme.onSurfaceVariant, "Not tested", MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
@@ -359,7 +378,14 @@ fun AgentScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    IconButton(onClick = onRefreshAntigravityModels, enabled = !state.antigravityModelsLoading) {
+                    IconButton(
+                        onClick = onRefreshAntigravityModels,
+                        enabled = !state.antigravityModelsLoading,
+                        modifier = Modifier.defaultMinSize(
+                            minWidth = LiquidGlassTokens.MinTouchTarget,
+                            minHeight = LiquidGlassTokens.MinTouchTarget,
+                        ),
+                    ) {
                         if (state.antigravityModelsLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         else Icon(Icons.Default.Refresh, "Refresh models")
                     }
@@ -388,19 +414,20 @@ fun AgentScreen(
                     ) {
                         items(filteredAntigravityModels, key = { it }) { modelId ->
                             val isSelected = state.antigravityModel == modelId
-                            Surface(
+                            LiquidGlassCard(
+                                modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(14.dp),
-                                color = if (isSelected) PocketOrange.copy(alpha = 0.10f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
-                                border = BorderStroke(
+                                material = if (isSelected) LiquidGlassMaterial.Regular else LiquidGlassMaterial.UltraThin,
+                                layerSource = null,
+                                borderStroke = BorderStroke(
                                     1.dp,
-                                    if (isSelected) PocketOrange.copy(alpha = 0.45f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                                    if (isSelected) PocketOrange.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
                                 ),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        onSetAntigravityModel(modelId)
-                                        showAntigravityModelSheet = false
-                                    },
+                                tint = if (isSelected) PocketOrange.copy(alpha = 0.12f) else null,
+                                onClick = {
+                                    onSetAntigravityModel(modelId)
+                                    showAntigravityModelSheet = false
+                                },
                             ) {
                                 Row(
                                     Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
@@ -423,7 +450,7 @@ fun AgentScreen(
                                                 ) {
                                                     Text(
                                                         tier,
-                                                        fontSize = 9.sp,
+                                                        fontSize = 11.sp,
                                                         fontWeight = FontWeight.Bold,
                                                         color = if (isSelected) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
                                                         modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
@@ -470,7 +497,14 @@ fun AgentScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    IconButton(onClick = ::discoverModels, enabled = !isDiscovering) {
+                    IconButton(
+                        onClick = ::discoverModels,
+                        enabled = !isDiscovering,
+                        modifier = Modifier.defaultMinSize(
+                            minWidth = LiquidGlassTokens.MinTouchTarget,
+                            minHeight = LiquidGlassTokens.MinTouchTarget,
+                        ),
+                    ) {
                         if (isDiscovering) {
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = PocketOrange)
                         } else {
@@ -614,20 +648,21 @@ fun AgentScreen(
                             )
                             recommended.forEach { opt ->
                                 val isSelected = model == opt.id
-                                Surface(
+                                LiquidGlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(14.dp),
-                                    color = if (isSelected) PocketOrange.copy(alpha = 0.10f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
-                                    border = BorderStroke(
+                                    material = if (isSelected) LiquidGlassMaterial.Regular else LiquidGlassMaterial.UltraThin,
+                                    layerSource = null,
+                                    borderStroke = BorderStroke(
                                         1.dp,
-                                        if (isSelected) PocketOrange.copy(alpha = 0.45f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                                        if (isSelected) PocketOrange.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
                                     ),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            model = opt.id
-                                            modelSearch = ""
-                                            showModels = false
-                                        },
+                                    tint = if (isSelected) PocketOrange.copy(alpha = 0.12f) else null,
+                                    onClick = {
+                                        model = opt.id
+                                        modelSearch = ""
+                                        showModels = false
+                                    },
                                 ) {
                                     Row(
                                         Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
@@ -661,17 +696,18 @@ fun AgentScreen(
                     ) {
                         if (modelSearch.isNotBlank() && filteredModels.none { it.id.equals(modelSearch.trim(), ignoreCase = true) }) {
                             item {
-                                Surface(
+                                LiquidGlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(14.dp),
-                                    color = PocketOrange.copy(alpha = 0.12f),
-                                    border = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.5f)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            model = modelSearch.trim()
-                                            modelSearch = ""
-                                            showModels = false
-                                        },
+                                    material = LiquidGlassMaterial.UltraThin,
+                                    layerSource = null,
+                                    borderStroke = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.5f)),
+                                    tint = PocketOrange.copy(alpha = 0.12f),
+                                    onClick = {
+                                        model = modelSearch.trim()
+                                        modelSearch = ""
+                                        showModels = false
+                                    },
                                 ) {
                                     Row(
                                         Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
@@ -689,20 +725,21 @@ fun AgentScreen(
                         }
                         items(filteredModels, key = { it.id }) { option ->
                             val isSelected = model == option.id
-                            Surface(
+                            LiquidGlassCard(
+                                modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(14.dp),
-                                color = if (isSelected) PocketOrange.copy(alpha = 0.10f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
-                                border = BorderStroke(
+                                material = if (isSelected) LiquidGlassMaterial.Regular else LiquidGlassMaterial.UltraThin,
+                                layerSource = null,
+                                borderStroke = BorderStroke(
                                     1.dp,
-                                    if (isSelected) PocketOrange.copy(alpha = 0.45f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                                    if (isSelected) PocketOrange.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
                                 ),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        model = option.id
-                                        modelSearch = ""
-                                        showModels = false
-                                    },
+                                tint = if (isSelected) PocketOrange.copy(alpha = 0.12f) else null,
+                                onClick = {
+                                    model = option.id
+                                    modelSearch = ""
+                                    showModels = false
+                                },
                             ) {
                                 Row(
                                     Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
@@ -720,7 +757,7 @@ fun AgentScreen(
                                             )
                                             if (option.isFree) {
                                                 Spacer(Modifier.width(6.dp))
-                                                Text("FREE", color = Color(0xFF58C99C), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                Text("FREE", color = if (isSystemInDarkTheme()) Color(0xFF58C99C) else Color(0xFF0D7A3E), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                             }
                                         }
                                         if (option.displayName != option.id) {
@@ -745,9 +782,13 @@ fun AgentScreen(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        containerColor = Color.Transparent,
         topBar = {
-            TopAppBar(
-                modifier = Modifier.padding(top = 4.dp),
+            LiquidGlassTopBar(
+                material = LiquidGlassMaterial.Regular,
+                shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
+                layerSource = null,
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Surface(
@@ -783,102 +824,64 @@ fun AgentScreen(
                     }
                 },
                 actions = {
-                    // Top Bar Live Status Pill
-                    Surface(
-                        color = pillBg,
-                        shape = RoundedCornerShape(50),
-                        border = BorderStroke(1.dp, dot.copy(alpha = 0.35f)),
-                    ) {
-                        Row(
-                            Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Box(Modifier.size(6.5.dp).background(dot, CircleShape))
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                if (pillLoading) "Checking" else label,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = dot,
-                            )
-                        }
-                    }
+                    LiquidGlassPill(
+                        text = if (pillLoading) "Checking" else label,
+                        accentColor = dot,
+                        tint = pillBg,
+                        material = LiquidGlassMaterial.UltraThin,
+                        layerSource = null,
+                        showDot = true,
+                    )
                     Spacer(Modifier.width(12.dp))
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
     ) { padding ->
+        val navBarBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        // Floating nav (44dp target + 8dp padding) + host padding + breathing room.
+        val floatingNavFootprint = LiquidGlassTokens.MinTouchTarget + PocketSpacing.sm
+        val defaultClearance = navBarBottomInset + floatingNavFootprint + PocketSpacing.lg + PocketSpacing.sm + PocketSpacing.xxl
+        val finalBottomPadding = maxOf(bottomBarPadding, defaultClearance)
         LazyColumn(
             Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .imePadding(),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+            contentPadding = PaddingValues(start = 16.dp, top = 10.dp, end = 16.dp, bottom = finalBottomPadding),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             // ── 1. Compact 3-Way Segmented Engine Selector ──
             item {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            orderedAgents.forEach { agent ->
-                                val isSelected = viewedAgent == agent
+                    LiquidGlassSegmentedControl(
+                        items = orderedAgents,
+                        selectedItem = viewedAgent,
+                        onItemSelected = { agent ->
+                            if (state.agentInstalling == null) {
+                                viewedAgent = agent
                                 val isInstalled = agent == state.agentKind || state.installedAgentVersions.containsKey(agent)
-                                val updateAvailable = state.agentUpdates.containsKey(agent)
-                                val shortTitle = when (agent) {
-                                    AgentKind.ANTIGRAVITY -> "Antigravity"
-                                    AgentKind.DEEPSEEK_HARNESS -> "DeepSeek"
-                                    AgentKind.CLAUDE_CODE -> "Claude Code"
-                                }
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else Color.Transparent,
-                                    border = if (isSelected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)) else null,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clickable(enabled = state.agentInstalling == null) {
-                                            viewedAgent = agent
-                                            if (isInstalled) onSelectAgent(agent)
-                                        },
-                                ) {
-                                    Box(
-                                        modifier = Modifier.padding(vertical = 12.dp, horizontal = 4.dp),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                shortTitle,
-                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                                fontSize = 12.sp,
-                                                color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1,
-                                            )
-                                            if (updateAvailable) {
-                                                Spacer(Modifier.width(3.dp))
-                                                Box(Modifier.size(5.dp).background(PocketOrange, CircleShape))
-                                            }
-                                        }
-                                    }
-                                }
+                                if (isInstalled) onSelectAgent(agent)
                             }
-                        }
-                    }
+                        },
+                        itemLabel = { agent ->
+                            when (agent) {
+                                AgentKind.ANTIGRAVITY -> "Antigravity"
+                                AgentKind.DEEPSEEK_HARNESS -> "DeepSeek"
+                                AgentKind.CLAUDE_CODE -> "Claude Code"
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        material = LiquidGlassMaterial.Regular,
+                        layerSource = null,
+                        accentColor = MaterialTheme.colorScheme.primary,
+                    )
 
                     if (state.agentInstalling == viewedAgent) {
                         Spacer(Modifier.height(6.dp))
-                        Surface(
+                        LiquidGlassCard(
                             shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                            material = LiquidGlassMaterial.Thin,
+                            layerSource = null,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Column(Modifier.padding(12.dp)) {
@@ -928,10 +931,10 @@ fun AgentScreen(
                         }
                     } else if (!viewedAgentInstalled) {
                         Spacer(Modifier.height(8.dp))
-                        Surface(
+                        LiquidGlassCard(
                             shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)),
+                            material = LiquidGlassMaterial.Thin,
+                            layerSource = null,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Column(Modifier.padding(16.dp)) {
@@ -951,7 +954,9 @@ fun AgentScreen(
                                 Button(
                                     onClick = { onInstallAgent(viewedAgent) },
                                     enabled = state.agentInstalling == null,
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .defaultMinSize(minHeight = 44.dp),
                                     shape = RoundedCornerShape(12.dp),
                                 ) {
                                     Text("Install ${viewedAgent.title}", fontWeight = FontWeight.Bold)
@@ -1173,11 +1178,11 @@ private fun AgentAntigravityCard(
     val clipboard = LocalClipboardManager.current
     val auth = state.antigravityAuth
 
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(20.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
+    LiquidGlassCard(
         modifier = Modifier.fillMaxWidth(),
+        material = LiquidGlassMaterial.Thin,
+        shape = RoundedCornerShape(20.dp),
+        layerSource = null,
     ) {
         Column(
             Modifier.padding(16.dp),
@@ -1198,12 +1203,27 @@ private fun AgentAntigravityCard(
                         )
                     }
                 }
-                OutlinedButton(
-                    onClick = onStartLogin,
+                LiquidGlassSurface(
+                    material = LiquidGlassMaterial.UltraThin,
                     shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    borderStroke = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.35f)),
+                    tint = PocketOrange.copy(alpha = 0.08f),
+                    onClick = onStartLogin,
+                    layerSource = null,
                 ) {
-                    Text("+ Add account", fontSize = 12.sp)
+                    Box(
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 44.dp)
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "+ Add account",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = PocketOrange,
+                        )
+                    }
                 }
             }
 
@@ -1211,9 +1231,10 @@ private fun AgentAntigravityCard(
             if (auth.status == AntigravityAuthStatus.STARTING || auth.status == AntigravityAuthStatus.COMPLETING) {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
             } else if (auth.status == AntigravityAuthStatus.AWAITING_CODE) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                LiquidGlassCard(
                     shape = RoundedCornerShape(14.dp),
+                    material = LiquidGlassMaterial.UltraThin,
+                    layerSource = null,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1221,7 +1242,9 @@ private fun AgentAntigravityCard(
                         auth.authorizationUrl?.let { url ->
                             OutlinedButton(
                                 onClick = { clipboard.setText(AnnotatedString(url)) },
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 44.dp),
                                 shape = RoundedCornerShape(10.dp),
                             ) {
                                 Text("Copy Google Sign-in URL")
@@ -1238,7 +1261,9 @@ private fun AgentAntigravityCard(
                         Button(
                             onClick = onSubmitCode,
                             enabled = code.isNotBlank(),
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 44.dp),
                             shape = RoundedCornerShape(10.dp),
                         ) {
                             Text("Complete Sign-in")
@@ -1248,7 +1273,9 @@ private fun AgentAntigravityCard(
             } else if (state.antigravityAccounts.isEmpty() && auth.status != AntigravityAuthStatus.SIGNED_IN) {
                 Button(
                     onClick = onStartLogin,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 44.dp),
                     shape = RoundedCornerShape(12.dp),
                 ) {
                     Text(if (auth.status == AntigravityAuthStatus.ERROR) "Reconnect with Google" else "Sign in with Google")
@@ -1257,15 +1284,17 @@ private fun AgentAntigravityCard(
 
             // List of connected accounts
             if (state.antigravityAccounts.isNotEmpty()) {
-                Surface(
+                LiquidGlassCard(
                     shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    material = LiquidGlassMaterial.UltraThin,
+                    layerSource = null,
                 ) {
                     Column {
                         state.antigravityAccounts.forEachIndexed { index, account ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 44.dp)
                                     .clickable { onSetPrimaryAccount(account.id) }
                                     .padding(horizontal = 12.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -1345,7 +1374,7 @@ private fun AgentAntigravityCard(
                                             ) {
                                                 Text(
                                                     "PRIMARY",
-                                                    fontSize = 9.sp,
+                                                    fontSize = 10.sp,
                                                     fontWeight = FontWeight.Bold,
                                                     color = Color(0xFF2E9D72),
                                                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
@@ -1379,7 +1408,7 @@ private fun AgentAntigravityCard(
                                 }
                                 IconButton(
                                     onClick = { onRemoveAccount(account.id) },
-                                    modifier = Modifier.size(28.dp),
+                                    modifier = Modifier.size(44.dp),
                                 ) {
                                     Icon(
                                         Icons.Default.DeleteSweep,
@@ -1405,29 +1434,14 @@ private fun AgentAntigravityCard(
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            AntigravityLoadBalancingStrategy.entries.forEach { strategy ->
-                                val selected = state.antigravityLoadBalancingStrategy == strategy
-                                Surface(
-                                    color = if (selected) PocketOrange.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
-                                    border = BorderStroke(1.dp, if (selected) PocketOrange else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clickable { onSetStrategy(strategy) },
-                                ) {
-                                    Text(
-                                        strategy.title,
-                                        fontSize = 11.sp,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (selected) PocketOrange else MaterialTheme.colorScheme.onSurface,
-                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                                        modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
-                                        maxLines = 1,
-                                    )
-                                }
-                            }
-                        }
+                        LiquidGlassSegmentedControl(
+                            items = AntigravityLoadBalancingStrategy.entries,
+                            selectedItem = state.antigravityLoadBalancingStrategy,
+                            onItemSelected = onSetStrategy,
+                            itemLabel = { it.title },
+                            material = LiquidGlassMaterial.UltraThin,
+                            layerSource = null,
+                        )
                         Row(
                             Modifier.fillMaxWidth().padding(top = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -1463,35 +1477,42 @@ private fun AgentAntigravityCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.weight(1f),
                         )
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
+                        Box(
                             modifier = Modifier
-                                .clickable(enabled = !state.antigravityModelsLoading) { onRefreshModels() }
-                                .padding(start = 6.dp, top = 2.dp, bottom = 2.dp),
+                                .defaultMinSize(minWidth = 44.dp, minHeight = 44.dp)
+                                .clickable(enabled = !state.antigravityModelsLoading) { onRefreshModels() },
+                            contentAlignment = Alignment.CenterEnd,
                         ) {
-                            if (state.antigravityModelsLoading) {
-                                CircularProgressIndicator(Modifier.size(11.dp), strokeWidth = 1.4.dp)
-                                Spacer(Modifier.width(4.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(start = 6.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+                            ) {
+                                if (state.antigravityModelsLoading) {
+                                    CircularProgressIndicator(Modifier.size(11.dp), strokeWidth = 1.4.dp)
+                                    Spacer(Modifier.width(4.dp))
+                                }
+                                Text(
+                                    "Sync",
+                                    fontSize = 11.sp,
+                                    color = PocketOrange,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
                             }
-                            Text(
-                                "Sync",
-                                fontSize = 11.sp,
-                                color = PocketOrange,
-                                fontWeight = FontWeight.SemiBold,
-                            )
                         }
                     }
                     Spacer(Modifier.height(8.dp))
-                    Surface(
+                    LiquidGlassCard(
+                        modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onOpenModelSheet() },
+                        material = LiquidGlassMaterial.UltraThin,
+                        layerSource = null,
+                        onClick = onOpenModelSheet,
                     ) {
                         Row(
-                            modifier = Modifier.padding(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp)
+                                .padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Box(
@@ -1567,63 +1588,47 @@ private fun AgentAntigravityCard(
                         )
                     }
                     Spacer(Modifier.height(8.dp))
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(3.dp),
-                            horizontalArrangement = Arrangement.spacedBy(3.dp),
-                        ) {
-                            listOf("low", "medium", "high").forEach { effort ->
-                                val isSelected = state.antigravityEffort == effort
-                                Surface(
-                                    shape = RoundedCornerShape(9.dp),
-                                    color = if (isSelected) PocketOrange else Color.Transparent,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clickable { onSetEffort(effort) },
-                                ) {
-                                    Box(
-                                        modifier = Modifier.padding(vertical = 7.dp),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Text(
-                                            effort.replaceFirstChar { if (it.isLowerCase()) it.titlecase(java.util.Locale.ROOT) else it.toString() },
-                                            fontSize = 12.sp,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (isSelected) Color(0xFF241107) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    LiquidGlassSegmentedControl(
+                        items = listOf("low", "medium", "high"),
+                        selectedItem = state.antigravityEffort,
+                        onItemSelected = onSetEffort,
+                        itemLabel = { it.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase(java.util.Locale.ROOT) else c.toString() } },
+                        material = LiquidGlassMaterial.UltraThin,
+                        layerSource = null,
+                    )
                 }
             }
 
             if (auth.status == AntigravityAuthStatus.SIGNED_IN) {
-                OutlinedButton(
-                    onClick = onTest,
-                    enabled = state.apiPingStatus != ApiPingStatus.PINGING,
-                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                LiquidGlassSurface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    material = LiquidGlassMaterial.Thin,
+                    tint = PocketOrange.copy(alpha = 0.08f),
+                    borderStroke = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.7f)),
                     shape = RoundedCornerShape(13.dp),
-                    border = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.7f)),
+                    onClick = if (state.apiPingStatus != ApiPingStatus.PINGING) onTest else null,
+                    layerSource = null,
                 ) {
-                    if (state.apiPingStatus == ApiPingStatus.PINGING) {
-                        CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 1.8.dp, color = PocketOrange)
-                        Spacer(Modifier.width(8.dp))
-                    } else {
-                        Icon(Icons.Default.Refresh, null, Modifier.size(16.dp), tint = PocketOrange)
-                        Spacer(Modifier.width(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (state.apiPingStatus == ApiPingStatus.PINGING) {
+                            CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 1.8.dp, color = PocketOrange)
+                            Spacer(Modifier.width(8.dp))
+                        } else {
+                            Icon(Icons.Default.Refresh, null, Modifier.size(16.dp), tint = PocketOrange)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(
+                            if (state.apiPingStatus == ApiPingStatus.PINGING) "Testing connection…" else "Test connection",
+                            color = PocketOrange,
+                            fontWeight = FontWeight.SemiBold,
+                        )
                     }
-                    Text(
-                        if (state.apiPingStatus == ApiPingStatus.PINGING) "Testing connection…" else "Test connection",
-                        color = PocketOrange,
-                        fontWeight = FontWeight.SemiBold,
-                    )
                 }
 
                 state.apiPingMessage?.takeIf { state.apiPingStatus != ApiPingStatus.IDLE }?.let { message ->
@@ -1703,11 +1708,11 @@ private fun AgentProviderCard(
     val activeKey = savedKeys.firstOrNull { it.isActive }
     val activeKeyStatus = activeKey?.let { keyConnectionStatuses[it.id] }
 
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(20.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+    LiquidGlassCard(
         modifier = Modifier.fillMaxWidth(),
+        material = LiquidGlassMaterial.Thin,
+        shape = RoundedCornerShape(20.dp),
+        layerSource = null,
     ) {
         Column(
             Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
@@ -1728,15 +1733,18 @@ private fun AgentProviderCard(
                     modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Surface(
+                    LiquidGlassCard(
+                        modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f),
+                        material = LiquidGlassMaterial.UltraThin,
+                        layerSource = null,
                     ) {
                         Column {
                             visibleKinds.forEachIndexed { index, kind ->
                                 Row(
                                     Modifier
                                         .fillMaxWidth()
+                                        .defaultMinSize(minHeight = 44.dp)
                                         .clickable {
                                             onProvider(kind)
                                             connectionExpanded = false
@@ -1805,11 +1813,20 @@ private fun AgentProviderCard(
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 Text("Gateway protocol", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Spacer(Modifier.height(5.dp))
-                                Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f)) {
+                                LiquidGlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    material = LiquidGlassMaterial.UltraThin,
+                                    layerSource = null,
+                                ) {
                                     Column {
                                         listOf("anthropic-messages", "openai-completions", "openai-responses").forEach { option ->
                                             Row(
-                                                Modifier.fillMaxWidth().clickable { onDshApi(option) }.padding(horizontal = 12.dp, vertical = 9.dp),
+                                                Modifier
+                                                    .fillMaxWidth()
+                                                    .defaultMinSize(minHeight = 44.dp)
+                                                    .clickable { onDshApi(option) }
+                                                    .padding(horizontal = 12.dp, vertical = 9.dp),
                                                 verticalAlignment = Alignment.CenterVertically,
                                             ) {
                                                 Text(option, Modifier.weight(1f), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
@@ -1829,13 +1846,20 @@ private fun AgentProviderCard(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text("Model & access", fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    Text(
-                        if (isDiscovering) "Discovering…" else if (models.isEmpty()) "Discover models" else "${models.size} models",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = PocketOrange,
-                        modifier = Modifier.clickable(enabled = !isDiscovering, onClick = onDiscover).padding(6.dp),
-                    )
+                    Box(
+                        modifier = Modifier
+                            .defaultMinSize(minWidth = 44.dp, minHeight = 44.dp)
+                            .clickable(enabled = !isDiscovering, onClick = onDiscover),
+                        contentAlignment = Alignment.CenterEnd,
+                    ) {
+                        Text(
+                            if (isDiscovering) "Discovering…" else if (models.isEmpty()) "Discover models" else "${models.size} models",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = PocketOrange,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                        )
+                    }
                 }
 
                 PremiumSummaryRow(
@@ -1916,15 +1940,19 @@ private fun AgentProviderCard(
                         modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Surface(
+                        LiquidGlassCard(
                             shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                            material = LiquidGlassMaterial.UltraThin,
+                            layerSource = null,
                         ) {
                             Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 if (state.antigravityAccounts.isNotEmpty()) {
                                     state.antigravityAccounts.forEach { acc ->
                                         Row(
-                                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .defaultMinSize(minHeight = 44.dp)
+                                                .padding(vertical = 4.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                         ) {
                                             Icon(
@@ -2005,20 +2033,36 @@ private fun AgentProviderCard(
                     ) {
                         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Text(if (selectedKind == ProviderKind.CLAUDE) "Saved tokens (${savedKeys.size})" else "Saved keys (${savedKeys.size})", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
-                            Text(
-                                if (addKeyExpanded) "Cancel" else "+ Add key",
-                                fontSize = 11.sp,
-                                color = PocketOrange,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.clickable { addKeyExpanded = !addKeyExpanded }.padding(6.dp),
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .defaultMinSize(minWidth = 44.dp, minHeight = 44.dp)
+                                    .clickable { addKeyExpanded = !addKeyExpanded },
+                                contentAlignment = Alignment.CenterEnd,
+                            ) {
+                                Text(
+                                    if (addKeyExpanded) "Cancel" else "+ Add key",
+                                    fontSize = 11.sp,
+                                    color = PocketOrange,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                                )
+                            }
                         }
                         savedKeys.forEach { key ->
                             val keyStatus = keyConnectionStatuses[key.id]
-                            Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)) {
+                            LiquidGlassCard(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                material = LiquidGlassMaterial.UltraThin,
+                                layerSource = null,
+                            ) {
                                 Column {
                                     Row(
-                                        Modifier.fillMaxWidth().clickable { onActivateKey(key.id) }.padding(start = 12.dp, top = 7.dp, bottom = 7.dp),
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .defaultMinSize(minHeight = 44.dp)
+                                            .clickable { onActivateKey(key.id) }
+                                            .padding(start = 12.dp, top = 7.dp, bottom = 7.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         Column(Modifier.weight(1f)) {
@@ -2026,7 +2070,7 @@ private fun AgentProviderCard(
                                             Text(if (key.isActive) "Active" else "Tap to activate", fontSize = 10.sp, color = if (key.isActive) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                         AgentSelectionDot(key.isActive)
-                                        IconButton(onClick = { onRemoveKey(key.id) }) {
+                                        IconButton(onClick = { onRemoveKey(key.id) }, modifier = Modifier.defaultMinSize(minWidth = LiquidGlassTokens.MinTouchTarget, minHeight = LiquidGlassTokens.MinTouchTarget)) {
                                             Icon(Icons.Default.DeleteSweep, "Remove", Modifier.size(17.dp))
                                         }
                                     }
@@ -2069,14 +2113,16 @@ private fun AgentProviderCard(
                                     singleLine = true,
                                     visualTransformation = if (newKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                                    trailingIcon = { IconButton(onClick = onToggleNewKey) { Icon(if (newKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, "Toggle visibility") } },
+                                    trailingIcon = { IconButton(onClick = onToggleNewKey, modifier = Modifier.defaultMinSize(minWidth = LiquidGlassTokens.MinTouchTarget, minHeight = LiquidGlassTokens.MinTouchTarget)) { Icon(if (newKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, "Toggle visibility") } },
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(12.dp),
                                 )
                                 Button(
                                     onClick = { onAddKey(); addKeyExpanded = false },
                                     enabled = newKeyName.isNotBlank() && newApiKey.isNotBlank(),
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .defaultMinSize(minHeight = 44.dp),
                                     shape = RoundedCornerShape(12.dp),
                                 ) { Text(if (selectedKind == ProviderKind.CLAUDE) "Save token" else "Save API key") }
                             }
@@ -2093,37 +2139,47 @@ private fun AgentProviderCard(
                 (isAntigravityServer && hasAntigravityAuth && model.isNotBlank()) ||
                 (!isAntigravityServer && apiKey.isNotBlank() && (selectedKind == ProviderKind.CLAUDE || (baseUrl.isNotBlank() && model.isNotBlank())))
             )
-            OutlinedButton(
-                onClick = onValidate,
-                enabled = canValidate,
-                modifier = Modifier.fillMaxWidth().height(46.dp),
+            LiquidGlassSurface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                material = LiquidGlassMaterial.Thin,
+                tint = PocketOrange.copy(alpha = 0.08f),
+                borderStroke = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.7f)),
                 shape = RoundedCornerShape(13.dp),
-                border = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.7f)),
+                onClick = if (canValidate) onValidate else null,
+                layerSource = null,
             ) {
-                if (isValidating) {
-                    CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 1.8.dp, color = PocketOrange)
-                    Spacer(Modifier.width(8.dp))
-                } else {
-                    Icon(
-                        if (selectedKind == ProviderKind.CLAUDE || isAntigravityServer) Icons.Default.Check else Icons.Default.Refresh,
-                        null,
-                        Modifier.size(16.dp),
-                        tint = PocketOrange,
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (isValidating) {
+                        CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 1.8.dp, color = PocketOrange)
+                        Spacer(Modifier.width(8.dp))
+                    } else {
+                        Icon(
+                            if (selectedKind == ProviderKind.CLAUDE || isAntigravityServer) Icons.Default.Check else Icons.Default.Refresh,
+                            null,
+                            Modifier.size(16.dp),
+                            tint = PocketOrange,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(
+                        when {
+                            isValidating && selectedKind == ProviderKind.CLAUDE -> "Saving token…"
+                            isValidating && isAntigravityServer -> "Verifying Antigravity Server…"
+                            isValidating -> "Testing connection…"
+                            selectedKind == ProviderKind.CLAUDE -> "Save subscription token"
+                            isAntigravityServer -> "Connect & Save Antigravity Server"
+                            else -> "Test connection"
+                        },
+                        color = PocketOrange,
+                        fontWeight = FontWeight.SemiBold,
                     )
-                    Spacer(Modifier.width(8.dp))
                 }
-                Text(
-                    when {
-                        isValidating && selectedKind == ProviderKind.CLAUDE -> "Saving token…"
-                        isValidating && isAntigravityServer -> "Verifying Antigravity Server…"
-                        isValidating -> "Testing connection…"
-                        selectedKind == ProviderKind.CLAUDE -> "Save subscription token"
-                        isAntigravityServer -> "Connect & Save Antigravity Server"
-                        else -> "Test connection"
-                    },
-                    color = PocketOrange,
-                    fontWeight = FontWeight.SemiBold,
-                )
             }
         }
     }
@@ -2140,7 +2196,12 @@ private fun PremiumSummaryRow(
     onClick: () -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 13.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = 44.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -2181,41 +2242,61 @@ private fun AgentUpdateBlock(
     onCheck: () -> Unit,
     onUpdate: (AgentKind) -> Unit,
 ) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 2.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+    LiquidGlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        material = LiquidGlassMaterial.Thin,
+        shape = RoundedCornerShape(PocketRadius.lg),
+        layerSource = null,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Runtime updates", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                Text(
-                    state.agentUpdateMessage ?: "Installed agents stay current",
-                    fontSize = 10.5.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            val canCheck = !state.agentUpdatesChecking && state.agentUpdating == null && state.agentInstalling == null
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             Row(
                 modifier = Modifier
-                    .clickable(enabled = canCheck, onClick = onCheck)
-                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 44.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (state.agentUpdatesChecking) {
-                    CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 1.6.dp)
-                } else {
-                    Icon(Icons.Default.Refresh, contentDescription = null, tint = PocketOrange, modifier = Modifier.size(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Runtime updates", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    Text(
+                        state.agentUpdateMessage ?: "Installed agents stay current",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
-                Spacer(Modifier.width(5.dp))
-                Text("Check updates", color = PocketOrange, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                val canCheck = !state.agentUpdatesChecking && state.agentUpdating == null && state.agentInstalling == null
+                LiquidGlassSurface(
+                    material = LiquidGlassMaterial.UltraThin,
+                    shape = RoundedCornerShape(10.dp),
+                    borderStroke = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.35f)),
+                    tint = PocketOrange.copy(alpha = 0.08f),
+                    onClick = if (canCheck) onCheck else null,
+                    layerSource = null,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 44.dp)
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (state.agentUpdatesChecking) {
+                            CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 1.6.dp, color = PocketOrange)
+                        } else {
+                            Icon(Icons.Default.Refresh, contentDescription = null, tint = PocketOrange, modifier = Modifier.size(14.dp))
+                        }
+                        Spacer(Modifier.width(5.dp))
+                        Text("Check updates", color = PocketOrange, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
-        }
 
-        state.agentUpdates.forEach { (agent, update) ->
+            state.agentUpdates.forEach { (agent, update) ->
                 val updating = state.agentUpdating == agent
                 val downloaded = state.agentUpdateDownloadedBytes
                 val total = state.agentUpdateTotalBytes
@@ -2223,10 +2304,13 @@ private fun AgentUpdateBlock(
                     (downloaded.toFloat() / total).coerceIn(0f, 1f)
                 } else state.agentUpdateProgress.coerceIn(0f, 1f)
 
-                Surface(
+                LiquidGlassCard(
+                    modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
-                    color = PocketOrange.copy(alpha = 0.08f),
-                    border = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.28f)),
+                    material = LiquidGlassMaterial.UltraThin,
+                    tint = PocketOrange.copy(alpha = 0.08f),
+                    borderStroke = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.28f)),
+                    layerSource = null,
                 ) {
                     Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2242,7 +2326,9 @@ private fun AgentUpdateBlock(
                         } else {
                             Button(
                                 onClick = { onUpdate(agent) },
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 44.dp),
                                 enabled = state.agentUpdating == null && state.agentInstalling == null,
                                 shape = RoundedCornerShape(10.dp),
                             ) {
@@ -2251,6 +2337,7 @@ private fun AgentUpdateBlock(
                         }
                     }
                 }
+            }
         }
     }
 }

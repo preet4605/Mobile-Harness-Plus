@@ -3929,15 +3929,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         failedApiKeyIds.clear()
         val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
-        val taskRecord = supervisor.createTask(
-            projectId = project.id,
-            projectSlug = project.slug,
-            chatId = state.value.activeChatId ?: "default",
-            agentKind = state.value.agentKind.name,
-            providerJson = state.value.provider.kind.name,
-            prompt = runtimePrompt,
-            objective = requestText.ifBlank { runtimePrompt }
-        )
+        val taskRecord = try {
+            supervisor.createTask(
+                projectId = project.id,
+                projectSlug = project.slug,
+                chatId = state.value.activeChatId ?: "default",
+                agentKind = state.value.agentKind.name,
+                providerJson = state.value.provider.kind.name,
+                prompt = runtimePrompt,
+                objective = requestText.ifBlank { runtimePrompt }
+            )
+        } catch (t: Throwable) {
+            runCatching { android.util.Log.e("MainViewModel", "Failed to create task in sendPrompt", t) }
+            _state.update {
+                it.copy(
+                    isRunning = false,
+                    liveThinking = false,
+                    activeSessionId = null,
+                    toastMessage = "Task creation error: ${t.localizedMessage ?: t.message}",
+                )
+            }
+            return
+        }
         activeRuntimeRequest = RuntimeRetryRequest(
             runtime = activeRuntime(),
             project = project,
@@ -4582,16 +4595,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             current.messages
         } else {
             val startedAt = current.workSegmentStartedAtMillis ?: current.taskStartedAtMillis ?: System.currentTimeMillis()
-            current.messages + ChatMessage(
-                id = "interrupted-${current.activeSessionId ?: chatId}",
-                fromUser = false,
-                text = "",
-                workItems = liveItems.map { it.copy(isComplete = true) } + ActivityItem(
-                    "Task interrupted",
-                    "The agent process stopped before reporting completion. Continue this chat to resume its official session.",
-                ),
-                workedMillis = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L),
-            )
+            current.messages + createInterruptedMessage(startedAt, liveItems)
         }
         val write = TranscriptWrite(project.id, chatId, messages)
         pendingTranscriptWrite = write
@@ -4704,5 +4708,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val TEST_PROVIDER_DEFAULTS_VERSION = 1
         private const val TEST_OPENROUTER_BASE_URL = "https://openrouter.ai/api"
         private const val TEST_OPENROUTER_MODEL = "stealth/ox-alpha"
+
+        internal fun createInterruptedMessage(
+            startedAtMillis: Long?,
+            liveItems: List<ActivityItem>,
+        ): ChatMessage {
+            val startedAt = startedAtMillis ?: System.currentTimeMillis()
+            return ChatMessage(
+                id = "interrupted-${UUID.randomUUID()}",
+                fromUser = false,
+                text = "",
+                workItems = liveItems.map { it.copy(isComplete = true) } + ActivityItem(
+                    "Task interrupted",
+                    "The agent process stopped before reporting completion. Continue this chat to resume its official session.",
+                ),
+                workedMillis = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L),
+            )
+        }
     }
 }

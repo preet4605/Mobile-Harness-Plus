@@ -514,7 +514,12 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             projectSlug = if (context.projectSlug.isNotBlank()) context.projectSlug else existing?.projectSlug.orEmpty(),
             acceptanceCriteria = effCriteria
         )
-        val decomposedPlan = taskDecomposer.decompose(taskId, effObjective, decompositionContext)
+        val decomposedPlan = try {
+            taskDecomposer.decompose(taskId, effObjective, decompositionContext)
+        } catch (e: InvalidDecompositionException) {
+            runCatching { Log.w(TAG, "decomposeTask failed for task $taskId: ${e.message}. Falling back to default single-step plan.") }
+            null
+        }
         return initializePlan(
             taskId = taskId,
             plan = decomposedPlan,
@@ -576,15 +581,41 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                 status = PlanStatus.PENDING
             )
         } else {
-            taskDecomposer.decompose(
-                taskId = taskId,
-                objective = effObjective,
-                context = TaskDecompositionContext(
-                    projectId = projectId,
-                    projectSlug = projectSlug,
-                    acceptanceCriteria = effCriteria
+            try {
+                taskDecomposer.decompose(
+                    taskId = taskId,
+                    objective = effObjective,
+                    context = TaskDecompositionContext(
+                        projectId = projectId,
+                        projectSlug = projectSlug,
+                        acceptanceCriteria = effCriteria
+                    )
                 )
-            )
+            } catch (e: InvalidDecompositionException) {
+                runCatching { Log.w(TAG, "Task decomposition failed in initializePlan for task $taskId: ${e.message}. Falling back to default single-step execution plan.") }
+                val safeObjective = effObjective.trim().ifBlank { "Execute Task" }
+                val fallbackObjective = if (PlanBuilder.isAmbiguousObjective(safeObjective)) {
+                    "Execute task request: $safeObjective"
+                } else {
+                    safeObjective
+                }
+                val fallbackCriteria = if (effCriteria.isNotEmpty()) {
+                    effCriteria
+                } else {
+                    listOf("Fulfill objective: $fallbackObjective")
+                }
+                PlanBuilder(
+                    planId = planId,
+                    taskId = taskId,
+                    title = "Execution Plan for $taskId"
+                ).addStep(
+                    title = "Execute Task",
+                    objective = fallbackObjective,
+                    acceptanceCriteria = fallbackCriteria,
+                    verificationCommand = "true",
+                    stepOrder = 0
+                ).build()
+            }
         }
 
         val canonicalTask = existing?.copy(plan = executionPlan) ?: CanonicalTask(
@@ -673,16 +704,42 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                 status = PlanStatus.PENDING
             )
         } else {
-            taskDecomposer.decompose(
-                taskId = taskId,
-                objective = effectiveObjective,
-                context = TaskDecompositionContext(
-                    projectId = projectId,
-                    projectSlug = projectSlug,
-                    constraints = constraints,
-                    acceptanceCriteria = effCriteria
+            try {
+                taskDecomposer.decompose(
+                    taskId = taskId,
+                    objective = effectiveObjective,
+                    context = TaskDecompositionContext(
+                        projectId = projectId,
+                        projectSlug = projectSlug,
+                        constraints = constraints,
+                        acceptanceCriteria = effCriteria
+                    )
                 )
-            )
+            } catch (e: InvalidDecompositionException) {
+                runCatching { Log.w(TAG, "Task decomposition failed in createTask for task $taskId: ${e.message}. Falling back to default single-step execution plan.") }
+                val safeObjective = effectiveObjective.trim().ifBlank { "Execute Task" }
+                val fallbackObjective = if (PlanBuilder.isAmbiguousObjective(safeObjective)) {
+                    "Execute task request: $safeObjective"
+                } else {
+                    safeObjective
+                }
+                val fallbackCriteria = if (effCriteria.isNotEmpty()) {
+                    effCriteria
+                } else {
+                    listOf("Fulfill objective: $fallbackObjective")
+                }
+                PlanBuilder(
+                    planId = planId,
+                    taskId = taskId,
+                    title = "Execution Plan for $taskId"
+                ).addStep(
+                    title = "Execute Task",
+                    objective = fallbackObjective,
+                    acceptanceCriteria = fallbackCriteria,
+                    verificationCommand = "true",
+                    stepOrder = 0
+                ).build()
+            }
         }
 
         val canonicalTask = CanonicalTask(

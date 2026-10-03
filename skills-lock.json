@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "apple-design": {
+      "source": "tzzs/apple-design-skill",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "bf403693c929029dd7d3de19af247fdbdf1e4e3c822bc774b0df0b7952c8792b"
+    }
+  }
+}

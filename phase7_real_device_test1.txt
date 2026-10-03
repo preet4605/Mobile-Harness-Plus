@@ -1,0 +1,15 @@
+# Phase 7 — Real-Device Test 1: Clean Baseline
+Status: PASSED
+Date: 2026-09-28
+Package: com.jarves.mh.dev
+Source Commit: 410c4ab
+APK MD5: 7c0fc2c0b8725c8c30e7a8a93a27dc49
+Process PID: 3105
+PRoot PID: 11979
+Agy PID: 11981
+
+Acceptance Criteria:
+1. com.jarves.mh.dev starts without crash/ANR: VERIFIED (0 crashes, 0 ANRs, active top-activity).
+2. Phase 6 classes loaded: VERIFIED (TaskSupervisor, StepVerifier, DefaultStepVerifier, RecoveryEngine, PlanBuilder, WorkspaceCheckpoints, GlobalExecutionPolicies loaded in runtime DEX).
+3. Existing SQLite/task/checkpoint data intact: VERIFIED (9 tables, 5 task_checkpoints, 38 memory_entries, 69 durable_task_states, canonical_tasks preserved).
+4. Controlled task execution lifecycle captured: VERIFIED.

@@ -504,4 +504,224 @@ class DeterministicTaskDecompositionTest {
         assertEquals(listOf("JWT tokens are validated", "Expired tokens return 401"), plan.steps[0].acceptanceCriteria)
         assertEquals("Build and verify authentication module", plan.steps[0].objective)
     }
+
+    // 11. Valid 1,2,3 sequential milestones
+    @Test
+    fun test11_validSequentialMilestones() {
+        val taskId = "task-seq-milestones-11"
+        val prompt = """
+            1. Setup local environment
+            2. Implement feature logic
+            3. Verify test suite
+            Acceptance Criteria:
+            - All tests pass
+        """.trimIndent()
+
+        val plan = decomposer.decompose(taskId, prompt, TaskDecompositionContext())
+        assertEquals(3, plan.steps.size)
+        assertEquals("Setup local environment", plan.steps[0].objective)
+        assertEquals(0, plan.steps[0].stepOrder)
+        assertEquals("Implement feature logic", plan.steps[1].objective)
+        assertEquals(1, plan.steps[1].stepOrder)
+        assertEquals("Verify test suite", plan.steps[2].objective)
+        assertEquals(2, plan.steps[2].stepOrder)
+    }
+
+    // 12. Normal conversational text
+    @Test
+    fun test12_normalConversationalText() {
+        val taskId = "task-convo-text-12"
+        val prompt = """
+            Please refactor the network layer to handle transient connection drops gracefully and retry up to 3 times.
+            Acceptance Criteria:
+            - Retries on network loss
+            - No unhandled exceptions
+        """.trimIndent()
+
+        val plan = decomposer.decompose(taskId, prompt, TaskDecompositionContext())
+        assertEquals(1, plan.steps.size)
+        assertEquals("Execute Task", plan.steps[0].title)
+        assertEquals(0, plan.steps[0].stepOrder)
+        assertEquals("Please refactor the network layer to handle transient connection drops gracefully and retry up to 3 times.", plan.steps[0].objective)
+    }
+
+    // 13. Numbered prose
+    @Test
+    fun test13_numberedProse() {
+        val taskId = "task-numbered-prose-13"
+        val prompt = """
+            Here are 3 reasons why we need this: 1. speed is crucial, 2. memory usage is too high, and 3. users complained.
+            Acceptance Criteria:
+            - Performance improved
+        """.trimIndent()
+
+        val plan = decomposer.decompose(taskId, prompt, TaskDecompositionContext())
+        assertEquals(1, plan.steps.size)
+        assertEquals("Execute Task", plan.steps[0].title)
+        assertEquals(0, plan.steps[0].stepOrder)
+        assertEquals("Here are 3 reasons why we need this: 1. speed is crucial, 2. memory usage is too high, and 3. users complained.", plan.steps[0].objective)
+    }
+
+    // 14. Multiple numbered lists
+    @Test
+    fun test14_multipleNumberedLists() {
+        val taskId = "task-multi-lists-14"
+        val prompt = """
+            Database steps:
+            1. Create table schema
+            2. Add foreign keys
+
+            API steps:
+            1. Define repository endpoints
+            2. Connect to viewmodel
+            Acceptance Criteria:
+            - Database and API working
+        """.trimIndent()
+
+        val plan = decomposer.decompose(taskId, prompt, TaskDecompositionContext())
+        assertEquals("Multiple numbered lists must fall back to single-task decomposition", 1, plan.steps.size)
+        assertEquals("Execute Task", plan.steps[0].title)
+        assertTrue(plan.steps[0].objective.contains("Database steps:"))
+        assertTrue(plan.steps[0].objective.contains("API steps:"))
+    }
+
+    // 15. Numbering restarting at 1
+    @Test
+    fun test15_numberingRestartingAtOne() {
+        val taskId = "task-restarting-one-15"
+        val prompt = """
+            1. Step Alpha
+            2. Step Beta
+            1. Step Restarted at one
+            Acceptance Criteria:
+            - All verified
+        """.trimIndent()
+
+        val plan = decomposer.decompose(taskId, prompt, TaskDecompositionContext())
+        assertEquals("Restarted numbering must fall back to single-task decomposition without crashing", 1, plan.steps.size)
+        assertEquals("Execute Task", plan.steps[0].title)
+        assertTrue(plan.steps[0].objective.contains("Step Alpha"))
+        assertTrue(plan.steps[0].objective.contains("Step Restarted at one"))
+    }
+
+    // 16. Skipped numbering
+    @Test
+    fun test16_skippedNumbering() {
+        val taskId = "task-skipped-num-16"
+        val prompt = """
+            1. Step Alpha
+            3. Step Gamma
+            4. Step Delta
+            Acceptance Criteria:
+            - All verified
+        """.trimIndent()
+
+        val plan = decomposer.decompose(taskId, prompt, TaskDecompositionContext())
+        assertEquals("Skipped numbering must fall back to single-task decomposition without crashing", 1, plan.steps.size)
+        assertEquals("Execute Task", plan.steps[0].title)
+        assertTrue(plan.steps[0].objective.contains("Step Alpha"))
+        assertTrue(plan.steps[0].objective.contains("Step Delta"))
+    }
+
+    // 17. Markdown numbered sections
+    @Test
+    fun test17_markdownNumberedSections() {
+        val taskId = "task-markdown-sections-17"
+        val prompt = """
+            ## 1. Setup Phase
+            Prose about setup:
+            1. Clone repo
+            2. Install packages
+
+            ## 2. Execution Phase
+            Prose about execution:
+            1. Build project
+            2. Run tests
+            Acceptance Criteria:
+            - Build passes
+        """.trimIndent()
+
+        val plan = decomposer.decompose(taskId, prompt, TaskDecompositionContext())
+        assertEquals("Markdown numbered sections with sublists must fall back gracefully", 1, plan.steps.size)
+        assertEquals("Execute Task", plan.steps[0].title)
+        assertTrue(plan.steps[0].objective.contains("## 1. Setup Phase"))
+        assertTrue(plan.steps[0].objective.contains("## 2. Execution Phase"))
+    }
+
+    // 18. The exact "expected step 3, found 1" failure pattern
+    @Test
+    fun test18_exactPattern_expectedStep3Found1() {
+        val taskId = "task-exact-pattern-3-1"
+        val prompt = """
+            1. First task milestone
+            2. Second task milestone
+            1. Third milestone restarting
+            Acceptance Criteria:
+            - Verified
+        """.trimIndent()
+
+        val plan = decomposer.decompose(taskId, prompt, TaskDecompositionContext())
+        assertEquals("Exact expected step 3 found 1 failure pattern must not crash", 1, plan.steps.size)
+        assertEquals("Execute Task", plan.steps[0].title)
+        assertTrue(plan.steps[0].objective.contains("First task milestone"))
+        assertTrue(plan.steps[0].objective.contains("Third milestone restarting"))
+    }
+
+    // 19. The previous "expected step 11, found 1" pattern
+    @Test
+    fun test19_exactPattern_expectedStep11Found1() {
+        val taskId = "task-exact-pattern-11-1"
+        val prompt = """
+            1. Item 1
+            2. Item 2
+            3. Item 3
+            4. Item 4
+            5. Item 5
+            6. Item 6
+            7. Item 7
+            8. Item 8
+            9. Item 9
+            10. Item 10
+            1. Sub-item restarting
+            Acceptance Criteria:
+            - Verified
+        """.trimIndent()
+
+        val plan = decomposer.decompose(taskId, prompt, TaskDecompositionContext())
+        assertEquals("Exact expected step 11 found 1 failure pattern must not crash", 1, plan.steps.size)
+        assertEquals("Execute Task", plan.steps[0].title)
+        assertTrue(plan.steps[0].objective.contains("Item 1"))
+        assertTrue(plan.steps[0].objective.contains("Sub-item restarting"))
+    }
+
+    // 20. Decomposition failure cannot crash task creation
+    @Test
+    fun test20_decompositionFailureCannotCrashTaskCreation() {
+        val taskId = "task-failing-decomposer-20"
+        val failingDecomposer = object : TaskDecomposer {
+            override fun decompose(taskId: String, objective: String, context: TaskDecompositionContext): ExecutionPlan {
+                throw InvalidDecompositionException("Simulated catastrophic decomposer failure: expected step 3, found 1")
+            }
+        }
+        supervisor.taskDecomposer = failingDecomposer
+
+        val taskRecord = supervisor.createTask(
+            taskId = taskId,
+            projectId = "test-project",
+            projectSlug = "test",
+            chatId = "chat-20",
+            agentKind = "ANTIGRAVITY",
+            providerJson = "{}",
+            prompt = "Some complex user prompt with multiple sections"
+        )
+
+        assertNotNull("Task record must be successfully created even when decomposer fails", taskRecord)
+        assertEquals(taskId, taskRecord.taskId)
+
+        val canonical = supervisor.canonicalTaskRepository.getTask(taskId)
+        assertNotNull("Canonical task must be persisted", canonical)
+        assertEquals(1, canonical!!.plan.steps.size)
+        assertEquals("Execute Task", canonical.plan.steps[0].title)
+        assertEquals(StepStatus.PENDING, canonical.plan.steps[0].status)
+    }
 }

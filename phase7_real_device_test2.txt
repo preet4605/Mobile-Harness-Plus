@@ -1,0 +1,55 @@
+# Phase 7 — Real-Device Test 2: Controlled Process Death & Recovery
+Status: PASSED
+Date: 2026-09-28
+Package: com.jarves.mh.dev
+Source Commit: 410c4ab
+APK MD5: 7c0fc2c0b8725c8c30e7a8a93a27dc49
+
+1. Pre-Kill State:
+- Task ID: b92acef6-7708-4891-b1d3-eaeeb8c6ee52
+- Session ID: 1d97672a-91ea-4fb1-aca7-79049673d676
+- App Process PID: 3105
+- Bound Task Process PID: 32618
+- Plan Status: IN_PROGRESS, currentStepIndex: 0
+- Active Step: step-0 ("Confirm process is actually dead.") in RUNNING state (attempt 1)
+- Checkpoint: step-1 snapshot intact in /data/user/0/com.jarves.mh.dev/files/checkpoints/
+
+2. Process Termination:
+- Deliberate termination of Mobile Harness PID 3105 during RUNNING
+- Process death verified: PID 3105 and bound child PID 32618 ceased execution
+
+3. Post-Restart State:
+- Mobile Harness restarted with new App Process PID: 26902
+- TaskSupervisor.reconcileOnStartup() executed on launch:
+  * Found active task b92acef6-7708-4891-b1d3-eaeeb8c6ee52
+  * Verified previous PID 32618 is dead
+  * Transitioned task state to ABANDONED with recoveryRequired = true
+  * Reconciled interrupted step-0 to FAILED (reason: "Process terminated due to application process death / system restart")
+  * Invariant verified: Interrupted step was NOT marked COMPLETED
+  * Invariant verified: currentStepIndex remained 0 (did not advance incorrectly)
+  * Invariant verified: No duplicate recovery plan or spurious attempt was created
+- SQLite database integrity verified: All 9 tables intact, zero corruption
+
+4. Checkpoint / Recovery State:
+- Step-1 checkpoint metadata verified intact on disk:
+  * Checkpoint tag: step-1
+  * Checkpoint location: /data/user/0/com.jarves.mh.dev/files/checkpoints/fa51b2cf-9da2-4e05-9eaf-f643aae08eca/step-1/
+  * Backed up files intact: metadata.json + project workspace tree
+
+5. Resume Behavior & Supervised Continuation:
+- Continuation task launched: 082f84a2-486d-4da0-ab5f-9afd03992691
+- Session ID: 0b6892b4-0293-40d2-ac7d-3ff3e3bf2d03
+- Active Process Tree:
+  * PRoot PID: 8746 (libproot.so)
+  * Antigravity Agent PID: 8748 (agy)
+- Context & Policies: Deterministic Brain Context and Global Execution Policies successfully injected
+- StepVerifier: Active verification gate enforcing acceptance criteria
+
+6. Resource Measurements:
+- App Process PID: 26902
+- Memory: TOTAL PSS ~96.7 MB (Java Heap: 14.8 MB, Native Heap: 8.8 MB)
+- CPU: Stable, no spinning threads
+- Crashes/ANRs: 0 crashes, 0 ANRs on restarted PID 26902
+
+GATE VERDICT:
+REAL-DEVICE TEST 2 PASSED

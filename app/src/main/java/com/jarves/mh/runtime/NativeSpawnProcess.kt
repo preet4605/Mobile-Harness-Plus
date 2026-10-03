@@ -73,6 +73,15 @@ internal class NativeSpawnProcess private constructor(
 
     companion object {
         const val MAX_OUTPUT_BYTES: Long = 5L * 1024 * 1024 // 5 MB
+        const val MAX_ARG_STRLEN: Int = 131072 // Linux MAX_ARG_STRLEN (32 pages * 4096)
+
+        fun validateArgv(argv: List<String>) {
+            argv.forEachIndexed { index, arg ->
+                require(arg.length < MAX_ARG_STRLEN) {
+                    "Argument at index $index exceeds maximum allowed length (${arg.length} >= $MAX_ARG_STRLEN). Large payloads must be streamed through stdin, not passed in argv."
+                }
+            }
+        }
 
         fun start(
             argv: List<String>,
@@ -83,6 +92,7 @@ internal class NativeSpawnProcess private constructor(
             ptyRows: Int = 40,
             ptyColumns: Int = 120,
         ): NativeSpawnProcess {
+            validateArgv(argv)
             outputFile.parentFile?.mkdirs()
             if (pseudoTerminal) outputFile.delete()
             val spawned = NativeSpawn.spawn(

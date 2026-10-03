@@ -475,8 +475,15 @@ class RuntimeInstaller(private val context: Context) {
         )
         dshMarker.writeText(latest)
         dshAndroidCompatibilityMarker.delete()
+        cleanDshNativeCache()
         ensureDshAndroidCompatibility()
-        verifyGuest(runtime.proot, "/usr/local/bin/dsh --profile headless --help", "DeepSeek Harness update verification failed")
+        verifyGuest(
+            proot = runtime.proot,
+            command = "/usr/local/bin/dsh --profile headless --help",
+            failureMessage = "DeepSeek Harness update verification failed",
+            emulateHardLinks = false,
+            environment = mapOf(NARB_DISABLE_NATIVE_CACHE_ENV to NARB_DISABLE_NATIVE_CACHE_VALUE),
+        )
     }
 
     private fun fetchAgyManifest(): JSONObject = JSONObject(
@@ -562,6 +569,7 @@ class RuntimeInstaller(private val context: Context) {
         onProgress: suspend (RuntimeInstallProgress) -> Unit,
     ) {
         if (isAgentInstalled(com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS)) {
+            cleanDshNativeCache()
             ensureDshAndroidCompatibility()
             return
         }
@@ -572,11 +580,42 @@ class RuntimeInstaller(private val context: Context) {
             to = 0.995f,
             onProgress = onProgress,
         )
+        cleanDshNativeCache()
         ensureDshAndroidCompatibility()
-        verifyGuest(proot, "/usr/local/bin/dsh --profile headless --help", "DeepSeek Harness verification failed")
+        verifyGuest(
+            proot = proot,
+            command = "/usr/local/bin/dsh --profile headless --help",
+            failureMessage = "DeepSeek Harness verification failed",
+            emulateHardLinks = false,
+            environment = mapOf(NARB_DISABLE_NATIVE_CACHE_ENV to NARB_DISABLE_NATIVE_CACHE_VALUE),
+        )
         require(isAgentInstalled(com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS)) {
             "The DeepSeek Harness runtime bundle is incomplete"
         }
+    }
+
+    /**
+     * Safely and idempotently removes stale corrupted native-cache directories created
+     * by node-addon-native-custom-loader under PRoot.
+     */
+    fun cleanDshNativeCache(): Int {
+        val targets = listOfNotNull(
+            File(rootfs, "tmp").takeIf { it.isDirectory },
+            File("/tmp").takeIf { it.isDirectory },
+            File(System.getProperty("java.io.tmpdir") ?: "/tmp").takeIf { it.isDirectory },
+        ).distinct()
+
+        var removed = 0
+        targets.forEach { tmpDir ->
+            tmpDir.listFiles { file ->
+                file.name.startsWith("node-addon-native-custom-loader-")
+            }?.forEach { loaderDir ->
+                if (loaderDir.deleteRecursively()) {
+                    removed++
+                }
+            }
+        }
+        return removed
     }
 
     /**
@@ -589,6 +628,7 @@ class RuntimeInstaller(private val context: Context) {
      * no-clobber guarantee. Existing-file edits continue to use atomic rename.
      */
     fun ensureDshAndroidCompatibility() {
+        cleanDshNativeCache()
         if (!isAgentInstalled(com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS)) return
         if (dshAndroidCompatibilityMarker.isFile && dshAndroidCompatibilityMarker.readText().trim() == DSH_ANDROID_COMPATIBILITY_VERSION) return
         val persistence = File(
@@ -1394,13 +1434,20 @@ class RuntimeInstaller(private val context: Context) {
         .filter { it == '\t' || it.code >= 32 }
         .take(MAX_TERMINAL_LINE)
 
-    private suspend fun verifyGuest(proot: File, command: String, failureMessage: String) {
+    private suspend fun verifyGuest(
+        proot: File,
+        command: String,
+        failureMessage: String,
+        emulateHardLinks: Boolean = true,
+        environment: Map<String, String> = emptyMap(),
+    ) {
         val verify = process(
             proot = proot,
             rootfs = rootfs,
             workspace = File(rootfs, "root"),
-            environment = emptyMap(),
+            environment = environment,
             guestCommand = listOf("/usr/bin/env", "bash", "-lc", command),
+            emulateHardLinks = emulateHardLinks,
         )
         withTimeout(60_000L) {
             while (verify.isAlive) delay(50)
@@ -1994,5 +2041,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         private const val MAX_TERMINAL_LINE = 500
         private const val MAX_COLLECTED_OUTPUT = 24_000
         private val ANSI_ESCAPE = Regex("\\u001B(?:\\[[0-?]*[ -/]*[@-~]|\\][^\\u0007]*(?:\\u0007|\\u001B\\\\))")
+        const val NARB_DISABLE_NATIVE_CACHE_ENV = "NARB_DISABLE_NATIVE_CACHE"
+        const val NARB_DISABLE_NATIVE_CACHE_VALUE = "1"
     }
 }

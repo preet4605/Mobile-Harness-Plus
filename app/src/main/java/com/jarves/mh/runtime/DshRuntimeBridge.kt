@@ -141,6 +141,7 @@ class DshRuntimeBridge(
             check(installer.isAgentInstalled(com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS)) {
                 "DeepSeek Harness is not installed. Open Settings → Coding agent to install it."
             }
+            installer.cleanDshNativeCache()
             installer.ensureDshAndroidCompatibility()
             val workspace = checkpoints.ensureWorkspace(projectId)
             checkpoints.createCheckpoint(projectId, workspace)
@@ -150,14 +151,7 @@ class DshRuntimeBridge(
             }
             val route = DshRouteMapper.forProfile(provider, localGatewayUrl = antigravityGateway?.url)
             writeDshSettings(installed.rootfs, route, provider)
-            val environment = linkedMapOf(
-                "DSH_HOME" to DSH_HOME_GUEST_PATH,
-                // PocketDev already confines the whole Linux guest with PRoot. Let dsh
-                // use every tool inside that boundary without an unavailable approval UI.
-                "DSH_PERMISSION_MODE" to "danger-full-access",
-                route.keyEnv to secret,
-            )
-            if (route.keyEnv != FALLBACK_KEY_ENV) environment.remove(FALLBACK_KEY_ENV)
+            val environment = buildDshEnvironment(route, secret)
 
             val guestWorkspacePath = "/workspace/$projectSlug"
             val contextPrompt = buildContextPrompt(injectedPrompt, conversationHistory, guestWorkspacePath, projectKind, memory)
@@ -723,11 +717,26 @@ class DshRuntimeBridge(
     companion object {
         const val DSH_HOME_GUEST_PATH = "/root/.dsh"
         const val FALLBACK_KEY_ENV = "MH_DSH_API_KEY"
+        const val NARB_DISABLE_NATIVE_CACHE_ENV = "NARB_DISABLE_NATIVE_CACHE"
+        const val NARB_DISABLE_NATIVE_CACHE_VALUE = "1"
         private const val FOREGROUND_PROGRESS_MIN_INTERVAL_MS = 750L
         private const val SDK_INITIALIZE_ID = 1
         private const val SDK_PROMPT_ID = 2
         private const val SDK_SHUTDOWN_ID = 3
         private const val SDK_SHUTDOWN_TIMEOUT_MS = 3_000L
+
+        internal fun buildDshEnvironment(route: DshRoute, secret: String): Map<String, String> {
+            val env = linkedMapOf(
+                "DSH_HOME" to DSH_HOME_GUEST_PATH,
+                // PocketDev already confines the whole Linux guest with PRoot. Let dsh
+                // use every tool inside that boundary without an unavailable approval UI.
+                "DSH_PERMISSION_MODE" to "danger-full-access",
+                NARB_DISABLE_NATIVE_CACHE_ENV to NARB_DISABLE_NATIVE_CACHE_VALUE,
+                route.keyEnv to secret,
+            )
+            if (route.keyEnv != FALLBACK_KEY_ENV) env.remove(FALLBACK_KEY_ENV)
+            return env
+        }
     }
 }
 

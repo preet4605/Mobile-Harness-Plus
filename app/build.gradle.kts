@@ -162,7 +162,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions.jvmTarget = "17"
+    kotlinOptions {
+        jvmTarget = "17"
+        freeCompilerArgs += listOf("-Xskip-metadata-version-check")
+    }
     buildFeatures {
         compose = true
         buildConfig = true
@@ -220,6 +223,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("com.github.luben:zstd-jni:1.5.6-9@aar")
+    implementation("com.github.BuildItCode:LiquidGlass:0.2.5")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250107")

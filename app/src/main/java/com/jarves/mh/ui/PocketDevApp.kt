@@ -21,18 +21,27 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.StartOffset
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -52,8 +61,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -140,9 +151,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -166,6 +174,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -183,6 +193,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -238,7 +249,22 @@ import java.io.ByteArrayInputStream
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.semantics.Role
+import com.jarves.mh.data.AppPreferences
+import com.jarves.mh.ui.theme.glass.LiquidGlassCard
+import com.jarves.mh.ui.theme.glass.LiquidGlassConfig
+import com.jarves.mh.ui.theme.glass.LiquidGlassFloatingNavBar
+import com.jarves.mh.ui.theme.glass.LiquidGlassFloatingNavBarItem
+import com.jarves.mh.ui.theme.glass.LiquidGlassHost
+import com.jarves.mh.ui.theme.glass.LiquidGlassLayers
+import com.jarves.mh.ui.theme.glass.LiquidGlassMaterial
+import com.jarves.mh.ui.theme.glass.LiquidGlassSegmentedControl
+import com.jarves.mh.ui.theme.glass.LiquidGlassSurface
+import com.jarves.mh.ui.theme.glass.LiquidGlassTokens
+import com.jarves.mh.ui.theme.glass.LiquidGlassTopBar
+import com.jarves.mh.ui.theme.glass.asBackdropSource
 
 import com.jarves.mh.ui.theme.AppThemeMode
 import androidx.compose.material.icons.filled.SmartToy
@@ -262,6 +288,10 @@ private enum class WorkspaceTab(val label: String, val icon: ImageVector) {
 fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val preferences = remember(context) { AppPreferences(context) }
+    val glassConfig = remember(preferences.reduceTransparency) {
+        LiquidGlassConfig.fromPreferences(preferences, context)
+    }
     val projectsListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
     LaunchedEffect(state.toastMessage) {
         state.toastMessage?.let { message ->
@@ -269,10 +299,16 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
             viewModel.consumeToast()
         }
     }
-    when {
-        state.startupStage == StartupStage.CHECKING -> StartupLoadingScreen(
-            state = state,
-            themeMode = state.themeMode,
+    LiquidGlassHost(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        config = glassConfig,
+    ) {
+        when {
+            state.startupStage == StartupStage.CHECKING -> StartupLoadingScreen(
+                state = state,
+                themeMode = state.themeMode,
             onToggleTheme = viewModel::toggleTheme,
         )
         !state.backgroundSetupComplete && state.startupStage == StartupStage.SETUP_REQUIRED ->
@@ -407,6 +443,7 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
             onClearAllMemory = viewModel::clearMemory,
         )
         else -> RootScreenHost(state, viewModel, projectsListState)
+        }
     }
 }
 
@@ -2080,7 +2117,9 @@ private fun RootScreenHost(
 ) {
     var screen by rememberSaveable { mutableStateOf(RootScreen.PROJECTS) }
     var showQuickTerminal by rememberSaveable { mutableStateOf(false) }
-    val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    var floatingNavMeasuredHeightDp by remember { mutableStateOf(0.dp) }
+    val density = LocalDensity.current
+    val keyboardVisible = WindowInsets.ime.getBottom(density) > 0
     val terminalLines by viewModel.terminalLines.collectAsStateWithLifecycle()
     val isTerminalRunning by viewModel.isTerminalRunning.collectAsStateWithLifecycle()
     val terminalLiveOutput by viewModel.terminalLiveOutput.collectAsStateWithLifecycle()
@@ -2088,40 +2127,74 @@ private fun RootScreenHost(
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
-            if (!keyboardVisible) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                RootScreen.entries.forEach { tab ->
-                    NavigationBarItem(
-                        selected = screen == tab,
-                        onClick = { screen = tab },
-                        icon = { Icon(tab.icon, contentDescription = tab.label) },
-                        label = { Text(tab.label, fontSize = 11.sp) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                        ),
-                    )
+            if (!keyboardVisible) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 24.dp, vertical = 12.dp)
+                        .onGloballyPositioned { coordinates ->
+                            val heightDp = with(density) { coordinates.size.height.toDp() }
+                            if (heightDp > 0.dp && heightDp != floatingNavMeasuredHeightDp) {
+                                floatingNavMeasuredHeightDp = heightDp
+                            }
+                        },
+                    horizontalAlignment = Alignment.End,
+                ) {
+                    if (screen == RootScreen.PROJECTS && !showQuickTerminal) {
+                        ExtendedFloatingActionButton(
+                            onClick = { showQuickTerminal = true },
+                            icon = { Icon(Icons.Default.Terminal, contentDescription = null) },
+                            text = { Text("Terminal", fontWeight = FontWeight.SemiBold) },
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                    }
+                    LiquidGlassFloatingNavBar(
+                        modifier = Modifier.fillMaxWidth(),
+                        layerSource = LiquidGlassLayers.Background,
+                    ) {
+                        RootScreen.entries.forEach { tab ->
+                            val selected = screen == tab
+                            LiquidGlassFloatingNavBarItem(
+                                selected = selected,
+                                onClick = { screen = tab },
+                                icon = { Icon(tab.icon, contentDescription = tab.label) },
+                                label = {
+                                    Text(
+                                        tab.label,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+                                    )
+                                },
+                                contentDescription = tab.label,
+                                selectedTint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
                 }
             }
         },
-        floatingActionButton = {
-            if (screen == RootScreen.PROJECTS && !keyboardVisible && !showQuickTerminal) {
-                ExtendedFloatingActionButton(
-                    onClick = { showQuickTerminal = true },
-                    icon = { Icon(Icons.Default.Terminal, contentDescription = null) },
-                    text = { Text("Terminal", fontWeight = FontWeight.SemiBold) },
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                )
-            }
-        },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        val navBarsBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        val scaffoldBottom = padding.calculateBottomPadding()
+        val actualNavFootprint = maxOf(floatingNavMeasuredHeightDp, scaffoldBottom).takeIf { it > 0.dp }
+            ?: (navBarsBottomInset + 88.dp)
+        val floatingNavClearance = actualNavFootprint + 28.dp
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .asBackdropSource(LiquidGlassLayers.Background),
+        ) {
             when (screen) {
                 RootScreen.PROJECTS -> ProjectsScreen(
                     state = state,
                     listState = projectsListState,
+                    bottomBarPadding = floatingNavClearance,
                     onOpen = viewModel::openProject,
                     onCreate = viewModel::createProject,
                     onCreateQuickProject = viewModel::createQuickProject,
@@ -2141,6 +2214,7 @@ private fun RootScreenHost(
                 )
                 RootScreen.AGENT -> AgentScreen(
                     state = state,
+                    bottomBarPadding = floatingNavClearance,
                     onSaveProvider = { profile, key ->
                         viewModel.updateProvider(profile, key)
                     },
@@ -2168,36 +2242,42 @@ private fun RootScreenHost(
                     onSetAntigravityModel = viewModel::setAntigravityModel,
                     onSetAntigravityEffort = viewModel::setAntigravityEffort,
                 )
-                RootScreen.SETTINGS -> SettingsScreen(
-                    state = state,
-                    onSaveProvider = { profile, key ->
-                        viewModel.updateProvider(profile, key)
-                    },
-                    onDiscoverModels = viewModel::discoverModels,
-                    onValidateProvider = viewModel::validateProvider,
-                    onSetThemeMode = viewModel::setThemeMode,
-                    onPing = viewModel::pingApi,
-                    onClearTerminal = viewModel::clearTerminal,
-                    getSavedApiKey = viewModel::getSavedApiKey,
-                    getSavedApiKeys = viewModel::getSavedApiKeys,
-                    onAddApiKey = viewModel::addApiKey,
-                    onActivateApiKey = viewModel::activateApiKey,
-                    onRemoveApiKey = viewModel::removeApiKey,
-                    onInstallDevStack = viewModel::installDevStack,
-                    onRemoveDevStack = viewModel::removeDevStack,
-                    onInstallAgent = viewModel::installAgent,
-                    onCheckAgentUpdates = viewModel::checkAgentUpdates,
-                    onUpdateAgent = viewModel::updateAgent,
-                    onStartAntigravityLogin = viewModel::startAntigravityLogin,
-                    onSubmitAntigravityCode = viewModel::submitAntigravityCode,
-                    onLogoutAntigravity = viewModel::logoutAntigravity,
-                    onRefreshAntigravityModels = viewModel::refreshAntigravityModels,
-                    onSetAntigravityModel = viewModel::setAntigravityModel,
-                    onSetAntigravityEffort = viewModel::setAntigravityEffort,
-                    initialDebugUpdateManifestUrl = viewModel.debugUpdateManifestUrl(),
-                    onSetDebugUpdateManifestUrl = viewModel::setDebugUpdateManifestUrl,
-                    onClearDebugUpdateManifestUrl = viewModel::clearDebugUpdateManifestUrl,
-                )
+                RootScreen.SETTINGS -> Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = padding.calculateBottomPadding()),
+                ) {
+                    SettingsScreen(
+                        state = state,
+                        onSaveProvider = { profile, key ->
+                            viewModel.updateProvider(profile, key)
+                        },
+                        onDiscoverModels = viewModel::discoverModels,
+                        onValidateProvider = viewModel::validateProvider,
+                        onSetThemeMode = viewModel::setThemeMode,
+                        onPing = viewModel::pingApi,
+                        onClearTerminal = viewModel::clearTerminal,
+                        getSavedApiKey = viewModel::getSavedApiKey,
+                        getSavedApiKeys = viewModel::getSavedApiKeys,
+                        onAddApiKey = viewModel::addApiKey,
+                        onActivateApiKey = viewModel::activateApiKey,
+                        onRemoveApiKey = viewModel::removeApiKey,
+                        onInstallDevStack = viewModel::installDevStack,
+                        onRemoveDevStack = viewModel::removeDevStack,
+                        onInstallAgent = viewModel::installAgent,
+                        onCheckAgentUpdates = viewModel::checkAgentUpdates,
+                        onUpdateAgent = viewModel::updateAgent,
+                        onStartAntigravityLogin = viewModel::startAntigravityLogin,
+                        onSubmitAntigravityCode = viewModel::submitAntigravityCode,
+                        onLogoutAntigravity = viewModel::logoutAntigravity,
+                        onRefreshAntigravityModels = viewModel::refreshAntigravityModels,
+                        onSetAntigravityModel = viewModel::setAntigravityModel,
+                        onSetAntigravityEffort = viewModel::setAntigravityEffort,
+                        initialDebugUpdateManifestUrl = viewModel.debugUpdateManifestUrl(),
+                        onSetDebugUpdateManifestUrl = viewModel::setDebugUpdateManifestUrl,
+                        onClearDebugUpdateManifestUrl = viewModel::clearDebugUpdateManifestUrl,
+                    )
+                }
             }
         }
     }
@@ -3154,6 +3234,7 @@ private fun ClaudeSubscriptionCredentialsStep(
 private fun ProjectsScreen(
     state: AppUiState,
     listState: LazyListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() },
+    bottomBarPadding: Dp = 0.dp,
     onOpen: (Project) -> Unit,
     onCreate: (String) -> Unit,
     onCreateQuickProject: () -> Unit,
@@ -3191,18 +3272,31 @@ private fun ProjectsScreen(
         if (state.appUpdate != null) showUpdateDialog = true
     }
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        containerColor = Color.Transparent,
         topBar = {
-            TopAppBar(
-                modifier = Modifier.padding(top = 8.dp),
-                title = { Row(verticalAlignment = Alignment.CenterVertically) { BrandMark(compact = true); Spacer(Modifier.width(9.dp)); Text("Mobile Harness", fontWeight = FontWeight.Bold) } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+            LiquidGlassTopBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        BrandMark(compact = true)
+                        Spacer(Modifier.width(9.dp))
+                        Text("Mobile Harness", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    }
+                },
+                material = LiquidGlassMaterial.Regular,
+                shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
+                layerSource = null,
             )
         },
     ) { padding ->
+        val navBarBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        // Explicit bottom overlay clearance fallback: Terminal FAB (56dp) + Spacer (10dp) + Floating Nav Bar (~64dp) + container padding (24dp) + safe breathing room + navigation bars insets
+        val defaultClearance = 224.dp + navBarBottomInset
+        val finalBottomPadding = if (bottomBarPadding > 0.dp) bottomBarPadding else defaultClearance
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(start = 18.dp, top = 18.dp, end = 18.dp, bottom = 88.dp),
+            contentPadding = PaddingValues(start = 18.dp, top = 20.dp, end = 18.dp, bottom = finalBottomPadding),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
@@ -3212,12 +3306,13 @@ private fun ProjectsScreen(
                     fontWeight = FontWeight.Bold,
                     letterSpacing = (-0.3).sp,
                 )
+                Spacer(Modifier.height(6.dp))
                 Text(
                     "Local developer harness & autonomous coding environment.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 13.sp,
                 )
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(18.dp))
 
                 // Bento-inspired modular tiles
                 Row(
@@ -3249,38 +3344,58 @@ private fun ProjectsScreen(
                     )
                 }
 
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(12.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Button(
-                        onClick = { showCreate = true },
-                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                    LiquidGlassSurface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        material = LiquidGlassMaterial.Thin,
+                        tint = PocketOrange.copy(alpha = 0.08f),
+                        borderStroke = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.28f)),
                         shape = RoundedCornerShape(PocketRadius.md),
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 1.dp, pressedElevation = 0.dp),
+                        onClick = { showCreate = true },
                     ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = "New workspace",
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 13.sp,
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = PocketOrange.copy(alpha = 0.16f),
+                                modifier = Modifier.size(24.dp),
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.Add,
+                                        contentDescription = null,
+                                        tint = PocketOrange,
+                                        modifier = Modifier.size(15.dp),
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(9.dp))
+                            Text(
+                                text = "New workspace",
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
                     }
                 }
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(12.dp))
                 val isImportExpanded = importExpanded || state.projectImporting || state.gitCloneRunning
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .softCard(
-                            shape = RoundedCornerShape(PocketRadius.lg),
-                            elevation = 1.dp,
-                        ),
+                LiquidGlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    material = LiquidGlassMaterial.Thin,
+                    shape = RoundedCornerShape(PocketRadius.lg),
                 ) {
                     Column {
                         Row(
@@ -3391,7 +3506,7 @@ private fun ProjectsScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 4.dp),
+                        .padding(top = 16.dp, bottom = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -3409,13 +3524,10 @@ private fun ProjectsScreen(
             }
             if (projects.isEmpty()) {
                 item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .softCard(
-                                shape = RoundedCornerShape(PocketRadius.xl),
-                                elevation = 1.dp,
-                            ),
+                    LiquidGlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        material = LiquidGlassMaterial.Thin,
+                        shape = RoundedCornerShape(PocketRadius.xl),
                     ) {
                         Column(
                             modifier = Modifier
@@ -3462,6 +3574,7 @@ private fun ProjectsScreen(
                         project = project,
                         taskRunning = state.isRunning && state.activeProject?.id == project.id,
                         terminalRunning = state.projectTerminalRunning && state.activeProject?.id == project.id,
+                        isActive = state.activeProject?.id == project.id,
                         onOpen = { onOpen(project) },
                         onRename = { onRenameProject(project.id, it) },
                         onDelete = { onDeleteProject(project.id) },
@@ -3772,6 +3885,7 @@ private fun ProjectCard(
     project: Project,
     taskRunning: Boolean,
     terminalRunning: Boolean,
+    isActive: Boolean = false,
     onOpen: () -> Unit,
     onRename: (String) -> Unit,
     onDelete: () -> Unit,
@@ -3780,14 +3894,12 @@ private fun ProjectCard(
     var showRename by rememberSaveable(project.id) { mutableStateOf(false) }
     var showDelete by rememberSaveable(project.id) { mutableStateOf(false) }
     var renameText by rememberSaveable(project.id) { mutableStateOf(project.name) }
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .softCard(
-                shape = RoundedCornerShape(PocketRadius.lg),
-                elevation = 1.dp,
-                onClick = onOpen,
-            ),
+    LiquidGlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        material = LiquidGlassMaterial.Thin,
+        shape = RoundedCornerShape(PocketRadius.lg),
+        borderStroke = if (isActive) BorderStroke(1.dp, PocketOrange.copy(alpha = 0.42f)) else null,
+        onClick = onOpen,
     ) {
         Row(
             modifier = Modifier.padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 6.dp),
@@ -3856,7 +3968,10 @@ private fun ProjectCard(
                 )
             }
             Box {
-                IconButton(onClick = { menuOpen = true }) {
+                IconButton(
+                    onClick = { menuOpen = true },
+                    modifier = Modifier.size(44.dp),
+                ) {
                     Icon(
                         Icons.Default.MoreVert,
                         contentDescription = "Project options",
@@ -4244,108 +4359,131 @@ private fun WorkspaceScreen(
         )
     }
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        containerColor = Color.Transparent,
         topBar = {
-            Column {
-                TopAppBar(
-                    title = {
-                        Column(Modifier.fillMaxWidth()) {
-                            Text(
-                                state.activeProject?.name.orEmpty(),
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 15.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.combinedClickable(
-                                    onClick = {},
-                                    onLongClick = {
-                                        Toast.makeText(context, state.activeProject?.name.orEmpty(), Toast.LENGTH_LONG).show()
-                                    },
-                                ),
-                            )
-                            Text(
-                                "${activeChat?.title ?: "Chat"} · ${if (state.agentKind == AgentKind.ANTIGRAVITY) state.agentKind.title else state.provider.kind.title}",
-                                fontSize = 10.5.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
+            LiquidGlassTopBar(
+                title = {
+                    Text(
+                        state.activeProject?.name.orEmpty(),
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 15.sp,
+                        color = if (isSystemInDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.combinedClickable(
+                            onClick = {},
+                            onLongClick = {
+                                Toast.makeText(context, state.activeProject?.name.orEmpty(), Toast.LENGTH_LONG).show()
+                            },
+                        ),
+                    )
+                },
+                subtitle = {
+                    Text(
+                        "${activeChat?.title ?: "Chat"} · ${if (state.agentKind == AgentKind.ANTIGRAVITY) state.agentKind.title else state.provider.kind.title}",
+                        fontSize = 10.5.sp,
+                        color = if (isSystemInDarkTheme()) Color(0xFF94A3B8) else Color(0xFF475569),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            "Projects",
+                            tint = if (isSystemInDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
+                        )
+                    }
+                },
+                actions = {
+                    if (isAndroidProject) {
+                        IconButton(
+                            onClick = {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                                    !context.packageManager.canRequestPackageInstalls()) {
+                                    unknownAppsLauncher.launch(
+                                        Intent(
+                                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                            Uri.parse("package:${context.packageName}"),
+                                        ),
+                                    )
+                                } else {
+                                    onBuildAndRunAndroid()
+                                }
+                            },
+                            enabled = !state.androidBuildRunning && !state.isRunning && !state.projectTerminalRunning,
+                            modifier = Modifier.size(44.dp),
+                        ) {
+                            if (state.androidBuildRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            else Icon(
+                                Icons.Default.PlayArrow,
+                                "Build and run Android app",
+                                tint = if (isSystemInDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
                             )
                         }
-                    },
-                    navigationIcon = { IconButton(onClick = onBack, modifier = Modifier.size(38.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Projects") } },
-                    actions = {
-                        if (isAndroidProject) {
-                            IconButton(
-                                onClick = {
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                                        !context.packageManager.canRequestPackageInstalls()) {
-                                        unknownAppsLauncher.launch(
-                                            Intent(
-                                                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                                                Uri.parse("package:${context.packageName}"),
-                                            ),
-                                        )
-                                    } else {
-                                        onBuildAndRunAndroid()
-                                    }
-                                },
-                                enabled = !state.androidBuildRunning && !state.isRunning && !state.projectTerminalRunning,
-                                modifier = Modifier.size(38.dp),
-                            ) {
-                                if (state.androidBuildRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                                else Icon(Icons.Default.PlayArrow, "Build and run Android app")
-                            }
-                        }
-                        IconButton(onClick = onOpenMemoryViewer, modifier = Modifier.size(38.dp)) {
-                            BadgedBox(
-                                badge = {
-                                    if (state.contextMemory.entries.isNotEmpty()) {
-                                        Badge(
-                                            containerColor = com.jarves.mh.ui.theme.PocketOrange,
-                                            contentColor = Color.White,
-                                        ) {
-                                            Text("${state.contextMemory.entries.size}")
-                                        }
+                    }
+                    IconButton(onClick = onOpenMemoryViewer, modifier = Modifier.size(44.dp)) {
+                        BadgedBox(
+                            badge = {
+                                if (state.contextMemory.entries.isNotEmpty()) {
+                                    Badge(
+                                        containerColor = com.jarves.mh.ui.theme.PocketOrange,
+                                        contentColor = Color.White,
+                                    ) {
+                                        Text("${state.contextMemory.entries.size}")
                                     }
                                 }
-                            ) {
-                                Icon(
-                                    Icons.Default.Psychology,
-                                    contentDescription = "Persistent Memory",
-                                    tint = if (state.contextMemory.entries.isNotEmpty()) com.jarves.mh.ui.theme.PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
                             }
+                        ) {
+                            Icon(
+                                Icons.Default.Psychology,
+                                contentDescription = "Persistent Memory",
+                                tint = if (state.contextMemory.entries.isNotEmpty()) com.jarves.mh.ui.theme.PocketOrange else if (isSystemInDarkTheme()) Color(0xFF94A3B8) else Color(0xFF475569),
+                            )
                         }
-                        IconButton(onClick = { showChats = true }, modifier = Modifier.size(38.dp)) { Icon(Icons.Default.History, "Project chats") }
-                        if (state.isRunning) CircularProgressIndicator(Modifier.padding(horizontal = 8.dp).size(18.dp), strokeWidth = 2.dp)
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-                )
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-            }
+                    }
+                    IconButton(onClick = { showChats = true }) {
+                        Icon(
+                            Icons.Default.History,
+                            "Project chats",
+                            tint = if (isSystemInDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
+                        )
+                    }
+                    if (state.isRunning) CircularProgressIndicator(Modifier.padding(horizontal = 8.dp).size(18.dp), strokeWidth = 2.dp)
+                },
+                material = LiquidGlassMaterial.Thin,
+                layerSource = null,
+            )
         },
         bottomBar = {
-            if (!keyboardVisible) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                WorkspaceTab.entries.filter { it != WorkspaceTab.CHANGES }.forEach { tab ->
-                    NavigationBarItem(
-                        selected = selectedTab == tab,
-                        onClick = {
+            if (!keyboardVisible) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
+                ) {
+                    LiquidGlassSegmentedControl(
+                        items = WorkspaceTab.entries.filter { it != WorkspaceTab.CHANGES },
+                        selectedItem = selectedTab,
+                        onItemSelected = { tab ->
                             selectedTab = tab
                             if (tab == WorkspaceTab.FILES) onRefreshFiles()
                             if (tab == WorkspaceTab.TERMINAL) onTerminalOpened()
                         },
-                        icon = { Icon(tab.icon, tab.label) },
-                        label = { Text(tab.label, fontSize = 10.sp) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                        itemLabel = { it.label },
+                        material = LiquidGlassMaterial.Regular,
+                        layerSource = null,
+                        accentColor = MaterialTheme.colorScheme.primary,
                     )
                 }
             }
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize().padding(padding).clipToBounds()) {
             when (selectedTab) {
                 WorkspaceTab.CHAT -> ChatTab(
                     state.messages,
@@ -4843,6 +4981,23 @@ private fun FilesTab(
     }
 }
 
+internal fun sanitizeChatTabMessages(messages: List<ChatMessage>): List<ChatMessage> {
+    if (messages.isEmpty()) return messages
+    val seen = HashSet<String>(messages.size)
+    var hasDups = false
+    for (m in messages) {
+        if (!seen.add(m.id)) {
+            hasDups = true
+            break
+        }
+    }
+    return if (hasDups) {
+        AppPreferences.repairDuplicateMessageIds(messages).first
+    } else {
+        messages
+    }
+}
+
 @Composable
 private fun ChatTab(
     messages: List<ChatMessage>,
@@ -4896,15 +5051,16 @@ private fun ChatTab(
             !listState.canScrollForward
         }
     }
+    val safeMessages = remember(messages) { sanitizeChatTabMessages(messages) }
     Column(Modifier.fillMaxSize().imePadding()) {
         Box(Modifier.weight(1f)) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 state = listState,
-                contentPadding = PaddingValues(16.dp),
+                contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(messages, key = { it.id }) { message ->
+                items(safeMessages, key = { it.id }) { message ->
                     if (message.workItems.isNotEmpty()) {
                         WorkBlockCard(message)
                     } else {
@@ -4924,38 +5080,55 @@ private fun ChatTab(
                 }
                 approval?.let { request -> item { ApprovalCard(request, onApproval) } }
             }
-            if (!readerAtBottom) {
-                Surface(
+        }
+
+        // Reserved contextual area for Latest control — guaranteed zero occlusion of message text
+        AnimatedVisibility(
+            visible = !readerAtBottom,
+            enter = fadeIn(spring(stiffness = Spring.StiffnessMediumLow)) +
+                    expandVertically(spring(stiffness = Spring.StiffnessMediumLow)),
+            exit = fadeOut(spring(stiffness = Spring.StiffnessMediumLow)) +
+                   shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            val isDark = isSystemInDarkTheme()
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                LiquidGlassSurface(
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 10.dp)
+                        .heightIn(min = LiquidGlassTokens.MinTouchTarget)
                         .clickable {
                             chatScope.launch {
-                                listState.animateScrollToItem(
-                                    (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0),
-                                )
+                                val targetIndex = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+                                listState.animateScrollToItem(targetIndex)
                             }
                         },
-                    shape = CircleShape,
-                    shadowElevation = 4.dp,
-                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    material = LiquidGlassMaterial.Regular,
+                    shape = RoundedCornerShape(LiquidGlassTokens.PillRadius),
+                    tint = if (isDark) Color(0xEE1E293B) else Color(0xEEFFFFFF),
+                    borderStroke = BorderStroke(0.75.dp, if (isDark) Color(0x40FFFFFF) else Color(0x33000000)),
+                    layerSource = null,
                 ) {
                     Row(
-                        Modifier.padding(start = 13.dp, end = 15.dp, top = 7.dp, bottom = 7.dp),
+                        Modifier.padding(start = 14.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
                             Icons.Default.KeyboardArrowDown,
                             contentDescription = null,
                             modifier = Modifier.size(17.dp),
-                            tint = MaterialTheme.colorScheme.primary,
+                            tint = if (isDark) Color.White else MaterialTheme.colorScheme.primary,
                         )
                         Spacer(Modifier.width(4.dp))
                         Text(
                             "Latest",
-                            fontSize = 12.sp,
+                            fontSize = 12.5.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary,
+                            color = if (isDark) Color.White else MaterialTheme.colorScheme.primary,
                         )
                     }
                 }
@@ -5111,54 +5284,65 @@ private fun ChatTab(
 
                 TokenTelemetryBar(metrics = tokenMetrics, modifier = Modifier.padding(bottom = 4.dp))
 
+                val isDark = isSystemInDarkTheme()
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f),
+                    thickness = 0.5.dp,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 6.dp, start = 4.dp, end = 4.dp),
+                        .padding(bottom = 8.dp, start = 2.dp, end = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Surface(
+                    LiquidGlassSurface(
                         modifier = Modifier.clickable {
                             val newText = if (inputState.text.startsWith("/")) "" else "/"
                             inputState = TextFieldValue(newText, TextRange(newText.length))
                             onPromptChanged(newText)
                         },
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        material = LiquidGlassMaterial.UltraThin,
+                        shape = RoundedCornerShape(10.dp),
+                        layerSource = null,
                     ) {
                         Text(
                             "/ Commands",
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 11.5.sp,
                             color = PocketOrange,
                         )
                     }
 
-                    Surface(
+                    LiquidGlassSurface(
                         modifier = Modifier.clickable(onClick = onOpenSkills),
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        material = LiquidGlassMaterial.UltraThin,
+                        shape = RoundedCornerShape(10.dp),
+                        layerSource = null,
                     ) {
-                        Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.primary)
                             Spacer(Modifier.width(4.dp))
-                            Text("Skills", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Skills", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
 
-                    Surface(
+                    LiquidGlassSurface(
                         modifier = Modifier.clickable(onClick = onOpenInspector),
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (subagentsCount + tasksCount > 0) PocketGreen.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        material = LiquidGlassMaterial.UltraThin,
+                        shape = RoundedCornerShape(10.dp),
+                        tint = if (subagentsCount + tasksCount > 0) PocketGreen.copy(alpha = 0.15f) else null,
+                        layerSource = null,
                     ) {
-                        Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Layers, null, modifier = Modifier.size(12.dp), tint = if (subagentsCount + tasksCount > 0) PocketGreen else MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(Modifier.width(4.dp))
                             Text(
                                 if (subagentsCount + tasksCount > 0) "Inspector (${subagentsCount + tasksCount})" else "Inspector",
-                                fontSize = 11.sp,
+                                fontSize = 11.5.sp,
                                 color = if (subagentsCount + tasksCount > 0) PocketGreen else MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontWeight = if (subagentsCount + tasksCount > 0) FontWeight.Bold else FontWeight.Normal,
                             )
@@ -5166,12 +5350,13 @@ private fun ChatTab(
                     }
                 }
 
-                Surface(
+                LiquidGlassSurface(
+                    material = LiquidGlassMaterial.Regular,
                     shape = RoundedCornerShape(26.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(
-                        width = 1.dp,
-                        color = if (canSend) MaterialTheme.colorScheme.primary.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outlineVariant,
+                    layerSource = null,
+                    borderStroke = BorderStroke(
+                        width = 0.75.dp,
+                        color = if (canSend) MaterialTheme.colorScheme.primary.copy(alpha = 0.40f) else if (isDark) Color(0x2EFFFFFF) else MaterialTheme.colorScheme.outlineVariant,
                     ),
                     // PRD §3.1.1: Non-negotiable minimum height — input bar must never compress below 52dp
                     modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
@@ -5185,7 +5370,7 @@ private fun ChatTab(
                         IconButton(
                             onClick = onAttach,
                             enabled = !isRunning && pendingAttachments.size < 5,
-                            modifier = Modifier.size(40.dp),
+                            modifier = Modifier.size(44.dp),
                         ) {
                             Icon(
                                 imageVector = Icons.Default.AttachFile,
@@ -5235,7 +5420,7 @@ private fun ChatTab(
                             // PRD §3.5.2: Immediate visual feedback — show spinner when isStopping, Stop icon otherwise
                             Box(
                                 modifier = Modifier
-                                    .size(38.dp)
+                                    .size(44.dp)
                                     .background(
                                         color = if (isStopping)
                                             MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
@@ -5265,12 +5450,31 @@ private fun ChatTab(
                                 }
                             }
                         } else {
+                            val isDark = isSystemInDarkTheme()
                             Box(
                                 modifier = Modifier
-                                    .size(38.dp)
-                                    .background(
-                                        color = if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                                        shape = CircleShape,
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .then(
+                                        if (canSend) {
+                                            Modifier
+                                                .background(
+                                                    if (isDark) Color(0xFFF1F5F9) else MaterialTheme.colorScheme.primary,
+                                                    CircleShape,
+                                                )
+                                                .border(0.75.dp, Color(0x33FFFFFF), CircleShape)
+                                        } else {
+                                            Modifier
+                                                .background(
+                                                    if (isDark) Color(0x1AFFFFFF) else Color(0x0F000000),
+                                                    CircleShape,
+                                                )
+                                                .border(
+                                                    0.75.dp,
+                                                    if (isDark) Color(0x26FFFFFF) else Color(0x14000000),
+                                                    CircleShape,
+                                                )
+                                        }
                                     )
                                     .clickable(
                                         enabled = canSend,
@@ -5287,7 +5491,11 @@ private fun ChatTab(
                                 Icon(
                                     imageVector = Icons.Default.ArrowUpward,
                                     contentDescription = "Send",
-                                    tint = if (canSend) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                    tint = if (canSend) {
+                                        if (isDark) Color(0xFF0F172A) else Color.White
+                                    } else {
+                                        if (isDark) Color(0x66FFFFFF) else Color(0x40000000)
+                                    },
                                     modifier = Modifier.size(19.dp),
                                 )
                             }

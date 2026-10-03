@@ -1,0 +1,72 @@
+# Phase 7 — Real-Device Test 3: Verification Failure + Recovery
+Status: PASSED
+Date: 2026-09-28
+Package: com.jarves.mh.dev
+Source Commit: 410c4ab
+Host App PID: 26902
+
+1. Identity Consistency Verification (Test 2 Post-Mortem):
+- Issue Investigated: Report typo vs. database mismatch between Task ID b92acef6-7708-4891-b1d3-eaeeb8c6ee52 and checkpoint metadata 082f84a2-486d-4da0-ab5f-9afd03992691.
+- Findings:
+  * Pre-Kill Task: b92acef6-7708-4891-b1d3-eaeeb8c6ee52 (PID 3105, child 32618). Step-0 registered with checkpoint tag 'step-1'.
+  * Reconcile on Startup: Host PID 3105 terminated. Mobile Harness launched new PID 26902. TaskSupervisor.reconcileOnStartup() transitioned b92acef6 to ABANDONED (recoveryRequired=true) and step-0 to FAILED.
+  * Supervised Continuation Task: 082f84a2-486d-4da0-ab5f-9afd03992691 (session 0b6892b4-0293-40d2-ac7d-3ff3e3bf2d03, PID 8746).
+  * Continuation Step-0 execution created a fresh checkpoint snapshot in directory files/checkpoints/fa51b2cf-9da2-4e05-9eaf-f643aae08eca/step-1/metadata.json with taskId '082f84a2-486d-4da0-ab5f-9afd03992691'.
+  * The Test 2 report recorded pre-kill ID b92acef6 in Section 1 and quoted the post-restart checkpoint metadata in Section 4.
+  * SQLite audit: Zero corruption across all 9 tables. Checkpoint ownership matches exactly.
+- Verdict: IDENTITY CONSISTENCY CONFIRMED. No database defect or orphaned state.
+
+2. Test 3 Execution Details:
+- Task ID: d895e921-9c85-4433-9ba2-50999800692a
+- Plan ID: plan-d895e921-9c85-4433-9ba2-50999800692a
+- Step ID: d895e921-9c85-4433-9ba2-50999800692a-step-0
+- Session ID: 48a41758-a340-47e2-88b7-302c676622e8
+- Bound Process PID: 22451
+- Checkpoint Tag: step-1
+
+3. Failure & Recovery Lifecycle:
+- Pre-Failure State: Step-0 RUNNING (attempt 1), baseline checkpoint step-1 created.
+- Failure Trigger: Execution failure after dirtying workspace files.
+- Failure Record:
+  * Failure ID: fail-d895e921-9c85-4433-9ba2-50999800692a-d895e921-9c85-4433-9ba2-50999800692a-step-0-2
+  * Classification: WORKSPACE_MUTATED_FAILURE
+  * Mutated Files: swift-lovelace/app-online-debug.apk, swift-lovelace/current_brain.db, swift-lovelace/mobile-harness-dev.apk
+- Recovery Plan:
+  * Recovery ID: rec-d895e921-9c85-4433-9ba2-50999800692a-d895e921-9c85-4433-9ba2-50999800692a-step-0-2
+  * Strategy: RESTORE_CHECKPOINT
+  * Rationale: Execution failed after modifying files (3 mutated). Restore step checkpoint 'step-1' to revert dirty state.
+  * Persistence: Persisted to SQLite recovery_plans before recovery execution.
+- Checkpoint Restore:
+  * Workspace restored cleanly from backup snapshot 'step-1'.
+  * Result: "Successfully restored checkpoint 'step-1' for step 'Execute Task'"
+  * Next Action: RETRY_STEP
+  * Recovery Status: COMPLETED
+
+4. Retry & Final Verification:
+- Attempt 2 Execution:
+  * Step status transitioned to RUNNING, then VERIFYING.
+  * StepVerifier.verify() executed trusted verification.
+  * Verification Result: PASSED ("Trusted verification passed for step 'Execute Task'").
+  * Step marked COMPLETED.
+  * currentStepIndex advanced from 0 -> 1 exactly once.
+  * Task and Plan marked COMPLETED exactly once.
+
+5. Invariant Checks:
+- Failure record persisted before recovery: VERIFIED
+- Checkpoint ownership matches projectId + taskId + stepId: VERIFIED
+- Workspace mutations restored: VERIFIED
+- Recovery attempt incremented correctly (1 -> 2): VERIFIED
+- No duplicate recovery plan: VERIFIED
+- Recovery never directly marked task/step complete: VERIFIED
+- StepVerifier performed final verification: VERIFIED
+- currentStepIndex advanced exactly once: VERIFIED
+- Plan/Task completed exactly once: VERIFIED
+
+6. Resource Measurements:
+- App PID: 26902
+- Memory: TOTAL PSS ~98.4 MB (Java Heap: 15.2 MB, Native Heap: 9.1 MB)
+- CPU: Normal, 0% idle
+- Crashes/ANRs: 0 crashes, 0 ANRs on PID 26902
+
+GATE VERDICT:
+REAL-DEVICE TEST 3 PASSED

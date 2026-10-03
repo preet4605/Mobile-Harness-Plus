@@ -1,0 +1,130 @@
+# Phase 7 — Real-Device Test 6: Real-Device Cancellation During Recovery
+Status: PASSED
+Date: 2026-09-28
+Package: com.jarves.mh.dev
+Source Commit: 6138d44
+APK Size: 111271002 bytes
+APK MD5: f9c4f807a7b84aaf6b6b4869622d0d65
+APK SHA256: 963eee030d7d870c37fd02694e5d08a5ceea7e73b2bc8f3fcb52dd44d1d8fd90
+Installed APK Path: /data/app/~~OLyxCt-Lo5dUSot2-aATTQ==/com.jarves.mh.dev-ZN97V_OZkmtj-bkKnmzmuw==/base.apk
+Installed APK MD5: f9c4f807a7b84aaf6b6b4869622d0d65 (VERIFIED MATCH)
+Installed APK SHA256: 963eee030d7d870c37fd02694e5d08a5ceea7e73b2bc8f3fcb52dd44d1d8fd90 (VERIFIED MATCH)
+Host App Process PID: 11462 (VmRSS: 232,236 kB, Responsive, 0 crashes, 0 ANRs)
+
+1. Pre-Execution Verification & Preflight Audit:
+- Preflight Status: READY
+- Source Commit: 6138d44 ("feat(runtime): deterministic environment drift recovery via RECREATE_WORKSPACE_STATE")
+- Installed APK: Confirmed matching built debug APK bit-for-bit (MD5 f9c4f807a7b84aaf6b6b4869622d0d65).
+- Constraints Enforced:
+  * Zero source code modifications
+  * Zero APK rebuilds
+  * Zero manual SQLite state edits
+  * Zero forced state transitions
+
+2. Controlled Real-Device Task Configuration:
+- Task ID: task-p7t6-1790601704551
+- Plan ID: b4a0f05d-8199-4b0c-b3fd-a887f419546a
+- Step ID: task-p7t6-1790601704551-step-0
+- Title: "Real-Device Step 0 Cancellation During Recovery"
+- Objective: "Encounter recoverable fault and cancel while in RECOVERING state"
+- Acceptance Criteria: ["Step must transition from RECOVERING to CANCELLED and never reach COMPLETED"]
+- Project ID: fa51b2cf-9da2-4e05-9eaf-f643aae08eca (clever-kalam)
+- Execution Environment: Physical Android Device (OnePlus/OPPO CPH2745, Android 16, ART runtime, PID 11462)
+
+3. Controlled Execution & Recovery Lifecycle:
+- Lifecycle Progression:
+  RUNNING -> FAILURE -> RECOVERING -> CANCELLED
+- Attempt 1:
+  * Transitioned: Step-0 PENDING -> RUNNING (attempt 1)
+  * Confirmed initial StepStatus in SQLite: RUNNING
+  * Injected recoverable failure: Mutation created (dirty_mutation.tmp) with recoverable fault:
+    "Resource temporarily unavailable (transient_system_fault: lock acquisition timeout)"
+- Failure Record:
+  * Failure ID: fail-task-p7t6-1790601704551-task-p7t6-1790601704551-step-0-2
+  * Classification: WORKSPACE_MUTATED_FAILURE
+  * Mutated Files: ["dirty_mutation.tmp"] (1 file)
+- Recovery Plan Generated:
+  * Recovery ID: rec-task-p7t6-1790601704551-task-p7t6-1790601704551-step-0-2
+  * Strategy: RESTORE_CHECKPOINT
+  * Checkpoint Tag: step-1
+  * Pre-Action SQLite State Verified:
+    - execution_steps.status = RECOVERING
+    - recovery_plans.status = IN_PROGRESS
+    - recovery_plans.next_action = EXECUTE_RECOVERY
+
+4. Cancellation During Active Recovery:
+- Cancellation Trigger:
+  * Normal production TaskSupervisor.requestStop(taskId) issued while step was DEFINITELY in RECOVERING state.
+- Interception & Verification:
+  * Step status at stop request: RECOVERING
+  * Recovery status at stop request: IN_PROGRESS
+  * Next action at stop request: EXECUTE_RECOVERY (not terminal)
+- Post-Cancellation State:
+  * RecoveryPlan.status = CANCELLED
+  * RecoveryPlan.nextAction = CANCELLED
+  * TaskExecutionStatus = CANCELLED
+  * Step never became COMPLETED (step status remained RECOVERING / CANCELLED)
+  * currentStepIndex = 0 (did not advance)
+  * No retry attempt started after cancellation (total execution attempts = 1)
+  * No subsequent step started
+  * Exactly one failure record (count = 1)
+  * Exactly one RecoveryPlan generated (no duplicates)
+  * RecoveryEngine did not complete the step
+  * StepVerifier was never called to complete the cancelled step
+  * Exactly one cancellation learning/feedback memory entry recorded:
+    Key: progress:task-p7t6-1790601704551:task-p7t6-1790601704551:attempt-0:cancelled
+    Summary: Cancelled execution attempt
+  * SQLite PRAGMA integrity_check = ok
+
+5. Process Restart & Non-Resurrection Audit:
+- Reconcile on Startup:
+  * Evaluated TaskSupervisor.reconcileOnStartup() on persisted SQLite database
+  * Reconcile count = 0 (cancelled task was NOT resurrected or marked abandoned for retry)
+  * Post-restart task status: CANCELLED
+  * Post-restart recovery status: CANCELLED
+  * Post-restart recovery next_action: CANCELLED
+  * Post-restart step status: NOT COMPLETED
+  * Post-restart currentStepIndex: 0
+  * Verified: The cancelled task and recovery are NOT retried, duplicated, or resurrected.
+
+6. Architectural Invariant Audit:
+- Invariant 1 (Confirmed initial StepStatus=RUNNING): VERIFIED (true)
+- Invariant 2 (Confirmed StepStatus=RECOVERING during intercept): VERIFIED (true)
+- Invariant 3 (Confirmed RecoveryPlan status PENDING/IN_PROGRESS): VERIFIED (true)
+- Invariant 4 (Confirmed RecoveryPlan nextAction non-terminal): VERIFIED (true)
+- Invariant 5 (RecoveryPlan status = CANCELLED): VERIFIED (true)
+- Invariant 6 (RecoveryPlan nextAction = CANCELLED): VERIFIED (true)
+- Invariant 7 (TaskExecutionStatus = CANCELLED): VERIFIED (true)
+- Invariant 8 (Step never becomes COMPLETED): VERIFIED (true)
+- Invariant 9 (currentStepIndex does not advance): VERIFIED (true)
+- Invariant 10 (No retry attempt starts after cancellation): VERIFIED (true)
+- Invariant 11 (Exactly one failure record): VERIFIED (true)
+- Invariant 12 (Exactly one feedback/learning event): VERIFIED (true)
+- Invariant 13 (Feedback memory key is cancelled event): VERIFIED (true)
+- Invariant 14 (Reconcile on startup list empty for cancelled task): VERIFIED (true)
+- Invariant 15 (Post-restart task status remains CANCELLED): VERIFIED (true)
+- Invariant 16 (Post-restart recovery status remains CANCELLED): VERIFIED (true)
+- Invariant 17 (Post-restart recovery nextAction remains CANCELLED): VERIFIED (true)
+- Invariant 18 (Post-restart step remains non-completed): VERIFIED (true)
+- Invariant 19 (Post-restart currentStepIndex remains 0): VERIFIED (true)
+- Invariant 20 (SQLite integrity_check = ok): VERIFIED (true)
+
+7. Real-Device Telemetry & Environment:
+- Device: OnePlus/OPPO CPH2745, Android 16
+- Host App: com.jarves.mh.dev (PID: 11462)
+  * Total PSS: 112,197 kB (~109.5 MB)
+  * Total RSS: 232,236 kB (~226 MB)
+  * Java Heap Alloc: 14,499 kB
+  * Native Heap Alloc: 25,560 kB
+- Power & Thermals:
+  * Battery Level: 81%
+  * Battery Voltage: 4254 mV
+  * Phone Temperature: 33.0°C (nominal)
+  * Battery Temperature: 33.2°C (nominal)
+- Reliability:
+  * Process Crashes: 0
+  * ANRs: 0
+  * Database Integrity: PRAGMA integrity_check = ok
+
+GATE VERDICT:
+REAL-DEVICE TEST 6 PASSED

@@ -24,8 +24,14 @@ import org.json.JSONObject
 import java.io.File
 import java.time.Instant
 
-class AppPreferences(private val context: Context) {
-    private val preferences = context.getSharedPreferences("pocket_preferences", Context.MODE_PRIVATE)
+class AppPreferences(
+    private val context: Context? = null,
+    baseChatsDir: File? = null,
+) {
+    private val preferences by lazy {
+        context?.getSharedPreferences("pocket_preferences", Context.MODE_PRIVATE)
+            ?: error("Context is required for shared preferences access")
+    }
 
     var onboardingComplete: Boolean
         get() = preferences.getBoolean("onboarding_complete", false)
@@ -203,6 +209,10 @@ class AppPreferences(private val context: Context) {
         get() = preferences.getString("theme_mode", "dark") ?: "dark"
         set(value) { preferences.edit().putString("theme_mode", value).apply() }
 
+    var reduceTransparency: Boolean
+        get() = preferences.getBoolean("reduce_transparency", false)
+        set(value) { preferences.edit().putBoolean("reduce_transparency", value).apply() }
+
     var legacySeededCredentialRemoved: Boolean
         get() = preferences.getBoolean("legacy_seeded_credential_removed", false)
         set(value) { preferences.edit().putBoolean("legacy_seeded_credential_removed", value).apply() }
@@ -362,8 +372,8 @@ class AppPreferences(private val context: Context) {
                 if (slug != obj.optString("slug")) needsSave = true
                 var millis = obj.optLong("updatedAtMillis", 0L)
                 if (millis <= 0L) {
-                    val workspaceDir = File(context.filesDir, "workspaces/$id")
-                    millis = if (workspaceDir.exists() && workspaceDir.lastModified() > 0L) {
+                    val workspaceDir = context?.filesDir?.let { File(it, "workspaces/$id") }
+                    millis = if (workspaceDir?.exists() == true && workspaceDir.lastModified() > 0L) {
                         workspaceDir.lastModified()
                     } else {
                         System.currentTimeMillis() - 3600_000L
@@ -395,7 +405,10 @@ class AppPreferences(private val context: Context) {
         return list
     }
 
-    private val chatsDir = File(context.filesDir, "chats").also { it.mkdirs() }
+    private val chatsDir = baseChatsDir ?: File(
+        context?.filesDir ?: error("Context or baseChatsDir required"),
+        "chats",
+    ).also { it.mkdirs() }
 
     fun saveProjectChats(projectId: String, chats: List<ProjectChat>) {
         val projectDir = File(chatsDir, projectId).also { it.mkdirs() }
@@ -446,8 +459,9 @@ class AppPreferences(private val context: Context) {
 
     @Synchronized
     fun saveMessages(projectId: String, chatId: String, messages: List<ChatMessage>) {
+        val (repairedMessages, _) = repairDuplicateMessageIds(messages)
         val arr = JSONArray()
-        messages.forEach { m ->
+        repairedMessages.forEach { m ->
             arr.put(JSONObject().apply {
                 put("id", m.id)
                 put("fromUser", m.fromUser)
@@ -492,7 +506,15 @@ class AppPreferences(private val context: Context) {
 
     fun loadMessages(projectId: String, chatId: String): List<ChatMessage> {
         val file = File(File(chatsDir, projectId), "$chatId.json")
-        return loadLegacyMessages(file)
+        if (!file.exists()) return emptyList()
+        val rawMessages = readRawLegacyMessages(file)
+        val (repaired, wasRepaired) = repairDuplicateMessageIds(rawMessages)
+        if (wasRepaired) {
+            runCatching {
+                saveMessages(projectId, chatId, repaired)
+            }
+        }
+        return repaired
     }
 
     fun deleteProjectChats(projectId: String) {
@@ -501,6 +523,11 @@ class AppPreferences(private val context: Context) {
     }
 
     private fun loadLegacyMessages(file: File): List<ChatMessage> {
+        val raw = readRawLegacyMessages(file)
+        return repairDuplicateMessageIds(raw).first
+    }
+
+    internal fun readRawLegacyMessages(file: File): List<ChatMessage> {
         if (!file.exists()) return emptyList()
         return runCatching {
             val arr = JSONArray(file.readText())
@@ -635,5 +662,36 @@ class AppPreferences(private val context: Context) {
     private fun String.toChatTitle(): String {
         val clean = replace(Regex("\\s+"), " ").trim()
         return if (clean.length <= 42) clean else clean.take(39).trimEnd() + "…"
+    }
+
+    companion object {
+        fun repairDuplicateMessageIds(messages: List<ChatMessage>): Pair<List<ChatMessage>, Boolean> {
+            if (messages.isEmpty()) return messages to false
+            val seen = mutableSetOf<String>()
+            var modified = false
+            val result = ArrayList<ChatMessage>(messages.size)
+            for ((index, msg) in messages.withIndex()) {
+                val baseId = msg.id.ifBlank { "msg-$index" }
+                val finalId = if (seen.add(baseId)) {
+                    if (baseId != msg.id) {
+                        modified = true
+                        baseId
+                    } else {
+                        msg.id
+                    }
+                } else {
+                    modified = true
+                    var counter = 1
+                    var candidate = "$baseId-$counter"
+                    while (!seen.add(candidate)) {
+                        counter++
+                        candidate = "$baseId-$counter"
+                    }
+                    candidate
+                }
+                result.add(if (finalId == msg.id) msg else msg.copy(id = finalId))
+            }
+            return result to modified
+        }
     }
 }

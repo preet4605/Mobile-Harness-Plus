@@ -199,20 +199,10 @@ class ClaudeRuntimeBridge(
             val guestWorkspacePath = "/workspace/$projectSlug"
             val contextPrompt = buildContextPrompt(injectedPrompt, conversationHistory, guestWorkspacePath, projectKind, memory)
 
-            val command = buildList {
-                add(launch.executable)
-                add("--bare")
-                add("-p")
-                add(contextPrompt)
-                add("--output-format")
-                add("stream-json")
-                add("--include-partial-messages")
-                add("--verbose")
-                add("--model")
-                add(launch.environment["ANTHROPIC_MODEL"] ?: provider.model)
-                add("--max-turns")
-                add("25")
-            }
+            val command = buildClaudeCommand(
+                executable = launch.executable,
+                model = launch.environment["ANTHROPIC_MODEL"] ?: provider.model,
+            )
             Log.d("ClaudeBridge", "Launching command: $command")
             val process = installer.process(
                 installed.proot,
@@ -237,6 +227,9 @@ class ClaudeRuntimeBridge(
             if (userStopRequested) process.destroy()
             coroutineScope {
                 val permissionWatcher = launch { watchPermissionRequests(sessionId) }
+                val promptWriter = launch(Dispatchers.IO) {
+                    deliverPromptToStdin(process, contextPrompt)
+                }
                 try {
                     var lastDiagnostic = ""
                     val pendingOutput = StringBuilder()
@@ -317,6 +310,7 @@ class ClaudeRuntimeBridge(
                         error(lastDiagnostic.ifBlank { "Claude Code stopped with exit code $exit" })
                     }
                 } finally {
+                    promptWriter.cancel()
                     permissionWatcher.cancelAndJoin()
                     pending.values.filter { it.request.sessionId == sessionId }.forEach { permission ->
                         runCatching { permission.response.writeText("deny") }
@@ -1031,6 +1025,18 @@ class ClaudeRuntimeBridge(
         }
     }
 
+    private fun deliverPromptToStdin(process: Process, prompt: String) {
+        runCatching {
+            process.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
+                writer.write(prompt)
+                writer.flush()
+            }
+            Log.d("ClaudeBridge", "Context prompt (${prompt.length} chars) streamed to stdin and closed")
+        }.onFailure { error ->
+            Log.w("ClaudeBridge", "Failed writing prompt to stdin: ${error.message}")
+        }
+    }
+
     private data class PendingPermission(val request: ToolRequest, val response: File)
     private class ProviderSessionException(message: String) : IllegalStateException(message)
 
@@ -1039,5 +1045,26 @@ class ClaudeRuntimeBridge(
         private const val MAX_RENDERED_DIFF_LINES = 600
         private const val DIFF_CONTEXT_LINES = 3
         private const val FOREGROUND_PROGRESS_MIN_INTERVAL_MS = 750L
+
+        fun buildClaudeCommand(
+            executable: String,
+            model: String,
+        ): List<String> {
+            val command = listOf(
+                executable,
+                "--bare",
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--include-partial-messages",
+                "--verbose",
+                "--model",
+                model,
+                "--max-turns",
+                "25",
+            )
+            NativeSpawnProcess.validateArgv(command)
+            return command
+        }
     }
 }

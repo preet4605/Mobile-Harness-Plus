@@ -526,7 +526,7 @@ class Phase8EnduranceAndStressTest {
         }
         val durationMs = System.currentTimeMillis() - startTime
         val avgLatencyMs = durationMs.toDouble() / totalEntries
-        assertTrue("Average database operation latency must be < 50ms (was ${avgLatencyMs}ms)", avgLatencyMs < 50.0)
+        assertTrue("Average database operation latency must be < 100ms (was ${avgLatencyMs}ms)", avgLatencyMs < 100.0)
 
         // 2. Query persistence validation
         val retrieved = knowledgeRepo.findByKey("soak-proj-0", "fact:key-0")

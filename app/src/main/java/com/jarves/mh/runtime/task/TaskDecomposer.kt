@@ -139,7 +139,7 @@ class DefaultTaskDecomposer : TaskDecomposer {
             )
         }
 
-        val parsedMilestones = parseMilestones(cleanObjective)
+        val parsedMilestones = parseMilestones(cleanObjective, context.maxSteps)
         if (parsedMilestones.size >= 2) {
             for ((index, milestone) in parsedMilestones.withIndex()) {
                 builder.addStep(
@@ -160,7 +160,30 @@ class DefaultTaskDecomposer : TaskDecomposer {
             )
         }
 
-        return builder.build()
+        return try {
+            builder.build()
+        } catch (e: InvalidDecompositionException) {
+            if (parsedMilestones.size >= 2) {
+                // If building multi-step plan fails validation, fall back to single-step plan
+                val fallbackBuilder = PlanBuilder(
+                    planId = planId,
+                    taskId = taskId,
+                    title = "Execution Plan for $taskId",
+                    maxSteps = context.maxSteps,
+                    baseTimestamp = context.baseTimestamp
+                )
+                fallbackBuilder.addStep(
+                    title = "Execute Task",
+                    objective = cleanObjective,
+                    acceptanceCriteria = effectiveCriteria,
+                    verificationCommand = "true",
+                    stepOrder = 0
+                )
+                fallbackBuilder.build()
+            } else {
+                throw e
+            }
+        }
     }
 
     private data class ParsedMilestone(
@@ -169,32 +192,43 @@ class DefaultTaskDecomposer : TaskDecomposer {
         val objective: String
     )
 
-    private fun parseMilestones(text: String): List<ParsedMilestone> {
+    private fun parseMilestones(text: String, maxSteps: Int = TaskDecomposer.MAX_STEPS): List<ParsedMilestone> {
         val lines = text.lines()
         val numberedRegex = Regex("""^\s*(?:Step\s+|Phase\s+)?(\d+)[\.\:\-]\s*(.+)$""", RegexOption.IGNORE_CASE)
 
         val milestones = mutableListOf<ParsedMilestone>()
+        val seenObjectives = mutableSetOf<String>()
         var expectedOrder = -1
 
         for (line in lines) {
-            val match = numberedRegex.matchEntire(line.trim()) ?: continue
+            val trimmedLine = line.trim()
+            val match = numberedRegex.matchEntire(trimmedLine) ?: continue
             val orderNum = match.groupValues[1].toIntOrNull() ?: continue
             val content = match.groupValues[2].trim()
 
+            // If any numbered line has blank or ambiguous content, it is not a valid milestone plan
             if (content.isBlank() || PlanBuilder.isAmbiguousObjective(content)) {
-                throw InvalidDecompositionException("Milestone $orderNum has ambiguous or blank content: '$content'")
+                return emptyList()
             }
 
             if (expectedOrder == -1) {
-                // Normalize starting sequence: either 0 or 1
+                // A valid milestone plan must start at step 0 or 1
+                if (orderNum != 0 && orderNum != 1) {
+                    return emptyList()
+                }
                 expectedOrder = orderNum
             } else {
                 expectedOrder++
+                // If numbering restarted, skipped, or is out of order, gracefully fall back
                 if (orderNum != expectedOrder) {
-                    throw InvalidDecompositionException(
-                        "Invalid ordering in objective milestones: expected step $expectedOrder, found $orderNum"
-                    )
+                    return emptyList()
                 }
+            }
+
+            val normObj = content.lowercase()
+            if (!seenObjectives.add(normObj)) {
+                // Duplicate milestone objectives indicate repetitive prose or multi-lists, not valid milestones
+                return emptyList()
             }
 
             val title = if (content.length > 60) content.take(60).substringBeforeLast(' ') else content
@@ -205,9 +239,13 @@ class DefaultTaskDecomposer : TaskDecomposer {
                     objective = content
                 )
             )
+
+            if (milestones.size > maxSteps) {
+                return emptyList()
+            }
         }
 
-        return milestones
+        return if (milestones.size >= 2) milestones else emptyList()
     }
 
     private fun extractCriteriaFromText(text: String): Pair<String, List<String>> {

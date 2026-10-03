@@ -1,0 +1,109 @@
+# Phase 7 — Real-Device Test 4: Transient System Failure Recovery (Post-Remediation)
+Status: PASSED
+Date: 2026-09-28
+Package: com.jarves.mh.dev
+Source Commit: 21da0d1
+APK Size: 111270970 bytes
+APK MD5: 744d98821317ff780b97b143c9c08f4b
+APK SHA256: 814a66196a8e8da0db2222a99ac3d462a84aa3c307cb0d8bc71b9e897a458f83
+Installed APK Path: /data/app/~~daPSjFRbl-DC7b6RjE4IYQ==/com.jarves.mh.dev-Y3_8sNjk41ixcv3RRAW6pQ==/base.apk
+Installed APK MD5: 744d98821317ff780b97b143c9c08f4b (VERIFIED MATCH)
+Installed APK SHA256: 814a66196a8e8da0db2222a99ac3d462a84aa3c307cb0d8bc71b9e897a458f83 (VERIFIED MATCH)
+Host App Process PID: 24021 (VmRSS: 244,268 kB, Responsive, 0 crashes, 0 ANRs)
+
+1. Pre-Execution Verification & Remediation Audit:
+- Source Commit: 21da0d1 ("fix(runtime): deterministic transient system fault recovery via RETRY_STEP_DIRECT")
+- Unit Tests: 494/494 unit tests passed (:app:testOnlineDebugUnitTest UP-TO-DATE / SUCCESSFUL).
+- Git Diff: Confirmed only intended remediation changes:
+  * TaskSupervisor.TaskErrorClassification.TRANSIENT_SYSTEM_FAULT added
+  * Evidence-based error classification rules for errno 11 / resource temporarily unavailable / EBUSY / database locked added
+  * RecoveryEngine.planRecovery() maps clean-workspace TRANSIENT_SYSTEM_FAULT to RETRY_STEP_DIRECT without checkpoint tag
+  * Checkpoint tag nullification enforced for RETRY_STEP_DIRECT
+  * Single-step task fallback loop handles TRANSIENT_SYSTEM_FAULT retry
+  * MainViewModel retry evaluation includes TRANSIENT_SYSTEM_FAULT
+  * Deterministic test suite TransientSystemFaultRecoveryTest (7 comprehensive tests) added
+- APK Assembly: :app:assembleOnlineDebug completed in 55s.
+  * Artifact copied to app-online-debug.apk and mobile-harness-dev.apk
+  * Size: 111,270,970 bytes
+  * MD5: 744d98821317ff780b97b143c9c08f4b
+  * SHA256: 814a66196a8e8da0db2222a99ac3d462a84aa3c307cb0d8bc71b9e897a458f83
+- Device Installation:
+  * Installed over com.jarves.mh.dev via adb install -r
+  * Version confirmed: versionCode=5, versionName=1.0.4-dev
+  * Installed APK MD5 confirmed matching 744d98821317ff780b97b143c9c08f4b
+  * Runtime enum constants verified on device via ART:
+    [USER_CANCELLED, TRANSIENT_API_ERROR, PERMANENT_AUTH_OR_CONFIG, WORKSPACE_MUTATED_FAILURE, PROCESS_FAILURE, STEP_VERIFICATION_FAILURE, TRANSIENT_SYSTEM_FAULT]
+
+2. Controlled Real-Device Task Execution:
+- Task ID: task-p7t4-1790592317542
+- Plan ID: 89303ac1-13f4-4b37-87f6-c0e599ccf164
+- Step ID: task-p7t4-1790592317542-step-0 ("Real-Device Step 0")
+- Project ID: fa51b2cf-9da2-4e05-9eaf-f643aae08eca (clever-kalam)
+- Execution Environment: Physical Android Device ART runtime loading com.jarves.mh.dev base.apk classes with real AndroidSqliteDriver
+- Initial State: Step-0 PENDING -> RUNNING (attempt 1), clean workspace
+
+3. Failure & Recovery Lifecycle:
+- Failure Injection: Genuine evidence-based TRANSIENT_SYSTEM_FAULT:
+  "Resource temporarily unavailable (transient_system_fault: lock acquisition timeout)"
+  Workspace unmodified (0 mutated files). Host app PID 24021 unkilled and active.
+- Failure Record:
+  * Failure ID: fail-task-p7t4-1790592317542-task-p7t4-1790592317542-step-0-2
+  * Classification: TRANSIENT_SYSTEM_FAULT
+  * Error Message: Resource temporarily unavailable (transient_system_fault: lock acquisition timeout)
+  * Mutated Files: [] (0 files)
+- Recovery Plan:
+  * Recovery ID: rec-task-p7t4-1790592317542-task-p7t4-1790592317542-step-0-2
+  * Strategy: RETRY_STEP_DIRECT
+  * Checkpoint Tag: null
+  * Files to Rollback: [] (0 files)
+  * Attempt Number: 2
+  * Pre-Action Persistence: Persisted to SQLite before recovery action
+- Recovery Execution:
+  * State transitions: PENDING -> IN_PROGRESS -> COMPLETED
+  * Checkpoint Restore: NONE (checkpointRestored = false; checkpointTag = null)
+  * Next Action: RETRY_STEP
+  * RecoveryEngine did NOT directly complete the step.
+
+4. Retry & Final Trusted Verification:
+- Attempt 2 Execution:
+  * Transitioned: Step-0 RUNNING (attempt 2)
+  * Execution block completed successfully, created verified_payload.txt
+  * Transitioned: Step-0 VERIFYING
+  * StepVerifier.verify() invoked as the sole completion authority
+  * Verification Result: PASSED ("Trusted verification passed for step 'Real-Device Step 0'")
+  * Step-0 marked COMPLETED
+  * currentStepIndex advanced from 0 -> 1 exactly once
+  * Plan marked COMPLETED exactly once
+  * Task marked COMPLETED exactly once
+
+5. Architectural Invariant Audit:
+- Invariant 1 (Exactly one failure record): VERIFIED (count = 1)
+- Invariant 2 (Classified TRANSIENT_SYSTEM_FAULT): VERIFIED
+- Invariant 3 (Recovery Strategy RETRY_STEP_DIRECT): VERIFIED
+- Invariant 4 (checkpointTag is null): VERIFIED (null)
+- Invariant 5 (No checkpoint restore executed): VERIFIED (clean workspace retained)
+- Invariant 6 (Workspace unchanged during fault): VERIFIED
+- Invariant 7 (Attempt 1 -> 2 exactly once): VERIFIED
+- Invariant 8 (RecoveryEngine never directly completes step): VERIFIED
+- Invariant 9 (StepVerifier is completion authority): VERIFIED
+- Invariant 10 (currentStepIndex advances exactly once to 1): VERIFIED
+- Invariant 11 (Plan and task complete exactly once): VERIFIED
+- Invariant 12 (Brain context & execution policies preserved): VERIFIED
+- Invariant 13 (No crash, ANR, or restart loop): VERIFIED
+
+6. Real-Device Telemetry & Environment:
+- Host App: com.jarves.mh.dev (PID: 24021)
+  * Total PSS: 137,280 kB (~134 MB)
+  * Total RSS: 244,268 kB (~238 MB)
+  * Java Heap Alloc: 25,584 kB
+  * Native Heap Alloc: 14,202 kB
+- Power & Thermals:
+  * Battery Level: 95%
+  * Battery Voltage: 4398 mV
+  * Phone Temperature: 33.0°C (nominal)
+  * Battery Temperature: 32.1°C (nominal)
+- SQLite Database:
+  * Database intact, 0 corruptions, PRAGMA integrity_check = ok
+
+GATE VERDICT:
+REAL-DEVICE TEST 4 PASSED
