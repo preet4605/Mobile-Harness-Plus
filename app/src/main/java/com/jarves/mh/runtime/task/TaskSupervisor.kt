@@ -243,7 +243,6 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
      */
     fun bindSession(taskId: String, sessionId: String) {
         stateStore.markSessionId(taskId, sessionId)
-        com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.registerSession(taskId, sessionId)
         refreshActiveTasks()
     }
 
@@ -990,12 +989,6 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         outputBuffers.remove(targetTaskId)
         fallbackDeciders.remove(targetTaskId)
         activeJobs.remove(targetTaskId)
-        if (status.isTerminal) {
-            com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.revokeExecutionAuthority(
-                targetTaskId,
-                "Task terminal: $status",
-            )
-        }
         refreshActiveTasks()
 
         return finalizedRecord

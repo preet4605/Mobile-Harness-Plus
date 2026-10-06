@@ -333,14 +333,11 @@ class AgentProviderPresetTest {
     @Test
     fun nativeCacheDisabledForDshEnvironment() {
         val route = DshRouteMapper.forProfile(ProviderProfile(ProviderKind.DEEPSEEK))
-        val envUnauthorized = DshRuntimeBridge.buildDshEnvironment(route, "secret-key-123", isExecutionAuthorized = false)
-        assertEquals("1", envUnauthorized[DshRuntimeBridge.NARB_DISABLE_NATIVE_CACHE_ENV])
-        assertEquals(DshRuntimeBridge.DSH_HOME_GUEST_PATH, envUnauthorized["DSH_HOME"])
-        assertEquals("read-only", envUnauthorized["DSH_PERMISSION_MODE"])
-        assertEquals("secret-key-123", envUnauthorized["DEEPSEEK_API_KEY"])
-
-        val envAuthorized = DshRuntimeBridge.buildDshEnvironment(route, "secret-key-123", isExecutionAuthorized = true)
-        assertEquals("danger-full-access", envAuthorized["DSH_PERMISSION_MODE"])
+        val env = DshRuntimeBridge.buildDshEnvironment(route, "secret-key-123")
+        assertEquals("1", env[DshRuntimeBridge.NARB_DISABLE_NATIVE_CACHE_ENV])
+        assertEquals(DshRuntimeBridge.DSH_HOME_GUEST_PATH, env["DSH_HOME"])
+        assertEquals("danger-full-access", env["DSH_PERMISSION_MODE"])
+        assertEquals("secret-key-123", env["DEEPSEEK_API_KEY"])
     }
 
     @Test

@@ -247,8 +247,6 @@ data class AppUiState(
     val previewUrl: String? = null,
     val isRunning: Boolean = false,
     val activeSessionId: String? = null,
-    val executionUiStatus: com.jarves.mh.runtime.boundary.ExecutionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.IDLE,
-    val currentExecutionMode: com.jarves.mh.runtime.boundary.ExecutionMode = com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION,
     val toastMessage: String? = null,
     val projectTerminalLines: List<TerminalOutputLine> = emptyList(),
     val projectTerminalLiveOutput: String = "",
@@ -366,8 +364,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val agentRegistry = AgentRegistry.builtIns(claudeRuntime, dshRuntime, antigravityRuntime)
     private fun activeRuntime(): com.jarves.mh.runtime.RuntimeBridge = agentRegistry.require(_state.value.agentKind).runtime
     private val providerApi = ProviderApiClient()
-    var conversationalResponder: com.jarves.mh.runtime.boundary.ConversationalResponder =
-        com.jarves.mh.runtime.boundary.DefaultConversationalResponder(providerApi)
     private fun appUpdater(): AppUpdater = AppUpdater(
         getApplication(),
         if (BuildConfig.DEBUG) preferences.debugUpdateManifestUrl else "",
@@ -4142,45 +4138,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         updateActiveChatTitle(requestText)
 
         val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
-        val activeTask = supervisor.activeTasks.value.values.firstOrNull { it.projectId == project.id && it.status.isActive }
-        val lastRecord = supervisor.stateStore.getTasksForProject(project.id, limit = 1).firstOrNull()
-        val boundaryContext = com.jarves.mh.runtime.boundary.BoundaryEvaluationContext(
-            history = _state.value.messages,
-            lastTaskId = lastRecord?.taskId,
-            lastTaskStatus = lastRecord?.status,
-            activeTask = activeTask,
-            hasAttachments = attachments.isNotEmpty(),
-            isSlashCommand = parsedCmd != null,
-        )
-        val decision = com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.evaluate(requestText, boundaryContext)
-
-        if (decision.mode == com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION) {
-            val skillName = parsedSkill?.first?.name
-            _state.update {
-                it.copy(
-                    messages = it.messages + ChatMessage(
-                        fromUser = true,
-                        text = prompt.trim(),
-                        attachments = attachments,
-                        activeSkill = skillName,
-                    ),
-                    pendingAttachments = emptyList(),
-                    isRunning = false,
-                    slashCommandsVisible = false,
-                    filteredSkills = emptyList(),
-                    liveThinking = true,
-                    currentTaskRequest = null,
-                    activeSessionId = null,
-                    executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.CONVERSATIONAL_TURN,
-                    currentExecutionMode = com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION,
-                )
-            }
-            touchProject(project.id)
-            persistMessages()
-            handleConversationalTurn(prompt, requestText, lastRecord)
-            return
-        }
-
         _state.update {
             val startedAt = System.currentTimeMillis()
             val skillName = parsedSkill?.first?.name
@@ -4195,8 +4152,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 isRunning = true,
                 slashCommandsVisible = false,
                 filteredSkills = emptyList(),
-                executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.ACTIVE_EXECUTION,
-                currentExecutionMode = com.jarves.mh.runtime.boundary.ExecutionMode.EXECUTION,
                 activity = listOf(ActivityItem(
                     if (skillName != null) "Applying skill: $skillName" else "Understanding your request",
                     if (skillName != null) "Executing skill directives" else "Preparing a safe plan",
@@ -4340,58 +4295,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun handleConversationalTurn(
-        userPrompt: String,
-        requestText: String,
-        lastRecord: com.jarves.mh.runtime.task.DurableTaskRecord?,
-    ) {
-        viewModelScope.launch {
-            try {
-                val currentHistory = _state.value.messages
-                val provider = _state.value.provider
-                val apiKey = vault.get(provider.secretId).orEmpty()
-                val reply = conversationalResponder.respond(
-                    prompt = requestText,
-                    history = currentHistory,
-                    provider = provider,
-                    apiKey = apiKey,
-                    lastTaskRecord = lastRecord,
-                )
-                _state.update { current ->
-                    current.copy(
-                        liveThinking = false,
-                        executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.IDLE,
-                        messages = current.messages + ChatMessage(fromUser = false, text = reply),
-                    )
-                }
-                persistMessages()
-            } catch (t: Throwable) {
-                _state.update { current ->
-                    current.copy(
-                        liveThinking = false,
-                        executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.IDLE,
-                        messages = current.messages + ChatMessage(
-                            fromUser = false,
-                            text = "I encountered an error generating the conversational response: ${t.localizedMessage ?: t.message}",
-                        ),
-                    )
-                }
-                persistMessages()
-            }
-        }
-    }
-
     fun answerApproval(approved: Boolean) {
         val request = state.value.pendingApproval ?: return
-        val isAllowed = approved && com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.isToolExecutionAllowed(
-            activeRuntimeRequest?.taskId,
-            request.sessionId,
-            request.toolName,
-        )
-        if (isAllowed) {
-            com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).resumeFromApproval(request.sessionId)
-        }
-        viewModelScope.launch { activeRuntime().respondToApproval(request, isAllowed) }
+        com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).resumeFromApproval(request.sessionId)
+        viewModelScope.launch { activeRuntime().respondToApproval(request, approved) }
     }
 
     /**
@@ -4412,8 +4319,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { current ->
             current.copy(
                 isStopping = true,
-                executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.CANCELLED_EXECUTION,
-                currentExecutionMode = com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION,
                 currentTaskRequest = null,
                 subagents = SubagentRegistry.terminate(current.subagents, "*", now),
                 backgroundTasks = TaskRegistry.terminate(current.backgroundTasks, "*"),
@@ -4449,8 +4354,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     pendingApproval = null,
                     activeThinkingBlockId = null,
                     activeSessionId = null,
-                    executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.CANCELLED_EXECUTION,
-                    currentExecutionMode = com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION,
                     currentTaskRequest = null,
                 )
             }
@@ -4604,10 +4507,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun onRuntimeEvent(event: RuntimeEvent) {
-        if (event.sessionId.isBlank()) return
-        if (!com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.isEventPermitted(event.sessionId)) {
-            return
-        }
         if (event is RuntimeEvent.SessionFailed && _state.value.agentKind == AgentKind.ANTIGRAVITY &&
             (event.reason.contains("sign-in", true) || event.reason.contains("authentication", true))) {
             antigravityAuthController.invalidateSession(event.reason)
@@ -4783,8 +4682,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         isRunning = false,
                         isStopping = false,
                         activeSessionId = null,
-                        executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.COMPLETED_EXECUTION,
-                        currentExecutionMode = com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION,
                         subagents = completedSubagents,
                         backgroundTasks = completedTasks,
                         activity = listOf(ActivityItem("Task completed", "${current.agentKind.title} finished successfully")) +
@@ -4849,10 +4746,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         isRunning = willRetry,
                         isStopping = false,
                         activeSessionId = if (willRetry) current.activeSessionId else null,
-                        executionUiStatus = if (willRetry) com.jarves.mh.runtime.boundary.ExecutionUiStatus.ACTIVE_EXECUTION
-                            else com.jarves.mh.runtime.boundary.ExecutionUiStatus.FAILED_EXECUTION,
-                        currentExecutionMode = if (willRetry) com.jarves.mh.runtime.boundary.ExecutionMode.EXECUTION
-                            else com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION,
                         pendingApproval = null,
                         subagents = failedSubagents,
                         backgroundTasks = failedTasks,
