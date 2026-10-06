@@ -99,20 +99,17 @@ class AntigravityBridgeTest {
 
     @Test
     fun `headless command uses exact model configuration without conflicting effort`() {
-        val commandUnauthorized = antigravityCommand("gemini-model", "high", "conversation-1", isExecutionAuthorized = false)
-        assertTrue(commandUnauthorized.containsAll(listOf(
+        val command = antigravityCommand("gemini-model", "high", "conversation-1")
+        assertTrue(command.containsAll(listOf(
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--print-timeout", "60m",
+            "--dangerously-skip-permissions",
             "--model", "gemini-model",
             "--conversation", "conversation-1",
         )))
-        assertTrue("--dangerously-skip-permissions" !in commandUnauthorized)
-        assertTrue("--effort" !in commandUnauthorized)
-        assertTrue("--new-project" !in commandUnauthorized)
-
-        val commandAuthorized = antigravityCommand("gemini-model", "high", "conversation-1", isExecutionAuthorized = true)
-        assertTrue("--dangerously-skip-permissions" in commandAuthorized)
+        assertTrue("--effort" !in command)
+        assertTrue("--new-project" !in command)
     }
 
     @Test

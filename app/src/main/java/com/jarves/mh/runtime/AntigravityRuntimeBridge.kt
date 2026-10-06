@@ -488,12 +488,6 @@ class AntigravityRuntimeBridge(
         }
         val effectiveAttemptId = attemptId ?: snapshot?.attemptId
         val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId, effectiveAttemptId)
-        val isExecutionAuthorized = com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.isExecutionAuthorized(taskId, null)
-        if (!isExecutionAuthorized) {
-            emitFailure(sessionId, "Execution not authorized for task $taskId")
-            throw SecurityException("Execution denied: Antigravity session requires valid EXECUTION authority for task $taskId")
-        }
-        com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.registerSession(taskId!!, sessionId)
         activeSessionId = sessionId
         activeTaskId = taskId
         val isTaskCancelled = (taskId != null && runCatching {
@@ -584,8 +578,7 @@ class AntigravityRuntimeBridge(
                 val workspace = checkpoints.ensureWorkspace(projectId)
                 checkpoints.createCheckpoint(projectId, workspace)
                 val before = checkpoints.snapshot(workspace)
-                val isAuthorized = com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.isExecutionAuthorized(taskId, sessionId)
-                val command = antigravityCommand(model(), effort(), targetConvId, isAuthorized)
+                val command = antigravityCommand(model(), effort(), targetConvId)
                 val process = installer.process(
                     installed.proot,
                     installed.rootfs,
@@ -767,8 +760,8 @@ class AntigravityRuntimeBridge(
 
     override suspend fun respondToApproval(request: ToolRequest, approved: Boolean) {
         // agy headless streaming rejects control_response messages. This driver is
-        // intentionally launched with --dangerously-skip-permissions only inside an authorized
-        // EXECUTION context, so no Antigravity approval can be pending here.
+        // intentionally launched with --dangerously-skip-permissions by explicit
+        // product choice, so no Antigravity approval can be pending here.
     }
 
     override suspend fun stopSession(sessionId: String, force: Boolean) {
@@ -778,7 +771,6 @@ class AntigravityRuntimeBridge(
         }.getOrNull() ?: activeTaskId
         if (resolvedTaskId != null) {
             stoppedTaskIds.add(resolvedTaskId)
-            com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.revokeExecutionAuthority(resolvedTaskId, "Stopped by user")
         }
         val proc = activeProcess
         if (proc != null) {
@@ -938,20 +930,14 @@ class AntigravityRuntimeBridge(
 
 private class AntigravitySessionException(message: String) : IllegalStateException(message)
 
-internal fun antigravityCommand(
-    model: String,
-    effort: String,
-    conversationId: String?,
-    isExecutionAuthorized: Boolean = false,
-): List<String> = buildList {
+internal fun antigravityCommand(model: String, effort: String, conversationId: String?): List<String> = buildList {
     add(RuntimeInstaller.AGY_GUEST_PATH)
     addAll(listOf("--input-format", "stream-json"))
     addAll(listOf("--output-format", "stream-json"))
     addAll(listOf("--print-timeout", "60m"))
-    // Dangerously skip permissions is permitted ONLY within an authorized EXECUTION context.
-    if (isExecutionAuthorized) {
-        add("--dangerously-skip-permissions")
-    }
+    // This is intentionally explicit and covered by tests. Antigravity tool calls
+    // do not pass through PocketDev approval dialogs while this mode is enabled.
+    add("--dangerously-skip-permissions")
     addAntigravitySelection(model, effort)
     conversationId?.takeIf(String::isNotBlank)?.let {
         addAll(listOf("--conversation", it))
