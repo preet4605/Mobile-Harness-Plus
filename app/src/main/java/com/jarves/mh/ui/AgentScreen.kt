@@ -99,6 +99,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarves.mh.data.ApiKeyInfo
 import com.jarves.mh.model.AgentKind
+import com.jarves.mh.model.ClaudeAuthMode
 import com.jarves.mh.model.DSH_PROTOCOL_PROVIDERS
 import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.ProviderProfile
@@ -199,6 +200,11 @@ fun AgentScreen(
     onRefreshAntigravityModels: () -> Unit = {},
     onSetAntigravityModel: (String) -> Unit = {},
     onSetAntigravityEffort: (String) -> Unit = {},
+    onStartClaudeLogin: () -> Unit = {},
+    onCancelClaudeLogin: () -> Unit = {},
+    onSubmitClaudeCode: (String) -> Unit = {},
+    onLogoutClaude: () -> Unit = {},
+    onRefreshClaudeAuth: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     var selectedKind by rememberSaveable(state.provider.kind) { mutableStateOf(state.provider.kind) }
@@ -975,6 +981,11 @@ fun AgentScreen(
                     )
                 } else {
                     AgentProviderCard(
+                        onStartClaudeLogin = onStartClaudeLogin,
+                        onCancelClaudeLogin = onCancelClaudeLogin,
+                        onSubmitClaudeCode = onSubmitClaudeCode,
+                        onLogoutClaude = onLogoutClaude,
+                        onRefreshClaudeAuth = onRefreshClaudeAuth,
                         state = state,
                         selectedKind = selectedKind,
                         baseUrl = baseUrl,
@@ -1070,7 +1081,13 @@ fun AgentScreen(
                                 }
                                 val kind = selectedKind
                                 val url = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl.trim()
-                                val profile = ProviderProfile(kind, url, model.trim(), dshApi = dshApi)
+                                // A pasted setup token means token mode; otherwise keep whatever mode is active.
+                                val authMode = if (kind == ProviderKind.CLAUDE && apiKey.isNotBlank()) {
+                                    ClaudeAuthMode.SETUP_TOKEN_LEGACY
+                                } else {
+                                    state.provider.claudeAuthMode
+                                }
+                                val profile = ProviderProfile(kind, url, model.trim(), dshApi = dshApi, claudeAuthMode = authMode)
                                 if (kind == ProviderKind.CLAUDE) {
                                     onSaveProvider(profile, apiKey.trim())
                                     status = "Claude subscription token saved securely. Send a message to verify your subscription."
@@ -1679,6 +1696,11 @@ private fun AgentProviderCard(
     onOpenModelSheet: () -> Unit,
     onDiscover: () -> Unit,
     onValidate: () -> Unit,
+    onStartClaudeLogin: () -> Unit = {},
+    onCancelClaudeLogin: () -> Unit = {},
+    onSubmitClaudeCode: (String) -> Unit = {},
+    onLogoutClaude: () -> Unit = {},
+    onRefreshClaudeAuth: () -> Unit = {},
 ) {
     val visibleKinds = remember(state.agentKind) { providersForAgent(state.agentKind) }
     var connectionExpanded by rememberSaveable(selectedKind) { mutableStateOf(false) }
@@ -1854,12 +1876,23 @@ private fun AgentProviderCard(
                     onClick = onOpenModelSheet,
                 )
             } else {
+                Spacer(Modifier.height(12.dp))
+                ClaudeAccountCard(
+                    auth = state.claudeAuth,
+                    claudeInstalled = state.installedAgentVersions.containsKey(AgentKind.CLAUDE_CODE),
+                    busy = state.isRunning || state.agentInstalling != null,
+                    onSignIn = onStartClaudeLogin,
+                    onCancel = onCancelClaudeLogin,
+                    onSubmitCode = onSubmitClaudeCode,
+                    onSignOut = onLogoutClaude,
+                    onRefresh = onRefreshClaudeAuth,
+                )
                 Text(
-                    "Run `claude setup-token` on a computer signed in to your Claude subscription, then save the generated token below.",
-                    fontSize = 12.sp,
-                    lineHeight = 17.sp,
+                    "Prefer a token? Use the advanced setup-token option below (run `claude setup-token` on a computer).",
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 12.dp),
+                    modifier = Modifier.padding(top = 10.dp, bottom = 6.dp),
                 )
             }
 
@@ -1970,9 +2003,9 @@ private fun AgentProviderCard(
             } else {
                 PremiumSummaryRow(
                     icon = Icons.Default.Key,
-                    title = if (selectedKind == ProviderKind.CLAUDE) "Subscription token" else "Credentials",
+                    title = if (selectedKind == ProviderKind.CLAUDE) "Setup token (advanced)" else "Credentials",
                     subtitle = buildString {
-                        append(activeKey?.name ?: if (selectedKind == ProviderKind.CLAUDE) "No subscription token saved" else "No API key saved")
+                        append(activeKey?.name ?: if (selectedKind == ProviderKind.CLAUDE) "No setup token saved" else "No API key saved")
                         if (activeKey != null) append(" · Active")
                         activeKeyStatus?.let {
                             append(" · ")
@@ -2123,6 +2156,9 @@ private fun AgentProviderCard(
                 (isAntigravityServer && hasAntigravityAuth && model.isNotBlank()) ||
                 (!isAntigravityServer && apiKey.isNotBlank() && (selectedKind == ProviderKind.CLAUDE || (baseUrl.isNotBlank() && model.isNotBlank())))
             )
+            // For Claude the account sign-in card is the primary path; saving a setup token is the
+            // advanced option and only appears once that section is open.
+            if (selectedKind != ProviderKind.CLAUDE || keysExpanded) {
             LiquidGlassSurface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2164,6 +2200,7 @@ private fun AgentProviderCard(
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
+            }
             }
         }
     }

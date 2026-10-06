@@ -5,6 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jarves.mh.ui.MainViewModel
@@ -18,6 +20,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             val vm: MainViewModel = viewModel()
             val state by vm.state.collectAsStateWithLifecycle()
+            // Returning from the browser after a sign-in must show the real session state.
+            LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.onAppResumed() }
             PocketTheme(themeMode = state.themeMode) {
                 PocketDevApp(vm)
             }

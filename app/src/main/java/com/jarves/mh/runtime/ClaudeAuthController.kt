@@ -1,69 +1,19 @@
 package com.jarves.mh.runtime
 
 import android.content.Context
-import android.util.Log
+import android.content.Intent
+import androidx.core.content.ContextCompat
 import com.jarves.mh.model.AgentKind
 import java.io.File
 import java.io.RandomAccessFile
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import org.json.JSONObject
-
-enum class ClaudeAuthStatusState {
-    SIGNED_OUT,
-    STARTING,
-    AWAITING_AUTH,
-    SIGNED_IN,
-    ERROR,
-}
-
-/**
- * Non-secret status metadata parsed from `claude auth status --json`.
- * Never contains access tokens, refresh tokens, or credential file contents.
- */
-data class ClaudeStatusMetadata(
-    val loggedIn: Boolean,
-    val authMethod: String = "none",
-    val apiProvider: String = "firstParty",
-    val subscriptionType: String? = null,
-) {
-    companion object {
-        fun fromJson(jsonStr: String): ClaudeStatusMetadata? = runCatching {
-            val json = JSONObject(jsonStr)
-            ClaudeStatusMetadata(
-                loggedIn = json.optBoolean("loggedIn", false),
-                authMethod = json.optString("authMethod", "none"),
-                apiProvider = json.optString("apiProvider", "firstParty"),
-                subscriptionType = json.optString("subscriptionType").takeIf(String::isNotBlank),
-            )
-        }.getOrNull()
-    }
-}
-
-data class ClaudeAuthState(
-    val status: ClaudeAuthStatusState = ClaudeAuthStatusState.SIGNED_OUT,
-    val authorizationUrl: String? = null,
-    val message: String? = null,
-    val subscriptionType: String? = null,
-    val authMethod: String? = null,
-    val apiProvider: String? = null,
-) {
-    val displayStatus: String get() = when (status) {
-        ClaudeAuthStatusState.SIGNED_IN -> {
-            val tier = subscriptionType?.replaceFirstChar { it.uppercase() } ?: "Pro/Max"
-            "Signed in — Claude $tier"
-        }
-        ClaudeAuthStatusState.STARTING -> "Starting sign in…"
-        ClaudeAuthStatusState.AWAITING_AUTH -> "Waiting for authorization…"
-        ClaudeAuthStatusState.ERROR -> message ?: "Sign-in error"
-        ClaudeAuthStatusState.SIGNED_OUT -> "Not signed in"
-    }
-}
 
 /**
  * Manages Claude Code's native subscription authentication via `claude auth login --claudeai`.
@@ -71,27 +21,35 @@ data class ClaudeAuthState(
  * Claude Code itself owns the OAuth PKCE flow, credential storage, and refresh.
  * Mobile Harness does NOT implement custom OAuth, does NOT extract or persist OAuth tokens,
  * and does NOT read the contents of `/root/.claude/.credentials.json`.
+ *
+ * The sign-in sequencing lives in [ClaudeLoginEngine]; this class adapts it to the PRoot
+ * runtime, the foreground service that keeps the app alive while the user is in the
+ * browser, and the app's state flow.
  */
 class ClaudeAuthController(
     private val context: Context,
     private val onSignedInChanged: (Boolean) -> Unit = {},
     private val onAuthUrlDiscovered: ((String) -> Unit)? = null,
+    /** Fired only when the user just finished an account sign-in (not on routine status checks). */
+    private val onLoginCompleted: () -> Unit = {},
 ) {
     private val installer = RuntimeInstaller(context)
     private val mutableState = MutableStateFlow(ClaudeAuthState())
     val state: StateFlow<ClaudeAuthState> = mutableState.asStateFlow()
 
-    @Volatile private var process: Process? = null
+    private val loginInFlight = AtomicBoolean(false)
+    @Volatile private var loginEngine: ClaudeLoginEngine? = null
+
+    val isLoginInFlight: Boolean get() = loginInFlight.get()
 
     fun hasNativeCredentials(): Boolean =
         File(installer.rootfs, "root/.claude/.credentials.json").isFile
 
-    fun extractOAuthUrl(text: String): String? {
-        val regex = Regex("https://(?:claude\\.com|platform\\.claude\\.com)/[a-zA-Z0-9_\\-\\.~:/?#\\[\\]@!${'$'}&'()*+,;=%]+")
-        return regex.find(text)?.value
-    }
+    fun extractOAuthUrl(text: String): String? = ClaudeAuthUrl.extract(text, complete = true)
 
     suspend fun queryAuthStatus(): ClaudeStatusMetadata? = withContext(Dispatchers.IO) {
+        // A sign-in in progress owns the state; a status refresh must not overwrite it.
+        if (loginInFlight.get()) return@withContext null
         if (!installer.isAgentInstalled(AgentKind.CLAUDE_CODE)) {
             mutableState.value = ClaudeAuthState(
                 status = ClaudeAuthStatusState.SIGNED_OUT,
@@ -99,47 +57,14 @@ class ClaudeAuthController(
             )
             return@withContext null
         }
-        val runtime = runCatching { installer.installedRuntime() }.getOrNull() ?: return@withContext null
-        val statusOutput = File(context.cacheDir, "claude-auth-status.log").apply { delete() }
-        val workspace = File(context.filesDir, "workspaces/claude-auth").apply { mkdirs() }
-        val statusProcess = runCatching {
-            installer.process(
-                proot = runtime.proot,
-                rootfs = runtime.rootfs,
-                workspace = workspace,
-                environment = mapOf(
-                    "HOME" to "/root",
-                    "TERM" to "xterm-256color",
-                    "NO_COLOR" to "1",
-                ),
-                guestCommand = listOf(RuntimeInstaller.CLAUDE_GUEST_PATH, "auth", "status", "--json"),
-                guestWorkspacePath = "/workspace/claude-auth",
-                emulateHardLinks = false,
-                outputFile = statusOutput,
-                pseudoTerminal = false,
-            )
-        }.getOrNull() ?: return@withContext null
-
-        withTimeoutOrNull(10_000L) {
-            while (statusProcess.isAlive) delay(50)
-        }
-        val output = runCatching { statusOutput.readText() }.getOrDefault("").trim()
-        val metadata = ClaudeStatusMetadata.fromJson(output)
-        if (metadata != null) {
+        val metadata = runStatusBlocking()
+        if (metadata != null && !loginInFlight.get()) {
             if (metadata.loggedIn) {
-                val tier = metadata.subscriptionType?.replaceFirstChar { it.uppercase() } ?: "Pro/Max"
-                mutableState.value = ClaudeAuthState(
-                    status = ClaudeAuthStatusState.SIGNED_IN,
-                    subscriptionType = metadata.subscriptionType,
-                    authMethod = metadata.authMethod,
-                    apiProvider = metadata.apiProvider,
-                    message = "Signed in — Claude $tier",
-                )
+                mutableState.value = ClaudeAuthState.signedIn(metadata)
                 onSignedInChanged(true)
             } else {
                 mutableState.value = ClaudeAuthState(
                     status = ClaudeAuthStatusState.SIGNED_OUT,
-                    subscriptionType = null,
                     authMethod = metadata.authMethod,
                     apiProvider = metadata.apiProvider,
                     message = "Not signed in",
@@ -151,134 +76,196 @@ class ClaudeAuthController(
     }
 
     suspend fun beginLogin() = withContext(Dispatchers.IO) {
-        if (process?.isAlive == true) return@withContext
-        if (!installer.isAgentInstalled(AgentKind.CLAUDE_CODE)) {
+        if (!loginInFlight.compareAndSet(false, true)) return@withContext
+        val outputFile = File(context.cacheDir, "claude-auth-login.log")
+        try {
+            if (!installer.isAgentInstalled(AgentKind.CLAUDE_CODE)) {
+                mutableState.value = ClaudeAuthState(
+                    status = ClaudeAuthStatusState.ERROR,
+                    message = ClaudeLoginOutput.messageFor(ClaudeAuthErrorKind.NOT_INSTALLED),
+                    errorKind = ClaudeAuthErrorKind.NOT_INSTALLED,
+                )
+                return@withContext
+            }
+            outputFile.delete()
+            val engine = ClaudeLoginEngine(
+                launcher = { args -> PtyClaudeCliProcess(launchCli(args, pty = true, outputFile = outputFile), outputFile) },
+                queryStatus = ::runStatusBlocking,
+                onState = { mutableState.value = it },
+                onUrl = { url -> onAuthUrlDiscovered?.invoke(url) },
+            )
+            loginEngine = engine
+            startForegroundWhileSigningIn()
+            AndroidBrowserBridge(context).ensureBridgeInstalled(installer.rootfs)
+            val outcome = runInterruptible { engine.run() }
+            if (outcome is ClaudeLoginEngine.Outcome.SignedIn) {
+                onSignedInChanged(true)
+                onLoginCompleted()
+            }
+        } catch (cancelled: CancellationException) {
+            mutableState.value = ClaudeAuthState(
+                status = ClaudeAuthStatusState.SIGNED_OUT,
+                message = "Sign in cancelled.",
+            )
+            throw cancelled
+        } catch (t: Throwable) {
             mutableState.value = ClaudeAuthState(
                 status = ClaudeAuthStatusState.ERROR,
-                message = "Install Claude Code before signing in.",
+                message = ClaudeLoginOutput.messageFor(ClaudeAuthErrorKind.SPAWN_FAILED),
+                errorKind = ClaudeAuthErrorKind.SPAWN_FAILED,
             )
-            return@withContext
-        }
-        mutableState.value = ClaudeAuthState(
-            status = ClaudeAuthStatusState.STARTING,
-            message = "Starting Claude sign-in…",
-        )
-        val browserBridge = AndroidBrowserBridge(context)
-        browserBridge.ensureBridgeInstalled(installer.rootfs)
-        val authOutput = File(context.cacheDir, "claude-auth-login.log").apply { delete() }
-        val workspace = File(context.filesDir, "workspaces/claude-auth").apply { mkdirs() }
-        val runtime = installer.installedRuntime()
-        val running = installer.process(
-            proot = runtime.proot,
-            rootfs = runtime.rootfs,
-            workspace = workspace,
-            environment = mapOf(
-                "HOME" to "/root",
-                "TERM" to "xterm-256color",
-                "NO_COLOR" to "1",
-                "BROWSER" to AndroidBrowserBridge.BROWSER_ENV_PATH,
-            ),
-            guestCommand = listOf(RuntimeInstaller.CLAUDE_GUEST_PATH, "auth", "login", "--claudeai"),
-            guestWorkspacePath = "/workspace/claude-auth",
-            emulateHardLinks = false,
-            outputFile = authOutput,
-            pseudoTerminal = true,
-            ptyRows = 40,
-            ptyColumns = 120,
-        )
-        process = running
-        val native = running as? NativeSpawnProcess ?: error("Unsupported Claude authentication process")
-        var offset = 0L
-        val output = StringBuilder()
-        try {
-            while (running.isAlive || native.outputFile.length() > offset) {
-                val available = native.outputFile.length() - offset
-                if (available <= 0) {
-                    delay(100)
-                    continue
-                }
-                val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
-                val count = RandomAccessFile(native.outputFile, "r").use { file ->
-                    file.seek(offset)
-                    file.read(bytes)
-                }
-                if (count <= 0) continue
-                offset += count
-                output.append(bytes.decodeToString(0, count))
-                val clean = output.toString()
-                val url = extractOAuthUrl(clean)
-                if (url != null && mutableState.value.authorizationUrl == null) {
-                    mutableState.value = ClaudeAuthState(
-                        status = ClaudeAuthStatusState.AWAITING_AUTH,
-                        authorizationUrl = url,
-                        message = "Finish signing in on Claude.ai, or paste the code below.",
-                    )
-                    onAuthUrlDiscovered?.invoke(url)
-                }
-                if (clean.contains("Logged in", true) ||
-                    clean.contains("Authentication successful", true) ||
-                    clean.contains("Login successful", true)
-                ) {
-                    break
-                }
-            }
-            repeat(20) {
-                if (!running.isAlive) return@repeat
-                delay(100)
-            }
         } finally {
-            if (running.isAlive) running.destroy()
-            process = null
+            loginEngine = null
+            runCatching { outputFile.delete() }
+            stopForegroundAfterSigningIn()
+            loginInFlight.set(false)
         }
-        queryAuthStatus()
+        Unit
     }
 
+    /** Forwards a code the user copied from claude.ai when the browser redirect could not finish the login. */
     fun submitCode(code: String) {
-        val running = process ?: return
-        val clean = code.trim()
-        if (clean.isBlank()) return
-        runCatching {
-            running.outputStream.write("$clean\r\n".toByteArray(Charsets.UTF_8))
-            running.outputStream.flush()
-        }
+        loginEngine?.submitCode(code)
     }
 
     fun cancelLogin() {
-        process?.let {
-            if (it.isAlive) it.destroyForcibly()
+        val engine = loginEngine
+        if (engine != null) {
+            engine.cancel()
+        } else {
+            mutableState.value = ClaudeAuthState(
+                status = ClaudeAuthStatusState.SIGNED_OUT,
+                message = "Sign in cancelled.",
+            )
         }
-        process = null
+    }
+
+    /** Called when a running session reports that the saved Claude session was rejected. */
+    fun markExpired() {
+        if (loginInFlight.get()) return
         mutableState.value = ClaudeAuthState(
-            status = ClaudeAuthStatusState.SIGNED_OUT,
-            message = "Sign in cancelled.",
+            status = ClaudeAuthStatusState.EXPIRED,
+            message = ClaudeLoginOutput.messageFor(ClaudeAuthErrorKind.EXPIRED),
+            errorKind = ClaudeAuthErrorKind.EXPIRED,
         )
+        onSignedInChanged(false)
     }
 
     suspend fun logout() = withContext(Dispatchers.IO) {
         if (!installer.isAgentInstalled(AgentKind.CLAUDE_CODE)) return@withContext
-        val runtime = runCatching { installer.installedRuntime() }.getOrNull() ?: return@withContext
-        val logoutOutput = File(context.cacheDir, "claude-auth-logout.log").apply { delete() }
-        val workspace = File(context.filesDir, "workspaces/claude-auth").apply { mkdirs() }
-        val proc = runCatching {
-            installer.process(
-                proot = runtime.proot,
-                rootfs = runtime.rootfs,
-                workspace = workspace,
-                environment = mapOf(
-                    "HOME" to "/root",
-                    "TERM" to "xterm-256color",
-                    "NO_COLOR" to "1",
-                ),
-                guestCommand = listOf(RuntimeInstaller.CLAUDE_GUEST_PATH, "auth", "logout"),
-                guestWorkspacePath = "/workspace/claude-auth",
-                emulateHardLinks = false,
-                outputFile = logoutOutput,
-                pseudoTerminal = false,
-            )
-        }.getOrNull() ?: return@withContext
-        withTimeoutOrNull(10_000L) {
-            while (proc.isAlive) delay(50)
-        }
+        runCliBlocking(listOf("auth", "logout"))
         queryAuthStatus()
+    }
+
+    private fun runStatusBlocking(): ClaudeStatusMetadata? {
+        if (!installer.isAgentInstalled(AgentKind.CLAUDE_CODE)) return null
+        return ClaudeStatusMetadata.fromOutput(runCliBlocking(listOf("auth", "status", "--json")).orEmpty())
+    }
+
+    /** Runs a short non-interactive CLI command; the process is always killed on timeout and the log removed. */
+    private fun runCliBlocking(args: List<String>, timeoutMs: Long = CLI_TIMEOUT_MS): String? {
+        val output = File(context.cacheDir, "claude-auth-${args.joinToString("-").filter(Char::isLetterOrDigit)}.log")
+        output.delete()
+        val process = runCatching { launchCli(args, pty = false, outputFile = output) }.getOrNull() ?: return null
+        return try {
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (process.isAlive && System.currentTimeMillis() < deadline) Thread.sleep(50)
+            if (process.isAlive) null else runCatching { output.readText() }.getOrNull()
+        } finally {
+            runCatching { if (process.isAlive) process.destroyForcibly() }
+            runCatching { output.delete() }
+        }
+    }
+
+    private fun launchCli(args: List<String>, pty: Boolean, outputFile: File): NativeSpawnProcess {
+        val runtime = installer.installedRuntime()
+        val workspace = File(context.filesDir, "workspaces/claude-auth").apply { mkdirs() }
+        val environment = mutableMapOf(
+            "HOME" to "/root",
+            "TERM" to "xterm-256color",
+            "NO_COLOR" to "1",
+        )
+        if (pty) environment["BROWSER"] = AndroidBrowserBridge.BROWSER_ENV_PATH
+        val process = installer.process(
+            proot = runtime.proot,
+            rootfs = runtime.rootfs,
+            workspace = workspace,
+            environment = environment,
+            guestCommand = listOf(RuntimeInstaller.CLAUDE_GUEST_PATH) + args,
+            guestWorkspacePath = "/workspace/claude-auth",
+            emulateHardLinks = false,
+            outputFile = outputFile,
+            pseudoTerminal = pty,
+            ptyRows = 40,
+            // Wide enough that the terminal UI never wraps the long authorization link.
+            ptyColumns = PTY_COLUMNS,
+        )
+        return process as? NativeSpawnProcess ?: error("Unsupported Claude authentication process")
+    }
+
+    /** Keeps the app alive while the user is away in the browser; reuses the existing runtime service. */
+    private fun startForegroundWhileSigningIn() {
+        runCatching {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, RuntimeExecutionService::class.java)
+                    .setAction(RuntimeExecutionService.ACTION_START)
+                    .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, "Claude sign-in")
+                    .putExtra(RuntimeExecutionService.EXTRA_TITLE, "Signing in to Claude")
+                    .putExtra(RuntimeExecutionService.EXTRA_CAN_STOP, false),
+            )
+        }
+    }
+
+    private fun stopForegroundAfterSigningIn() {
+        // A coding session that started meanwhile owns the service; do not stop it from here.
+        if (RuntimeTaskController.stopAction != null) return
+        runCatching {
+            context.startService(
+                Intent(context, RuntimeExecutionService::class.java)
+                    .setAction(RuntimeExecutionService.ACTION_CANCELLED),
+            )
+        }.onFailure {
+            runCatching { context.stopService(Intent(context, RuntimeExecutionService::class.java)) }
+        }
+    }
+
+    /** Adapts a PTY-backed [NativeSpawnProcess] to the engine's process abstraction. */
+    private class PtyClaudeCliProcess(
+        private val native: NativeSpawnProcess,
+        private val outputFile: File,
+    ) : ClaudeCliProcess {
+        private var offset = 0L
+
+        override val isAlive: Boolean get() = native.isAlive
+
+        override fun readNewOutput(): String {
+            val available = outputFile.length() - offset
+            if (available <= 0) return ""
+            val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
+            val count = runCatching {
+                RandomAccessFile(outputFile, "r").use { file ->
+                    file.seek(offset)
+                    file.read(bytes)
+                }
+            }.getOrDefault(-1)
+            if (count <= 0) return ""
+            offset += count
+            return bytes.decodeToString(0, count)
+        }
+
+        override fun write(text: String) {
+            native.outputStream.write(text.toByteArray(Charsets.UTF_8))
+            native.outputStream.flush()
+        }
+
+        override fun destroy() {
+            runCatching { if (native.isAlive) native.destroyForcibly() }
+        }
+    }
+
+    private companion object {
+        const val CLI_TIMEOUT_MS = 10_000L
+        const val PTY_COLUMNS = 512
     }
 }
