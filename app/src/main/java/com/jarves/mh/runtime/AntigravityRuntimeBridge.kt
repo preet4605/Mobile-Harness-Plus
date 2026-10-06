@@ -346,7 +346,9 @@ class AntigravityRuntimeBridge(
     @Volatile private var activeProcess: Process? = null
     override val isRunning: Boolean get() = activeProcess?.isAlive == true
     @Volatile private var activeSessionId: String? = null
+    @Volatile private var activeTaskId: String? = null
     @Volatile private var userStopRequested = false
+    private val stoppedTaskIds = ConcurrentHashMap.newKeySet<String>()
     @Volatile private var foregroundResultPosted = false
 
     fun configureProjectRoot(projectId: String, rootPath: String) = checkpoints.configureProjectRoot(projectId, rootPath)
@@ -486,14 +488,45 @@ class AntigravityRuntimeBridge(
         }
         val effectiveAttemptId = attemptId ?: snapshot?.attemptId
         val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId, effectiveAttemptId)
+        val isExecutionAuthorized = com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.isExecutionAuthorized(taskId, null)
+        if (!isExecutionAuthorized) {
+            emitFailure(sessionId, "Execution not authorized for task $taskId")
+            throw SecurityException("Execution denied: Antigravity session requires valid EXECUTION authority for task $taskId")
+        }
+        com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.registerSession(taskId!!, sessionId)
         activeSessionId = sessionId
+        activeTaskId = taskId
+        val isTaskCancelled = (taskId != null && runCatching {
+            com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).isCancellationActive(taskId)
+        }.getOrDefault(false)) || (taskId != null && stoppedTaskIds.contains(taskId))
+        if (isTaskCancelled || userStopRequested) {
+            userStopRequested = true
+            if (taskId != null) stoppedTaskIds.add(taskId)
+            activeSessionId = null
+            activeTaskId = null
+            emitFailure(sessionId, "Stopped by user")
+            cancelForegroundRuntime()
+            throw IllegalStateException("Stopped by user")
+        }
+        val isTaskTerminal = taskId != null && runCatching {
+            val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
+            supervisor.stateStore.get(taskId)?.status?.isTerminal == true
+        }.getOrDefault(false)
+        if (isTaskTerminal) {
+            activeSessionId = null
+            activeTaskId = null
+            emitFailure(sessionId, "Task $taskId is already terminal")
+            throw IllegalStateException("Task $taskId is already terminal")
+        }
         userStopRequested = false
         foregroundResultPosted = false
         finished.remove(sessionId)
         eventBus.emit(RuntimeEvent.SessionStarted(sessionId))
         if (!installer.isAgentInstalled(com.jarves.mh.model.AgentKind.ANTIGRAVITY)) {
-            emitFailure(sessionId, "Antigravity CLI is not installed. Open Settings → Coding agent to install it.")
-            return@withContext sessionId
+            val message = "Antigravity CLI is not installed. Open Settings → Coding agent to install it."
+            activeSessionId = null
+            emitFailure(sessionId, message)
+            throw IllegalStateException(message)
         }
 
         val attemptedAccountIds = mutableSetOf<String>()
@@ -501,6 +534,8 @@ class AntigravityRuntimeBridge(
         val initialStickyAccountId = if (!existingConvId.isNullOrBlank()) conversationAccount?.invoke(projectId) else null
         var currentStickyAccountId = initialStickyAccountId
         var sessionCompleted = false
+        var networkRetries = 0
+        val maxNetworkRetries = 2
 
         while (!sessionCompleted && !userStopRequested) {
             val account = accountManager?.selectAccountForTurn(
@@ -512,9 +547,16 @@ class AntigravityRuntimeBridge(
                 attemptedAccountIds.add(account!!.id)
             } else if (attemptedAccountIds.isNotEmpty()) {
                 val msg = "All available Antigravity accounts are out of quota or unavailable."
+                activeSessionId = null
                 emitFailure(sessionId, msg)
                 finishForegroundRuntime(false, projectSlug, msg)
-                return@withContext sessionId
+                throw IllegalStateException(msg)
+            } else {
+                val msg = "No Antigravity accounts configured. Add an account in Settings."
+                activeSessionId = null
+                emitFailure(sessionId, msg)
+                finishForegroundRuntime(false, projectSlug, msg)
+                throw IllegalStateException(msg)
             }
 
             val guestHome = if (useAccount) {
@@ -523,8 +565,9 @@ class AntigravityRuntimeBridge(
             } else "/root"
             val env = if (useAccount) mapOf("HOME" to guestHome) else emptyMap()
 
-            val isStickyTurn = (useAccount && account!!.id == currentStickyAccountId && !existingConvId.isNullOrBlank())
-            val targetConvId = if (isStickyTurn) existingConvId else null
+            val currentConvId = conversationId(projectId) ?: existingConvId
+            val isStickyTurn = (useAccount && account!!.id == currentStickyAccountId && !currentConvId.isNullOrBlank())
+            val targetConvId = if (isStickyTurn) currentConvId else null
             val effectivePrompt = if (!isStickyTurn && conversationHistory.isNotEmpty()) {
                 buildFailoverPrompt(projectSlug, injectedPrompt, conversationHistory, memory)
             } else {
@@ -541,7 +584,8 @@ class AntigravityRuntimeBridge(
                 val workspace = checkpoints.ensureWorkspace(projectId)
                 checkpoints.createCheckpoint(projectId, workspace)
                 val before = checkpoints.snapshot(workspace)
-                val command = antigravityCommand(model(), effort(), targetConvId)
+                val isAuthorized = com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.isExecutionAuthorized(taskId, sessionId)
+                val command = antigravityCommand(model(), effort(), targetConvId, isAuthorized)
                 val process = installer.process(
                     installed.proot,
                     installed.rootfs,
@@ -669,6 +713,7 @@ class AntigravityRuntimeBridge(
                 val errorMsg = error.message.orEmpty()
                 val isQuota = isQuotaError(errorMsg)
                 val isAuth = isAuthError(errorMsg)
+                val isNetwork = isNetworkError(errorMsg)
 
                 if (useAccount) {
                     if (isQuota) accountManager!!.markQuotaExhausted(account!!.id, modelId = model())
@@ -680,12 +725,25 @@ class AntigravityRuntimeBridge(
 
                 if (!userStopRequested && (isQuota || isAuth) && hasMoreAccounts) {
                     currentStickyAccountId = null
+                    activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
+                    activeProcess = null
                     eventBus.emit(
                         RuntimeEvent.AssistantDelta(
                             sessionId,
                             "\n\n*[Notice: Account ${account?.displayTitle ?: ""} reached limit. Failing over to next available account…]*\n\n",
                         ),
                     )
+                } else if (!userStopRequested && isNetwork && networkRetries < maxNetworkRetries) {
+                    networkRetries++
+                    activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
+                    activeProcess = null
+                    eventBus.emit(
+                        RuntimeEvent.AssistantDelta(
+                            sessionId,
+                            "\n\n*[Network connection interrupted (switching connection). Reconnecting (attempt $networkRetries/$maxNetworkRetries)…]*\n\n",
+                        ),
+                    )
+                    delay(2000L)
                 } else {
                     // Ensure active process is killed so no orphaned process runs concurrently
                     activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
@@ -698,44 +756,73 @@ class AntigravityRuntimeBridge(
                 }
             }
         }
-        activeProcess = null
-        activeSessionId = null
-        RuntimeTaskController.stopAction = null
+        if (activeSessionId == sessionId) {
+            activeProcess = null
+            activeSessionId = null
+            activeTaskId = null
+            RuntimeTaskController.stopAction = null
+        }
         sessionId
     }
 
     override suspend fun respondToApproval(request: ToolRequest, approved: Boolean) {
         // agy headless streaming rejects control_response messages. This driver is
-        // intentionally launched with --dangerously-skip-permissions by explicit
-        // product choice, so no Antigravity approval can be pending here.
+        // intentionally launched with --dangerously-skip-permissions only inside an authorized
+        // EXECUTION context, so no Antigravity approval can be pending here.
     }
 
     override suspend fun stopSession(sessionId: String, force: Boolean) {
-        if (activeSessionId == sessionId) {
-            userStopRequested = true
+        userStopRequested = true
+        val resolvedTaskId: String? = runCatching {
+            com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).getTaskIdForSession(sessionId)
+        }.getOrNull() ?: activeTaskId
+        if (resolvedTaskId != null) {
+            stoppedTaskIds.add(resolvedTaskId)
+            com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.revokeExecutionAuthority(resolvedTaskId, "Stopped by user")
+        }
+        val proc = activeProcess
+        if (proc != null) {
+            if (force) {
+                // Stage 2: Force kill immediately — skip grace period
+                (proc as? NativeSpawnProcess)?.destroyForcibly() ?: proc.destroyForcibly()
+            } else {
+                // Stage 1: Graceful interrupt (SIGINT / Ctrl+C)
+                (proc as? NativeSpawnProcess)?.interrupt() ?: proc.destroy()
+                // Allow up to 1500ms for the process to handle the interrupt and exit.
+                var waited = 0L
+                while (proc.isAlive && waited < 1500L) {
+                    kotlinx.coroutines.delay(100)
+                    waited += 100
+                }
+                // Auto-escalate to force kill if still alive after grace period.
+                if (proc.isAlive) proc.destroyForcibly()
+            }
+        }
+        emitFailure(sessionId, "Stopped by user")
+    }
+
+    override suspend fun stopActiveSession(force: Boolean) {
+        userStopRequested = true
+        val currentSessionId = activeSessionId
+        if (currentSessionId != null) {
+            stopSession(currentSessionId, force)
+        } else {
             val proc = activeProcess
             if (proc != null) {
                 if (force) {
-                    // Stage 2: Force kill immediately — skip grace period
                     (proc as? NativeSpawnProcess)?.destroyForcibly() ?: proc.destroyForcibly()
                 } else {
-                    // Stage 1: Graceful interrupt (SIGINT / Ctrl+C)
                     (proc as? NativeSpawnProcess)?.interrupt() ?: proc.destroy()
-                    // Allow up to 1500ms for the process to handle the interrupt and exit.
                     var waited = 0L
                     while (proc.isAlive && waited < 1500L) {
                         kotlinx.coroutines.delay(100)
                         waited += 100
                     }
-                    // Auto-escalate to force kill if still alive after grace period.
                     if (proc.isAlive) proc.destroyForcibly()
                 }
             }
-            emitFailure(sessionId, "Stopped by user")
         }
     }
-
-    override suspend fun stopActiveSession(force: Boolean) = activeSessionId?.let { stopSession(it, force) } ?: Unit
 
     override suspend fun undoLastChanges(projectId: String): Boolean = withContext(Dispatchers.IO) {
         val checkpoint = checkpoints.checkpointDir(projectId)
@@ -837,6 +924,8 @@ class AntigravityRuntimeBridge(
                 "Antigravity needs Google sign-in. Open Settings → Coding agent."
             value.contains("out of credits", true) || value.contains("quota", true) ->
                 "Your Antigravity account is out of credits. Check the account plan or wait for credits to reset."
+            isNetworkError(value) ->
+                "Network connection interrupted. Please check your internet connection."
             value.contains("timed out", true) || value.contains("timeout", true) ->
                 "Antigravity reached the 60-minute task limit. Your files were kept."
             value.contains("model", true) && (value.contains("invalid", true) || value.contains("unknown", true)) ->
@@ -849,14 +938,20 @@ class AntigravityRuntimeBridge(
 
 private class AntigravitySessionException(message: String) : IllegalStateException(message)
 
-internal fun antigravityCommand(model: String, effort: String, conversationId: String?): List<String> = buildList {
+internal fun antigravityCommand(
+    model: String,
+    effort: String,
+    conversationId: String?,
+    isExecutionAuthorized: Boolean = false,
+): List<String> = buildList {
     add(RuntimeInstaller.AGY_GUEST_PATH)
     addAll(listOf("--input-format", "stream-json"))
     addAll(listOf("--output-format", "stream-json"))
     addAll(listOf("--print-timeout", "60m"))
-    // This is intentionally explicit and covered by tests. Antigravity tool calls
-    // do not pass through PocketDev approval dialogs while this mode is enabled.
-    add("--dangerously-skip-permissions")
+    // Dangerously skip permissions is permitted ONLY within an authorized EXECUTION context.
+    if (isExecutionAuthorized) {
+        add("--dangerously-skip-permissions")
+    }
     addAntigravitySelection(model, effort)
     conversationId?.takeIf(String::isNotBlank)?.let {
         addAll(listOf("--conversation", it))
@@ -883,7 +978,7 @@ internal fun antigravityWorkspacePrompt(
     prompt: String,
     memory: ContextMemory = ContextMemory(""),
 ): String {
-    val memoryBlock = renderMemoryBlock(memory)
+    val memoryBlock = renderMemoryBlock(memory, prompt)
     return buildString {
         appendLine("<pocketdev_workspace>")
         appendLine("The active project workspace is /workspace/$projectSlug. Create, edit, read, run, and build project files only inside this directory. Do not create project output under ~/.gemini/antigravity-cli/scratch or any other scratch directory.")
@@ -927,5 +1022,39 @@ internal fun isAuthError(raw: String): Boolean {
         value.contains("authentication failed") ||
         value.contains("not signed in") ||
         value.contains("oauth")
+}
+
+internal fun isNetworkError(raw: String): Boolean {
+    val value = raw.lowercase()
+    return value.contains("software caused connection abort") ||
+        value.contains("connection abort") ||
+        value.contains("econnaborted") ||
+        value.contains("broken pipe") ||
+        value.contains("epipe") ||
+        value.contains("connection reset") ||
+        value.contains("econnreset") ||
+        value.contains("connection refused") ||
+        value.contains("econnrefused") ||
+        value.contains("network unreachable") ||
+        value.contains("network is unreachable") ||
+        value.contains("no route to host") ||
+        value.contains("socket timeout") ||
+        value.contains("timed out") ||
+        value.contains("timeout") ||
+        value.contains("read tcp") ||
+        value.contains("write tcp") ||
+        value.contains("dial tcp") ||
+        value.contains("tls handshake timeout") ||
+        value.contains("ssl handshake") ||
+        value.contains("handshake timeout") ||
+        value.contains("unexpected eof") ||
+        value.contains("stream error") ||
+        value.contains("stream closed") ||
+        value.contains("stream terminated") ||
+        value.contains("transport: error") ||
+        value.contains("network error") ||
+        value.contains("network connection interrupted") ||
+        (value.contains("request failed") && (value.contains("streamgeneratecontent") || value.contains("post") || value.contains("get"))) ||
+        (value.contains("agent executor error") && value.contains("generating and executing"))
 }
 

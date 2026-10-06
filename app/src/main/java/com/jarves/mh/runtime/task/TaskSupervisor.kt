@@ -117,6 +117,23 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
     private val _events = MutableSharedFlow<RuntimeEvent>(extraBufferCapacity = 128)
     val events: SharedFlow<RuntimeEvent> = _events.asSharedFlow()
 
+    fun interface TaskFallbackDecider {
+        fun decideFallback(taskId: String, errorMsg: String): Boolean
+    }
+
+    private val fallbackDeciders = ConcurrentHashMap<String, TaskFallbackDecider>()
+
+    fun registerFallbackDecider(taskId: String, decider: TaskFallbackDecider) {
+        fallbackDeciders[taskId] = decider
+    }
+
+    fun unregisterFallbackDecider(taskId: String) {
+        fallbackDeciders.remove(taskId)
+    }
+
+    fun getTaskIdForSession(sessionId: String): String? =
+        processSupervisor.getTaskIdForSession(sessionId) ?: stateStore.getBySessionId(sessionId)?.taskId
+
     companion object {
         private const val TAG = "TaskSupervisor"
         @Volatile private var instance: TaskSupervisor? = null
@@ -150,11 +167,18 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             val active = stateStore.getActiveTasks()
             runCatching { Log.d(TAG, "Reconciling ${active.size} active tasks from database on startup") }
 
-            for (task in active) {
+            for (task in active) try {
+                // COMPLETING cannot legally move to ABANDONED; a dead COMPLETING task never
+                // finished finalization, so it is failed (recoveryRequired) instead.
+                val recoveryTarget = if (task.status == TaskExecutionStatus.COMPLETING) {
+                    TaskExecutionStatus.FAILED
+                } else {
+                    TaskExecutionStatus.ABANDONED
+                }
                 val pid = task.pid
                 val isAlive = pid != null && pid > 1 && processSupervisor.isProcessAlive(pid)
                 if (!isAlive) {
-                    val terminal = stateStore.transition(task.taskId, TaskExecutionStatus.ABANDONED) { record ->
+                    val terminal = stateStore.transition(task.taskId, recoveryTarget) { record ->
                         record.copy(
                             lastError = "Process terminated due to application process death / system restart",
                             recoveryRequired = true
@@ -163,7 +187,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                     reconcileCanonicalTaskStepsOnAbandonment(task.taskId, terminal.lastError ?: "Process terminated")
                     healthMonitor.onTaskAbandoned(task.taskId, pid)
                     reconciled.add(terminal)
-                    runCatching { Log.i(TAG, "Reconciled dead task ${task.taskId} -> ABANDONED (recoveryRequired=true)") }
+                    runCatching { Log.i(TAG, "Reconciled dead task ${task.taskId} -> $recoveryTarget (recoveryRequired=true)") }
                 } else {
                     // PID is alive. Verify process identity to avoid killing an innocent recycled PID.
                     val isVerified = processSupervisor.isVerifiedExpectedProcess(pid)
@@ -175,7 +199,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                     } else {
                         runCatching { Log.w(TAG, "Found task ${task.taskId} with alive PID $pid, but process identity could not be verified.") }
                     }
-                    val terminal = stateStore.transition(task.taskId, TaskExecutionStatus.ABANDONED) { record ->
+                    val terminal = stateStore.transition(task.taskId, recoveryTarget) { record ->
                         record.copy(
                             lastError = if (isVerified) {
                                 "Application restarted while task was active; orphaned process terminated (PID $pid)"
@@ -188,8 +212,10 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                     reconcileCanonicalTaskStepsOnAbandonment(task.taskId, terminal.lastError ?: "Process terminated")
                     healthMonitor.onTaskAbandoned(task.taskId, pid)
                     reconciled.add(terminal)
-                    runCatching { Log.i(TAG, "Reconciled orphaned/unverifiable task ${task.taskId} -> ABANDONED (recoveryRequired=true)") }
+                    runCatching { Log.i(TAG, "Reconciled orphaned/unverifiable task ${task.taskId} -> $recoveryTarget (recoveryRequired=true)") }
                 }
+            } catch (t: Throwable) {
+                runCatching { Log.e(TAG, "Failed to reconcile task ${task.taskId}; continuing with remaining tasks", t) }
             }
 
             wakeLockManager?.releaseAll()
@@ -217,6 +243,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
      */
     fun bindSession(taskId: String, sessionId: String) {
         stateStore.markSessionId(taskId, sessionId)
+        com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.registerSession(taskId, sessionId)
         refreshActiveTasks()
     }
 
@@ -788,7 +815,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
     }
 
     fun classifyError(errorMsg: String, workspaceMutated: Boolean, isCancelled: Boolean): TaskErrorClassification {
-        if (isCancelled || errorMsg.contains("stopped by user", ignoreCase = true) || errorMsg.contains("cancelled", ignoreCase = true)) {
+        if (isCancelled) {
             return TaskErrorClassification.USER_CANCELLED
         }
         val lower = errorMsg.lowercase()
@@ -822,10 +849,30 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             lower.contains("transient fault") || lower.contains("system fault")) {
             return TaskErrorClassification.TRANSIENT_SYSTEM_FAULT
         }
-        if (lower.contains("503") || lower.contains("unavailable") || lower.contains("service is currently unavailable") ||
-            lower.contains("500") || lower.contains("502") || lower.contains("504") ||
-            lower.contains("socket timeout") || lower.contains("network error") ||
-            lower.contains("rate limit") || lower.contains("http 429") || lower.contains("resource_exhausted")) {
+        val hasTransientApiMarker = lower.contains("service is currently unavailable") ||
+            lower.contains("http 500") || lower.contains("http 502") || lower.contains("http 503") || lower.contains("http 504") ||
+            lower.contains("code 500") || lower.contains("code: 500") || lower.contains("code 502") || lower.contains("code: 502") ||
+            lower.contains("code 503") || lower.contains("code: 503") || lower.contains("code 504") || lower.contains("code: 504") ||
+            lower.contains("status 500") || lower.contains("status: 500") || lower.contains("status 502") || lower.contains("status: 502") ||
+            lower.contains("status 503") || lower.contains("status: 503") || lower.contains("status 504") || lower.contains("status: 504") ||
+            lower.contains("status code 500") || lower.contains("status code 502") || lower.contains("status code 503") || lower.contains("status code 504") ||
+            lower.contains("503 service unavailable") || lower.contains("503 unavailable") ||
+            lower.contains("500 internal server error") || lower.contains("502 bad gateway") || lower.contains("504 gateway timeout") ||
+            lower.contains("socket timeout") || lower.contains("socket closed") || lower.contains("network error") ||
+            lower.contains("network connection interrupted") || lower.contains("connection interrupted") ||
+            lower.contains("software caused connection abort") || lower.contains("connection abort") || lower.contains("connection aborted") ||
+            lower.contains("econnaborted") || lower.contains("broken pipe") || lower.contains("epipe") ||
+            lower.contains("network unreachable") || lower.contains("network is unreachable") || lower.contains("no route to host") ||
+            lower.contains("connection reset") || lower.contains("econnreset") || lower.contains("econnrefused") || lower.contains("connection refused") ||
+            lower.contains("unknownhost") || lower.contains("unknown host") || lower.contains("unreachable") ||
+            lower.contains("etimedout") || lower.contains("connection timed out") || lower.contains("timed out") ||
+            lower.contains("handshake timeout") || lower.contains("ssl handshake") || lower.contains("tls handshake") ||
+            lower.contains("read tcp") || lower.contains("write tcp") || lower.contains("dial tcp") ||
+            lower.contains("streamgeneratecontent") || lower.contains("agent executor error") ||
+            lower.contains("stream error") || lower.contains("stream closed") || lower.contains("stream terminated") ||
+            lower.contains("unexpected eof") || lower.contains("transport: error") ||
+            lower.contains("rate limit") || lower.contains("http 429") || lower.contains("code 429") || lower.contains("resource_exhausted")
+        if (hasTransientApiMarker) {
             return TaskErrorClassification.TRANSIENT_API_ERROR
         }
         return TaskErrorClassification.PROCESS_FAILURE
@@ -941,7 +988,14 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
         processSupervisor.unregister(targetTaskId)
         outputBuffers.remove(targetTaskId)
+        fallbackDeciders.remove(targetTaskId)
         activeJobs.remove(targetTaskId)
+        if (status.isTerminal) {
+            com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.revokeExecutionAuthority(
+                targetTaskId,
+                "Task terminal: $status",
+            )
+        }
         refreshActiveTasks()
 
         return finalizedRecord
@@ -989,9 +1043,28 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         canonicalTaskRepository.getTask(taskId)
             ?: error("CanonicalTask $taskId not found in repository; cannot execute task without canonical record")
 
+        val currentInitialStatus = task.status
+        if (currentInitialStatus.isTerminal) {
+            runCatching { Log.w(TAG, "Task $taskId is already terminal ($currentInitialStatus); skipping executeTask") }
+            return supervisorScope.launch { /* no-op job */ }
+        }
+        if (isCancellationActive(taskId)) {
+            finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before launch")
+            return supervisorScope.launch { /* no-op job */ }
+        }
+
         val job = supervisorScope.launch {
             try {
                 executionLock.withExecutionLock(task.taskId, task.projectId) {
+                    val statusInsideLock = stateStore.get(taskId)?.status
+                    if (statusInsideLock?.isTerminal == true) {
+                        runCatching { Log.w(TAG, "Task $taskId became terminal ($statusInsideLock) before execution lock; skipping") }
+                        return@withExecutionLock
+                    }
+                    if (isCancellationActive(taskId)) {
+                        finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before launch")
+                        return@withExecutionLock
+                    }
                     var current = stateStore.transition(taskId, TaskExecutionStatus.STARTING)
                     refreshActiveTasks()
                     wakeLockManager?.acquire(taskId)
@@ -1014,7 +1087,6 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                     while (!succeeded && attempt <= task.maxRetries) {
                         try {
                             if (attempt > 0) {
-                                processSupervisor.clearCancellationRequested(taskId)
                                 current = stateStore.transition(taskId, TaskExecutionStatus.RECOVERING) {
                                     it.copy(retryCount = attempt, lastError = "Retrying attempt $attempt/${task.maxRetries}...")
                                 }
@@ -1031,6 +1103,12 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                 if (stateStore.get(taskId)?.status != TaskExecutionStatus.CANCELLED) {
                                     finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user before launch")
                                 }
+                                break
+                            }
+
+                            // Pre-execution terminal check: Never execute attempt for already-terminal task
+                            val statusBeforeRun = stateStore.get(taskId)?.status
+                            if (statusBeforeRun != null && statusBeforeRun.isTerminal) {
                                 break
                             }
 
@@ -1472,6 +1550,10 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                         val mutatedFiles = detectStepMutatedFiles(current.projectId, stepTag, wsDir)
                                         val classification = classifyError(errorMsg, mutatedFiles.isNotEmpty(), isCancellationActive(taskId))
 
+                                        if (classification == TaskErrorClassification.PERMANENT_AUTH_OR_CONFIG) {
+                                            throw stepExecError
+                                        }
+
                                         if (isCancellationActive(taskId)) {
                                             val cancelledPlan = canonicalTask.activeRecoveryPlan?.copy(
                                                 status = com.jarves.mh.model.brain.RecoveryStatus.CANCELLED,
@@ -1895,7 +1977,11 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                             if (t is kotlinx.coroutines.CancellationException) {
                                 throw t
                             }
-                            if (t is StepVerificationException || t is StepExecutionException) {
+                            val isStepFailure = t is StepVerificationException || t is StepExecutionException
+                            val stepReason = if (t is StepVerificationException) t.reason else if (t is StepExecutionException) t.reason else null
+                            val isAuthOrConfigFailure = stepReason != null && classifyError(stepReason, workspaceMutated = false, isCancelled = isCancellationActive(taskId)) == TaskErrorClassification.PERMANENT_AUTH_OR_CONFIG
+
+                            if (isStepFailure && !isAuthOrConfigFailure) {
                                 val failedAttempt = attempt
                                 val failedAttemptId = "$taskId:attempt-$failedAttempt"
                                 processSupervisor.terminate(taskId, force = true)
@@ -1945,7 +2031,6 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
 
                             // Terminate any running child process from this attempt before retrying (do not mark cancellation requested for retry)
                             processSupervisor.terminate(taskId, force = true, markCancelled = false)
-                            processSupervisor.clearCancellationRequested(taskId)
 
                             val checkpoints = getCheckpoints()
                             val mutatedFiles = runCatching { checkpoints.readChangedPaths(task.projectId) }.getOrDefault(emptyList()) ?: emptyList()
@@ -1984,8 +2069,27 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                     break
                                 }
                                 TaskErrorClassification.PERMANENT_AUTH_OR_CONFIG -> {
-                                    finalizeTask(taskId, TaskExecutionStatus.FAILED, error = errorMsg, recoveryRequired = false)
-                                    break
+                                    val fallbackDecider = fallbackDeciders[taskId]
+                                    val canFallback = fallbackDecider != null && attempt <= task.maxRetries && fallbackDecider.decideFallback(taskId, errorMsg)
+                                    if (canFallback) {
+                                        runCatching { Log.i(TAG, "Auth/config failure on attempt $attempt for task $taskId; fallback applied, retrying attempt $attempt") }
+                                    } else {
+                                        val canonical = canonicalTaskRepository.getTask(taskId)
+                                        if (canonical != null && canonical.plan.steps.isNotEmpty()) {
+                                            val stepIndex = canonical.plan.currentStepIndex.coerceIn(0, canonical.plan.steps.size - 1)
+                                            val currentStep = canonical.plan.steps[stepIndex]
+                                            if (currentStep.status != StepStatus.COMPLETED) {
+                                                val failedStep = currentStep.copy(
+                                                    status = StepStatus.FAILED,
+                                                    completedAt = Instant.now(),
+                                                    resultSummary = errorMsg
+                                                )
+                                                canonicalTaskRepository.saveTask(canonical.copy(plan = canonical.plan.withUpdatedStep(failedStep)))
+                                            }
+                                        }
+                                        finalizeTask(taskId, TaskExecutionStatus.FAILED, error = errorMsg, recoveryRequired = false)
+                                        break
+                                    }
                                 }
                                 TaskErrorClassification.WORKSPACE_MUTATED_FAILURE -> {
                                     val failureDetail = "Task failed after modifying files (${mutatedFiles.size} changed). Auto-retry disabled ($errorMsg)."

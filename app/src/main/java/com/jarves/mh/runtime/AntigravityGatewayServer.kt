@@ -11,6 +11,8 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -27,11 +29,19 @@ class AntigravityGatewayServer(
     private val targetModel: () -> String = { "gemini-3.8-pro" },
     private val upstreamBaseUrl: String = DEFAULT_CLOUDCODE_URL,
     private val transportOverride: ((url: String, method: String, headers: Map<String, String>, body: String?) -> GatewayHttpResult)? = null,
+    val gatewaySecret: String = generateGatewaySecret(),
 ) : AutoCloseable {
 
     companion object {
         const val DEFAULT_CLOUDCODE_URL = "https://daily-cloudcode-pa.googleapis.com"
         private const val TAG = "AntigravityGateway"
+
+        fun generateGatewaySecret(): String {
+            val bytes = ByteArray(32)
+            SecureRandom().nextBytes(bytes)
+            val hex = bytes.joinToString("") { "%02x".format(it) }
+            return "sk-ant-oat-$hex"
+        }
     }
 
     data class GatewayHttpResult(
@@ -96,6 +106,23 @@ class AntigravityGatewayServer(
             val length = headers["content-length"]?.toIntOrNull() ?: 0
             if (length < 0 || length > 16 * 1024 * 1024) {
                 writeJson(output, 413, AntigravityProtocolAdapter.anthropicErrorJson("invalid_request_error", "Payload too large"))
+                return
+            }
+
+            if (!isAuthorized(headers["authorization"])) {
+                if (length > 0) {
+                    var remaining = length.toLong()
+                    while (remaining > 0) {
+                        val skipped = input.skip(remaining)
+                        if (skipped <= 0) {
+                            if (input.read() < 0) break
+                            remaining--
+                        } else {
+                            remaining -= skipped
+                        }
+                    }
+                }
+                writeUnauthorized(output, requestLine)
                 return
             }
 
@@ -300,27 +327,36 @@ class AntigravityGatewayServer(
             return override(urlStr, method, headers, body)
         }
 
-        return runCatching {
-            val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-                requestMethod = method
-                connectTimeout = 15_000
-                readTimeout = 90_000
-                doOutput = body != null
-                headers.forEach { (k, v) -> setRequestProperty(k, v) }
+        var lastError: Throwable? = null
+        for (attempt in 0..1) {
+            try {
+                val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                    requestMethod = method
+                    connectTimeout = 15_000
+                    readTimeout = 90_000
+                    doOutput = body != null
+                    headers.forEach { (k, v) -> setRequestProperty(k, v) }
+                }
+                if (body != null) {
+                    conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                }
+                val code = conn.responseCode
+                return if (code in 200..299) {
+                    GatewayHttpResult(code, "", conn.inputStream)
+                } else {
+                    val errBody = (conn.errorStream ?: conn.inputStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    GatewayHttpResult(code, errBody)
+                }
+            } catch (t: Throwable) {
+                lastError = t
+                if (attempt == 0) {
+                    runCatching { Thread.sleep(1000L) }
+                    continue
+                }
+                break
             }
-            if (body != null) {
-                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            }
-            val code = conn.responseCode
-            if (code in 200..299) {
-                GatewayHttpResult(code, "", conn.inputStream)
-            } else {
-                val errBody = (conn.errorStream ?: conn.inputStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
-                GatewayHttpResult(code, errBody)
-            }
-        }.getOrElse { error ->
-            GatewayHttpResult(502, error.message ?: "Failed to connect to Antigravity upstream")
         }
+        return GatewayHttpResult(502, lastError?.message ?: "Failed to connect to Antigravity upstream")
     }
 
     private fun relayStreamingResponse(output: BufferedOutputStream, httpResult: GatewayHttpResult, format: WireFormat, model: String) {
@@ -342,7 +378,8 @@ class AntigravityGatewayServer(
         }
 
         val reader = BufferedReader(InputStreamReader(httpResult.stream ?: httpResult.body.byteInputStream(), Charsets.UTF_8))
-        reader.useLines { lines ->
+        try {
+            reader.useLines { lines ->
             for (rawLine in lines) {
                 val line = rawLine.trim()
                 if (!line.startsWith("data:")) continue
@@ -418,6 +455,9 @@ class AntigravityGatewayServer(
                 }
             }
         }
+    } catch (t: Throwable) {
+        logW("Upstream streaming connection interrupted: ${t.message}")
+    }
 
         when (format) {
             WireFormat.ANTHROPIC -> {
@@ -452,11 +492,40 @@ class AntigravityGatewayServer(
         writeJson(output, 200, converted.toString())
     }
 
+    private fun isAuthorized(authHeader: String?): Boolean {
+        if (authHeader == null || !authHeader.startsWith("Bearer ", ignoreCase = true)) {
+            return false
+        }
+        val token = authHeader.substring(7).trim()
+        if (token.isEmpty()) return false
+        val tokenBytes = token.toByteArray(Charsets.UTF_8)
+        val secretBytes = gatewaySecret.toByteArray(Charsets.UTF_8)
+        val md = MessageDigest.getInstance("SHA-256")
+        val digestToken = md.digest(tokenBytes)
+        md.reset()
+        val digestSecret = md.digest(secretBytes)
+        return MessageDigest.isEqual(digestToken, digestSecret)
+    }
+
+    private fun writeUnauthorized(output: BufferedOutputStream, requestLine: String) {
+        val path = requestLine.split(' ').getOrNull(1).orEmpty().substringBefore('?')
+        val isChatCompletions = path.trimEnd('/').endsWith("/chat/completions")
+        val errorBody = if (isChatCompletions) {
+            AntigravityProtocolAdapter.openAiErrorJson("Missing or invalid authorization token", "authentication_error", 401)
+        } else {
+            AntigravityProtocolAdapter.anthropicErrorJson("authentication_error", "Missing or invalid authorization token")
+        }
+        writeJson(output, 401, errorBody)
+    }
+
     private fun writeJson(output: BufferedOutputStream, status: Int, body: String) {
         val bytes = body.toByteArray(Charsets.UTF_8)
         output.write("HTTP/1.1 $status ${httpStatusText(status)}\r\n".toByteArray(Charsets.UTF_8))
         output.write("Content-Type: application/json; charset=utf-8\r\n".toByteArray(Charsets.UTF_8))
         output.write("Content-Length: ${bytes.size}\r\n".toByteArray(Charsets.UTF_8))
+        if (status == 401) {
+            output.write("WWW-Authenticate: Bearer\r\n".toByteArray(Charsets.UTF_8))
+        }
         output.write("Connection: close\r\n\r\n".toByteArray(Charsets.UTF_8))
         output.write(bytes)
         output.flush()

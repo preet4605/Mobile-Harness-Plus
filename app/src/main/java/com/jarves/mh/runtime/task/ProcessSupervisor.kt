@@ -46,9 +46,15 @@ class ProcessSupervisor {
             // Also store sessionId key directly as alias
             trackedProcesses[sessionId] = TrackedProcess(taskId, process, resolvedPid)
         }
-        userCancellationRequests.remove(taskId)
-        if (sessionId != null) userCancellationRequests.remove(sessionId)
-        runCatching { Log.d("ProcessSupervisor", "Registered process for task $taskId (PID: $resolvedPid, session: $sessionId)") }
+        val isCancelled = isCancellationRequested(taskId) || (sessionId != null && isCancellationRequested(sessionId))
+        if (isCancelled) {
+            markCancellationRequested(taskId)
+            if (sessionId != null) markCancellationRequested(sessionId)
+            runCatching {
+                (process as? NativeSpawnProcess)?.destroyForcibly() ?: process.destroyForcibly()
+            }
+        }
+        runCatching { Log.d("ProcessSupervisor", "Registered process for task $taskId (PID: $resolvedPid, session: $sessionId, cancelled: $isCancelled)") }
     }
 
     fun bindProcess(taskId: String, sessionId: String, process: Process, pid: Int? = null) {

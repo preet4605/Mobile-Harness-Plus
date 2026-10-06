@@ -93,7 +93,7 @@ import com.jarves.mh.BuildConfig
 import com.jarves.mh.data.ApiKeyInfo
 import com.jarves.mh.model.AgentKind
 import com.jarves.mh.model.DEEPSEEK_HARNESS_PROVIDERS
-import com.jarves.mh.model.DSH_PROTOCOL_PROVIDERS
+import com.jarves.mh.model.agentUsesConfiguredProtocol
 import com.jarves.mh.model.DevStack
 import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.ProviderProfile
@@ -799,7 +799,7 @@ private fun ConnectionSettings(
     } else {
         OutlinedTextField(baseUrl, onBaseUrl, label = { Text("Base URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
     }
-    if (state.agentKind == AgentKind.DEEPSEEK_HARNESS && selectedKind in DSH_PROTOCOL_PROVIDERS) {
+    if (agentUsesConfiguredProtocol(state.agentKind, selectedKind)) {
         Text("Gateway protocol", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)) {
             Column {

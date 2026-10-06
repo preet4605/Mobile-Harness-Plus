@@ -52,6 +52,13 @@ object SlashCommandEngine {
             isLocalOnly = true,
         ),
         SlashCommand(
+            name = "thinking",
+            description = "Select Claude reasoning effort level",
+            category = SlashCommandCategory.CONFIG,
+            isLocalOnly = true,
+            supportedAgents = setOf(AgentKind.CLAUDE_CODE),
+        ),
+        SlashCommand(
             name = "skills",
             description = "View and manage active, linked, and global skills",
             category = SlashCommandCategory.CONFIG,
@@ -250,8 +257,8 @@ object SlashCommandEngine {
      */
     fun buildPromptForSkill(skill: SkillInfo, args: String, skillContent: String): String {
         return buildString {
-            appendLine("<active_skill name=\"${skill.name}\" source=\"${skill.source.name}\">")
-            appendLine(skillContent.trim())
+            appendLine("<active_skill name=\"${skill.name.replace("\"", "'").replace("<", "").replace(">", "")}\" source=\"${skill.source.name}\">")
+            appendLine(com.jarves.mh.data.PromptContextSupport.escapeDelimiters(skillContent.trim()))
             appendLine("</active_skill>")
             appendLine()
             appendLine("[USER DIRECTIVE - ACTIVE SKILL APPLIED: ${skill.name}]")

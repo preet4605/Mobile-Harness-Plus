@@ -74,4 +74,38 @@ class MemoryExtractorTest {
         assertEquals("Jetpack Compose", extracted["project-framework"])
         assertEquals("Gradle", extracted["build-system"])
     }
+
+    private fun userKv(text: String) =
+        MemoryExtractor.extractMemories(listOf(ChatMessage(fromUser = true, text = text))).toMap()
+
+    @Test
+    fun `language and framework instructions are not stored as database`() {
+        assertEquals(mapOf("project-language" to "Kotlin"), userKv("Please use Kotlin"))
+        assertEquals(mapOf("project-framework" to "Compose"), userKv("Switch to Compose"))
+        assertEquals(mapOf("project-language" to "Swift"), userKv("Use Swift"))
+    }
+
+    @Test
+    fun `explicit database detection is preserved`() {
+        assertEquals(mapOf("database" to "SQLite"), userKv("Use SQLite"))
+        assertEquals(mapOf("database" to "Postgres"), userKv("Use Postgres for the database"))
+    }
+
+    @Test
+    fun `unclassifiable tech yields no inferred value`() {
+        assertTrue(userKv("Use Retrofit").isEmpty())
+        val rich = MemoryExtractor.extractRichMemories(
+            listOf(ChatMessage(fromUser = true, text = "Use Ktor")), "p",
+        )
+        assertTrue(rich.none { it.key == "database" })
+    }
+
+    @Test
+    fun `rich extraction keys language correctly`() {
+        val rich = MemoryExtractor.extractRichMemories(
+            listOf(ChatMessage(fromUser = true, text = "Please use Kotlin")), "p",
+        )
+        assertEquals("Kotlin", rich.first { it.key == "project-language" }.value)
+        assertTrue(rich.none { it.key == "database" })
+    }
 }

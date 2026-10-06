@@ -6,6 +6,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
+import com.jarves.mh.provider.ProviderFailureClassifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -33,6 +34,9 @@ class ProviderApiClient {
     ): ModelDiscoveryResult = withContext(Dispatchers.IO) {
         if (baseUrl.isBlank()) {
             return@withContext ModelDiscoveryResult.Failure("Enter a base URL first.")
+        }
+        if (com.jarves.mh.provider.isRevokedProvider(baseUrl)) {
+            return@withContext ModelDiscoveryResult.Failure("Connection blocked: $baseUrl is a revoked phishing provider.")
         }
 
         var authError = false
@@ -77,6 +81,12 @@ class ProviderApiClient {
     ): ConnectionValidation = withContext(Dispatchers.IO) {
         if (baseUrl.isBlank() || model.isBlank() || apiKey.isBlank()) {
             return@withContext ConnectionValidation.Failure("Base URL, model, and API key are required.")
+        }
+        if (com.jarves.mh.provider.isRevokedProvider(baseUrl) || com.jarves.mh.provider.isRevokedProvider(model)) {
+            return@withContext ConnectionValidation.Failure(
+                message = "Connection blocked: $baseUrl is a revoked phishing provider.",
+                label = "Revoked",
+            )
         }
         val endpoint = messagesEndpoint(baseUrl, protocol)
         val body = validationBody(model, protocol)
@@ -134,6 +144,116 @@ class ProviderApiClient {
         }
     }
 
+    suspend fun completeChat(
+        baseUrl: String,
+        model: String,
+        apiKey: String,
+        protocol: ProviderProtocol,
+        messages: List<com.jarves.mh.model.ChatMessage>,
+        systemPrompt: String? = null,
+    ): Result<String> = withContext(Dispatchers.IO) {
+        if (baseUrl.isBlank() || model.isBlank()) {
+            return@withContext Result.failure(IllegalArgumentException("Base URL and model are required"))
+        }
+        val endpoint = messagesEndpoint(baseUrl, protocol)
+        val body = chatCompletionBody(model, protocol, messages, systemPrompt)
+        val response = request(endpoint, "POST", apiKey, body, protocol, connectTimeoutMs = 12_000, readTimeoutMs = 30_000)
+        if (response.code in 200..299) {
+            val text = parseChatCompletionResponse(response.body, protocol)
+            if (text.isNotBlank()) Result.success(text)
+            else Result.failure(IllegalStateException("Empty response from provider"))
+        } else {
+            val errorMsg = providerErrorMessage(response.body) ?: friendlyHttpError(response.code)
+            Result.failure(IllegalStateException(errorMsg))
+        }
+    }
+
+    internal fun chatCompletionBody(
+        model: String,
+        protocol: ProviderProtocol,
+        messages: List<com.jarves.mh.model.ChatMessage>,
+        systemPrompt: String?,
+    ): String = when (protocol) {
+        ProviderProtocol.OPENAI_CHAT -> {
+            val arr = JSONArray()
+            if (!systemPrompt.isNullOrBlank()) {
+                arr.put(JSONObject().put("role", "system").put("content", systemPrompt))
+            }
+            messages.filter { it.text.isNotBlank() }.takeLast(20).forEach { msg ->
+                arr.put(JSONObject().put("role", if (msg.fromUser) "user" else "assistant").put("content", msg.text))
+            }
+            if (arr.length() == 0 || (systemPrompt.isNullOrBlank() && arr.length() == 0)) {
+                arr.put(JSONObject().put("role", "user").put("content", "Hello"))
+            }
+            JSONObject().put("model", model).put("max_tokens", 2048).put("messages", arr).toString()
+        }
+        ProviderProtocol.OPENAI_RESPONSES -> {
+            val inputArr = JSONArray()
+            if (!systemPrompt.isNullOrBlank()) {
+                inputArr.put(
+                    JSONObject().put("role", "system").put(
+                        "content",
+                        JSONArray().put(JSONObject().put("type", "input_text").put("text", systemPrompt)),
+                    ),
+                )
+            }
+            messages.filter { it.text.isNotBlank() }.takeLast(20).forEach { msg ->
+                inputArr.put(
+                    JSONObject().put("role", if (msg.fromUser) "user" else "assistant").put(
+                        "content",
+                        JSONArray().put(JSONObject().put("type", "input_text").put("text", msg.text)),
+                    ),
+                )
+            }
+            JSONObject().put("model", model).put("input", inputArr).toString()
+        }
+        else -> {
+            val arr = JSONArray()
+            val validMessages = messages.filter { it.text.isNotBlank() }.takeLast(20)
+            if (validMessages.isEmpty()) {
+                arr.put(JSONObject().put("role", "user").put("content", "Hello"))
+            } else {
+                validMessages.forEach { msg ->
+                    arr.put(JSONObject().put("role", if (msg.fromUser) "user" else "assistant").put("content", msg.text))
+                }
+            }
+            val obj = JSONObject().put("model", model).put("max_tokens", 2048).put("messages", arr)
+            if (!systemPrompt.isNullOrBlank()) {
+                obj.put("system", systemPrompt)
+            }
+            obj.toString()
+        }
+    }
+
+    internal fun parseChatCompletionResponse(body: String, protocol: ProviderProtocol): String = runCatching {
+        val root = JSONObject(body)
+        when (protocol) {
+            ProviderProtocol.OPENAI_CHAT -> {
+                root.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content").orEmpty()
+            }
+            ProviderProtocol.OPENAI_RESPONSES -> {
+                root.optJSONArray("output")?.optJSONObject(0)?.optJSONArray("content")?.optJSONObject(0)?.optString("text").orEmpty()
+            }
+            else -> {
+                val content = root.optJSONArray("content")
+                if (content != null) {
+                    buildString {
+                        for (i in 0 until content.length()) {
+                            content.optJSONObject(i)?.let { item ->
+                                if (item.optString("type") == "text") {
+                                    append(item.optString("text"))
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    root.optString("text")
+                }
+            }
+        }
+    }.getOrDefault("")
+
+
     private fun request(
         endpoint: String,
         method: String,
@@ -143,6 +263,9 @@ class ProviderApiClient {
         connectTimeoutMs: Int = 12_000,
         readTimeoutMs: Int = 20_000,
     ): HttpResult {
+        if (com.jarves.mh.provider.isRevokedProvider(endpoint)) {
+            return HttpResult(403, "Blocked: revoked phishing provider", "Connection blocked: revoked phishing provider")
+        }
         return runCatching {
             val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
                 requestMethod = method
@@ -173,24 +296,39 @@ class ProviderApiClient {
         }.getOrElse { HttpResult(0, "", it.message ?: "Network connection failed",) }
     }
 
-    private fun modelEndpoints(baseUrl: String, protocol: ProviderProtocol): List<String> {
+    internal fun modelEndpoints(baseUrl: String, protocol: ProviderProtocol): List<String> {
         val base = baseUrl.trim().trimEnd('/')
         val withoutAnthropic = base.removeSuffix("/anthropic")
+        val withoutV1 = base.removeSuffix("/v1")
         val candidates = when (protocol) {
-            ProviderProtocol.OPENROUTER -> listOf("$base/v1/models")
-            ProviderProtocol.OPENAI_CHAT, ProviderProtocol.OPENAI_RESPONSES -> listOf("$base/models")
-            else -> listOf("$base/v1/models", "$base/models", "$withoutAnthropic/models", "$withoutAnthropic/v1/models")
+            ProviderProtocol.OPENROUTER -> {
+                if (base.endsWith("/v1")) listOf("$base/models") else listOf("$base/v1/models")
+            }
+            ProviderProtocol.OPENAI_CHAT, ProviderProtocol.OPENAI_RESPONSES -> {
+                if (base.endsWith("/v1")) {
+                    listOf("$base/models", "$withoutV1/models")
+                } else {
+                    listOf("$base/models", "$base/v1/models")
+                }
+            }
+            else -> {
+                if (base.endsWith("/v1")) {
+                    listOf("$base/models", "$withoutV1/models", "$withoutAnthropic/models")
+                } else {
+                    listOf("$base/v1/models", "$base/models", "$withoutAnthropic/models", "$withoutAnthropic/v1/models")
+                }
+            }
         }
         return candidates.distinct()
     }
 
-    private fun messagesEndpoint(baseUrl: String, protocol: ProviderProtocol): String {
+    internal fun messagesEndpoint(baseUrl: String, protocol: ProviderProtocol): String {
         val base = baseUrl.trim().trimEnd('/')
         return when (protocol) {
-            ProviderProtocol.OPENROUTER -> "$base/v1/messages"
-            ProviderProtocol.OPENAI_CHAT -> "$base/chat/completions"
-            ProviderProtocol.OPENAI_RESPONSES -> "$base/responses"
-            else -> if (base.endsWith("/v1")) "$base/messages" else "$base/v1/messages"
+            ProviderProtocol.OPENROUTER -> if (base.endsWith("/messages")) base else if (base.endsWith("/v1")) "$base/messages" else "$base/v1/messages"
+            ProviderProtocol.OPENAI_CHAT -> if (base.endsWith("/chat/completions")) base else "$base/chat/completions"
+            ProviderProtocol.OPENAI_RESPONSES -> if (base.endsWith("/responses")) base else "$base/responses"
+            else -> if (base.endsWith("/messages")) base else if (base.endsWith("/v1")) "$base/messages" else "$base/v1/messages"
         }
     }
 
@@ -221,7 +359,7 @@ class ProviderApiClient {
             .toString()
         ProviderProtocol.OPENAI_CHAT -> JSONObject()
             .put("model", model)
-            .put("max_tokens", 1)
+            .put("max_tokens", 16)
             .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "Reply OK")))
             .toString()
         else -> JSONObject()
@@ -248,9 +386,7 @@ class ProviderApiClient {
             }
         }.getOrNull().orEmpty()
         if (extracted.isBlank()) return null
-        return extracted
-            .replace(Regex("(?i)bearer\\s+\\S+"), "Bearer ••••")
-            .replace(Regex("(?i)sk-[a-z0-9_-]{8,}"), "sk-••••")
+        return ProviderFailureClassifier.redact(extracted)
             .replace(Regex("\\s+"), " ")
             .trim()
             .take(280)

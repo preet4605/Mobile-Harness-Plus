@@ -30,6 +30,9 @@ import com.jarves.mh.model.Project
 import com.jarves.mh.model.ProjectKind
 import com.jarves.mh.model.ProjectChat
 import com.jarves.mh.model.ProviderKind
+import com.jarves.mh.provider.ProviderFailureClass
+import com.jarves.mh.provider.ProviderFailureClassifier
+import com.jarves.mh.provider.ProviderFallbackPlanner
 import com.jarves.mh.model.ProviderProfile
 import com.jarves.mh.model.RuntimeEvent
 import com.jarves.mh.model.ToolRequest
@@ -47,6 +50,12 @@ import com.jarves.mh.network.ConnectionValidation
 import com.jarves.mh.network.ModelDiscoveryResult
 import com.jarves.mh.network.ProviderApiClient
 import com.jarves.mh.network.GitHubRepository
+import com.jarves.mh.model.ClaudeAuthMode
+import com.jarves.mh.model.ClaudeThinkingLevel
+import com.jarves.mh.runtime.AndroidBrowserBridge
+import com.jarves.mh.runtime.ClaudeAuthController
+import com.jarves.mh.runtime.ClaudeAuthState
+import com.jarves.mh.runtime.ClaudeAuthStatusState
 import com.jarves.mh.runtime.ClaudeRuntimeBridge
 import com.jarves.mh.model.AntigravityAccount
 import com.jarves.mh.model.AntigravityAccountStatus
@@ -160,6 +169,10 @@ private data class RuntimeRetryRequest(
     val taskId: String? = null,
     val attemptId: String? = null,
     val brainSnapshot: com.jarves.mh.data.BrainContextSnapshot? = null,
+    /** Custom profiles snapshotted at task start; later edits cannot change this task's fallback order. */
+    val fallbackProfiles: List<com.jarves.mh.provider.CustomProviderProfile> = emptyList(),
+    /** Redacted record of every failure that caused a key or provider switch. */
+    val failureChain: List<String> = emptyList(),
 )
 
 private data class TranscriptWrite(
@@ -234,6 +247,8 @@ data class AppUiState(
     val previewUrl: String? = null,
     val isRunning: Boolean = false,
     val activeSessionId: String? = null,
+    val executionUiStatus: com.jarves.mh.runtime.boundary.ExecutionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.IDLE,
+    val currentExecutionMode: com.jarves.mh.runtime.boundary.ExecutionMode = com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION,
     val toastMessage: String? = null,
     val projectTerminalLines: List<TerminalOutputLine> = emptyList(),
     val projectTerminalLiveOutput: String = "",
@@ -270,12 +285,17 @@ data class AppUiState(
     val agentUpdateBytesPerSecond: Long? = null,
     val antigravityAuth: AntigravityAuthState = AntigravityAuthState(),
     val antigravityAccounts: List<AntigravityAccount> = emptyList(),
+    val claudeAuth: ClaudeAuthState = ClaudeAuthState(),
+    val claudeAuthMode: ClaudeAuthMode = ClaudeAuthMode.NATIVE_SUBSCRIPTION,
     val antigravityLoadBalancingStrategy: AntigravityLoadBalancingStrategy = AntigravityLoadBalancingStrategy.LEAST_RECENTLY_USED,
     val antigravityFailoverEnabled: Boolean = true,
     val antigravityModel: String = "",
     val antigravityEffort: String = "high",
     val antigravityModels: List<String> = emptyList(),
     val antigravityModelsLoading: Boolean = false,
+    val claudeModel: String = "default",
+    val claudeThinkingLevel: String = "default",
+    val claudeThinkingPickerVisible: Boolean = false,
     val androidBuildRunning: Boolean = false,
     val androidBuildMessage: String? = null,
     val appUpdate: AppUpdateInfo? = null,
@@ -322,8 +342,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val memoryStore = ContextMemoryStore(application)
     private val skillManager = SkillManager(application)
     private val antigravityAccountManager = AntigravityAccountManager(application, preferences)
-    private val claudeRuntime = ClaudeRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.kind.name) }
-    private val dshRuntime = DshRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.kind.name) }
+    private val claudeRuntime = ClaudeRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
+    private val dshRuntime = DshRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
     private val installer = RuntimeInstaller(application)
     private val antigravityRuntime = AntigravityRuntimeBridge(
         application,
@@ -346,6 +366,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val agentRegistry = AgentRegistry.builtIns(claudeRuntime, dshRuntime, antigravityRuntime)
     private fun activeRuntime(): com.jarves.mh.runtime.RuntimeBridge = agentRegistry.require(_state.value.agentKind).runtime
     private val providerApi = ProviderApiClient()
+    var conversationalResponder: com.jarves.mh.runtime.boundary.ConversationalResponder =
+        com.jarves.mh.runtime.boundary.DefaultConversationalResponder(providerApi)
     private fun appUpdater(): AppUpdater = AppUpdater(
         getApplication(),
         if (BuildConfig.DEBUG) preferences.debugUpdateManifestUrl else "",
@@ -360,6 +382,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var lastOpenedAntigravityAuthUrl: String? = null
     private var activeRuntimeRequest: RuntimeRetryRequest? = null
     private val failedApiKeyIds = mutableSetOf<String>()
+    private val attemptedProfileIds = mutableSetOf<String>()
     @Volatile private var pendingTranscriptWrite: TranscriptWrite? = null
     private var transcriptDebounceJob: kotlinx.coroutines.Job? = null
     private val initialAgentKind = AgentKind.fromStored(preferences.agentKind)
@@ -377,6 +400,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         preferences.antigravityAccountEmail = email.orEmpty()
         if (!signedIn) preferences.clearAgentConversations(AgentKind.ANTIGRAVITY)
     }
+    private val browserBridge = AndroidBrowserBridge(application) { url ->
+        openExternalUrl(url)
+    }
+    val claudeAuthController = ClaudeAuthController(
+        context = application,
+        onSignedInChanged = { signedIn ->
+            _state.update { current ->
+                if (current.provider.kind == ProviderKind.CLAUDE && current.provider.claudeAuthMode == ClaudeAuthMode.NATIVE_SUBSCRIPTION) {
+                    current.copy(provider = current.provider.copy(hasSecret = signedIn))
+                } else current
+            }
+        },
+        onAuthUrlDiscovered = { url ->
+            openExternalUrl(url)
+        },
+    )
+    private var lastOpenedClaudeAuthUrl: String? = null
     private val _state = MutableStateFlow(
         AppUiState(
             onboardingComplete = preferences.onboardingComplete,
@@ -392,10 +432,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 accountEmail = preferences.antigravityAccountEmail.takeIf(String::isNotBlank),
             ),
             antigravityAccounts = antigravityAccountManager.accountsList(),
+            claudeAuthMode = preferences.claudeAuthMode,
             antigravityLoadBalancingStrategy = preferences.antigravityLoadBalancingStrategy,
             antigravityFailoverEnabled = preferences.antigravityFailoverEnabled,
             antigravityModel = preferences.antigravityModel,
             antigravityEffort = preferences.antigravityEffort,
+            claudeModel = preferences.claudeModel,
+            claudeThinkingLevel = preferences.claudeThinkingLevel,
             themeMode = runCatching { com.jarves.mh.ui.theme.AppThemeMode.valueOf(preferences.themeMode.uppercase()) }
                 .getOrDefault(com.jarves.mh.ui.theme.AppThemeMode.DARK),
             projects = preferences.loadProjects(),
@@ -464,6 +507,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { antigravityAccountManager.refreshAllAccountQuotas() }
         }
+        viewModelScope.launch(Dispatchers.IO) {
+            browserBridge.watch(this)
+        }
+        viewModelScope.launch {
+            claudeAuthController.state.collect { auth ->
+                _state.update { it.copy(claudeAuth = auth) }
+                auth.authorizationUrl?.takeIf { it != lastOpenedClaudeAuthUrl }?.let { url ->
+                    lastOpenedClaudeAuthUrl = url
+                    openExternalUrl(url)
+                }
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { claudeAuthController.queryAuthStatus() }
+        }
         if (antigravityAuthController.hasOfficialCredential() &&
             (!preferences.antigravitySignedIn || preferences.antigravityAccountEmail.isBlank())
         ) {
@@ -492,6 +550,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             preferences.saveProvider(testProvider, _state.value.agentKind)
             preferences.testProviderDefaultsVersion = TEST_PROVIDER_DEFAULTS_VERSION
             _state.update { it.copy(provider = testProvider) }
+        }
+
+        vault.purgeRevokedProviders()
+        val customKeys = vault.list(ProviderKind.CUSTOM.name)
+        val hasCustomKey = customKeys.isNotEmpty() && vault.get(ProviderKind.CUSTOM.name)?.isNotBlank() == true
+        val currentProvider = _state.value.provider
+        val isProviderRevoked = com.jarves.mh.provider.isRevokedProvider(currentProvider.baseUrl) ||
+            com.jarves.mh.provider.isRevokedProvider(currentProvider.model)
+        val providerHasRevokedDrift = isProviderRevoked ||
+            com.jarves.mh.provider.isRevokedProvider(_state.value.activeApiKeyName.orEmpty()) ||
+            preferences.hasRevokedProviderDrift()
+        if (providerHasRevokedDrift && (!hasCustomKey || isProviderRevoked)) {
+            preferences.purgeRevokedProviders()
+            val cleaned = currentProvider.copy(
+                baseUrl = currentProvider.kind.defaultBaseUrl,
+                model = currentProvider.kind.defaultModel,
+                hasSecret = false,
+                profileId = "",
+            )
+            AgentKind.entries.forEach { agent ->
+                preferences.saveProvider(cleaned, agent)
+            }
+            _state.update {
+                it.copy(
+                    provider = cleaned,
+                    activeApiKeyName = null,
+                    apiPingMessage = if (com.jarves.mh.provider.isRevokedProvider(it.apiPingMessage.orEmpty())) null else it.apiPingMessage,
+                    apiPingStatus = if (com.jarves.mh.provider.isRevokedProvider(it.apiPingMessage.orEmpty())) ApiPingStatus.IDLE else it.apiPingStatus,
+                )
+            }
+        }
+        if (com.jarves.mh.provider.isRevokedProvider(preferences.claudeModel)) {
+            preferences.claudeModel = "default"
+            _state.update { it.copy(claudeModel = "default") }
         }
 
         val loadedProjects = preferences.loadProjects()
@@ -1073,18 +1165,61 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun removeApiKey(kind: ProviderKind, keyId: String): List<ApiKeyInfo> {
+        val keysBefore = vault.list(kind.name)
+        val removedKey = keysBefore.firstOrNull { it.id == keyId }
         vault.remove(kind.name, keyId)
+        val remaining = vault.list(kind.name)
+        val wasRevoked = com.jarves.mh.provider.isRevokedProvider(removedKey?.name.orEmpty()) ||
+            com.jarves.mh.provider.isRevokedProvider(_state.value.provider.baseUrl) ||
+            com.jarves.mh.provider.isRevokedProvider(_state.value.provider.model) ||
+            com.jarves.mh.provider.isRevokedProvider(_state.value.activeApiKeyName.orEmpty())
+        if (wasRevoked || remaining.isEmpty()) {
+            vault.purgeRevokedProviders()
+            preferences.purgeRevokedProviders()
+        }
         refreshActiveApiKey(kind)
-        return vault.list(kind.name)
+        return remaining
     }
 
     private fun refreshActiveApiKey(kind: ProviderKind) {
-        if (_state.value.provider.kind != kind) return
         val keys = vault.list(kind.name)
+        val activeName = keys.firstOrNull(ApiKeyInfo::isActive)?.name
+        val currentProvider = _state.value.provider
+        val hasRevokedDrift = com.jarves.mh.provider.isRevokedProvider(currentProvider.baseUrl) ||
+            com.jarves.mh.provider.isRevokedProvider(currentProvider.model) ||
+            com.jarves.mh.provider.isRevokedProvider(_state.value.activeApiKeyName.orEmpty()) ||
+            com.jarves.mh.provider.isRevokedProvider(activeName.orEmpty())
+        val hasNoKeys = keys.isEmpty()
+        val shouldReset = hasRevokedDrift || (hasNoKeys && currentProvider.kind == kind && kind == ProviderKind.CUSTOM)
+        val updatedProvider = if (shouldReset) {
+            currentProvider.copy(
+                baseUrl = currentProvider.kind.defaultBaseUrl,
+                model = currentProvider.kind.defaultModel,
+                hasSecret = false,
+                profileId = "",
+            )
+        } else if (currentProvider.kind == kind) {
+            currentProvider.copy(hasSecret = keys.isNotEmpty())
+        } else {
+            val targetKeys = vault.list(currentProvider.secretId)
+            currentProvider.copy(hasSecret = targetKeys.isNotEmpty())
+        }
+        if (shouldReset) {
+            preferences.purgeRevokedProviders()
+            AgentKind.entries.forEach { agent ->
+                preferences.saveProvider(updatedProvider, agent)
+            }
+        } else {
+            preferences.saveProvider(updatedProvider, _state.value.agentKind)
+        }
+        val cleanPingMessage = if (com.jarves.mh.provider.isRevokedProvider(_state.value.apiPingMessage.orEmpty())) null else _state.value.apiPingMessage
+        val cleanPingStatus = if (cleanPingMessage == null && _state.value.apiPingMessage != null) ApiPingStatus.IDLE else _state.value.apiPingStatus
         _state.update { current ->
             current.copy(
-                activeApiKeyName = keys.firstOrNull(ApiKeyInfo::isActive)?.name,
-                provider = current.provider.copy(hasSecret = keys.isNotEmpty()),
+                activeApiKeyName = if (shouldReset && (com.jarves.mh.provider.isRevokedProvider(activeName.orEmpty()) || hasNoKeys)) null else activeName,
+                provider = updatedProvider,
+                apiPingMessage = cleanPingMessage,
+                apiPingStatus = cleanPingStatus,
             )
         }
     }
@@ -1385,9 +1520,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun finishOnboarding(profile: ProviderProfile, secret: String) {
-        vault.put(profile.kind.name, secret)
-        val hasSecret = secret.isNotBlank() || vault.contains(profile.kind.name) ||
-            (profile.kind == ProviderKind.ANTIGRAVITY_SERVER && (antigravityAccountManager.accountsList().isNotEmpty() || antigravityAuthController.hasOfficialCredential()))
+        val isClaudeNative = profile.kind == ProviderKind.CLAUDE &&
+            profile.claudeAuthMode == ClaudeAuthMode.NATIVE_SUBSCRIPTION
+        if (!isClaudeNative && secret.isNotBlank()) {
+            vault.put(profile.secretId, secret)
+        }
+        val hasSecret = secret.isNotBlank() || vault.contains(profile.secretId) ||
+            (profile.kind == ProviderKind.ANTIGRAVITY_SERVER && (antigravityAccountManager.accountsList().isNotEmpty() || antigravityAuthController.hasOfficialCredential())) ||
+            (isClaudeNative && (claudeAuthController.hasNativeCredentials() || _state.value.claudeAuth.status == ClaudeAuthStatusState.SIGNED_IN))
         val saved = profile.copy(
             hasSecret = hasSecret,
         )
@@ -1396,6 +1536,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(onboardingComplete = true, provider = saved, startupStage = StartupStage.READY) }
         refreshActiveApiKey(profile.kind)
         pingApi()
+    }
+
+    fun finishClaudeOnboarding() {
+        val currentProvider = preferences.loadProvider(vault, AgentKind.CLAUDE_CODE)
+        val profile = currentProvider.copy(
+            kind = ProviderKind.CLAUDE,
+            claudeAuthMode = ClaudeAuthMode.NATIVE_SUBSCRIPTION,
+            hasSecret = claudeAuthController.hasNativeCredentials() || _state.value.claudeAuth.status == ClaudeAuthStatusState.SIGNED_IN,
+        )
+        preferences.saveProvider(profile, AgentKind.CLAUDE_CODE)
+        preferences.onboardingComplete = true
+        _state.update { it.copy(onboardingComplete = true, provider = profile, startupStage = StartupStage.READY) }
     }
 
     fun finishAntigravityOnboarding() {
@@ -1446,7 +1598,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 agentKind = kind,
                 primaryAgentKind = if (selectingInitialAgent) kind else current.primaryAgentKind,
                 provider = provider,
-                activeApiKeyName = vault.list(provider.kind.name).firstOrNull(ApiKeyInfo::isActive)?.name,
+                activeApiKeyName = vault.list(provider.secretId).firstOrNull(ApiKeyInfo::isActive)?.name,
                 // Ping results belong to the previous agent; never leak them across.
                 apiPingStatus = ApiPingStatus.IDLE,
                 apiPingMessage = null,
@@ -1621,6 +1773,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun startClaudeLogin() {
+        if (_state.value.agentInstalling != null || _state.value.isRunning) return
+        lastOpenedClaudeAuthUrl = null
+        if (!installer.isAgentInstalled(AgentKind.CLAUDE_CODE)) {
+            installAgent(AgentKind.CLAUDE_CODE)
+            return
+        }
+        viewModelScope.launch { claudeAuthController.beginLogin() }
+    }
+
+    fun submitClaudeCode(code: String) {
+        runCatching { claudeAuthController.submitCode(code) }
+            .onFailure { error -> _state.update { it.copy(toastMessage = error.message ?: "Could not submit the code") } }
+    }
+
+    fun cancelClaudeLogin() {
+        claudeAuthController.cancelLogin()
+    }
+
+    fun logoutClaude() {
+        viewModelScope.launch {
+            runCatching { claudeAuthController.logout() }
+                .onFailure { error -> _state.update { it.copy(toastMessage = error.message ?: "Could not sign out") } }
+        }
+    }
+
+    fun setClaudeAuthMode(mode: ClaudeAuthMode) {
+        preferences.claudeAuthMode = mode
+        _state.update { current ->
+            val updated = current.provider.copy(claudeAuthMode = mode)
+            preferences.saveProvider(updated, current.agentKind)
+            current.copy(provider = updated, claudeAuthMode = mode)
+        }
+    }
+
+    fun refreshClaudeAuthStatus() {
+        viewModelScope.launch(Dispatchers.IO) {
+            claudeAuthController.queryAuthStatus()
+        }
+    }
+
     fun removeAntigravityAccount(accountId: String) {
         logoutAntigravity(accountId)
     }
@@ -1641,6 +1834,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setAntigravityFailoverEnabled(enabled: Boolean) {
         preferences.antigravityFailoverEnabled = enabled
         _state.update { it.copy(antigravityFailoverEnabled = enabled) }
+    }
+
+    fun setClaudeModel(model: String) {
+        val validated = com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS.firstOrNull { it.id.equals(model, ignoreCase = true) }?.id ?: return
+        preferences.claudeModel = validated
+        _state.update { current ->
+            val updatedProvider = if (current.provider.kind == ProviderKind.CLAUDE) {
+                val updated = current.provider.copy(model = validated)
+                preferences.saveProvider(updated, current.agentKind)
+                updated
+            } else {
+                current.provider
+            }
+            current.copy(
+                claudeModel = validated,
+                provider = updatedProvider,
+            )
+        }
+    }
+
+    fun setClaudeThinkingLevel(level: String) {
+        val validated = com.jarves.mh.model.ClaudeThinkingLevel.fromStored(level)
+        preferences.claudeThinkingLevel = validated.id
+        _state.update { current ->
+            val updatedProvider = if (current.provider.kind == ProviderKind.CLAUDE) {
+                val updated = current.provider.copy(claudeThinkingLevel = validated.id)
+                preferences.saveProvider(updated, current.agentKind)
+                updated
+            } else {
+                current.provider
+            }
+            current.copy(
+                claudeThinkingLevel = validated.id,
+                provider = updatedProvider,
+            )
+        }
+    }
+
+    fun toggleClaudeThinkingPicker(visible: Boolean? = null) {
+        _state.update { it.copy(claudeThinkingPickerVisible = visible ?: !it.claudeThinkingPickerVisible) }
     }
 
     fun setAntigravityModel(model: String) {
@@ -1874,6 +2107,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     suspend fun discoverModels(profile: ProviderProfile, secret: String): ModelDiscoveryResult {
+        if (profile.kind == ProviderKind.CLAUDE) {
+            return ModelDiscoveryResult.Success(com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS, "Claude Code")
+        }
         if (profile.kind == ProviderKind.ANTIGRAVITY_SERVER) {
             val primaryAcc = antigravityAccountManager.getPrimaryAccount()
             val models = com.jarves.mh.runtime.AntigravityProtocolAdapter.SUPPORTED_MODELS.map { id ->
@@ -1895,7 +2131,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return ModelDiscoveryResult.Success(models, "Antigravity Server")
         }
-        val key = secret.ifBlank { vault.get(profile.kind.name).orEmpty() }
+        val key = secret.ifBlank { vault.get(profile.secretId).orEmpty() }
         return providerApi.discoverModels(profile.baseUrl, key, providerProtocolForAgent(profile, _state.value.agentKind))
     }
 
@@ -1916,7 +2152,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
-        val key = secret.ifBlank { vault.get(profile.kind.name).orEmpty() }
+        val key = secret.ifBlank { vault.get(profile.secretId).orEmpty() }
         return providerApi.validate(
             profile.baseUrl,
             profile.model,
@@ -1947,7 +2183,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_state.value.apiPingStatus == ApiPingStatus.PINGING) return
         _state.update { it.copy(apiPingStatus = ApiPingStatus.PINGING, apiPingMessage = "Sending a minimal test request…") }
         viewModelScope.launch {
-            val key = vault.get(profile.kind.name).orEmpty()
+            val key = vault.get(profile.secretId).orEmpty()
             val result = providerApi.validate(
                 profile.baseUrl,
                 profile.model,
@@ -3555,7 +3791,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             "model" -> {
-                _state.update { it.copy(modelPickerVisible = true) }
+                val trimmed = args.trim()
+                if (trimmed.isNotBlank()) {
+                    val isClaude = _state.value.agentKind == AgentKind.CLAUDE_CODE || _state.value.provider.kind == ProviderKind.CLAUDE
+                    if (isClaude) {
+                        setClaudeModel(trimmed)
+                        _state.update {
+                            it.copy(
+                                messages = it.messages + ChatMessage(fromUser = true, text = "/model $trimmed") +
+                                    ChatMessage(fromUser = false, text = "Switched Claude model to `$trimmed`."),
+                            )
+                        }
+                    } else {
+                        setAntigravityModel(trimmed)
+                        _state.update {
+                            it.copy(
+                                messages = it.messages + ChatMessage(fromUser = true, text = "/model $trimmed") +
+                                    ChatMessage(fromUser = false, text = "Switched model to `$trimmed`."),
+                            )
+                        }
+                    }
+                    persistMessages()
+                } else {
+                    _state.update { it.copy(modelPickerVisible = true) }
+                }
+            }
+            "thinking" -> {
+                val trimmed = args.trim()
+                if (trimmed.isNotBlank()) {
+                    setClaudeThinkingLevel(trimmed)
+                    val level = ClaudeThinkingLevel.fromStored(trimmed)
+                    _state.update {
+                        it.copy(
+                            messages = it.messages + ChatMessage(fromUser = true, text = "/thinking $trimmed") +
+                                ChatMessage(fromUser = false, text = "Set Claude thinking effort to **${level.displayName}** (`${level.storageValue}`)."),
+                        )
+                    }
+                    persistMessages()
+                } else {
+                    _state.update { it.copy(claudeThinkingPickerVisible = true) }
+                }
             }
             "status" -> {
                 val runtime = _state.value.agentKind.title
@@ -3865,6 +4140,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val requestText = effectivePrompt
         updateActiveChatTitle(requestText)
+
+        val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
+        val activeTask = supervisor.activeTasks.value.values.firstOrNull { it.projectId == project.id && it.status.isActive }
+        val lastRecord = supervisor.stateStore.getTasksForProject(project.id, limit = 1).firstOrNull()
+        val boundaryContext = com.jarves.mh.runtime.boundary.BoundaryEvaluationContext(
+            history = _state.value.messages,
+            lastTaskId = lastRecord?.taskId,
+            lastTaskStatus = lastRecord?.status,
+            activeTask = activeTask,
+            hasAttachments = attachments.isNotEmpty(),
+            isSlashCommand = parsedCmd != null,
+        )
+        val decision = com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.evaluate(requestText, boundaryContext)
+
+        if (decision.mode == com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION) {
+            val skillName = parsedSkill?.first?.name
+            _state.update {
+                it.copy(
+                    messages = it.messages + ChatMessage(
+                        fromUser = true,
+                        text = prompt.trim(),
+                        attachments = attachments,
+                        activeSkill = skillName,
+                    ),
+                    pendingAttachments = emptyList(),
+                    isRunning = false,
+                    slashCommandsVisible = false,
+                    filteredSkills = emptyList(),
+                    liveThinking = true,
+                    currentTaskRequest = null,
+                    activeSessionId = null,
+                    executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.CONVERSATIONAL_TURN,
+                    currentExecutionMode = com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION,
+                )
+            }
+            touchProject(project.id)
+            persistMessages()
+            handleConversationalTurn(prompt, requestText, lastRecord)
+            return
+        }
+
         _state.update {
             val startedAt = System.currentTimeMillis()
             val skillName = parsedSkill?.first?.name
@@ -3879,6 +4195,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 isRunning = true,
                 slashCommandsVisible = false,
                 filteredSkills = emptyList(),
+                executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.ACTIVE_EXECUTION,
+                currentExecutionMode = com.jarves.mh.runtime.boundary.ExecutionMode.EXECUTION,
                 activity = listOf(ActivityItem(
                     if (skillName != null) "Applying skill: $skillName" else "Understanding your request",
                     if (skillName != null) "Executing skill directives" else "Preparing a safe plan",
@@ -3928,7 +4246,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendLine("</attached_files>")
         }
         failedApiKeyIds.clear()
-        val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
         val taskRecord = try {
             supervisor.createTask(
                 projectId = project.id,
@@ -3960,7 +4277,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             memory = state.value.contextMemory,
             taskId = taskRecord.taskId,
             attemptId = "${taskRecord.taskId}:attempt-0",
+            fallbackProfiles = customProviderFallbackSnapshot(state.value.provider, state.value.agentKind),
         )
+        attemptedProfileIds.clear()
+        state.value.provider.profileId.takeIf { it.isNotBlank() }?.let { attemptedProfileIds += it }
+        supervisor.registerFallbackDecider(taskRecord.taskId) { taskId, errorMsg ->
+            applyFallbackForTask(taskId, errorMsg)
+        }
         supervisor.executeTask(taskRecord.taskId) { task ->
             try {
                 activeRuntimeRequest?.let { request ->
@@ -3987,15 +4310,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (t: Throwable) {
                 val isCancelled = supervisor.processSupervisor.isCancellationRequested(task.taskId) ||
-                    t.message?.contains("stopped by user", ignoreCase = true) == true
+                    supervisor.isCancellationActive(task.taskId)
                 val checkpoints = com.jarves.mh.runtime.WorkspaceCheckpoints(getApplication<Application>().filesDir)
                 val mutated = runCatching { checkpoints.readChangedPaths(task.projectId) }.getOrDefault(emptyList()).isNotEmpty()
                 val classification = supervisor.classifyError(t.localizedMessage ?: t.message ?: "", mutated, isCancelled)
-                val willRetry = (classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.TRANSIENT_API_ERROR ||
+                val canFallback = classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.PERMANENT_AUTH_OR_CONFIG &&
+                    canFallbackForTask(task.taskId, t.localizedMessage ?: t.message ?: "")
+                val willRetry = ((classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.TRANSIENT_API_ERROR ||
                     classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.PROCESS_FAILURE ||
                     classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.TRANSIENT_SYSTEM_FAULT ||
-                    classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.ENVIRONMENT_DRIFT) &&
-                    task.retryCount < task.maxRetries
+                    classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.ENVIRONMENT_DRIFT ||
+                    classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.WORKSPACE_MUTATED_FAILURE) ||
+                    canFallback) &&
+                    task.retryCount < task.maxRetries &&
+                    !isCancelled
 
                 if (!willRetry) {
                     _state.update {
@@ -4012,10 +4340,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun handleConversationalTurn(
+        userPrompt: String,
+        requestText: String,
+        lastRecord: com.jarves.mh.runtime.task.DurableTaskRecord?,
+    ) {
+        viewModelScope.launch {
+            try {
+                val currentHistory = _state.value.messages
+                val provider = _state.value.provider
+                val apiKey = vault.get(provider.secretId).orEmpty()
+                val reply = conversationalResponder.respond(
+                    prompt = requestText,
+                    history = currentHistory,
+                    provider = provider,
+                    apiKey = apiKey,
+                    lastTaskRecord = lastRecord,
+                )
+                _state.update { current ->
+                    current.copy(
+                        liveThinking = false,
+                        executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.IDLE,
+                        messages = current.messages + ChatMessage(fromUser = false, text = reply),
+                    )
+                }
+                persistMessages()
+            } catch (t: Throwable) {
+                _state.update { current ->
+                    current.copy(
+                        liveThinking = false,
+                        executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.IDLE,
+                        messages = current.messages + ChatMessage(
+                            fromUser = false,
+                            text = "I encountered an error generating the conversational response: ${t.localizedMessage ?: t.message}",
+                        ),
+                    )
+                }
+                persistMessages()
+            }
+        }
+    }
+
     fun answerApproval(approved: Boolean) {
         val request = state.value.pendingApproval ?: return
-        com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).resumeFromApproval(request.sessionId)
-        viewModelScope.launch { activeRuntime().respondToApproval(request, approved) }
+        val isAllowed = approved && com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.isToolExecutionAllowed(
+            activeRuntimeRequest?.taskId,
+            request.sessionId,
+            request.toolName,
+        )
+        if (isAllowed) {
+            com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).resumeFromApproval(request.sessionId)
+        }
+        viewModelScope.launch { activeRuntime().respondToApproval(request, isAllowed) }
     }
 
     /**
@@ -4036,6 +4412,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { current ->
             current.copy(
                 isStopping = true,
+                executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.CANCELLED_EXECUTION,
+                currentExecutionMode = com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION,
+                currentTaskRequest = null,
                 subagents = SubagentRegistry.terminate(current.subagents, "*", now),
                 backgroundTasks = TaskRegistry.terminate(current.backgroundTasks, "*"),
             )
@@ -4070,6 +4449,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     pendingApproval = null,
                     activeThinkingBlockId = null,
                     activeSessionId = null,
+                    executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.CANCELLED_EXECUTION,
+                    currentExecutionMode = com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION,
+                    currentTaskRequest = null,
                 )
             }
         }
@@ -4222,15 +4604,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun onRuntimeEvent(event: RuntimeEvent) {
+        if (event.sessionId.isBlank()) return
+        if (!com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.isEventPermitted(event.sessionId)) {
+            return
+        }
         if (event is RuntimeEvent.SessionFailed && _state.value.agentKind == AgentKind.ANTIGRAVITY &&
             (event.reason.contains("sign-in", true) || event.reason.contains("authentication", true))) {
             antigravityAuthController.invalidateSession(event.reason)
         }
         if (event is RuntimeEvent.SessionFailed && retryWithNextApiKey(event)) return
         _state.update { current ->
-            if (!current.isRunning) {
-                current
-            } else if (current.activeSessionId != null && current.activeSessionId != event.sessionId) {
+            val isStarting = event is RuntimeEvent.SessionStarted && current.activeSessionId == null
+            if (!current.isRunning || (!isStarting && current.activeSessionId != event.sessionId)) {
                 current
             } else when (event) {
                 is RuntimeEvent.SessionStarted -> current.copy(
@@ -4398,6 +4783,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         isRunning = false,
                         isStopping = false,
                         activeSessionId = null,
+                        executionUiStatus = com.jarves.mh.runtime.boundary.ExecutionUiStatus.COMPLETED_EXECUTION,
+                        currentExecutionMode = com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION,
                         subagents = completedSubagents,
                         backgroundTasks = completedTasks,
                         activity = listOf(ActivityItem("Task completed", "${current.agentKind.title} finished successfully")) +
@@ -4421,6 +4808,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         event.reason.contains("UNAVAILABLE", ignoreCase = true) ||
                         event.reason.contains("service is currently unavailable", ignoreCase = true) ||
                         event.reason.contains("overloaded", ignoreCase = true) -> "Service unavailable"
+
+                        event.reason.contains("network", ignoreCase = true) ||
+                        event.reason.contains("connection abort", ignoreCase = true) ||
+                        event.reason.contains("connection interrupted", ignoreCase = true) ||
+                        event.reason.contains("socket", ignoreCase = true) ||
+                        event.reason.contains("broken pipe", ignoreCase = true) ||
+                        event.reason.contains("unreachable", ignoreCase = true) ||
+                        event.reason.contains("read tcp", ignoreCase = true) ||
+                        event.reason.contains("streamgeneratecontent", ignoreCase = true) ||
+                        event.reason.contains("timed out", ignoreCase = true) -> "Network connection interrupted"
 
                         event.reason.contains("API key", ignoreCase = true) ||
                         event.reason.contains("authentication", ignoreCase = true) ||
@@ -4452,6 +4849,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         isRunning = willRetry,
                         isStopping = false,
                         activeSessionId = if (willRetry) current.activeSessionId else null,
+                        executionUiStatus = if (willRetry) com.jarves.mh.runtime.boundary.ExecutionUiStatus.ACTIVE_EXECUTION
+                            else com.jarves.mh.runtime.boundary.ExecutionUiStatus.FAILED_EXECUTION,
+                        currentExecutionMode = if (willRetry) com.jarves.mh.runtime.boundary.ExecutionMode.EXECUTION
+                            else com.jarves.mh.runtime.boundary.ExecutionMode.CONVERSATION,
                         pendingApproval = null,
                         subagents = failedSubagents,
                         backgroundTasks = failedTasks,
@@ -4526,52 +4927,134 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persistMessages(includeLiveProcess = true, immediate = isTerminalEvent)
     }
 
-    private fun retryWithNextApiKey(event: RuntimeEvent.SessionFailed): Boolean {
+    fun canFallbackForTask(taskId: String, errorMsg: String): Boolean {
+        val current = _state.value
+        val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
+        val taskRecord = supervisor.stateStore.get(taskId)
+        val isCancelled = supervisor.isCancellationActive(taskId)
+        val isTerminal = taskRecord != null && taskRecord.status.isTerminal
+
+        val request = activeRuntimeRequest ?: return false
+        val failure = ProviderFailureClassifier.classify(errorMsg)
+        val secretId = request.provider.secretId
+        val credentials = vault.credentials(secretId)
+        val active = credentials.firstOrNull { it.isActive }
+        val failed = if (failure == ProviderFailureClass.KEY && active != null) failedApiKeyIds + "$secretId/${active.id}" else failedApiKeyIds
+        val untried = credentials.filter { "$secretId/${it.id}" !in failed }.map { it.id }
+        val remaining = if (request.provider.kind == ProviderKind.CUSTOM && request.provider.profileId.isNotBlank()) {
+            request.fallbackProfiles.filter { it.id !in attemptedProfileIds }
+        } else {
+            emptyList()
+        }
+        val hasEligibleFallback = ProviderFallbackPlanner.next(failure, request.provider, if (failure == ProviderFailureClass.KEY) untried else emptyList(), remaining) != null
+
+        return FallbackDecisionHelper.shouldAttemptFallback(
+            agentKind = current.agentKind,
+            isRunning = current.isRunning,
+            isStopping = current.isStopping,
+            isCancelled = isCancelled,
+            isTerminal = isTerminal,
+            hasEligibleFallback = hasEligibleFallback
+        )
+    }
+
+    private fun applyFallbackForTask(taskId: String, errorMsg: String): Boolean {
         val current = _state.value
         if (current.agentKind == AgentKind.ANTIGRAVITY) return false
-        if (!current.isRunning || current.activeSessionId != event.sessionId) return false
-        if (!isApiKeyFailure(event.reason)) return false
+        if (!current.isRunning || current.isStopping) return false
+        val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
+        if (supervisor.isCancellationActive(taskId)) return false
+        val taskRecord = supervisor.stateStore.get(taskId)
+        if (taskRecord != null && taskRecord.status.isTerminal) return false
+
         val request = activeRuntimeRequest ?: return false
-        val credentials = vault.credentials(request.provider.kind.name)
-        val active = credentials.firstOrNull { it.isActive } ?: return false
-        failedApiKeyIds += active.id
-        val next = credentials.firstOrNull { it.id !in failedApiKeyIds } ?: return false
-        if (!vault.activate(request.provider.kind.name, next.id)) return false
+        val failure = ProviderFailureClassifier.classify(errorMsg)
+        val secretId = request.provider.secretId
+        val credentials = vault.credentials(secretId)
+        val active = credentials.firstOrNull { it.isActive }
+        if (failure == ProviderFailureClass.KEY && active != null) failedApiKeyIds += "$secretId/${active.id}"
+        val untried = credentials.filter { "$secretId/${it.id}" !in failedApiKeyIds }.map { it.id }
+        // Provider fallback only applies to Dsh custom profiles; other providers keep key-only failover.
+        val remaining = if (request.provider.kind == ProviderKind.CUSTOM && request.provider.profileId.isNotBlank()) {
+            request.fallbackProfiles.filter { it.id !in attemptedProfileIds }
+        } else {
+            emptyList()
+        }
+        val step = ProviderFallbackPlanner.next(failure, request.provider, if (failure == ProviderFailureClass.KEY) untried else emptyList(), remaining)
+            ?: return false
+        val chainEntry = ProviderFailureClassifier.redact(
+            "${request.provider.kind.title}${request.provider.profileId.takeIf { it.isNotBlank() }?.let { " [$it]" }.orEmpty()}: ${errorMsg.take(300)}",
+            credentials.map { it.secret },
+        )
+        val chain = (request.failureChain + chainEntry).takeLast(10)
+        val nextRequest: RuntimeRetryRequest
+        val toast: String
+        when (step) {
+            is ProviderFallbackPlanner.Step.NextKey -> {
+                val next = credentials.firstOrNull { it.id == step.keyId } ?: return false
+                if (!vault.activate(secretId, next.id)) return false
+                nextRequest = request.copy(failureChain = chain)
+                toast = "${active?.name ?: "Key"} failed. Switched to ${next.name}."
+                _state.update { it.copy(activeApiKeyName = next.name) }
+            }
+            is ProviderFallbackPlanner.Step.NextProfile -> {
+                attemptedProfileIds += step.profile.id
+                val hasKey = vault.contains(step.profile.secretId)
+                nextRequest = request.copy(
+                    provider = step.profile.toProviderProfile(hasKey),
+                    failureChain = chain,
+                )
+                toast = "Provider failed. Falling back to ${step.profile.name}."
+            }
+        }
+        activeRuntimeRequest = nextRequest
         _state.update {
             it.copy(
                 activeSessionId = null,
-                activeApiKeyName = next.name,
-                toastMessage = "${active.name} failed. Switched to ${next.name}.",
-                liveProcess = it.liveProcess + ActivityItem("API key switched", "Using ${next.name}", true),
+                toastMessage = toast,
+                liveProcess = it.liveProcess + ActivityItem("Provider fallback", chain.last(), true),
             )
-        }
-        viewModelScope.launch {
-            kotlinx.coroutines.delay(300)
-            val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
-            val snapshot = request.brainSnapshot ?: request.taskId?.let { supervisor.getBrainSnapshot(it) }
-            val effectiveAttemptId = request.attemptId ?: snapshot?.attemptId
-            val sessionId = request.runtime.startSession(
-                projectId = request.project.id,
-                projectSlug = request.project.slug,
-                projectKind = request.project.kind,
-                prompt = request.prompt,
-                conversationHistory = request.history,
-                provider = request.provider,
-                memory = request.memory,
-                taskId = request.taskId,
-                brainSnapshot = snapshot,
-                attemptId = effectiveAttemptId,
-            )
-            request.taskId?.let { supervisor.bindSession(it, sessionId) }
         }
         return true
     }
 
-    private fun isApiKeyFailure(reason: String): Boolean {
-        val value = reason.lowercase()
-        return "api key" in value || "authentication" in value || "user not found" in value ||
-            "http 401" in value || "http 403" in value || "http 429" in value ||
-            "expired" in value || "quota" in value || "rate limit" in value
+    private fun retryWithNextApiKey(event: RuntimeEvent.SessionFailed): Boolean {
+        val current = _state.value
+        if (current.agentKind == AgentKind.ANTIGRAVITY) return false
+        if (!current.isRunning || current.isStopping || current.activeSessionId != event.sessionId) return false
+        val request = activeRuntimeRequest ?: return false
+        return canFallbackForTask(request.taskId ?: event.sessionId, event.reason)
+    }
+
+    private fun customProviderFallbackSnapshot(provider: ProviderProfile, agent: AgentKind): List<com.jarves.mh.provider.CustomProviderProfile> =
+        if (agent == AgentKind.DEEPSEEK_HARNESS && provider.kind == ProviderKind.CUSTOM && provider.profileId.isNotBlank()) {
+            ProviderFallbackPlanner.orderedProfiles(provider.profileId, preferences.loadCustomProviders())
+        } else {
+            emptyList()
+        }
+
+    // --- Multi custom provider profiles (Dsh). Keys are stored per profile id in the vault. ---
+
+    fun customProviders(): List<com.jarves.mh.provider.CustomProviderProfile> = preferences.loadCustomProviders()
+
+    /** Creates or edits a profile. The id is preserved on edit so running tasks and saved keys stay linked. */
+    fun saveCustomProvider(profile: com.jarves.mh.provider.CustomProviderProfile, apiKey: String = ""): com.jarves.mh.provider.CustomProviderProfile {
+        val all = preferences.loadCustomProviders().filterNot { it.id == profile.id } + profile
+        preferences.saveCustomProviders(all)
+        if (apiKey.isNotBlank()) vault.add(profile.secretId, "Primary", apiKey)
+        return profile
+    }
+
+    fun removeCustomProvider(profileId: String) {
+        preferences.saveCustomProviders(preferences.loadCustomProviders().filterNot { it.id == profileId })
+        vault.remove(com.jarves.mh.provider.CustomProviderProfile.secretIdFor(profileId))
+    }
+
+    fun selectCustomProvider(profileId: String) {
+        val profile = preferences.loadCustomProviders().firstOrNull { it.id == profileId && it.enabled } ?: return
+        val selected = profile.toProviderProfile(vault.contains(profile.secretId))
+        preferences.saveProvider(selected, _state.value.agentKind)
+        _state.update { it.copy(provider = selected) }
     }
 
     private fun touchProject(projectId: String) {

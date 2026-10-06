@@ -1,11 +1,47 @@
 package com.jarves.mh.model
 
+import com.jarves.mh.network.DiscoveredModel
 import java.time.Instant
 import java.text.Normalizer
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.roundToInt
 import kotlin.random.Random
+
+val CLAUDE_SUBSCRIPTION_MODELS: List<DiscoveredModel> = listOf(
+    DiscoveredModel("default", "Default"),
+    DiscoveredModel("sonnet", "Sonnet"),
+    DiscoveredModel("opus", "Opus"),
+    DiscoveredModel("haiku", "Haiku"),
+    DiscoveredModel("fable", "Fable"),
+)
+
+enum class ClaudeThinkingLevel(
+    val id: String,
+    val title: String,
+    val effortArg: String?,
+    val description: String,
+) {
+    DEFAULT("default", "Standard", null, "Default reasoning effort"),
+    LOW("low", "Low", "low", "Quick, minimal overhead"),
+    MEDIUM("medium", "Medium", "medium", "Balanced approach with standard testing"),
+    HIGH("high", "High", "high", "Comprehensive implementation and testing"),
+    MAX("max", "Max", "max", "Maximum capability with deepest reasoning");
+
+    val storageValue: String get() = id
+    val displayName: String get() = title
+
+    companion object {
+        val ALL_LEVELS: List<ClaudeThinkingLevel> = entries
+
+        fun fromStored(value: String?): ClaudeThinkingLevel {
+            if (value.isNullOrBlank()) return DEFAULT
+            val clean = value.trim().lowercase(Locale.ROOT)
+            return entries.firstOrNull { it.id == clean || it.name.lowercase(Locale.ROOT) == clean }
+                ?: if (clean == "xhigh") MAX else DEFAULT
+        }
+    }
+}
 
 enum class ProviderProtocol { CLAUDE_LOGIN, ANTHROPIC, ANTHROPIC_GATEWAY, OPENROUTER, OPENAI_RESPONSES, OPENAI_CHAT }
 
@@ -113,6 +149,7 @@ val DSH_PROTOCOL_PROVIDERS: Set<ProviderKind> = setOf(
 fun defaultDshApiForProvider(kind: ProviderKind): String = when (kind) {
     ProviderKind.OPENCODE_ZEN -> "openai-responses"
     ProviderKind.NVIDIA_NIM -> "openai-completions"
+    ProviderKind.CUSTOM -> "openai-completions"
     else -> "anthropic-messages"
 }
 
@@ -124,15 +161,27 @@ fun inferredDshApiForUrl(baseUrl: String): String {
     val normalized = baseUrl.trim().trimEnd('/').lowercase(Locale.ROOT)
     return when {
         normalized.endsWith("/responses") -> "openai-responses"
+        normalized.endsWith("/chat/completions") -> "openai-completions"
         "/anthropic" in normalized || "api.anthropic.com" in normalized -> "anthropic-messages"
         normalized.endsWith("/v1") -> "openai-completions"
         else -> "anthropic-messages"
     }
 }
 
-/** Resolves the protocol DeepSeek Harness will actually use for this saved profile. */
+/** True when [agent] takes the wire protocol from the profile's configured [ProviderProfile.dshApi]. */
+fun agentUsesConfiguredProtocol(agent: AgentKind, kind: ProviderKind): Boolean = when (agent) {
+    AgentKind.DEEPSEEK_HARNESS -> kind in DSH_PROTOCOL_PROVIDERS
+    AgentKind.CLAUDE_CODE -> kind == ProviderKind.CUSTOM
+    AgentKind.ANTIGRAVITY -> false
+}
+
+/**
+ * Single authoritative protocol resolution for validation, discovery and runtime routing.
+ * DeepSeek Harness honors the configured API for its protocol providers; Claude Code does so
+ * only for CUSTOM. Every other provider keeps its fixed [ProviderKind.protocol].
+ */
 fun providerProtocolForAgent(profile: ProviderProfile, agent: AgentKind): ProviderProtocol {
-    if (agent != AgentKind.DEEPSEEK_HARNESS || profile.kind !in DSH_PROTOCOL_PROVIDERS) {
+    if (!agentUsesConfiguredProtocol(agent, profile.kind)) {
         return profile.kind.protocol
     }
     val api = if (profile.kind.fixedProtocol) defaultDshApiForProvider(profile.kind) else profile.dshApi
@@ -150,6 +199,11 @@ fun providersForAgent(agent: AgentKind): List<ProviderKind> = when (agent) {
     AgentKind.ANTIGRAVITY -> emptyList()
 }
 
+enum class ClaudeAuthMode {
+    NATIVE_SUBSCRIPTION,
+    SETUP_TOKEN_LEGACY,
+}
+
 data class ProviderProfile(
     val kind: ProviderKind,
     val baseUrl: String = kind.defaultBaseUrl,
@@ -157,7 +211,14 @@ data class ProviderProfile(
     val hasSecret: Boolean = false,
     /** dsh custom-route wire protocol for CUSTOM: anthropic-messages | openai-completions | openai-responses. */
     val dshApi: String = defaultDshApiForProvider(kind),
+    val claudeAuthMode: ClaudeAuthMode = ClaudeAuthMode.NATIVE_SUBSCRIPTION,
+    val claudeThinkingLevel: String = "default",
+    /** Stable id of a multi-profile custom provider; blank for built-ins and the legacy single custom profile. */
+    val profileId: String = "",
 ) {
+    /** Vault id for this profile's API keys. Legacy and built-in profiles keep the kind-scoped id. */
+    val secretId: String get() = if (profileId.isBlank()) kind.name else "custom:$profileId"
+
     /** Effective base URL: fixed kinds always resolve to their constant, ignoring stored drift. */
     val resolvedBaseUrl: String get() = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl
 }

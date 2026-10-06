@@ -605,5 +605,19 @@ class ControlledBrainInjectionTest {
 
         val classAuth = supervisor.classifyError("HTTP 401: Invalid API Key", workspaceMutated = false, isCancelled = false)
         assertEquals(TaskSupervisor.TaskErrorClassification.PERMANENT_AUTH_OR_CONFIG, classAuth)
+
+        val classNetworkAbort = supervisor.classifyError(
+            """agent executor error: generating and executing: request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": read tcp 192.168.0.105:47230->172.217.113.4:443: read: software caused connection abort""",
+            workspaceMutated = false,
+            isCancelled = false,
+        )
+        assertEquals(TaskSupervisor.TaskErrorClassification.TRANSIENT_API_ERROR, classNetworkAbort)
+
+        val classFriendlyInterrupted = supervisor.classifyError(
+            "Network connection interrupted. Please check your internet connection.",
+            workspaceMutated = false,
+            isCancelled = false,
+        )
+        assertEquals(TaskSupervisor.TaskErrorClassification.TRANSIENT_API_ERROR, classFriendlyInterrupted)
     }
 }

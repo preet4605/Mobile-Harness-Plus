@@ -43,14 +43,24 @@ interface RuntimeBridge {
 object RuntimeLaunchConfigBuilder {
     fun build(profile: ProviderProfile, authToken: String? = null, localGatewayUrl: String? = null): RuntimeLaunchConfig {
         val environment = linkedMapOf("DISABLE_AUTOUPDATER" to "1")
-        when (profile.kind.protocol) {
+        when (com.jarves.mh.model.providerProtocolForAgent(profile, com.jarves.mh.model.AgentKind.CLAUDE_CODE)) {
             com.jarves.mh.model.ProviderProtocol.CLAUDE_LOGIN -> {
-                require(!authToken.isNullOrBlank()) { "Enter a Claude subscription token first" }
-                environment["CLAUDE_CODE_OAUTH_TOKEN"] = authToken
-                // Claude Code gives API-key variables precedence over OAuth. Explicitly
-                // clear them so a previous API provider can never shadow this token.
-                environment["ANTHROPIC_API_KEY"] = ""
-                environment["ANTHROPIC_AUTH_TOKEN"] = ""
+                if (profile.claudeAuthMode == com.jarves.mh.model.ClaudeAuthMode.SETUP_TOKEN_LEGACY) {
+                    require(!authToken.isNullOrBlank()) { "Enter a Claude subscription token first" }
+                    environment["CLAUDE_CODE_OAUTH_TOKEN"] = authToken
+                    // Claude Code gives API-key variables precedence over OAuth. Explicitly
+                    // clear them so a previous API provider can never shadow this token.
+                    environment["ANTHROPIC_API_KEY"] = ""
+                    environment["ANTHROPIC_AUTH_TOKEN"] = ""
+                } else {
+                    // In NATIVE_SUBSCRIPTION mode, ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN,
+                    // ANTHROPIC_BASE_URL, and CLAUDE_CODE_OAUTH_TOKEN must be strictly absent.
+                    // Claude Code reads credentials directly from /root/.claude/.credentials.json.
+                }
+                val effortArg = com.jarves.mh.model.ClaudeThinkingLevel.fromStored(profile.claudeThinkingLevel).effortArg
+                if (effortArg != null) {
+                    environment["CLAUDE_CODE_EFFORT_LEVEL"] = effortArg
+                }
             }
             com.jarves.mh.model.ProviderProtocol.ANTHROPIC -> {
                 environment["ANTHROPIC_BASE_URL"] = profile.baseUrl.trimEnd('/')

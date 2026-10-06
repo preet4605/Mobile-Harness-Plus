@@ -72,6 +72,11 @@ open class BrainKnowledgeRepository(
     private companion object {
         // Keep both FTS and LIKE query expressions comfortably below SQLite expression-depth limits.
         const val MAX_SEARCH_TERMS = 24
+        private val SEARCH_STOPWORDS = setOf(
+            "the", "and", "for", "with", "this", "that", "from", "into", "then", "than", "are", "was",
+            "not", "but", "you", "your", "all", "any", "can", "use", "its", "has", "have", "should",
+            "must", "will", "also", "only", "each", "when", "which", "what", "how", "does", "do",
+        )
         const val MAX_SEARCH_TERM_LENGTH = 64
         const val MAX_SEARCH_QUERY_CHARS = 1536
         val SEARCH_TOKEN_SPLIT_REGEX = Regex("[^\\p{L}\\p{N}_]+")
@@ -85,15 +90,18 @@ open class BrainKnowledgeRepository(
         if (query.isBlank()) return emptyList()
 
         val seen = LinkedHashSet<String>()
-        return query
+        val terms = query
             .take(MAX_SEARCH_QUERY_CHARS)
             .split(SEARCH_TOKEN_SPLIT_REGEX)
             .asSequence()
             .map { it.take(MAX_SEARCH_TERM_LENGTH) }
             .filter { it.length >= 2 }
             .filter { seen.add(it.lowercase(Locale.ROOT)) }
-            .take(MAX_SEARCH_TERMS)
             .toList()
+        // Drop filler words so an OR-query is not dominated by terms that match everything;
+        // fall back to the unfiltered terms when nothing meaningful remains.
+        val meaningful = terms.filter { it.lowercase(Locale.ROOT) !in SEARCH_STOPWORDS }
+        return (meaningful.ifEmpty { terms }).take(MAX_SEARCH_TERMS)
     }
 
     private fun mapRow(row: SqlRow): BrainKnowledgeEntry {
@@ -449,12 +457,9 @@ open class BrainKnowledgeRepository(
         for (entry in ranked) {
             if (results.size >= boundedLimit) break
             val entryChars = entry.key.length + entry.content.length
-            if (results.isNotEmpty() && currentChars + entryChars > boundedMaxChars) {
-                break
-            }
-            if (results.isEmpty() && entryChars > boundedMaxChars) {
-                break
-            }
+            // An entry that does not fit is skipped, not treated as end-of-list, so
+            // smaller lower-ranked candidates can still use the remaining budget.
+            if (currentChars + entryChars > boundedMaxChars) continue
             results.add(entry)
             currentChars += entryChars
         }

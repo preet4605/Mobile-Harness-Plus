@@ -41,31 +41,89 @@ import org.json.JSONArray
 
 internal object ProviderRuntimeErrorDetector {
     fun detect(line: String): String? {
-        val json = runCatching { JSONObject(line) }.getOrNull()
-        val combined = buildString {
-            append(line)
-            json?.let {
-                append(' ')
-                append(it.optString("error"))
-                append(' ')
-                append(it.optString("message"))
-                append(' ')
-                append(it.optString("result"))
+        val trimmed = line.trim()
+        if (trimmed.isEmpty()) return null
+        val json = runCatching { JSONObject(trimmed) }.getOrNull()
+        if (json != null) {
+            val type = json.optString("type")
+            return when (type) {
+                "system" -> {
+                    if (json.optString("subtype") == "api_retry") {
+                        val status = json.optInt("error_status", 0)
+                        if (status in listOf(401, 403)) {
+                            "The provider rejected the saved API key."
+                        } else {
+                            // Transient retries (such as 429 rate limits or server 5xx) are retried automatically by Claude Code
+                            null
+                        }
+                    } else {
+                        null
+                    }
+                }
+                "result" -> {
+                    if (json.optBoolean("is_error")) {
+                        val result = json.optString("result")
+                        val terminalReason = json.optString("terminal_reason")
+                        classifyErrorMessage("$result $terminalReason")
+                            ?: result.takeIf(String::isNotBlank)
+                            ?: "Claude Code reported an error"
+                    } else {
+                        null
+                    }
+                }
+                "assistant" -> {
+                    if (json.optBoolean("is_api_error_message") || json.has("error")) {
+                        val error = json.optString("error")
+                        val text = extractAssistantText(json)
+                        classifyErrorMessage("$error $text")
+                            ?: text.takeIf(String::isNotBlank)
+                            ?: "The provider rejected the saved API key."
+                    } else {
+                        null
+                    }
+                }
+                // Tool results ("user"), thinking/text deltas, stream events, rate limit telemetry are normal execution
+                "user", "content_block_start", "content_block_delta", "content_block_stop", "stream_event", "rate_limit_event", "message_delta" -> null
+                else -> null
             }
-        }.lowercase()
+        }
+
+        // Plain text output (e.g. CLI stderr before JSON streaming starts)
+        return classifyErrorMessage(trimmed)
+    }
+
+    private fun extractAssistantText(json: JSONObject): String {
+        val message = json.optJSONObject("message") ?: return ""
+        val content = message.optJSONArray("content") ?: return ""
+        val sb = StringBuilder()
+        for (i in 0 until content.length()) {
+            val block = content.optJSONObject(i) ?: continue
+            if (block.optString("type") == "text") {
+                sb.append(block.optString("text")).append(' ')
+            }
+        }
+        return sb.toString().trim()
+    }
+
+    private fun classifyErrorMessage(raw: String): String? {
+        val lower = raw.lowercase()
         return when {
-            "user not found" in combined -> "User not found. Check the API key and provider account."
-            "authentication_failed" in combined ||
-                "authentication failed" in combined ||
-                "invalid api key" in combined ||
-                "http 401" in combined ||
-                "http 403" in combined ||
-                "http 429" in combined ||
-                "expired" in combined ||
-                "quota" in combined ||
-                "rate limit" in combined ||
-                (json?.optString("subtype") == "api_retry" && json.optInt("error_status") in listOf(401, 403, 429)) ->
+            "not logged in" in lower || "run /login" in lower || "run login" in lower ->
+                "Claude subscription is not signed in. Use Sign in with Claude."
+            "user not found" in lower ->
+                "User not found. Check the API key and provider account."
+            "authentication_failed" in lower ||
+                "authentication failed" in lower ||
+                "invalid api key" in lower ||
+                "invalid_api_key" in lower ||
+                ("http 401" in lower && ("error" in lower || "unauthorized" in lower || "api" in lower || "failed" in lower)) ||
+                ("http 403" in lower && ("error" in lower || "forbidden" in lower || "api" in lower || "failed" in lower)) ->
                 "The provider rejected the saved API key."
+            "not available on your tier" in lower ||
+                "isn't available" in lower ||
+                "model not found" in lower ||
+                "does not have access" in lower ->
+                raw.take(300)
             else -> null
         }
     }
@@ -87,7 +145,9 @@ class ClaudeRuntimeBridge(
     @Volatile private var activeProcess: Process? = null
     override val isRunning: Boolean get() = activeProcess?.isAlive == true
     @Volatile private var activeSessionId: String? = null
+    @Volatile private var activeTaskId: String? = null
     @Volatile private var userStopRequested: Boolean = false
+    private val stoppedTaskIds = ConcurrentHashMap.newKeySet<String>()
     @Volatile private var activeProjectSlug: String? = null
     @Volatile private var taskStartedAtElapsedRealtime: Long = 0L
     @Volatile private var lastForegroundProgressAt: Long = 0L
@@ -122,8 +182,37 @@ class ClaudeRuntimeBridge(
         }
         val effectiveAttemptId = attemptId ?: snapshot?.attemptId
         val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId, effectiveAttemptId)
+        val isExecutionAuthorized = com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.isExecutionAuthorized(taskId, null)
+        if (!isExecutionAuthorized) {
+            emitFailureOnce(sessionId, "Execution not authorized for task $taskId")
+            throw SecurityException("Execution denied: Claude session requires valid EXECUTION authority for task $taskId")
+        }
+        com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.registerSession(taskId!!, sessionId)
         finishedSessions.remove(sessionId)
         activeSessionId = sessionId
+        activeTaskId = taskId
+        val isTaskCancelled = (taskId != null && runCatching {
+            com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).isCancellationActive(taskId)
+        }.getOrDefault(false)) || (taskId != null && stoppedTaskIds.contains(taskId))
+        if (isTaskCancelled || userStopRequested) {
+            userStopRequested = true
+            if (taskId != null) stoppedTaskIds.add(taskId)
+            activeSessionId = null
+            activeTaskId = null
+            emitFailureOnce(sessionId, "Stopped by user")
+            cancelForegroundRuntime()
+            throw ProviderSessionException("Stopped by user")
+        }
+        val isTaskTerminal = taskId != null && runCatching {
+            val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
+            supervisor.stateStore.get(taskId)?.status?.isTerminal == true
+        }.getOrDefault(false)
+        if (isTaskTerminal) {
+            activeSessionId = null
+            activeTaskId = null
+            emitFailureOnce(sessionId, "Task $taskId is already terminal")
+            throw IllegalStateException("Task $taskId is already terminal")
+        }
         userStopRequested = false
         activeProjectSlug = projectSlug
         taskStartedAtElapsedRealtime = android.os.SystemClock.elapsedRealtime()
@@ -141,22 +230,28 @@ class ClaudeRuntimeBridge(
         val effectiveAccountMgr = accountManager ?: AntigravityAccountManager(context, com.jarves.mh.data.AppPreferences(context))
         if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER && effectiveAccountMgr.selectAccountForTurn() == null) {
             val message = "Google account not signed in. Sign in under Antigravity settings to use Antigravity models."
-            eventBus.emit(RuntimeEvent.SessionFailed(sessionId, message))
-            return@withContext sessionId
+            activeSessionId = null
+            emitFailureOnce(sessionId, message)
+            throw ProviderSessionException(message)
         }
+        val isNativeSubscription = provider.kind == ProviderKind.CLAUDE &&
+            provider.claudeAuthMode == com.jarves.mh.model.ClaudeAuthMode.NATIVE_SUBSCRIPTION
         val secret = if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER) {
             secretFor(provider)?.ifBlank { "antigravity-local-token" } ?: "antigravity-local-token"
+        } else if (isNativeSubscription) {
+            null
         } else {
             secretFor(provider).orEmpty()
         }
-        if (secret.isBlank()) {
+        if (!isNativeSubscription && secret.isNullOrBlank()) {
             val message = if (provider.kind == ProviderKind.CLAUDE) {
-                "No Claude subscription token is saved. Add one from Agent → AI provider."
+                "No Claude setup token is saved. Add one from Agent → AI provider."
             } else {
                 "No API key is saved for ${provider.kind.title}."
             }
-            eventBus.emit(RuntimeEvent.SessionFailed(sessionId, message))
-            return@withContext sessionId
+            activeSessionId = null
+            emitFailureOnce(sessionId, message)
+            throw ProviderSessionException(message)
         }
 
         var formatGateway: LocalFormatGateway? = null
@@ -182,16 +277,19 @@ class ClaudeRuntimeBridge(
             val workspace = ensureWorkspace(projectId)
             createCheckpoint(projectId, workspace)
             val before = snapshot(workspace)
+            var gatewayAuthToken: String? = null
             if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER) {
                 antigravityGateway = AntigravityGatewayServer(effectiveAccountMgr, targetModel = { provider.model }).start()
-            } else if (provider.kind.protocol in setOf(
+                gatewayAuthToken = antigravityGateway.gatewaySecret
+            } else if (com.jarves.mh.model.providerProtocolForAgent(provider, com.jarves.mh.model.AgentKind.CLAUDE_CODE) in setOf(
                     com.jarves.mh.model.ProviderProtocol.OPENAI_CHAT,
                     com.jarves.mh.model.ProviderProtocol.OPENAI_RESPONSES,
                 )) {
-                formatGateway = LocalFormatGateway(provider, secret).start()
+                formatGateway = LocalFormatGateway(provider, secret.orEmpty()).start()
+                gatewayAuthToken = formatGateway.gatewaySecret
             }
             val localGatewayUrl = antigravityGateway?.url ?: formatGateway?.url
-            val launch = RuntimeLaunchConfigBuilder.build(provider, authToken = secret, localGatewayUrl = localGatewayUrl)
+            val launch = RuntimeLaunchConfigBuilder.build(provider, authToken = gatewayAuthToken ?: secret, localGatewayUrl = localGatewayUrl)
             Log.d("ClaudeBridge", "Provider: ${provider.kind}, Model: ${provider.model}, BaseUrl: ${provider.baseUrl}")
             Log.d("ClaudeBridge", "Launch environment keys: ${launch.environment.keys}")
 
@@ -199,9 +297,13 @@ class ClaudeRuntimeBridge(
             val guestWorkspacePath = "/workspace/$projectSlug"
             val contextPrompt = buildContextPrompt(injectedPrompt, conversationHistory, guestWorkspacePath, projectKind, memory)
 
+            val effort = if (provider.kind == ProviderKind.CLAUDE) {
+                com.jarves.mh.model.ClaudeThinkingLevel.fromStored(provider.claudeThinkingLevel).effortArg
+            } else null
             val command = buildClaudeCommand(
                 executable = launch.executable,
                 model = launch.environment["ANTHROPIC_MODEL"] ?: provider.model,
+                effort = effort,
             )
             Log.d("ClaudeBridge", "Launching command: $command")
             val process = installer.process(
@@ -226,7 +328,7 @@ class ClaudeRuntimeBridge(
             }
             if (userStopRequested) process.destroy()
             coroutineScope {
-                val permissionWatcher = launch { watchPermissionRequests(sessionId) }
+                val permissionWatcher = launch { watchPermissionRequests(sessionId, taskId) }
                 val promptWriter = launch(Dispatchers.IO) {
                     deliverPromptToStdin(process, contextPrompt)
                 }
@@ -298,7 +400,7 @@ class ClaudeRuntimeBridge(
                     } else if (!File(checkpointDir(projectId), "changes.json").isFile) {
                         acceptLastChanges(projectId)
                     }
-                    if (exit == 0) {
+                    if (exit == 0 || finishedSessions.contains(sessionId)) {
                         emitCompletedOnce(sessionId)
                         finishForegroundRuntime(
                             completed = true,
@@ -307,7 +409,7 @@ class ClaudeRuntimeBridge(
                         )
                     } else {
                         if (userStopRequested) throw ProviderSessionException("Stopped by user")
-                        error(lastDiagnostic.ifBlank { "Claude Code stopped with exit code $exit" })
+                        error(lastDiagnostic.ifBlank { "Claude Code stopped before reporting completion (exit code $exit)" })
                     }
                 } finally {
                     promptWriter.cancel()
@@ -321,7 +423,7 @@ class ClaudeRuntimeBridge(
         }.onFailure { error ->
             Log.e("ClaudeBridge", "Session failed", error)
             activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
-            val message = friendlyError(error)
+            val message = friendlyError(error, isNativeSubscription = isNativeSubscription)
             emitFailureOnce(sessionId, message)
             if (userStopRequested) {
                 cancelForegroundRuntime()
@@ -333,47 +435,81 @@ class ClaudeRuntimeBridge(
                 )
             }
             if (!userStopRequested) {
-                formatGateway?.close()
-                antigravityGateway?.close()
-                activeProcess = null
-                activeSessionId = null
-                RuntimeTaskController.stopAction = null
+                if (activeSessionId == sessionId) {
+                    formatGateway?.close()
+                    antigravityGateway?.close()
+                    activeProcess = null
+                    activeSessionId = null
+                    activeTaskId = null
+                    RuntimeTaskController.stopAction = null
+                }
                 throw error
             }
         }
-        formatGateway?.close()
-        antigravityGateway?.close()
-        activeProcess = null
-        activeSessionId = null
-        RuntimeTaskController.stopAction = null
+        if (activeSessionId == sessionId) {
+            formatGateway?.close()
+            antigravityGateway?.close()
+            activeProcess = null
+            activeSessionId = null
+            activeTaskId = null
+            RuntimeTaskController.stopAction = null
+        }
         sessionId
     }
 
     override suspend fun respondToApproval(request: ToolRequest, approved: Boolean) = withContext(Dispatchers.IO) {
         val permission = pending.remove(request.approvalId) ?: return@withContext
-        permission.response.writeText(if (approved) "allow" else "deny")
+        val isAllowed = approved && com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.isToolExecutionAllowed(
+            activeTaskId,
+            request.sessionId,
+            request.toolName,
+        )
+        permission.response.writeText(if (isAllowed) "allow" else "deny")
         eventBus.emit(
-            if (approved) RuntimeEvent.ToolApproved(request.sessionId, request.approvalId)
+            if (isAllowed) RuntimeEvent.ToolApproved(request.sessionId, request.approvalId)
             else RuntimeEvent.ToolRejected(request.sessionId, request.approvalId),
         )
     }
 
     override suspend fun stopSession(sessionId: String, force: Boolean) = withContext(Dispatchers.IO) {
-        if (activeSessionId == sessionId) {
-            userStopRequested = true
-            if (force) {
-                activeProcess?.destroyForcibly()
-            } else {
-                activeProcess?.destroy()
-                delay(500)
-                if (activeProcess?.isAlive == true) activeProcess?.destroyForcibly()
-            }
-            emitFailureOnce(sessionId, "Stopped by user")
+        userStopRequested = true
+        val resolvedTaskId: String? = runCatching {
+            com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).getTaskIdForSession(sessionId)
+        }.getOrNull() ?: activeTaskId
+        if (resolvedTaskId != null) {
+            stoppedTaskIds.add(resolvedTaskId)
+            com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.revokeExecutionAuthority(resolvedTaskId, "Stopped by user")
         }
+        val proc = activeProcess
+        if (proc != null) {
+            if (force) {
+                (proc as? NativeSpawnProcess)?.destroyForcibly() ?: proc.destroyForcibly()
+            } else {
+                (proc as? NativeSpawnProcess)?.interrupt() ?: proc.destroy()
+                delay(500)
+                if (proc.isAlive) proc.destroyForcibly()
+            }
+        }
+        emitFailureOnce(sessionId, "Stopped by user")
     }
 
     override suspend fun stopActiveSession(force: Boolean) {
-        activeSessionId?.let { stopSession(it, force) }
+        userStopRequested = true
+        val currentSessionId = activeSessionId
+        if (currentSessionId != null) {
+            stopSession(currentSessionId, force)
+        } else {
+            val proc = activeProcess
+            if (proc != null) {
+                if (force) {
+                    (proc as? NativeSpawnProcess)?.destroyForcibly() ?: proc.destroyForcibly()
+                } else {
+                    (proc as? NativeSpawnProcess)?.interrupt() ?: proc.destroy()
+                    delay(500)
+                    if (proc.isAlive) proc.destroyForcibly()
+                }
+            }
+        }
     }
 
     override suspend fun undoLastChanges(projectId: String): Boolean = withContext(Dispatchers.IO) {
@@ -445,7 +581,7 @@ class ClaudeRuntimeBridge(
         true
     }
 
-    private suspend fun watchPermissionRequests(sessionId: String) {
+    private suspend fun watchPermissionRequests(sessionId: String, taskId: String?) {
         val bridge = File(context.filesDir, "runtime-bridge")
         while (kotlin.coroutines.coroutineContext.isActive) {
             bridge.listFiles { file -> file.name.endsWith(".request") }.orEmpty().forEach { file ->
@@ -461,13 +597,24 @@ class ClaudeRuntimeBridge(
                         .ifBlank { command.orEmpty() }
                         .ifBlank { "$toolName running in project" }
 
-                    Log.d("ClaudeBridge", "Auto-approving permission request $approvalId for $toolName ($paths)")
+                    val isAllowed = com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.isToolExecutionAllowed(
+                        taskId,
+                        sessionId,
+                        toolName,
+                    )
                     val response = File(file.parentFile, "$approvalId.response")
-                    response.writeText("allow")
-
-                    eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, toolName, explanation))
+                    if (isAllowed) {
+                        Log.d("ClaudeBridge", "Auto-approving permission request $approvalId for $toolName ($paths)")
+                        response.writeText("allow")
+                        eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, toolName, explanation))
+                    } else {
+                        Log.w("ClaudeBridge", "Rejecting permission request $approvalId for $toolName: execution not authorized or terminal task")
+                        response.writeText("deny")
+                        eventBus.emit(RuntimeEvent.ToolRejected(sessionId, approvalId))
+                    }
                 }.onFailure {
-                    File(file.parentFile, "$approvalId.response").writeText("allow")
+                    // Fail safe: deny on any error
+                    runCatching { File(file.parentFile, "$approvalId.response").writeText("deny") }
                 }
             }
             delay(250)
@@ -814,80 +961,20 @@ class ClaudeRuntimeBridge(
         }
     }
 
-    private fun sanitizeForDisplay(value: String): String {
-        return value
-            .replace(Regex("sk-[A-Za-z0-9_-]{8,}"), "sk-••••")
-            .replace(Regex("(?i)(authorization|api[_-]?key)\\s*[:=]\\s*[^\\s,}]+"), "${'$'}1: ••••")
-            .replace(Regex("\\s+"), " ")
-            .trim()
-            .take(600)
-    }
-
     private fun buildContextPrompt(
         currentPrompt: String,
         history: List<ChatMessage>,
         guestWorkspacePath: String,
         projectKind: ProjectKind,
         memory: ContextMemory = ContextMemory(""),
-    ): String {
-        // Filter out the current prompt (last user message), system greeting, and any error messages
-        val priorMessages = history
-            .filter { msg ->
-                (msg.fromUser || !msg.text.startsWith("Hi! Tell me")) &&
-                !msg.text.startsWith("Failed to") &&
-                !msg.text.startsWith("Error:") &&
-                !msg.text.contains("API Error")
-            }
-            .dropLast(1) // Drop the current prompt which was just added
-
-        val sb = StringBuilder()
-        sb.appendLine("<project_workspace>")
-        if (projectKind == ProjectKind.QUICK_PROJECT) {
-            sb.appendLine("This is a lightweight project workspace at $guestWorkspacePath.")
-            sb.appendLine("Respond conversationally, and use terminal or file tools whenever they are useful for the request.")
-            sb.appendLine("Keep every file and command inside this project workspace.")
-        } else {
-            sb.appendLine("The current working directory $guestWorkspacePath is the project root.")
-            sb.appendLine("Create and edit project files directly in this directory. Do not create another outer project folder unless the user explicitly asks for one.")
-            sb.appendLine("When giving commands to the user, make them runnable from this project root.")
-        }
-        sb.appendLine("If this is an Android project, the phone already provides JDK 17, Android SDK 36, ARM64 Build Tools 35.0.0, Gradle 8.14.3, and an offline Maven repository.")
-        sb.appendLine("For newly created Android projects, use AGP 8.11.0, Kotlin 1.9.22, compileSdk 36, and Java 17 so the preinstalled offline toolchain can build immediately.")
-        sb.appendLine("The bundled Maven cache handles the base toolchain; Gradle may download project-specific libraries normally. Set android.useAndroidX=true for AndroidX or Compose projects.")
-        sb.appendLine("PocketDev globally configures Gradle to use the SDK's ARM64 aapt2. Do not use the x86_64 Maven aapt2, investigate its architecture, or add android.aapt2FromMavenOverride to the project.")
-        sb.appendLine("Use the installed `gradle` command for Android builds; do not ask the user to install Android Studio, an SDK, Gradle, ADB, or Termux.")
-        sb.appendLine("For local servers, give a clear start command and never use a kill command that searches its own command text with pgrep, because it can terminate the terminal itself.")
-        sb.appendLine("</project_workspace>")
-        sb.appendLine()
-        val memoryBlock = renderMemoryBlock(memory)
-        if (memoryBlock.isNotBlank()) {
-            sb.appendLine(memoryBlock)
-            sb.appendLine()
-        }
-        if (priorMessages.isEmpty()) {
-            sb.appendLine(currentPrompt)
-            return sb.toString()
-        }
-        sb.appendLine("<conversation_history>")
-        sb.appendLine("The following is our prior conversation in this project. Continue naturally from where we left off.")
-        sb.appendLine()
-        for (msg in priorMessages) {
-            val role = if (msg.fromUser) "User" else "Assistant"
-            sb.appendLine("$role: ${msg.text}")
-            if (msg.attachments.isNotEmpty()) {
-                sb.appendLine("Attached files:")
-                msg.attachments.forEach { attachment ->
-                    sb.appendLine("- ${attachment.displayName}: $guestWorkspacePath/${attachment.relativePath} (${attachment.mimeType})")
-                }
-            }
-            sb.appendLine()
-        }
-        sb.appendLine("</conversation_history>")
-        sb.appendLine()
-        sb.appendLine("Now, respond to this new message from the user:")
-        sb.appendLine(currentPrompt)
-        return sb.toString()
-    }
+    ): String = com.jarves.mh.data.PromptContextSupport.buildPrompt(
+        currentPrompt = currentPrompt,
+        history = history.dropLast(1), // the current prompt was just appended to history
+        guestWorkspacePath = guestWorkspacePath,
+        projectKind = projectKind,
+        memory = memory,
+        androidStackInstalled = installer.isStackInstalled(com.jarves.mh.model.DevStack.ANDROID),
+    )
 
     private fun ensureWorkspace(projectId: String): File = checkpoints.ensureWorkspace(projectId)
 
@@ -933,13 +1020,25 @@ class ClaudeRuntimeBridge(
         }
     }
 
-    private fun friendlyError(error: Throwable): String {
+    private fun friendlyError(error: Throwable, isNativeSubscription: Boolean = false): String {
         val message = error.message.orEmpty()
         return when {
             error is ProviderSessionException -> message
+            message.contains("not logged in", true) || message.contains("run /login", true) || message.contains("run login", true) ->
+                "Claude subscription is not signed in. Use Sign in with Claude."
             message.contains("user not found", true) -> "User not found. Check the API key and provider account."
             message.contains("checksum", true) -> "Runtime verification failed. Nothing unverified was executed."
-            message.contains("HTTP 401", true) || message.contains("authentication", true) -> "The provider rejected the saved API key."
+            message.contains("HTTP 401", true) || message.contains("authentication", true) -> {
+                if (isNativeSubscription) "Claude subscription is not signed in. Use Sign in with Claude."
+                else "The provider rejected the saved API key."
+            }
+            message.contains("software caused connection abort", true) ||
+                message.contains("connection abort", true) ||
+                message.contains("network connection interrupted", true) ||
+                message.contains("broken pipe", true) ||
+                message.contains("network unreachable", true) ||
+                message.contains("connection reset", true) ->
+                "Network connection interrupted. Please check your internet connection."
             message.isBlank() -> "The real Claude Code runtime could not start."
             else -> message.take(500)
         }
@@ -1046,13 +1145,15 @@ class ClaudeRuntimeBridge(
         private const val DIFF_CONTEXT_LINES = 3
         private const val FOREGROUND_PROGRESS_MIN_INTERVAL_MS = 750L
 
+        val SUPPORTED_EFFORT_LEVELS: Set<String> = setOf("low", "medium", "high", "xhigh", "max")
+
         fun buildClaudeCommand(
             executable: String,
             model: String,
+            effort: String? = null,
         ): List<String> {
-            val command = listOf(
+            val command = mutableListOf(
                 executable,
-                "--bare",
                 "-p",
                 "--output-format",
                 "stream-json",
@@ -1060,11 +1161,25 @@ class ClaudeRuntimeBridge(
                 "--verbose",
                 "--model",
                 model,
-                "--max-turns",
-                "25",
             )
+            val validatedEffort = effort?.takeIf { it in SUPPORTED_EFFORT_LEVELS }
+            if (validatedEffort != null) {
+                command.add("--effort")
+                command.add(validatedEffort)
+            }
+            command.add("--max-turns")
+            command.add("25")
             NativeSpawnProcess.validateArgv(command)
             return command
+        }
+
+        fun sanitizeForDisplay(value: String): String {
+            return value
+                .replace(Regex("sk-[A-Za-z0-9_-]{8,}"), "sk-••••")
+                .replace(Regex("(?i)(authorization|api[_-]?key|bearer|token|oauth_token)(\\s*[:=]\\s*|\\s+)[^\\s,}]+"), "${'$'}1: ••••")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .take(600)
         }
     }
 }

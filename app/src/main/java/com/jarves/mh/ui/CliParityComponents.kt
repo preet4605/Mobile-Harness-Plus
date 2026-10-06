@@ -7,6 +7,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -109,6 +110,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarves.mh.model.ArtifactInfo
+import com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS
+import com.jarves.mh.model.ClaudeThinkingLevel
+import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.BackgroundTaskInfo
 import com.jarves.mh.model.BackgroundTaskStatus
 import com.jarves.mh.model.CustomizationScopeMode
@@ -446,6 +450,9 @@ fun TokenTelemetryBar(
         ((metrics.promptTokens.toDouble() / metrics.contextWindowLimit) * 100).coerceIn(0.0, 100.0)
     } else 0.0
 
+    val isDark = isSystemInDarkTheme()
+    val telemetryColor = if (isDark) Color(0xFFE2E8F0) else Color(0xFF334155)
+
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
@@ -462,13 +469,13 @@ fun TokenTelemetryBar(
                     Icons.Default.Speed,
                     contentDescription = null,
                     modifier = Modifier.size(13.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = telemetryColor,
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
                     "${metrics.promptTokens} in · ${metrics.completionTokens} out",
                     fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = telemetryColor,
                     fontFamily = FontFamily.Monospace,
                 )
                 if (metrics.cachedTokens > 0) {
@@ -485,7 +492,7 @@ fun TokenTelemetryBar(
                 "Context: ${String.format("%.1f%%", capacityPct)}",
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Medium,
-                color = if (capacityPct > 80.0) Color(0xFFEA4335) else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (capacityPct > 80.0) Color(0xFFEA4335) else telemetryColor,
             )
         }
     }
@@ -1682,24 +1689,47 @@ fun ModelPickerDialog(
     availableModels: List<String>,
     onSelectModel: (String) -> Unit,
     onDismiss: () -> Unit,
+    provider: ProviderKind? = null,
 ) {
+    val isClaude = provider == ProviderKind.CLAUDE
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Switch AI Model") },
+        title = { Text(if (isClaude) "Select Claude Model" else "Switch AI Model") },
         text = {
             LazyColumn(
                 modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                val models = if (availableModels.isNotEmpty()) availableModels else listOf(
-                    "gemini-3.8-flash-high",
-                    "gemini-3.8-pro",
-                    "gemini-3.6-flash-high",
-                    "claude-sonnet-4-6",
-                    "claude-opus-4-6-thinking",
-                )
+                val models = if (availableModels.isNotEmpty()) {
+                    availableModels
+                } else if (isClaude) {
+                    CLAUDE_SUBSCRIPTION_MODELS.map { it.id }
+                } else {
+                    listOf(
+                        "gemini-3.8-flash-high",
+                        "gemini-3.8-pro",
+                        "gemini-3.6-flash-high",
+                        "claude-sonnet-4-6",
+                        "claude-opus-4-6-thinking",
+                    )
+                }
                 items(models) { modelId ->
                     val isSelected = modelId.equals(currentModel, ignoreCase = true)
+                    val descriptor = if (isClaude) {
+                        CLAUDE_SUBSCRIPTION_MODELS.firstOrNull { it.id.equals(modelId, ignoreCase = true) }
+                    } else null
+                    val displayName = descriptor?.displayName ?: modelId
+                    val description: String? = if (isClaude) {
+                        when (modelId.lowercase()) {
+                            "default" -> "Recommended default Claude Code model"
+                            "sonnet" -> "Claude 3.7 Sonnet (fast & highly capable)"
+                            "opus" -> "Claude 3 Opus (deep reasoning & analysis)"
+                            "haiku" -> "Claude 3.5 Haiku (fastest, lightweight)"
+                            "fable" -> "Experimental model"
+                            else -> null
+                        }
+                    } else null
+
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -1715,7 +1745,73 @@ fun ModelPickerDialog(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
-                            Text(modelId, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, fontSize = 13.sp)
+                            Column(Modifier.weight(1f, fill = false)) {
+                                Text(displayName, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, fontSize = 13.sp)
+                                if (description != null) {
+                                    Text(description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                            if (isSelected) {
+                                Icon(Icons.Default.Check, null, tint = PocketGreen, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        },
+    )
+}
+
+/**
+ * Claude Thinking / Effort Level Dialog for quick switching on the fly.
+ */
+@Composable
+fun ClaudeThinkingPickerDialog(
+    currentLevel: String,
+    onSelectLevel: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val currentEnum = ClaudeThinkingLevel.fromStored(currentLevel)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Claude Thinking Effort") },
+        text = {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                items(ClaudeThinkingLevel.values()) { level ->
+                    val isSelected = level == currentEnum
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onSelectLevel(level.storageValue)
+                                onDismiss()
+                            },
+                    ) {
+                        Row(
+                            Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(Modifier.weight(1f, fill = false)) {
+                                Text(
+                                    level.displayName,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    fontSize = 13.sp,
+                                )
+                                Text(
+                                    level.description,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                             if (isSelected) {
                                 Icon(Icons.Default.Check, null, tint = PocketGreen, modifier = Modifier.size(18.dp))
                             }

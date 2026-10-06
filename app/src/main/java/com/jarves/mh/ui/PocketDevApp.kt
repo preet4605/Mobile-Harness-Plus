@@ -21,27 +21,18 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.StartOffset
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -151,6 +142,9 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -175,7 +169,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -250,7 +243,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.semantics.Role
 import com.jarves.mh.data.AppPreferences
 import com.jarves.mh.ui.theme.glass.LiquidGlassCard
@@ -260,7 +252,6 @@ import com.jarves.mh.ui.theme.glass.LiquidGlassFloatingNavBarItem
 import com.jarves.mh.ui.theme.glass.LiquidGlassHost
 import com.jarves.mh.ui.theme.glass.LiquidGlassLayers
 import com.jarves.mh.ui.theme.glass.LiquidGlassMaterial
-import com.jarves.mh.ui.theme.glass.LiquidGlassSegmentedControl
 import com.jarves.mh.ui.theme.glass.LiquidGlassSurface
 import com.jarves.mh.ui.theme.glass.LiquidGlassTokens
 import com.jarves.mh.ui.theme.glass.LiquidGlassTopBar
@@ -4359,131 +4350,108 @@ private fun WorkspaceScreen(
         )
     }
     Scaffold(
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        containerColor = Color.Transparent,
         topBar = {
-            LiquidGlassTopBar(
-                title = {
-                    Text(
-                        state.activeProject?.name.orEmpty(),
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp,
-                        color = if (isSystemInDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.combinedClickable(
-                            onClick = {},
-                            onLongClick = {
-                                Toast.makeText(context, state.activeProject?.name.orEmpty(), Toast.LENGTH_LONG).show()
-                            },
-                        ),
-                    )
-                },
-                subtitle = {
-                    Text(
-                        "${activeChat?.title ?: "Chat"} · ${if (state.agentKind == AgentKind.ANTIGRAVITY) state.agentKind.title else state.provider.kind.title}",
-                        fontSize = 10.5.sp,
-                        color = if (isSystemInDarkTheme()) Color(0xFF94A3B8) else Color(0xFF475569),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            "Projects",
-                            tint = if (isSystemInDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
-                        )
-                    }
-                },
-                actions = {
-                    if (isAndroidProject) {
-                        IconButton(
-                            onClick = {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                                    !context.packageManager.canRequestPackageInstalls()) {
-                                    unknownAppsLauncher.launch(
-                                        Intent(
-                                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                                            Uri.parse("package:${context.packageName}"),
-                                        ),
-                                    )
-                                } else {
-                                    onBuildAndRunAndroid()
-                                }
-                            },
-                            enabled = !state.androidBuildRunning && !state.isRunning && !state.projectTerminalRunning,
-                            modifier = Modifier.size(44.dp),
-                        ) {
-                            if (state.androidBuildRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            else Icon(
-                                Icons.Default.PlayArrow,
-                                "Build and run Android app",
-                                tint = if (isSystemInDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
+            Column {
+                TopAppBar(
+                    title = {
+                        Column(Modifier.fillMaxWidth()) {
+                            Text(
+                                state.activeProject?.name.orEmpty(),
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 15.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.combinedClickable(
+                                    onClick = {},
+                                    onLongClick = {
+                                        Toast.makeText(context, state.activeProject?.name.orEmpty(), Toast.LENGTH_LONG).show()
+                                    },
+                                ),
+                            )
+                            Text(
+                                "${activeChat?.title ?: "Chat"} · ${if (state.agentKind == AgentKind.ANTIGRAVITY) state.agentKind.title else state.provider.kind.title}",
+                                fontSize = 10.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
-                    }
-                    IconButton(onClick = onOpenMemoryViewer, modifier = Modifier.size(44.dp)) {
-                        BadgedBox(
-                            badge = {
-                                if (state.contextMemory.entries.isNotEmpty()) {
-                                    Badge(
-                                        containerColor = com.jarves.mh.ui.theme.PocketOrange,
-                                        contentColor = Color.White,
-                                    ) {
-                                        Text("${state.contextMemory.entries.size}")
+                    },
+                    navigationIcon = { IconButton(onClick = onBack, modifier = Modifier.size(38.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Projects") } },
+                    actions = {
+                        if (isAndroidProject) {
+                            IconButton(
+                                onClick = {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                                        !context.packageManager.canRequestPackageInstalls()) {
+                                        unknownAppsLauncher.launch(
+                                            Intent(
+                                                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                                Uri.parse("package:${context.packageName}"),
+                                            ),
+                                        )
+                                    } else {
+                                        onBuildAndRunAndroid()
+                                    }
+                                },
+                                enabled = !state.androidBuildRunning && !state.isRunning && !state.projectTerminalRunning,
+                                modifier = Modifier.size(38.dp),
+                            ) {
+                                if (state.androidBuildRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                else Icon(Icons.Default.PlayArrow, "Build and run Android app")
+                            }
+                        }
+                        IconButton(onClick = onOpenMemoryViewer, modifier = Modifier.size(38.dp)) {
+                            BadgedBox(
+                                badge = {
+                                    if (state.contextMemory.entries.isNotEmpty()) {
+                                        Badge(
+                                            containerColor = com.jarves.mh.ui.theme.PocketOrange,
+                                            contentColor = Color.White,
+                                        ) {
+                                            Text("${state.contextMemory.entries.size}")
+                                        }
                                     }
                                 }
+                            ) {
+                                Icon(
+                                    Icons.Default.Psychology,
+                                    contentDescription = "Persistent Memory",
+                                    tint = if (state.contextMemory.entries.isNotEmpty()) com.jarves.mh.ui.theme.PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
-                        ) {
-                            Icon(
-                                Icons.Default.Psychology,
-                                contentDescription = "Persistent Memory",
-                                tint = if (state.contextMemory.entries.isNotEmpty()) com.jarves.mh.ui.theme.PocketOrange else if (isSystemInDarkTheme()) Color(0xFF94A3B8) else Color(0xFF475569),
-                            )
                         }
-                    }
-                    IconButton(onClick = { showChats = true }) {
-                        Icon(
-                            Icons.Default.History,
-                            "Project chats",
-                            tint = if (isSystemInDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
-                        )
-                    }
-                    if (state.isRunning) CircularProgressIndicator(Modifier.padding(horizontal = 8.dp).size(18.dp), strokeWidth = 2.dp)
-                },
-                material = LiquidGlassMaterial.Thin,
-                layerSource = null,
-            )
+                        IconButton(onClick = { showChats = true }, modifier = Modifier.size(38.dp)) { Icon(Icons.Default.History, "Project chats") }
+                        if (state.isRunning) CircularProgressIndicator(Modifier.padding(horizontal = 8.dp).size(18.dp), strokeWidth = 2.dp)
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+            }
         },
         bottomBar = {
-            if (!keyboardVisible) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
-                ) {
-                    LiquidGlassSegmentedControl(
-                        items = WorkspaceTab.entries.filter { it != WorkspaceTab.CHANGES },
-                        selectedItem = selectedTab,
-                        onItemSelected = { tab ->
+            if (!keyboardVisible) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                WorkspaceTab.entries.filter { it != WorkspaceTab.CHANGES }.forEach { tab ->
+                    NavigationBarItem(
+                        selected = selectedTab == tab,
+                        onClick = {
                             selectedTab = tab
                             if (tab == WorkspaceTab.FILES) onRefreshFiles()
                             if (tab == WorkspaceTab.TERMINAL) onTerminalOpened()
                         },
-                        modifier = Modifier.fillMaxWidth(),
-                        itemLabel = { it.label },
-                        material = LiquidGlassMaterial.Regular,
-                        layerSource = null,
-                        accentColor = MaterialTheme.colorScheme.primary,
+                        icon = { Icon(tab.icon, tab.label) },
+                        label = { Text(tab.label, fontSize = 10.sp) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                        ),
                     )
                 }
             }
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding).clipToBounds()) {
+        Box(Modifier.fillMaxSize().padding(padding)) {
             when (selectedTab) {
                 WorkspaceTab.CHAT -> ChatTab(
                     state.messages,
@@ -5057,7 +5025,7 @@ private fun ChatTab(
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 state = listState,
-                contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 16.dp),
+                contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(safeMessages, key = { it.id }) { message ->
@@ -5080,55 +5048,38 @@ private fun ChatTab(
                 }
                 approval?.let { request -> item { ApprovalCard(request, onApproval) } }
             }
-        }
-
-        // Reserved contextual area for Latest control — guaranteed zero occlusion of message text
-        AnimatedVisibility(
-            visible = !readerAtBottom,
-            enter = fadeIn(spring(stiffness = Spring.StiffnessMediumLow)) +
-                    expandVertically(spring(stiffness = Spring.StiffnessMediumLow)),
-            exit = fadeOut(spring(stiffness = Spring.StiffnessMediumLow)) +
-                   shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            val isDark = isSystemInDarkTheme()
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                LiquidGlassSurface(
+            if (!readerAtBottom) {
+                Surface(
                     modifier = Modifier
-                        .heightIn(min = LiquidGlassTokens.MinTouchTarget)
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 10.dp)
                         .clickable {
                             chatScope.launch {
-                                val targetIndex = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
-                                listState.animateScrollToItem(targetIndex)
+                                listState.animateScrollToItem(
+                                    (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0),
+                                )
                             }
                         },
-                    material = LiquidGlassMaterial.Regular,
-                    shape = RoundedCornerShape(LiquidGlassTokens.PillRadius),
-                    tint = if (isDark) Color(0xEE1E293B) else Color(0xEEFFFFFF),
-                    borderStroke = BorderStroke(0.75.dp, if (isDark) Color(0x40FFFFFF) else Color(0x33000000)),
-                    layerSource = null,
+                    shape = CircleShape,
+                    shadowElevation = 4.dp,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
                 ) {
                     Row(
-                        Modifier.padding(start = 14.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
+                        Modifier.padding(start = 13.dp, end = 15.dp, top = 7.dp, bottom = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
                             Icons.Default.KeyboardArrowDown,
                             contentDescription = null,
                             modifier = Modifier.size(17.dp),
-                            tint = if (isDark) Color.White else MaterialTheme.colorScheme.primary,
+                            tint = MaterialTheme.colorScheme.primary,
                         )
                         Spacer(Modifier.width(4.dp))
                         Text(
                             "Latest",
-                            fontSize = 12.5.sp,
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (isDark) Color.White else MaterialTheme.colorScheme.primary,
+                            color = MaterialTheme.colorScheme.primary,
                         )
                     }
                 }
@@ -5284,65 +5235,54 @@ private fun ChatTab(
 
                 TokenTelemetryBar(metrics = tokenMetrics, modifier = Modifier.padding(bottom = 4.dp))
 
-                val isDark = isSystemInDarkTheme()
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f),
-                    thickness = 0.5.dp,
-                    modifier = Modifier.padding(bottom = 6.dp),
-                )
-
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 8.dp, start = 2.dp, end = 2.dp),
+                        .padding(bottom = 6.dp, start = 4.dp, end = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    LiquidGlassSurface(
+                    Surface(
                         modifier = Modifier.clickable {
                             val newText = if (inputState.text.startsWith("/")) "" else "/"
                             inputState = TextFieldValue(newText, TextRange(newText.length))
                             onPromptChanged(newText)
                         },
-                        material = LiquidGlassMaterial.UltraThin,
-                        shape = RoundedCornerShape(10.dp),
-                        layerSource = null,
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                     ) {
                         Text(
                             "/ Commands",
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 11.5.sp,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
                             color = PocketOrange,
                         )
                     }
 
-                    LiquidGlassSurface(
+                    Surface(
                         modifier = Modifier.clickable(onClick = onOpenSkills),
-                        material = LiquidGlassMaterial.UltraThin,
-                        shape = RoundedCornerShape(10.dp),
-                        layerSource = null,
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                     ) {
-                        Row(Modifier.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.primary)
                             Spacer(Modifier.width(4.dp))
-                            Text("Skills", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Skills", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
 
-                    LiquidGlassSurface(
+                    Surface(
                         modifier = Modifier.clickable(onClick = onOpenInspector),
-                        material = LiquidGlassMaterial.UltraThin,
-                        shape = RoundedCornerShape(10.dp),
-                        tint = if (subagentsCount + tasksCount > 0) PocketGreen.copy(alpha = 0.15f) else null,
-                        layerSource = null,
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (subagentsCount + tasksCount > 0) PocketGreen.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                     ) {
-                        Row(Modifier.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Layers, null, modifier = Modifier.size(12.dp), tint = if (subagentsCount + tasksCount > 0) PocketGreen else MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(Modifier.width(4.dp))
                             Text(
                                 if (subagentsCount + tasksCount > 0) "Inspector (${subagentsCount + tasksCount})" else "Inspector",
-                                fontSize = 11.5.sp,
+                                fontSize = 11.sp,
                                 color = if (subagentsCount + tasksCount > 0) PocketGreen else MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontWeight = if (subagentsCount + tasksCount > 0) FontWeight.Bold else FontWeight.Normal,
                             )
@@ -5350,13 +5290,12 @@ private fun ChatTab(
                     }
                 }
 
-                LiquidGlassSurface(
-                    material = LiquidGlassMaterial.Regular,
+                Surface(
                     shape = RoundedCornerShape(26.dp),
-                    layerSource = null,
-                    borderStroke = BorderStroke(
-                        width = 0.75.dp,
-                        color = if (canSend) MaterialTheme.colorScheme.primary.copy(alpha = 0.40f) else if (isDark) Color(0x2EFFFFFF) else MaterialTheme.colorScheme.outlineVariant,
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = if (canSend) MaterialTheme.colorScheme.primary.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outlineVariant,
                     ),
                     // PRD §3.1.1: Non-negotiable minimum height — input bar must never compress below 52dp
                     modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
@@ -5370,7 +5309,7 @@ private fun ChatTab(
                         IconButton(
                             onClick = onAttach,
                             enabled = !isRunning && pendingAttachments.size < 5,
-                            modifier = Modifier.size(44.dp),
+                            modifier = Modifier.size(40.dp),
                         ) {
                             Icon(
                                 imageVector = Icons.Default.AttachFile,
@@ -5420,7 +5359,7 @@ private fun ChatTab(
                             // PRD §3.5.2: Immediate visual feedback — show spinner when isStopping, Stop icon otherwise
                             Box(
                                 modifier = Modifier
-                                    .size(44.dp)
+                                    .size(38.dp)
                                     .background(
                                         color = if (isStopping)
                                             MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
@@ -5450,31 +5389,12 @@ private fun ChatTab(
                                 }
                             }
                         } else {
-                            val isDark = isSystemInDarkTheme()
                             Box(
                                 modifier = Modifier
-                                    .size(44.dp)
-                                    .clip(CircleShape)
-                                    .then(
-                                        if (canSend) {
-                                            Modifier
-                                                .background(
-                                                    if (isDark) Color(0xFFF1F5F9) else MaterialTheme.colorScheme.primary,
-                                                    CircleShape,
-                                                )
-                                                .border(0.75.dp, Color(0x33FFFFFF), CircleShape)
-                                        } else {
-                                            Modifier
-                                                .background(
-                                                    if (isDark) Color(0x1AFFFFFF) else Color(0x0F000000),
-                                                    CircleShape,
-                                                )
-                                                .border(
-                                                    0.75.dp,
-                                                    if (isDark) Color(0x26FFFFFF) else Color(0x14000000),
-                                                    CircleShape,
-                                                )
-                                        }
+                                    .size(38.dp)
+                                    .background(
+                                        color = if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                        shape = CircleShape,
                                     )
                                     .clickable(
                                         enabled = canSend,
@@ -5491,11 +5411,7 @@ private fun ChatTab(
                                 Icon(
                                     imageVector = Icons.Default.ArrowUpward,
                                     contentDescription = "Send",
-                                    tint = if (canSend) {
-                                        if (isDark) Color(0xFF0F172A) else Color.White
-                                    } else {
-                                        if (isDark) Color(0x66FFFFFF) else Color(0x40000000)
-                                    },
+                                    tint = if (canSend) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                                     modifier = Modifier.size(19.dp),
                                 )
                             }

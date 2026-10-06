@@ -55,4 +55,32 @@ class ProcessSupervisorTest {
         supervisor.unregister("task-cancel-test")
         assertFalse(supervisor.isCancellationRequested("task-cancel-test"))
     }
+
+    @Test
+    fun `test register does not clear pending cancel and immediately terminates process`() {
+        val taskId = "task-cancelled-before-register"
+        supervisor.markCancellationRequested(taskId)
+        assertTrue(supervisor.isCancellationRequested(taskId))
+
+        var destroyedForcibly = false
+        val dummyProcess = object : Process() {
+            override fun getOutputStream(): java.io.OutputStream = java.io.ByteArrayOutputStream()
+            override fun getInputStream(): java.io.InputStream = java.io.ByteArrayInputStream(ByteArray(0))
+            override fun getErrorStream(): java.io.InputStream = java.io.ByteArrayInputStream(ByteArray(0))
+            override fun waitFor(): Int = 137
+            override fun exitValue(): Int = 137
+            override fun destroy() {}
+            override fun destroyForcibly(): Process {
+                destroyedForcibly = true
+                return this
+            }
+        }
+
+        supervisor.register(taskId, dummyProcess, pid = 12345, sessionId = "session-test")
+
+        // Cancel flag must remain sticky (F-02)
+        assertTrue("Cancellation flag must remain set after register", supervisor.isCancellationRequested(taskId))
+        assertTrue("Cancellation flag must be propagated to sessionId", supervisor.isCancellationRequested("session-test"))
+        assertTrue("Process must be forcibly terminated on registration if cancel was pending", destroyedForcibly)
+    }
 }

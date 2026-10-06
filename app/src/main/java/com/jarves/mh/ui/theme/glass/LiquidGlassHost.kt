@@ -3,6 +3,7 @@ package com.jarves.mh.ui.theme.glass
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Modifier
 import com.builditcode.glass.LocalBackdropLayerManager
 import com.builditcode.glass.TriLevelLayout
@@ -21,19 +22,30 @@ fun LiquidGlassHost(
     config: LiquidGlassConfig = LiquidGlassConfig(),
     content: @Composable () -> Unit,
 ) {
-    val manager = rememberBackdropManager(
-        defaultScaleFactor = config.scaleFactor,
-        defaultDebounceMs = config.debounceMs,
-    )
+    // Exactly one shared backdrop per host; content registers as source, glass chrome samples it.
+    val backdrop = rememberBackdropState()
 
     CompositionLocalProvider(
-        LocalBackdropLayerManager provides manager,
+        LocalLiquidGlassBackdrop provides backdrop,
         LocalLiquidGlassConfig provides config,
     ) {
         Box(modifier = modifier) {
             content()
         }
     }
+}
+
+/** Host-owned shared backdrop; null outside a [LiquidGlassHost]. */
+val LocalLiquidGlassBackdrop = compositionLocalOf<BackdropState?> { null }
+
+/**
+ * Marks solid, non-scrolling-ancestor content as the host's backdrop source. Glass consumers
+ * must be siblings of the node carrying this modifier, never descendants.
+ */
+@Composable
+fun Modifier.hostBackdropSource(): Modifier {
+    val backdrop = LocalLiquidGlassBackdrop.current ?: return this
+    return this.backdropSource(backdrop)
 }
 
 /**

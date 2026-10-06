@@ -43,8 +43,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
@@ -222,64 +220,53 @@ fun LiquidGlassTopBar(
     tonalElevation: Dp = 2.dp,
     windowInsets: WindowInsets = WindowInsets.statusBars,
 ) {
-    val isDark = isSystemInDarkTheme()
-    val primaryForeground = if (isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)
-    val secondaryForeground = if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
-
     LiquidGlassSurface(
         modifier = modifier.fillMaxWidth(),
         material = material,
         shape = shape,
         layerSource = layerSource,
         tonalElevation = tonalElevation,
-        contentColor = primaryForeground,
     ) {
-        CompositionLocalProvider(LocalContentColor provides primaryForeground) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .windowInsetsPadding(windowInsets)
-                    .defaultMinSize(minHeight = 48.dp)
-                    .padding(horizontal = PocketSpacing.sm, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (navigationIcon != null) {
-                    Box(
-                        modifier = Modifier.size(LiquidGlassTokens.MinTouchTarget),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        navigationIcon()
-                    }
-                    Spacer(Modifier.width(PocketSpacing.xs))
-                } else {
-                    Spacer(Modifier.width(PocketSpacing.sm))
-                }
-
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(vertical = PocketSpacing.xs),
-                    verticalArrangement = Arrangement.Center,
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(windowInsets)
+                .defaultMinSize(minHeight = 56.dp)
+                .padding(horizontal = PocketSpacing.sm, vertical = PocketSpacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (navigationIcon != null) {
+                Box(
+                    modifier = Modifier.size(LiquidGlassTokens.MinTouchTarget),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    CompositionLocalProvider(LocalContentColor provides primaryForeground) {
-                        title()
-                    }
-                    if (subtitle != null) {
-                        CompositionLocalProvider(LocalContentColor provides secondaryForeground) {
-                            subtitle()
-                        }
-                    }
+                    navigationIcon()
                 }
+                Spacer(Modifier.width(PocketSpacing.xs))
+            } else {
+                Spacer(Modifier.width(PocketSpacing.sm))
+            }
 
-                if (actions != null) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.End,
-                        content = actions,
-                    )
-                } else {
-                    Spacer(Modifier.width(PocketSpacing.sm))
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(vertical = PocketSpacing.xs),
+                verticalArrangement = Arrangement.Center,
+            ) {
+                title()
+                if (subtitle != null) {
+                    subtitle()
                 }
+            }
+
+            if (actions != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.End,
+                    content = actions,
+                )
+            } else {
+                Spacer(Modifier.width(PocketSpacing.sm))
             }
         }
     }
@@ -673,26 +660,23 @@ fun <T> LiquidGlassSegmentedControl(
     itemLabel: (T) -> String = { it.toString() },
     itemIcon: ((T) -> ImageVector?)? = null,
     material: LiquidGlassMaterial = LiquidGlassMaterial.Regular,
-    layerSource: String? = null,
+    layerSource: String? = LiquidGlassLayers.Background,
     accentColor: Color = PocketPalette.orangeAccent,
 ) {
     val isDark = isSystemInDarkTheme()
-    val containerShape = RoundedCornerShape(14.dp)
-    val itemShape = RoundedCornerShape(10.dp)
 
     LiquidGlassSurface(
-        modifier = modifier.clip(containerShape),
-        material = LiquidGlassMaterial.Thin,
-        shape = containerShape,
-        tint = if (isDark) Color(0x22121824) else Color(0x14000000),
-        borderStroke = BorderStroke(0.5.dp, if (isDark) Color(0x24FFFFFF) else Color(0x18000000)),
+        modifier = modifier
+            .clip(RoundedCornerShape(LiquidGlassTokens.ControlRadius)),
+        material = material,
+        shape = RoundedCornerShape(LiquidGlassTokens.ControlRadius),
         layerSource = layerSource,
     ) {
         Row(
             modifier = Modifier
                 .padding(3.dp)
                 .fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             items.forEach { item ->
@@ -700,100 +684,60 @@ fun <T> LiquidGlassSegmentedControl(
                 val label = itemLabel(item)
                 val icon = itemIcon?.invoke(item)
 
-                if (isSelected) {
-                    LiquidGlassSurface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .defaultMinSize(minHeight = LiquidGlassTokens.MinTouchTarget),
-                        material = LiquidGlassMaterial.UltraThin,
-                        shape = itemShape,
-                        tint = if (isDark) Color(0x26FFFFFF) else Color(0x60FFFFFF),
-                        borderStroke = BorderStroke(0.5.dp, if (isDark) Color(0x38FFFFFF) else Color(0x24000000)),
-                        tonalElevation = 1.dp,
-                        layerSource = null,
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .defaultMinSize(minHeight = LiquidGlassTokens.MinTouchTarget)
-                                .drawBehind {
-                                    drawLine(
-                                        color = if (isDark) Color(0x40FFFFFF) else Color(0x60FFFFFF),
-                                        start = Offset(4f, 1f),
-                                        end = Offset(size.width - 4f, 1f),
-                                        strokeWidth = 1.5f,
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = LiquidGlassTokens.MinTouchTarget)
+                        .clip(RoundedCornerShape(LiquidGlassTokens.ControlRadius - 2.dp))
+                        .then(
+                            if (isSelected) {
+                                Modifier
+                                    .background(
+                                        if (isDark) Color(0x33FFFFFF) else Color(0x55FFFFFF)
                                     )
-                                }
-                                .semantics {
-                                    selected = true
-                                    contentDescription = label
-                                }
-                                .padding(horizontal = PocketSpacing.xs, vertical = PocketSpacing.xs),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center,
-                            ) {
-                                if (icon != null) {
-                                    Icon(
-                                        imageVector = icon,
-                                        contentDescription = null,
-                                        tint = if (isDark) Color.White else Color(0xFF0F172A),
-                                        modifier = Modifier.size(15.dp),
+                                    .border(
+                                        0.75.dp,
+                                        accentColor.copy(alpha = 0.45f),
+                                        RoundedCornerShape(LiquidGlassTokens.ControlRadius - 2.dp),
                                     )
-                                    Spacer(Modifier.width(PocketSpacing.xs))
-                                }
-                                Text(
-                                    text = label,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (isDark) Color.White else Color(0xFF0F172A),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
+                            } else Modifier
+                        )
+                        .clickable(
+                            role = Role.Tab,
+                            onClick = { onItemSelected(item) },
+                        )
+                        .semantics {
+                            selected = isSelected
+                            contentDescription = label
                         }
-                    }
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .defaultMinSize(minHeight = LiquidGlassTokens.MinTouchTarget)
-                            .clip(itemShape)
-                            .clickable(
-                                role = Role.Tab,
-                                onClick = { onItemSelected(item) },
-                            )
-                            .semantics {
-                                selected = false
-                                contentDescription = label
-                            }
-                            .padding(horizontal = PocketSpacing.xs, vertical = PocketSpacing.xs),
-                        contentAlignment = Alignment.Center,
+                        .padding(horizontal = PocketSpacing.xs, vertical = PocketSpacing.xs),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center,
-                        ) {
-                            if (icon != null) {
-                                Icon(
-                                    imageVector = icon,
-                                    contentDescription = null,
-                                    tint = if (isDark) Color(0x99CBD5E1) else Color(0x99475569),
-                                    modifier = Modifier.size(15.dp),
-                                )
-                                Spacer(Modifier.width(PocketSpacing.xs))
-                            }
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Normal,
-                                color = if (isDark) Color(0x99CBD5E1) else Color(0x99475569),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
+                        if (icon != null) {
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = null,
+                                tint = if (isSelected) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(15.dp),
                             )
+                            Spacer(Modifier.width(PocketSpacing.xs))
                         }
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isSelected) {
+                                if (isDark) Color.White else Color(0xFF0F172A)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
             }

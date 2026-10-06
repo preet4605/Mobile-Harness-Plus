@@ -14,7 +14,6 @@ Rules
 - Never overwrite, revert, reset, or discard unrelated user changes.
 - Never commit or push unless explicitly requested.
 - Never expose or hard-code secrets.
-- When building or modifying code, always generate the APK and move it to the project root folder.
 - When complete and verified, STOP.
 
 Source of Truth
@@ -69,8 +68,6 @@ Preserve schema/data compatibility and use existing migrations.
 
 Keep engine-specific protocol logic inside existing runtime bridges.
 
-When normalizing provider base URLs ending with "/v1", prioritize "$base/models" directly and avoid duplicate "/v1/v1/*" paths.
-
 Performance
 
 Prefer event-driven, lifecycle-aware, cancellable work.
@@ -93,18 +90,6 @@ git status --short
 git diff --stat
 
 Inspect the full diff when changes were made.
-
-Build & APK Distribution
-
-Always generate the APK and copy it to the project root folder:
-- Assemble debug APK:
-  `./gradlew assembleOnlineDebug`
-- Copy to project root:
-  `cp -f app/build/outputs/apk/online/debug/app-online-debug.apk app-online-debug.apk`
-  `cp -f app-online-debug.apk mobile-harness-dev.apk`
-- Verify and report actual size and checksums:
-  `stat -c "%s %n" *.apk`
-  `md5sum *.apk`
 
 State
 

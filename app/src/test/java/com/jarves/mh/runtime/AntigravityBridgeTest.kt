@@ -99,17 +99,20 @@ class AntigravityBridgeTest {
 
     @Test
     fun `headless command uses exact model configuration without conflicting effort`() {
-        val command = antigravityCommand("gemini-model", "high", "conversation-1")
-        assertTrue(command.containsAll(listOf(
+        val commandUnauthorized = antigravityCommand("gemini-model", "high", "conversation-1", isExecutionAuthorized = false)
+        assertTrue(commandUnauthorized.containsAll(listOf(
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--print-timeout", "60m",
-            "--dangerously-skip-permissions",
             "--model", "gemini-model",
             "--conversation", "conversation-1",
         )))
-        assertTrue("--effort" !in command)
-        assertTrue("--new-project" !in command)
+        assertTrue("--dangerously-skip-permissions" !in commandUnauthorized)
+        assertTrue("--effort" !in commandUnauthorized)
+        assertTrue("--new-project" !in commandUnauthorized)
+
+        val commandAuthorized = antigravityCommand("gemini-model", "high", "conversation-1", isExecutionAuthorized = true)
+        assertTrue("--dangerously-skip-permissions" in commandAuthorized)
     }
 
     @Test
@@ -143,6 +146,20 @@ class AntigravityBridgeTest {
         assertTrue(isAuthError("OAuth token expired or invalid"))
         assertTrue(isAuthError("Not signed in to Google account"))
         org.junit.Assert.assertFalse(isAuthError("FileNotFoundException: file does not exist"))
+    }
+
+    @Test
+    fun `network error detection identifies wifi to mobile data switch and connection aborts`() {
+        val userReportedError = """agent executor error: generating and executing: request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": read tcp 192.168.0.105:47230->172.217.113.4:443: read: software caused connection abort"""
+        assertTrue(isNetworkError(userReportedError))
+        assertTrue(isNetworkError("software caused connection abort"))
+        assertTrue(isNetworkError("ECONNABORTED"))
+        assertTrue(isNetworkError("write: broken pipe"))
+        assertTrue(isNetworkError("read tcp 10.0.0.1:12345->1.2.3.4:443: read: connection reset by peer"))
+        assertTrue(isNetworkError("dial tcp: lookup daily-cloudcode-pa.googleapis.com: no such host"))
+        assertTrue(isNetworkError("Network connection interrupted. Please check your internet connection."))
+        org.junit.Assert.assertFalse(isNetworkError("Syntax error on line 42"))
+        org.junit.Assert.assertFalse(isNetworkError("Authentication failed: invalid token"))
     }
 
     @Test

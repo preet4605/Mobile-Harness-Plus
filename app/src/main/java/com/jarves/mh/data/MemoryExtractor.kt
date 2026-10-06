@@ -38,6 +38,17 @@ object MemoryExtractor {
         """(?im)(?:Next action|Next step|Up next):\s*([^\r\n\.]{4,200})"""
     )
 
+    /** Maps a user tech instruction to a memory key, or null when it cannot be classified. */
+    private fun classifyUserTech(tech: String, target: String): String? = when {
+        target.contains("database") -> "database"
+        tech.lowercase(Locale.ROOT) in setOf("sqlite", "room", "postgres", "mysql", "mongodb") -> "database"
+        target.contains("framework") -> "project-framework"
+        target.contains("language") -> "project-language"
+        tech.lowercase(Locale.ROOT) in setOf("kotlin", "java", "swift") -> "project-language"
+        tech.lowercase(Locale.ROOT) in setOf("compose", "flutter") -> "project-framework"
+        else -> null
+    }
+
     /**
      * Backward-compatible key-value extractor used across the app.
      */
@@ -50,13 +61,8 @@ object MemoryExtractor {
             USER_TECH_INSTRUCTION_REGEX.find(text)?.let { match ->
                 val tech = match.groupValues[1].trim()
                 val target = match.groupValues[2].trim().lowercase(Locale.ROOT)
-                val key = when {
-                    target.contains("database") || tech.equals("sqlite", ignoreCase = true) || tech.equals("room", ignoreCase = true) -> "database"
-                    target.contains("framework") -> "project-framework"
-                    target.contains("language") -> "project-language"
-                    else -> "database"
-                }
-                results.add(key to tech)
+                val key = classifyUserTech(tech, target)
+                if (key != null) results.add(key to tech)
             }
         }
 
@@ -154,12 +160,8 @@ object MemoryExtractor {
             USER_TECH_INSTRUCTION_REGEX.find(msg.text)?.let { match ->
                 val tech = match.groupValues[1].trim()
                 val target = match.groupValues[2].trim().lowercase(Locale.ROOT)
-                val key = when {
-                    target.contains("database") || tech.equals("sqlite", ignoreCase = true) || tech.equals("room", ignoreCase = true) -> "database"
-                    target.contains("framework") -> "project-framework"
-                    target.contains("language") -> "project-language"
-                    else -> "database"
-                }
+                val key = classifyUserTech(tech, target)
+                if (key == null) return@let
                 entries.add(
                     MemoryEntry(
                         projectId = projectId,

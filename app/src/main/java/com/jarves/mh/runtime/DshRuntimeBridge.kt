@@ -54,7 +54,9 @@ class DshRuntimeBridge(
     @Volatile private var activeProcess: Process? = null
     override val isRunning: Boolean get() = activeProcess?.isAlive == true
     @Volatile private var activeSessionId: String? = null
+    @Volatile private var activeTaskId: String? = null
     @Volatile private var userStopRequested: Boolean = false
+    private val stoppedTaskIds = ConcurrentHashMap.newKeySet<String>()
     @Volatile private var activeProjectSlug: String? = null
     @Volatile private var taskStartedAtElapsedRealtime: Long = 0L
     @Volatile private var lastForegroundProgressAt: Long = 0L
@@ -74,6 +76,12 @@ class DshRuntimeBridge(
         attemptId: String?,
     ): String = withContext(Dispatchers.IO + NonCancellable) {
         val sessionId = UUID.randomUUID().toString()
+        val isExecutionAuthorized = com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.isExecutionAuthorized(taskId, null)
+        if (!isExecutionAuthorized) {
+            emitFailureOnce(sessionId, "Execution not authorized for task $taskId")
+            throw SecurityException("Execution denied: DSH session requires valid EXECUTION authority for task $taskId")
+        }
+        com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.registerSession(taskId!!, sessionId)
         if (taskId != null) {
             runCatching {
                 com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).bindSession(taskId, sessionId)
@@ -86,6 +94,29 @@ class DshRuntimeBridge(
         val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId, effectiveAttemptId)
         finishedSessions.remove(sessionId)
         activeSessionId = sessionId
+        activeTaskId = taskId
+        val isTaskCancelled = (taskId != null && runCatching {
+            com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).isCancellationActive(taskId)
+        }.getOrDefault(false)) || (taskId != null && stoppedTaskIds.contains(taskId))
+        if (isTaskCancelled || userStopRequested) {
+            userStopRequested = true
+            if (taskId != null) stoppedTaskIds.add(taskId)
+            activeSessionId = null
+            activeTaskId = null
+            emitFailureOnce(sessionId, "Stopped by user")
+            cancelForegroundRuntime()
+            throw DshSessionException("Stopped by user")
+        }
+        val isTaskTerminal = taskId != null && runCatching {
+            val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
+            supervisor.stateStore.get(taskId)?.status?.isTerminal == true
+        }.getOrDefault(false)
+        if (isTaskTerminal) {
+            activeSessionId = null
+            activeTaskId = null
+            emitFailureOnce(sessionId, "Task $taskId is already terminal")
+            throw IllegalStateException("Task $taskId is already terminal")
+        }
         userStopRequested = false
         activeProjectSlug = projectSlug
         taskStartedAtElapsedRealtime = android.os.SystemClock.elapsedRealtime()
@@ -96,13 +127,10 @@ class DshRuntimeBridge(
         pushForegroundProgress("Starting DeepSeek Harness…")
         val effectiveAccountMgr = accountManager ?: AntigravityAccountManager(context, com.jarves.mh.data.AppPreferences(context))
         if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER && effectiveAccountMgr.selectAccountForTurn() == null) {
-            eventBus.emit(
-                RuntimeEvent.SessionFailed(
-                    sessionId,
-                    "Google account not signed in. Sign in under Antigravity settings to use Antigravity models.",
-                ),
-            )
-            return@withContext sessionId
+            val message = "Google account not signed in. Sign in under Antigravity settings to use Antigravity models."
+            activeSessionId = null
+            emitFailureOnce(sessionId, message)
+            throw DshSessionException(message)
         }
         val secret = if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER) {
             secretFor(provider)?.ifBlank { "antigravity-local-token" } ?: "antigravity-local-token"
@@ -110,17 +138,16 @@ class DshRuntimeBridge(
             secretFor(provider).orEmpty()
         }
         if (secret.isBlank()) {
-            eventBus.emit(RuntimeEvent.SessionFailed(sessionId, "No API key is saved for ${provider.kind.title}."))
-            return@withContext sessionId
+            val message = "No API key is saved for ${provider.kind.title}."
+            activeSessionId = null
+            emitFailureOnce(sessionId, message)
+            throw DshSessionException(message)
         }
         if (provider.kind == ProviderKind.CLAUDE) {
-            eventBus.emit(
-                RuntimeEvent.SessionFailed(
-                    sessionId,
-                    "Claude subscription login is not supported by DeepSeek Harness. Pick a key-based provider in Settings.",
-                ),
-            )
-            return@withContext sessionId
+            val message = "Claude subscription login is not supported by DeepSeek Harness. Pick a key-based provider in Settings."
+            activeSessionId = null
+            emitFailureOnce(sessionId, message)
+            throw DshSessionException(message)
         }
 
         var antigravityGateway: AntigravityGatewayServer? = null
@@ -151,7 +178,13 @@ class DshRuntimeBridge(
             }
             val route = DshRouteMapper.forProfile(provider, localGatewayUrl = antigravityGateway?.url)
             writeDshSettings(installed.rootfs, route, provider)
-            val environment = buildDshEnvironment(route, secret)
+            val dshSecret = if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER && antigravityGateway != null) {
+                antigravityGateway.gatewaySecret
+            } else {
+                secret
+            }
+            val isAuthorized = com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.isExecutionAuthorized(taskId, sessionId)
+            val environment = buildDshEnvironment(route, dshSecret, isAuthorized)
 
             val guestWorkspacePath = "/workspace/$projectSlug"
             val contextPrompt = buildContextPrompt(injectedPrompt, conversationHistory, guestWorkspacePath, projectKind, memory)
@@ -227,17 +260,23 @@ class DshRuntimeBridge(
                 )
             }
             if (!userStopRequested) {
-                antigravityGateway?.close()
-                activeProcess = null
-                activeSessionId = null
-                RuntimeTaskController.stopAction = null
+                if (activeSessionId == sessionId) {
+                    antigravityGateway?.close()
+                    activeProcess = null
+                    activeSessionId = null
+                    activeTaskId = null
+                    RuntimeTaskController.stopAction = null
+                }
                 throw error
             }
         }
-        antigravityGateway?.close()
-        activeProcess = null
-        activeSessionId = null
-        RuntimeTaskController.stopAction = null
+        if (activeSessionId == sessionId) {
+            antigravityGateway?.close()
+            activeProcess = null
+            activeSessionId = null
+            activeTaskId = null
+            RuntimeTaskController.stopAction = null
+        }
         sessionId
     }
 
@@ -396,21 +435,44 @@ class DshRuntimeBridge(
     }
 
     override suspend fun stopSession(sessionId: String, force: Boolean) = withContext(Dispatchers.IO) {
-        if (activeSessionId == sessionId) {
-            userStopRequested = true
-            if (force) {
-                activeProcess?.destroyForcibly()
-            } else {
-                activeProcess?.destroy()
-                delay(500)
-                if (activeProcess?.isAlive == true) activeProcess?.destroyForcibly()
-            }
-            emitFailureOnce(sessionId, "Stopped by user")
+        userStopRequested = true
+        val resolvedTaskId: String? = runCatching {
+            com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).getTaskIdForSession(sessionId)
+        }.getOrNull() ?: activeTaskId
+        if (resolvedTaskId != null) {
+            stoppedTaskIds.add(resolvedTaskId)
+            com.jarves.mh.runtime.boundary.ExecutionBoundaryGate.instance.revokeExecutionAuthority(resolvedTaskId, "Stopped by user")
         }
+        val proc = activeProcess
+        if (proc != null) {
+            if (force) {
+                (proc as? NativeSpawnProcess)?.destroyForcibly() ?: proc.destroyForcibly()
+            } else {
+                (proc as? NativeSpawnProcess)?.interrupt() ?: proc.destroy()
+                delay(500)
+                if (proc.isAlive) proc.destroyForcibly()
+            }
+        }
+        emitFailureOnce(sessionId, "Stopped by user")
     }
 
     override suspend fun stopActiveSession(force: Boolean) {
-        activeSessionId?.let { stopSession(it, force) }
+        userStopRequested = true
+        val currentSessionId = activeSessionId
+        if (currentSessionId != null) {
+            stopSession(currentSessionId, force)
+        } else {
+            val proc = activeProcess
+            if (proc != null) {
+                if (force) {
+                    (proc as? NativeSpawnProcess)?.destroyForcibly() ?: proc.destroyForcibly()
+                } else {
+                    (proc as? NativeSpawnProcess)?.interrupt() ?: proc.destroy()
+                    delay(500)
+                    if (proc.isAlive) proc.destroyForcibly()
+                }
+            }
+        }
     }
 
     fun configureProjectRoot(projectId: String, rootPath: String) {
@@ -482,35 +544,6 @@ class DshRuntimeBridge(
         true
     }
 
-    private fun writeDshSettings(rootfs: File, route: DshRoute, provider: ProviderProfile) {
-        val home = File(rootfs, DSH_HOME_GUEST_PATH.removePrefix("/")).apply { mkdirs() }
-        val body = buildString {
-            appendLine("agent-default-model:")
-            appendLine("  provider: ${route.name}")
-            appendLine("  model: ${yamlQuote(provider.model.ifBlank { route.defaultModel })}")
-            if (route.custom != null) {
-                appendLine("llm-pi-ai:")
-                appendLine("  providers:")
-                appendLine("    ${route.name}:")
-                appendLine("      apiKeyEnv: ${route.keyEnv}")
-                appendLine("      api: ${route.custom.api}")
-                appendLine("      baseURL: ${yamlQuote(route.custom.baseUrl)}")
-                appendLine("      models:")
-                if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER) {
-                    val allAntigravity = (listOf(provider.model.ifBlank { route.defaultModel }) + AntigravityProtocolAdapter.SUPPORTED_MODELS).distinct()
-                    for (m in allAntigravity) {
-                        appendLine("        - id: ${yamlQuote(m)}")
-                    }
-                } else {
-                    appendLine("        - id: ${yamlQuote(provider.model.ifBlank { route.defaultModel })}")
-                }
-            }
-        }
-        File(home, "settings.yaml").writeText(body)
-    }
-
-    private fun yamlQuote(value: String): String = "'${value.replace("'", "''")}'"
-
     private suspend fun emitReasoningSummary(
         sessionId: String,
         text: String,
@@ -579,6 +612,13 @@ class DshRuntimeBridge(
                 "The provider rejected the saved API key."
             message.contains("missing_credential", true) ->
                 "No API key reached DeepSeek Harness. Re-save the provider key in Settings."
+            message.contains("software caused connection abort", true) ||
+                message.contains("connection abort", true) ||
+                message.contains("network connection interrupted", true) ||
+                message.contains("broken pipe", true) ||
+                message.contains("network unreachable", true) ||
+                message.contains("connection reset", true) ->
+                "Network connection interrupted. Please check your internet connection."
             message.contains("not installed", true) -> message.take(300)
             message.isBlank() -> "DeepSeek Harness could not start."
             else -> message.take(500)
@@ -591,68 +631,14 @@ class DshRuntimeBridge(
         guestWorkspacePath: String,
         projectKind: ProjectKind,
         memory: ContextMemory = ContextMemory(""),
-    ): String {
-        val priorMessages = history
-            .filter { msg ->
-                (msg.fromUser || !msg.text.startsWith("Hi! Tell me")) &&
-                !msg.text.startsWith("Failed to") &&
-                !msg.text.startsWith("Error:") &&
-                !msg.text.contains("API Error")
-            }
-            .dropLast(1)
-
-        val sb = StringBuilder()
-        sb.appendLine("<project_workspace>")
-        if (projectKind == ProjectKind.QUICK_PROJECT) {
-            sb.appendLine("This is a lightweight project workspace at $guestWorkspacePath.")
-            sb.appendLine("Respond conversationally, and use terminal or file tools whenever they are useful for the request.")
-            sb.appendLine("Keep every file and command inside this project workspace.")
-        } else {
-            sb.appendLine("The current working directory $guestWorkspacePath is the project root.")
-            sb.appendLine("Create and edit project files directly in this directory. Do not create another outer project folder unless the user explicitly asks for one.")
-            sb.appendLine("When giving commands to the user, make them runnable from this project root.")
-        }
-        if (installer.isStackInstalled(DevStack.ANDROID)) {
-            sb.appendLine("If this is an Android project, the phone already provides JDK 17, Android SDK 36, ARM64 Build Tools 35.0.0, Gradle 8.14.3, and an offline Maven repository.")
-            sb.appendLine("For newly created Android projects, use AGP 8.11.0, Kotlin 1.9.22, compileSdk 36, and Java 17 so the preinstalled offline toolchain can build immediately.")
-            sb.appendLine("The bundled Maven cache handles the base toolchain; Gradle may download project-specific libraries normally. Set android.useAndroidX=true for AndroidX or Compose projects.")
-            sb.appendLine("PocketDev globally configures Gradle to use the SDK's ARM64 aapt2. Do not use the x86_64 Maven aapt2, investigate its architecture, or add android.aapt2FromMavenOverride to the project.")
-            sb.appendLine("Use the installed `gradle` command for Android builds; do not ask the user to install Android Studio, an SDK, Gradle, ADB, or Termux.")
-        } else {
-            sb.appendLine("The optional Android build toolchain is not installed in this PocketDev runtime. You may create Android project files, but do not claim that Gradle, the Android SDK, or aapt2 is available and do not present build or install commands as verified. Tell the user to add the Android development stack in PocketDev Settings before building.")
-        }
-        sb.appendLine("For local servers, give a clear start command and never use a kill command that searches its own command text with pgrep, because it can terminate the terminal itself.")
-        sb.appendLine("</project_workspace>")
-        sb.appendLine()
-        val memoryBlock = renderMemoryBlock(memory)
-        if (memoryBlock.isNotBlank()) {
-            sb.appendLine(memoryBlock)
-            sb.appendLine()
-        }
-        if (priorMessages.isEmpty()) {
-            sb.appendLine(currentPrompt)
-            return sb.toString()
-        }
-        sb.appendLine("<conversation_history>")
-        sb.appendLine("The following is our prior conversation in this project. Continue naturally from where we left off.")
-        sb.appendLine()
-        for (msg in priorMessages) {
-            val role = if (msg.fromUser) "User" else "Assistant"
-            sb.appendLine("$role: ${msg.text}")
-            if (msg.attachments.isNotEmpty()) {
-                sb.appendLine("Attached files:")
-                msg.attachments.forEach { attachment ->
-                    sb.appendLine("- ${attachment.displayName}: $guestWorkspacePath/${attachment.relativePath} (${attachment.mimeType})")
-                }
-            }
-            sb.appendLine()
-        }
-        sb.appendLine("</conversation_history>")
-        sb.appendLine()
-        sb.appendLine("Now, respond to this new message from the user:")
-        sb.appendLine(currentPrompt)
-        return sb.toString()
-    }
+    ): String = com.jarves.mh.data.PromptContextSupport.buildPrompt(
+        currentPrompt = currentPrompt,
+        history = history.dropLast(1), // the current prompt was just appended to history
+        guestWorkspacePath = guestWorkspacePath,
+        projectKind = projectKind,
+        memory = memory,
+        androidStackInstalled = installer.isStackInstalled(com.jarves.mh.model.DevStack.ANDROID),
+    )
 
     private fun pushForegroundProgress(detailRaw: String) {
         if (activeSessionId == null) return
@@ -725,17 +711,89 @@ class DshRuntimeBridge(
         private const val SDK_SHUTDOWN_ID = 3
         private const val SDK_SHUTDOWN_TIMEOUT_MS = 3_000L
 
-        internal fun buildDshEnvironment(route: DshRoute, secret: String): Map<String, String> {
+        internal fun buildDshEnvironment(
+            route: DshRoute,
+            secret: String,
+            isExecutionAuthorized: Boolean = false,
+        ): Map<String, String> {
+            val permissionMode = if (isExecutionAuthorized) "danger-full-access" else "read-only"
             val env = linkedMapOf(
                 "DSH_HOME" to DSH_HOME_GUEST_PATH,
-                // PocketDev already confines the whole Linux guest with PRoot. Let dsh
-                // use every tool inside that boundary without an unavailable approval UI.
-                "DSH_PERMISSION_MODE" to "danger-full-access",
+                // Danger full access is permitted ONLY within an authorized EXECUTION context.
+                "DSH_PERMISSION_MODE" to permissionMode,
                 NARB_DISABLE_NATIVE_CACHE_ENV to NARB_DISABLE_NATIVE_CACHE_VALUE,
                 route.keyEnv to secret,
             )
             if (route.keyEnv != FALLBACK_KEY_ENV) env.remove(FALLBACK_KEY_ENV)
             return env
+        }
+
+        internal fun yamlQuote(value: String): String = "'${value.replace("'", "''")}'"
+
+        internal fun buildDshCordisPatch(route: DshRoute, provider: ProviderProfile): String {
+            val targetModel = provider.model.ifBlank { route.defaultModel }
+            return buildString {
+                appendLine("- id: agent-default-model")
+                appendLine("  config:")
+                appendLine("    provider: ${route.name}")
+                appendLine("    model: ${yamlQuote(targetModel)}")
+                if (route.custom != null) {
+                    appendLine()
+                    appendLine("- id: llm-pi-ai")
+                    appendLine("  config:")
+                    appendLine("    providers:")
+                    appendLine("      ${route.name}:")
+                    appendLine("        apiKeyEnv: ${route.keyEnv}")
+                    appendLine("        api: ${route.custom.api}")
+                    appendLine("        baseURL: ${yamlQuote(route.custom.baseUrl)}")
+                    appendLine("        models:")
+                    if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER) {
+                        val allAntigravity = (listOf(targetModel) + AntigravityProtocolAdapter.SUPPORTED_MODELS).distinct()
+                        for (m in allAntigravity) {
+                            appendLine("          - id: ${yamlQuote(m)}")
+                        }
+                    } else {
+                        appendLine("          - id: ${yamlQuote(targetModel)}")
+                    }
+                }
+            }
+        }
+
+        internal fun buildDshLegacySettings(route: DshRoute, provider: ProviderProfile): String {
+            val targetModel = provider.model.ifBlank { route.defaultModel }
+            return buildString {
+                appendLine("agent-default-model:")
+                appendLine("  provider: ${route.name}")
+                appendLine("  model: ${yamlQuote(targetModel)}")
+                if (route.custom != null) {
+                    appendLine("llm-pi-ai:")
+                    appendLine("  providers:")
+                    appendLine("    ${route.name}:")
+                    appendLine("      apiKeyEnv: ${route.keyEnv}")
+                    appendLine("      api: ${route.custom.api}")
+                    appendLine("      baseURL: ${yamlQuote(route.custom.baseUrl)}")
+                    appendLine("      models:")
+                    if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER) {
+                        val allAntigravity = (listOf(targetModel) + AntigravityProtocolAdapter.SUPPORTED_MODELS).distinct()
+                        for (m in allAntigravity) {
+                            appendLine("        - id: ${yamlQuote(m)}")
+                        }
+                    } else {
+                        appendLine("        - id: ${yamlQuote(targetModel)}")
+                    }
+                }
+            }
+        }
+
+        internal fun writeDshSettings(rootfs: File, route: DshRoute, provider: ProviderProfile) {
+            val home = File(rootfs, DSH_HOME_GUEST_PATH.removePrefix("/")).apply { mkdirs() }
+            val cordisPatch = buildDshCordisPatch(route, provider)
+            File(home, "cordis.patch.yml").writeText(cordisPatch)
+            val sdkProfileDir = File(home, "profiles/sdk")
+            if (sdkProfileDir.isDirectory) {
+                File(sdkProfileDir, "cordis.patch.yml").writeText(cordisPatch)
+            }
+            File(home, "settings.yaml").writeText(buildDshLegacySettings(route, provider))
         }
     }
 }
@@ -797,12 +855,15 @@ internal object DshRouteMapper {
                 defaultModel = model,
                 custom = DshCustomRoute("openai-completions", profile.resolvedBaseUrl),
             )
-            ProviderKind.CUSTOM -> DshRoute(
-                name = "mh-custom",
-                keyEnv = DshRuntimeBridge.FALLBACK_KEY_ENV,
-                defaultModel = model,
-                custom = DshCustomRoute(profile.dshApi.ifBlank { "anthropic-messages" }, profile.resolvedBaseUrl),
-            )
+            ProviderKind.CUSTOM -> {
+                val endpoint = com.jarves.mh.provider.ProviderEndpointNormalizer.normalize(profile.resolvedBaseUrl, profile.dshApi)
+                DshRoute(
+                    name = if (profile.profileId.isBlank()) "mh-custom" else "mh-custom-" + profile.profileId.filter { it.isLetterOrDigit() }.take(12),
+                    keyEnv = DshRuntimeBridge.FALLBACK_KEY_ENV,
+                    defaultModel = model,
+                    custom = DshCustomRoute(endpoint.api, endpoint.baseUrl),
+                )
+            }
             ProviderKind.CLAUDE -> throw IllegalArgumentException("Claude subscription login is not supported by DeepSeek Harness")
         }
     }

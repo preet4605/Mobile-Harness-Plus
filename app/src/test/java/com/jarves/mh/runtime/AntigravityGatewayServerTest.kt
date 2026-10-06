@@ -131,6 +131,7 @@ class AntigravityGatewayServerTest {
             val conn = (URL("${gateway.url}/v1/messages/count_tokens").openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 doOutput = true
+                setRequestProperty("Authorization", "Bearer ${gateway.gatewaySecret}")
             }
             conn.outputStream.write("1234567890123456".toByteArray(Charsets.UTF_8))
             assertEquals(200, conn.responseCode)
@@ -155,6 +156,7 @@ class AntigravityGatewayServerTest {
             gateway.start()
             val conn = (URL("${gateway.url}/v1/models").openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
+                setRequestProperty("Authorization", "Bearer ${gateway.gatewaySecret}")
             }
             assertEquals(200, conn.responseCode)
             val body = conn.inputStream.bufferedReader().use { it.readText() }
@@ -175,6 +177,7 @@ class AntigravityGatewayServerTest {
                 requestMethod = "POST"
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Authorization", "Bearer ${gateway.gatewaySecret}")
             }
             conn.outputStream.write("{\"model\":\"gemini-3.8-pro\",\"messages\":[]}".toByteArray(Charsets.UTF_8))
             assertEquals(401, conn.responseCode)
@@ -312,6 +315,7 @@ class AntigravityGatewayServerTest {
                 requestMethod = "POST"
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Authorization", "Bearer ${gateway.gatewaySecret}")
             }
             conn.outputStream.write("{\"model\":\"gemini-3.8-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}".toByteArray(Charsets.UTF_8))
             assertEquals(200, conn.responseCode)
@@ -362,6 +366,7 @@ class AntigravityGatewayServerTest {
                 requestMethod = "POST"
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Authorization", "Bearer ${gateway.gatewaySecret}")
             }
             conn.outputStream.write("{\"model\":\"gemini-3.8-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}".toByteArray(Charsets.UTF_8))
 

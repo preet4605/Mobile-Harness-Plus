@@ -62,7 +62,7 @@ class ContextMemoryStoreTest {
         val afterAuto = store.upsert("p1", "project-language", "Java", MemorySource.AUTO)
 
         assertEquals(1, afterAuto.entries.size)
-        assertEquals("Java", afterAuto.entries[0].value)
+        assertEquals("Kotlin", afterAuto.entries[0].value)
         assertEquals(MemorySource.USER, afterAuto.entries[0].source)
     }
 

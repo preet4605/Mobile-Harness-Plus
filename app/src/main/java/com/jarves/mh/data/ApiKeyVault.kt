@@ -75,6 +75,13 @@ class ApiKeyVault(context: Context) {
             preferences.edit().remove(activeKey(providerId)).apply()
             remaining.firstOrNull()?.let { setActiveId(providerId, it.id) }
         }
+        if (remaining.isEmpty()) {
+            removeEncrypted(providerId)
+            preferences.edit()
+                .remove(poolKey(providerId))
+                .remove(activeKey(providerId))
+                .apply()
+        }
     }
 
     private fun putEncrypted(storageId: String, secret: String) {
@@ -89,9 +96,8 @@ class ApiKeyVault(context: Context) {
 
     @Synchronized
     fun contains(providerId: String): Boolean =
-        preferences.contains(activeKey(providerId)) ||
-        preferences.contains(poolKey(providerId)) ||
-        preferences.contains("$providerId.value")
+        list(providerId).isNotEmpty() ||
+        (preferences.contains("$providerId.value") && getEncrypted(providerId)?.isNotBlank() == true)
 
     @Synchronized
     fun remove(providerId: String) {
@@ -103,6 +109,74 @@ class ApiKeyVault(context: Context) {
             .remove(activeKey(providerId))
             .apply()
     }
+
+    @Synchronized
+    fun purgeRevokedProviders() {
+        preferences.all.keys.filter { it.endsWith(".pool") }.forEach { poolKey ->
+            val providerId = poolKey.removeSuffix(".pool")
+            val current = readPool(providerId)
+            val filtered = current.filterNot { com.jarves.mh.provider.isRevokedProvider(it.name) }
+            if (filtered.size != current.size) {
+                savePool(providerId, filtered)
+                current.filter { com.jarves.mh.provider.isRevokedProvider(it.name) }.forEach {
+                    removeEncrypted(secretKey(providerId, it.id))
+                    if (activeId(providerId) == it.id) {
+                        preferences.edit().remove(activeKey(providerId)).apply()
+                        filtered.firstOrNull()?.let { next -> setActiveId(providerId, next.id) }
+                    }
+                }
+                if (filtered.isEmpty()) {
+                    removeEncrypted(providerId)
+                    preferences.edit().remove(poolKey(providerId)).remove(activeKey(providerId)).apply()
+                }
+            }
+        }
+        preferences.all.keys.filter { it.endsWith(".active") }.forEach { activeK ->
+            val providerId = activeK.removeSuffix(".active")
+            val active = activeId(providerId)
+            if (active != null && readPool(providerId).none { it.id == active }) {
+                preferences.edit().remove(activeK).apply()
+            }
+        }
+        preferences.all.keys.forEach { key ->
+            if (com.jarves.mh.provider.isRevokedProvider(key)) {
+                preferences.edit().remove(key).apply()
+            }
+        }
+    }
+
+    @Synchronized
+    fun purgeTokenHarbor() {
+        preferences.all.keys.filter { it.endsWith(".pool") }.forEach { poolKey ->
+            val providerId = poolKey.removeSuffix(".pool")
+            val current = readPool(providerId)
+            val filtered = current.filterNot { it.name.contains("tokenharbor", ignoreCase = true) }
+            if (filtered.size != current.size) {
+                savePool(providerId, filtered)
+                current.filter { it.name.contains("tokenharbor", ignoreCase = true) }.forEach {
+                    removeEncrypted(secretKey(providerId, it.id))
+                    if (activeId(providerId) == it.id) {
+                        preferences.edit().remove(activeKey(providerId)).apply()
+                        filtered.firstOrNull()?.let { next -> setActiveId(providerId, next.id) }
+                    }
+                }
+                if (filtered.isEmpty()) {
+                    removeEncrypted(providerId)
+                    preferences.edit().remove(poolKey(providerId)).remove(activeKey(providerId)).apply()
+                }
+            }
+        }
+        preferences.all.keys.filter { it.endsWith(".active") }.forEach { activeK ->
+            val providerId = activeK.removeSuffix(".active")
+            val active = activeId(providerId)
+            if (active != null && readPool(providerId).none { it.id == active }) {
+                preferences.edit().remove(activeK).apply()
+            }
+        }
+    }
+
+    @Synchronized
+    fun purgeAiqana() = purgeRevokedProviders()
 
     @Synchronized
     fun get(providerId: String): String? {
@@ -144,9 +218,13 @@ class ApiKeyVault(context: Context) {
     }.getOrDefault(emptyList())
 
     private fun savePool(providerId: String, entries: List<ApiKeyInfo>) {
-        val array = JSONArray()
-        entries.forEach { array.put(JSONObject().put("id", it.id).put("name", it.name)) }
-        preferences.edit().putString(poolKey(providerId), array.toString()).apply()
+        if (entries.isEmpty()) {
+            preferences.edit().remove(poolKey(providerId)).apply()
+        } else {
+            val array = JSONArray()
+            entries.forEach { array.put(JSONObject().put("id", it.id).put("name", it.name)) }
+            preferences.edit().putString(poolKey(providerId), array.toString()).apply()
+        }
     }
 
     private fun activeId(providerId: String): String? = preferences.getString(activeKey(providerId), null)

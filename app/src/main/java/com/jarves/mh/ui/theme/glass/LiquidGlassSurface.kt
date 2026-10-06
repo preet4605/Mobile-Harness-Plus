@@ -1,5 +1,6 @@
 package com.jarves.mh.ui.theme.glass
 
+import android.os.Build
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -10,7 +11,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -20,6 +20,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -28,8 +29,6 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.builditcode.glass.layeredBackdropCapture
-import com.builditcode.glass.layeredBackdropSource
 import com.jarves.mh.ui.theme.PocketPalette
 
 /**
@@ -50,13 +49,14 @@ fun LiquidGlassSurface(
     borderStroke: BorderStroke? = null,
     tonalElevation: Dp = 0.dp,
     layerSource: String? = null,
+    backdrop: BackdropState? = null,
     contentColor: Color? = null,
     onClick: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     val config = LocalLiquidGlassConfig.current
     val isDark = isSystemInDarkTheme()
-    val defaultContentColor = if (isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)
+    val defaultContentColor = if (isDark) Color.White else Color(0xFF0F172A)
     val effectiveContentColor = contentColor ?: defaultContentColor
 
     if (!config.isGlassActive) {
@@ -91,18 +91,14 @@ fun LiquidGlassSurface(
 
     var surfaceModifier = modifier.clip(shape)
 
-    if (layerSource != null) {
-        val filter = material.toBackdropFilter(
-            tint = resolvedTint,
-            cornerRadiusDp = 14f,
-            enableRefraction = config.enableRefraction,
-        )
-        surfaceModifier = surfaceModifier.layeredBackdropCapture(
-            layerName = layerSource,
+    // Shared host backdrop (or explicit override). No per-surface GraphicsLayer capture.
+    val sharedBackdrop = backdrop ?: LocalLiquidGlassBackdrop.current
+    if (layerSource != null && sharedBackdrop != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        surfaceModifier = surfaceModifier.backdropGlass(
+            backdrop = sharedBackdrop,
             shape = shape,
-            padding = PaddingValues(0.dp),
-            filter = filter,
-            autoInvalidateOnMove = true,
+            blurDp = material.blurRadius.coerceAtMost(24f),
+            tint = Color.Transparent,
         )
     }
 
@@ -174,25 +170,13 @@ fun Modifier.liquidGlass(
     tint: Color = Color.Transparent,
     enableRefraction: Boolean = true,
 ): Modifier {
-    var result = this.clip(shape)
-    if (layerSource != null) {
-        result = result.layeredBackdropCapture(
-            layerName = layerSource,
-            shape = shape,
-            padding = PaddingValues(0.dp),
-            filter = material.toBackdropFilter(
-                tint = tint,
-                cornerRadiusDp = 14f,
-                enableRefraction = enableRefraction,
-            ),
-        )
-    }
-    return result
+    // Capture now flows through the host-owned shared backdrop (see LiquidGlassSurface);
+    // this plain modifier no longer owns a capture layer.
+    return this.clip(shape)
 }
 
 /**
  * Modifier to mark this element as a backdrop source layer for Liquid Glass capture.
  */
-fun Modifier.asBackdropSource(layerName: String): Modifier {
-    return this.layeredBackdropSource(layerName)
-}
+fun Modifier.asBackdropSource(@Suppress("UNUSED_PARAMETER") layerName: String): Modifier =
+    composed { Modifier.hostBackdropSource() }

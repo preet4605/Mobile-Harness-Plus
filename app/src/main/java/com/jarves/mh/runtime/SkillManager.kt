@@ -356,12 +356,18 @@ class SkillManager(
     fun buildRulesBlock(activeRules: List<RuleInfo>): String {
         val enabled = activeRules.filter { it.isEnabled && it.content.isNotBlank() }
         if (enabled.isEmpty()) return ""
+        // Files such as AGENTS.md / GEMINI.md are often byte-identical copies; emit one effective
+        // copy and keep every source name for provenance.
+        val grouped = LinkedHashMap<String, MutableList<RuleInfo>>()
+        enabled.forEach { grouped.getOrPut(it.content.trim().replace("\r\n", "\n")) { mutableListOf() }.add(it) }
         return buildString {
             appendLine("<user_rules>")
-            enabled.forEach { rule ->
-                appendLine("<RULE[${rule.name}]>")
-                appendLine(rule.content.trim())
-                appendLine("</RULE[${rule.name}]>")
+            grouped.forEach { (content, rules) ->
+                val label = rules.map { it.name }.distinct().joinToString(" = ")
+                    .let { com.jarves.mh.data.PromptContextSupport.escapeDelimiters(it).replace("]", ")").replace("[", "(") }
+                appendLine("<RULE[$label]>")
+                appendLine(com.jarves.mh.data.PromptContextSupport.escapeDelimiters(content))
+                appendLine("</RULE[$label]>")
             }
             appendLine("</user_rules>")
         }

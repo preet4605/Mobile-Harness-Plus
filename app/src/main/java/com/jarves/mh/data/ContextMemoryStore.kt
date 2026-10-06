@@ -83,12 +83,9 @@ class ContextMemoryStore(private val baseDir: File) {
             val existing = repository.findExact(cleanId, cleanKey, MemoryStatus.ACTIVE)
 
             if (existing != null) {
-                // If user wrote earlier, an auto update doesn't overwrite with lower confidence
-                val effectiveSource = if (existing.source.isUser && source.isAuto) {
-                    MemorySource.USER
-                } else {
-                    source
-                }
+                // A user-authored value is never replaced by an automatic update.
+                if (existing.source.isUser && source.isAuto) return@runCatching
+                val effectiveSource = source
                 repository.update(
                     existing.copy(
                         key = existing.key,

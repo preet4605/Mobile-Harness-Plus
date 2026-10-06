@@ -1,5 +1,6 @@
 package com.jarves.mh.runtime
 
+import com.jarves.mh.model.ClaudeAuthMode
 import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.ProviderProfile
 import org.junit.Assert.assertEquals
@@ -31,7 +32,7 @@ class RuntimeLaunchConfigBuilderTest {
     @Test
     fun configuresEveryClaudeModelRoleAndInMemoryAuth() {
         val config = RuntimeLaunchConfigBuilder.build(
-            ProviderProfile(ProviderKind.CUSTOM, "https://example.test/anthropic", "custom-model", true),
+            ProviderProfile(ProviderKind.CUSTOM, "https://example.test/anthropic", "custom-model", true, dshApi = "anthropic-messages"),
             authToken = "temporary-secret",
         )
 
@@ -60,7 +61,7 @@ class RuntimeLaunchConfigBuilderTest {
     @Test
     fun claudeSubscriptionUsesOAuthTokenWithoutApiKeyFallback() {
         val config = RuntimeLaunchConfigBuilder.build(
-            ProviderProfile(ProviderKind.CLAUDE),
+            ProviderProfile(ProviderKind.CLAUDE, claudeAuthMode = ClaudeAuthMode.SETUP_TOKEN_LEGACY),
             authToken = "subscription-token",
         )
 
@@ -70,9 +71,23 @@ class RuntimeLaunchConfigBuilderTest {
         assertNull(config.environment["ANTHROPIC_BASE_URL"])
     }
 
+    @Test
+    fun claudeNativeSubscriptionOmitsAllAnthropicVariables() {
+        val config = RuntimeLaunchConfigBuilder.build(
+            ProviderProfile(ProviderKind.CLAUDE, claudeAuthMode = ClaudeAuthMode.NATIVE_SUBSCRIPTION),
+        )
+
+        assertFalse(config.environment.containsKey("ANTHROPIC_API_KEY"))
+        assertFalse(config.environment.containsKey("ANTHROPIC_AUTH_TOKEN"))
+        assertFalse(config.environment.containsKey("ANTHROPIC_BASE_URL"))
+        assertFalse(config.environment.containsKey("CLAUDE_CODE_OAUTH_TOKEN"))
+    }
+
     @Test(expected = IllegalArgumentException::class)
-    fun claudeSubscriptionRequiresToken() {
-        RuntimeLaunchConfigBuilder.build(ProviderProfile(ProviderKind.CLAUDE))
+    fun claudeLegacySubscriptionRequiresToken() {
+        RuntimeLaunchConfigBuilder.build(
+            ProviderProfile(ProviderKind.CLAUDE, claudeAuthMode = ClaudeAuthMode.SETUP_TOKEN_LEGACY),
+        )
     }
 
     @Test
@@ -86,6 +101,39 @@ class RuntimeLaunchConfigBuilderTest {
 
         assertEquals("http://127.0.0.1:12345", config.environment["ANTHROPIC_BASE_URL"])
         assertEquals("claude-sonnet-4-6", config.environment["ANTHROPIC_MODEL"])
+    }
+
+    @Test
+    fun customOpenAiProtocolRoutesClaudeThroughLocalGateway() {
+        listOf("openai-completions", "openai-responses").forEach { api ->
+            val config = RuntimeLaunchConfigBuilder.build(
+                ProviderProfile(ProviderKind.CUSTOM, "https://api.example.com/v1", "m", true, dshApi = api),
+                authToken = "gateway-secret",
+                localGatewayUrl = "http://127.0.0.1:12345",
+            )
+
+            assertEquals("http://127.0.0.1:12345", config.environment["ANTHROPIC_BASE_URL"])
+            assertEquals("claude-sonnet-4-6", config.environment["ANTHROPIC_MODEL"])
+        }
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun customOpenAiProtocolRequiresLocalGateway() {
+        RuntimeLaunchConfigBuilder.build(
+            ProviderProfile(ProviderKind.CUSTOM, "https://api.example.com/v1", "m", true, dshApi = "openai-completions"),
+            authToken = "key",
+        )
+    }
+
+    @Test
+    fun customAnthropicProtocolStaysDirectForClaude() {
+        val config = RuntimeLaunchConfigBuilder.build(
+            ProviderProfile(ProviderKind.CUSTOM, "https://gw.example/anthropic/", "m", true, dshApi = "anthropic-messages"),
+            authToken = "key",
+        )
+
+        assertEquals("https://gw.example/anthropic", config.environment["ANTHROPIC_BASE_URL"])
+        assertEquals("m", config.environment["ANTHROPIC_MODEL"])
     }
 
     @Test

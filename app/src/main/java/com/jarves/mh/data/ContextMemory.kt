@@ -94,15 +94,5 @@ data class ContextMemory(
  * Formats persistent memory entries into a structured XML block
  * for injection into LLM prompts across all runtime bridges.
  */
-fun renderMemoryBlock(memory: ContextMemory): String {
-    val activeEntries = memory.entries.filter { it.status == MemoryStatus.ACTIVE }
-    if (activeEntries.isEmpty()) return ""
-    return buildString {
-        appendLine("<persistent_memory>")
-        appendLine("The following facts were remembered from previous sessions. They remain true across model and harness switches:")
-        activeEntries.forEach { entry ->
-            appendLine("- ${entry.key}: ${entry.value}")
-        }
-        appendLine("</persistent_memory>")
-    }
-}
+fun renderMemoryBlock(memory: ContextMemory, alreadyInContext: String = ""): String =
+    PromptContextSupport.renderMemory(memory, alreadyInContext)

@@ -9,6 +9,7 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONArray
@@ -18,6 +19,7 @@ import org.json.JSONObject
 internal class LocalFormatGateway(
     private val profile: ProviderProfile,
     private val apiKey: String,
+    val gatewaySecret: String = AntigravityGatewayServer.generateGatewaySecret(),
 ) : AutoCloseable {
     private val running = AtomicBoolean(true)
     private val server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
@@ -51,6 +53,22 @@ internal class LocalFormatGateway(
             writeJson(output, 413, errorJson("invalid_request_error", "Payload too large"))
             return
         }
+        if (!isAuthorized(headers["authorization"])) {
+            if (length > 0) {
+                var remaining = length.toLong()
+                while (remaining > 0) {
+                    val skipped = input.skip(remaining)
+                    if (skipped <= 0) {
+                        if (input.read() < 0) break
+                        remaining--
+                    } else {
+                        remaining -= skipped
+                    }
+                }
+            }
+            writeUnauthorized(output)
+            return
+        }
         val bodyBytes = ByteArray(length)
         var offset = 0
         while (offset < length) {
@@ -60,12 +78,16 @@ internal class LocalFormatGateway(
         }
         if (offset < length) return
         val path = requestLine.split(' ').getOrNull(1).orEmpty().substringBefore('?')
-        if (path.endsWith("/count_tokens")) {
+        if (path == "/" || path == "/health" || path == "/v1" || path == "/v1/") {
+            writeJson(output, 200, JSONObject().put("status", "ok").put("service", "format-gateway").toString())
+            return
+        }
+        if (path.trimEnd('/').endsWith("/count_tokens")) {
             val approximate = bodyBytes.decodeToString().length / 4 + 1
             writeJson(output, 200, JSONObject().put("input_tokens", approximate).toString())
             return
         }
-        if (!path.endsWith("/messages")) {
+        if (!path.trimEnd('/').endsWith("/messages")) {
             writeJson(output, 404, errorJson("not_found", "Unsupported gateway endpoint"))
             return
         }
@@ -170,6 +192,9 @@ internal class LocalFormatGateway(
     }
 
     private fun callProvider(body: JSONObject): Pair<Int, String> {
+        if (com.jarves.mh.provider.isRevokedProvider(profile.baseUrl)) {
+            return 403 to "Connection blocked: ${profile.baseUrl} is a revoked phishing provider"
+        }
         val endpoint = profile.baseUrl.trimEnd('/') + "/chat/completions"
         val connection = URL(endpoint).openConnection() as HttpURLConnection
         return try {
@@ -208,10 +233,37 @@ internal class LocalFormatGateway(
         output.flush()
     }
 
+    private fun isAuthorized(authHeader: String?): Boolean {
+        if (authHeader == null || !authHeader.startsWith("Bearer ", ignoreCase = true)) {
+            return false
+        }
+        val token = authHeader.substring(7).trim()
+        if (token.isEmpty()) return false
+        val tokenBytes = token.toByteArray(Charsets.UTF_8)
+        val secretBytes = gatewaySecret.toByteArray(Charsets.UTF_8)
+        val md = MessageDigest.getInstance("SHA-256")
+        val digestToken = md.digest(tokenBytes)
+        md.reset()
+        val digestSecret = md.digest(secretBytes)
+        return MessageDigest.isEqual(digestToken, digestSecret)
+    }
+
+    private fun writeUnauthorized(output: BufferedOutputStream) {
+        writeJson(output, 401, errorJson("authentication_error", "Missing or invalid authorization token"))
+    }
+
     private fun writeJson(output: BufferedOutputStream, code: Int, body: String) {
-        val bytes = body.toByteArray()
-        val reason = if (code in 200..299) "OK" else "Error"
-        output.write("HTTP/1.1 $code $reason\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray())
+        val bytes = body.toByteArray(Charsets.UTF_8)
+        val reason = when (code) {
+            200 -> "OK"
+            401 -> "Unauthorized"
+            404 -> "Not Found"
+            413 -> "Payload Too Large"
+            502 -> "Bad Gateway"
+            else -> if (code in 200..299) "OK" else "Error"
+        }
+        val authHeader = if (code == 401) "WWW-Authenticate: Bearer\r\n" else ""
+        output.write("HTTP/1.1 $code $reason\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${bytes.size}\r\n${authHeader}Connection: close\r\n\r\n".toByteArray(Charsets.UTF_8))
         output.write(bytes)
         output.flush()
     }

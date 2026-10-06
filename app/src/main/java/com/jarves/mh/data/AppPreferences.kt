@@ -55,6 +55,14 @@ class AppPreferences(
         get() = preferences.getString("primary_agent_kind", "") ?: ""
         set(value) { preferences.edit().putString("primary_agent_kind", value).apply() }
 
+    var claudeModel: String
+        get() = preferences.getString("claude_model", "default") ?: "default"
+        set(value) { preferences.edit().putString("claude_model", value).apply() }
+
+    var claudeThinkingLevel: String
+        get() = preferences.getString("claude_thinking_level", "default") ?: "default"
+        set(value) { preferences.edit().putString("claude_thinking_level", value).apply() }
+
     var antigravityModel: String
         get() = preferences.getString("agent_antigravity_model", "") ?: ""
         set(value) { preferences.edit().putString("agent_antigravity_model", value).apply() }
@@ -250,12 +258,28 @@ class AppPreferences(
         }
 
 
+    var claudeAuthMode: com.jarves.mh.model.ClaudeAuthMode
+        get() = runCatching {
+            com.jarves.mh.model.ClaudeAuthMode.valueOf(
+                preferences.getString("claude_auth_mode", com.jarves.mh.model.ClaudeAuthMode.NATIVE_SUBSCRIPTION.name)
+                    ?: com.jarves.mh.model.ClaudeAuthMode.NATIVE_SUBSCRIPTION.name
+            )
+        }.getOrDefault(com.jarves.mh.model.ClaudeAuthMode.NATIVE_SUBSCRIPTION)
+        set(value) { preferences.edit().putString("claude_auth_mode", value.name).apply() }
+
     fun saveProvider(profile: ProviderProfile, agent: AgentKind? = null) {
         val editor = preferences.edit()
             .putString("provider_kind", profile.kind.name)
             .putString("provider_base_url", profile.baseUrl)
             .putString("provider_model", profile.model)
             .putString("provider_dsh_api", profile.dshApi)
+            .putString("provider_profile_id", profile.profileId)
+            .putString("claude_auth_mode", profile.claudeAuthMode.name)
+        if (profile.kind == ProviderKind.CLAUDE) {
+            editor
+                .putString("claude_model", profile.model)
+                .putString("claude_thinking_level", profile.claudeThinkingLevel)
+        }
         if (agent != null) {
             val prefix = providerPrefix(agent)
             editor
@@ -263,6 +287,9 @@ class AppPreferences(
                 .putString("${prefix}base_url", profile.baseUrl)
                 .putString("${prefix}model", profile.model)
                 .putString("${prefix}dsh_api", profile.dshApi)
+                .putBoolean("${prefix}dsh_api_explicit", true)
+                .putString("${prefix}profile_id", profile.profileId)
+                .putString("${prefix}claude_auth_mode", profile.claudeAuthMode.name)
         }
         editor.apply()
     }
@@ -280,6 +307,13 @@ class AppPreferences(
         val storedModel = storedKind?.let {
             preferences.getString("${sourcePrefix}model", it.defaultModel) ?: it.defaultModel
         }.orEmpty()
+        val storedAuthMode = runCatching {
+            com.jarves.mh.model.ClaudeAuthMode.valueOf(
+                preferences.getString("${sourcePrefix}claude_auth_mode", null)
+                    ?: preferences.getString("claude_auth_mode", com.jarves.mh.model.ClaudeAuthMode.NATIVE_SUBSCRIPTION.name)
+                    ?: com.jarves.mh.model.ClaudeAuthMode.NATIVE_SUBSCRIPTION.name
+            )
+        }.getOrDefault(com.jarves.mh.model.ClaudeAuthMode.NATIVE_SUBSCRIPTION)
         // Older builds copied the global Claude/Anthropic default into a new
         // DeepSeek Harness profile. Treat that untouched, keyless placeholder
         // as unconfigured so DeepSeek opens on its own official provider.
@@ -313,22 +347,196 @@ class AppPreferences(
         } else {
             savedModel
         }
+        val isNativeClaude = kind == ProviderKind.CLAUDE && storedAuthMode == com.jarves.mh.model.ClaudeAuthMode.NATIVE_SUBSCRIPTION
+        val hasTokenHarborDrift = storedBaseUrl.contains("tokenharbor", ignoreCase = true) ||
+            savedModel.contains("tokenharbor", ignoreCase = true) ||
+            preferences.getString("claude_model", "")?.contains("tokenharbor", ignoreCase = true) == true ||
+            hasTokenHarborDrift()
+        val tokenHarborKeyDeleted = hasTokenHarborDrift &&
+            (!vault.contains(kind.name) || vault.list(kind.name).isEmpty())
+        if (tokenHarborKeyDeleted) {
+            purgeTokenHarbor()
+        }
+        val isStoredRevoked = com.jarves.mh.provider.isRevokedProvider(storedBaseUrl) ||
+            com.jarves.mh.provider.isRevokedProvider(savedModel)
+        val hasRevokedDrift = isStoredRevoked ||
+            com.jarves.mh.provider.isRevokedProvider(preferences.getString("claude_model", "").orEmpty()) ||
+            hasRevokedProviderDrift()
+        val revokedKeyDeleted = hasRevokedDrift &&
+            (!vault.contains(kind.name) || vault.list(kind.name).isEmpty() || isStoredRevoked)
+        if (revokedKeyDeleted || isStoredRevoked) {
+            purgeRevokedProviders()
+        }
+        val effectiveModel = if (tokenHarborKeyDeleted || revokedKeyDeleted || isStoredRevoked || com.jarves.mh.provider.isRevokedProvider(model)) {
+            kind.defaultModel
+        } else if (kind == ProviderKind.CLAUDE) {
+            val savedClaude = preferences.getString("claude_model", "default") ?: "default"
+            if (savedClaude.contains("tokenharbor", ignoreCase = true) || com.jarves.mh.provider.isRevokedProvider(savedClaude)) {
+                preferences.edit().putString("claude_model", "default").apply()
+                "default"
+            } else if (com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS.any { it.id.equals(savedClaude, ignoreCase = true) }) savedClaude else "default"
+        } else {
+            model
+        }
+        val claudeThinking = if (kind == ProviderKind.CLAUDE) {
+            preferences.getString("claude_thinking_level", "default") ?: "default"
+        } else {
+            "default"
+        }
+        val effectiveBaseUrl = if (tokenHarborKeyDeleted || revokedKeyDeleted || isStoredRevoked) {
+            kind.defaultBaseUrl
+        } else if (useStoredValues) {
+            preferences.getString("${sourcePrefix}base_url", kind.defaultBaseUrl) ?: kind.defaultBaseUrl
+        } else {
+            kind.defaultBaseUrl
+        }
+        val effectiveDshApi = if (useStoredValues) {
+            val stored = preferences.getString("${sourcePrefix}dsh_api", null)
+            val defaultApi = defaultDshApiForProvider(kind)
+            val candidate = if (stored.isNullOrBlank()) defaultApi else stored
+            // Claude Code never exposed a protocol choice before, so a stored CUSTOM value there is
+            // only a silent default. Honor it solely when the user saved it explicitly or it came
+            // from a multi-profile custom provider; otherwise keep the legacy Anthropic route.
+            val legacyClaudeCustom = agent == AgentKind.CLAUDE_CODE && kind == ProviderKind.CUSTOM &&
+                preferences.getString("${sourcePrefix}profile_id", "").isNullOrBlank() &&
+                !(hasAgentProfile && preferences.getBoolean("${prefix}dsh_api_explicit", false))
+            if (legacyClaudeCustom) {
+                "anthropic-messages"
+            } else if (kind == ProviderKind.CUSTOM && candidate == "anthropic-messages") {
+                val lowerUrl = effectiveBaseUrl.trim().trimEnd('/').lowercase(java.util.Locale.ROOT)
+                if (lowerUrl.endsWith("/v1") && "anthropic" !in lowerUrl) {
+                    com.jarves.mh.model.inferredDshApiForUrl(effectiveBaseUrl)
+                } else {
+                    candidate
+                }
+            } else {
+                candidate
+            }
+        } else {
+            defaultDshApiForProvider(kind)
+        }
         return ProviderProfile(
             kind = kind,
-            baseUrl = if (useStoredValues) {
-                preferences.getString("${sourcePrefix}base_url", kind.defaultBaseUrl) ?: kind.defaultBaseUrl
+            baseUrl = effectiveBaseUrl,
+            model = effectiveModel,
+            hasSecret = (!tokenHarborKeyDeleted && !revokedKeyDeleted && !isStoredRevoked) && (vault.contains(kind.name) || (kind == ProviderKind.ANTIGRAVITY_SERVER) || isNativeClaude),
+            dshApi = effectiveDshApi,
+            claudeAuthMode = storedAuthMode,
+            claudeThinkingLevel = claudeThinking,
+            profileId = if (useStoredValues && kind == ProviderKind.CUSTOM) {
+                preferences.getString("${sourcePrefix}profile_id", "").orEmpty()
             } else {
-                kind.defaultBaseUrl
-            },
-            model = model,
-            hasSecret = vault.contains(kind.name) || (kind == ProviderKind.ANTIGRAVITY_SERVER),
-            dshApi = if (useStoredValues) {
-                preferences.getString("${sourcePrefix}dsh_api", defaultDshApiForProvider(kind))
-                    ?: defaultDshApiForProvider(kind)
-            } else {
-                defaultDshApiForProvider(kind)
+                ""
             },
         )
+    }
+
+    fun hasRevokedProviderDrift(): Boolean {
+        for ((key, value) in preferences.all) {
+            val keyLower = key.lowercase(java.util.Locale.ROOT)
+            val valStr = (value as? String).orEmpty().lowercase(java.util.Locale.ROOT)
+            if (com.jarves.mh.provider.isRevokedProvider(keyLower) || com.jarves.mh.provider.isRevokedProvider(valStr)) return true
+        }
+        return false
+    }
+
+    fun hasAiqanaDrift(): Boolean = hasRevokedProviderDrift()
+
+    fun purgeRevokedProviders() {
+        val editor = preferences.edit()
+        for ((key, value) in preferences.all) {
+            val keyLower = key.lowercase(java.util.Locale.ROOT)
+            val valStr = (value as? String).orEmpty().lowercase(java.util.Locale.ROOT)
+            if (com.jarves.mh.provider.isRevokedProvider(keyLower)) {
+                editor.remove(key)
+            } else if (com.jarves.mh.provider.isRevokedProvider(valStr)) {
+                if (key == "custom_providers_json") {
+                    val raw = value as? String
+                    val profiles = com.jarves.mh.provider.CustomProviderProfile.listFromJson(raw)
+                    val cleaned = profiles.filterNot {
+                        com.jarves.mh.provider.isRevokedProvider(it.name) ||
+                        com.jarves.mh.provider.isRevokedProvider(it.baseUrl) ||
+                        com.jarves.mh.provider.isRevokedProvider(it.model)
+                    }
+                    if (cleaned.isEmpty()) {
+                        editor.remove(key)
+                    } else {
+                        editor.putString(key, com.jarves.mh.provider.CustomProviderProfile.listToJson(cleaned))
+                    }
+                } else if (key == "claude_model") {
+                    editor.putString(key, "default")
+                } else {
+                    editor.remove(key)
+                }
+            }
+        }
+        editor.apply()
+    }
+
+    fun hasTokenHarborDrift(): Boolean {
+        for ((key, value) in preferences.all) {
+            val keyLower = key.lowercase(java.util.Locale.ROOT)
+            val valStr = (value as? String).orEmpty().lowercase(java.util.Locale.ROOT)
+            if ("tokenharbor" in keyLower || "tokenharbor" in valStr) return true
+        }
+        return false
+    }
+
+    fun purgeTokenHarbor() {
+        val editor = preferences.edit()
+        for ((key, value) in preferences.all) {
+            val keyLower = key.lowercase(java.util.Locale.ROOT)
+            val valStr = (value as? String).orEmpty().lowercase(java.util.Locale.ROOT)
+            if ("tokenharbor" in keyLower) {
+                editor.remove(key)
+            } else if ("tokenharbor" in valStr) {
+                if (key == "custom_providers_json") {
+                    val raw = value as? String
+                    val profiles = com.jarves.mh.provider.CustomProviderProfile.listFromJson(raw)
+                    val cleaned = profiles.filterNot {
+                        it.name.contains("tokenharbor", ignoreCase = true) ||
+                        it.baseUrl.contains("tokenharbor", ignoreCase = true) ||
+                        it.model.contains("tokenharbor", ignoreCase = true)
+                    }
+                    if (cleaned.isEmpty()) {
+                        editor.remove(key)
+                    } else {
+                        editor.putString(key, com.jarves.mh.provider.CustomProviderProfile.listToJson(cleaned))
+                    }
+                } else if (key == "claude_model") {
+                    editor.putString(key, "default")
+                } else {
+                    editor.remove(key)
+                }
+            }
+        }
+        editor.apply()
+    }
+
+    fun purgeAiqana() = purgeRevokedProviders()
+
+    fun loadCustomProviders(): List<com.jarves.mh.provider.CustomProviderProfile> {
+        val raw = preferences.getString("custom_providers_json", null)
+        val profiles = com.jarves.mh.provider.CustomProviderProfile.listFromJson(raw)
+        if (profiles.isEmpty()) return emptyList()
+        val cleaned = profiles.filterNot { profile ->
+            val isRevoked = com.jarves.mh.provider.isRevokedProvider(profile.name) ||
+                com.jarves.mh.provider.isRevokedProvider(profile.baseUrl) ||
+                com.jarves.mh.provider.isRevokedProvider(profile.model)
+            if (isRevoked) return@filterNot true
+            val hasTokenHarbor = profile.name.contains("tokenharbor", ignoreCase = true) ||
+                profile.baseUrl.contains("tokenharbor", ignoreCase = true) ||
+                profile.model.contains("tokenharbor", ignoreCase = true)
+            hasTokenHarbor && (context == null || (!ApiKeyVault(context).contains(profile.secretId) && !ApiKeyVault(context).contains(ProviderKind.CUSTOM.name)))
+        }
+        if (cleaned.size != profiles.size) {
+            saveCustomProviders(cleaned)
+        }
+        return cleaned
+    }
+
+    fun saveCustomProviders(profiles: List<com.jarves.mh.provider.CustomProviderProfile>) {
+        preferences.edit().putString("custom_providers_json", com.jarves.mh.provider.CustomProviderProfile.listToJson(profiles)).apply()
     }
 
     private fun providerPrefix(agent: AgentKind): String = "provider_${agent.stableId.replace('-', '_')}_"

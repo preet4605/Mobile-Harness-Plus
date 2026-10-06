@@ -117,4 +117,17 @@ class LiquidGlassFoundationTest {
         )
         assertNotNull(modifier)
     }
+
+    @Test
+    fun glassRoles_tokensAreDistinctAndTuned() {
+        // Composer has the strongest spatial blur
+        assertTrue(GlassRoles.Composer.blurDp > GlassRoles.Nav.blurDp)
+        assertTrue(GlassRoles.Nav.blurDp > GlassRoles.Latest.blurDp)
+        assertTrue(GlassRoles.Latest.blurDp > GlassRoles.Chip.blurDp)
+        assertEquals(36f, GlassRoles.Composer.blurDp, 0.001f)
+        assertEquals(28f, GlassRoles.Nav.blurDp, 0.001f)
+        assertEquals(20f, GlassRoles.Latest.blurDp, 0.001f)
+        assertEquals(14f, GlassRoles.Chip.blurDp, 0.001f)
+    }
 }
+

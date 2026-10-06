@@ -378,14 +378,7 @@ fun AgentScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    IconButton(
-                        onClick = onRefreshAntigravityModels,
-                        enabled = !state.antigravityModelsLoading,
-                        modifier = Modifier.defaultMinSize(
-                            minWidth = LiquidGlassTokens.MinTouchTarget,
-                            minHeight = LiquidGlassTokens.MinTouchTarget,
-                        ),
-                    ) {
+                    IconButton(onClick = onRefreshAntigravityModels, enabled = !state.antigravityModelsLoading) {
                         if (state.antigravityModelsLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         else Icon(Icons.Default.Refresh, "Refresh models")
                     }
@@ -497,14 +490,7 @@ fun AgentScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    IconButton(
-                        onClick = ::discoverModels,
-                        enabled = !isDiscovering,
-                        modifier = Modifier.defaultMinSize(
-                            minWidth = LiquidGlassTokens.MinTouchTarget,
-                            minHeight = LiquidGlassTokens.MinTouchTarget,
-                        ),
-                    ) {
+                    IconButton(onClick = ::discoverModels, enabled = !isDiscovering) {
                         if (isDiscovering) {
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = PocketOrange)
                         } else {
@@ -757,7 +743,7 @@ fun AgentScreen(
                                             )
                                             if (option.isFree) {
                                                 Spacer(Modifier.width(6.dp))
-                                                Text("FREE", color = if (isSystemInDarkTheme()) Color(0xFF58C99C) else Color(0xFF0D7A3E), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                                Text("FREE", color = Color(0xFF58C99C), fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                             }
                                         }
                                         if (option.displayName != option.id) {
@@ -838,10 +824,8 @@ fun AgentScreen(
         },
     ) { padding ->
         val navBarBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        // Floating nav (44dp target + 8dp padding) + host padding + breathing room.
-        val floatingNavFootprint = LiquidGlassTokens.MinTouchTarget + PocketSpacing.sm
-        val defaultClearance = navBarBottomInset + floatingNavFootprint + PocketSpacing.lg + PocketSpacing.sm + PocketSpacing.xxl
-        val finalBottomPadding = maxOf(bottomBarPadding, defaultClearance)
+        val defaultClearance = navBarBottomInset + 88.dp + 28.dp
+        val finalBottomPadding = if (bottomBarPadding > 0.dp) bottomBarPadding else defaultClearance
         LazyColumn(
             Modifier
                 .fillMaxSize()
@@ -2070,7 +2054,7 @@ private fun AgentProviderCard(
                                             Text(if (key.isActive) "Active" else "Tap to activate", fontSize = 10.sp, color = if (key.isActive) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                         AgentSelectionDot(key.isActive)
-                                        IconButton(onClick = { onRemoveKey(key.id) }, modifier = Modifier.defaultMinSize(minWidth = LiquidGlassTokens.MinTouchTarget, minHeight = LiquidGlassTokens.MinTouchTarget)) {
+                                        IconButton(onClick = { onRemoveKey(key.id) }) {
                                             Icon(Icons.Default.DeleteSweep, "Remove", Modifier.size(17.dp))
                                         }
                                     }
@@ -2113,7 +2097,7 @@ private fun AgentProviderCard(
                                     singleLine = true,
                                     visualTransformation = if (newKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                                    trailingIcon = { IconButton(onClick = onToggleNewKey, modifier = Modifier.defaultMinSize(minWidth = LiquidGlassTokens.MinTouchTarget, minHeight = LiquidGlassTokens.MinTouchTarget)) { Icon(if (newKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, "Toggle visibility") } },
+                                    trailingIcon = { IconButton(onClick = onToggleNewKey) { Icon(if (newKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, "Toggle visibility") } },
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(12.dp),
                                 )

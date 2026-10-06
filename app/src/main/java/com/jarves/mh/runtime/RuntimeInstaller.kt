@@ -58,7 +58,7 @@ private data class RuntimeBundle(
 
 class RuntimeInstaller(private val context: Context) {
     private val runtimeDir = File(context.filesDir, "runtime")
-    private val rootfs = File(runtimeDir, "ubuntu")
+    internal val rootfs = File(runtimeDir, "ubuntu")
     private val downloads = File(context.cacheDir, "runtime-downloads")
     private val coreReadyMarker = File(rootfs, ".pocket-runtime-ready")
     private val claudeMarker = File(rootfs, ".pocket-claude-version")
@@ -1596,6 +1596,7 @@ class RuntimeInstaller(private val context: Context) {
             argv = args,
             environment = buildMap {
                 put("HOME", "/root")
+                put("BROWSER", AndroidBrowserBridge.BROWSER_ENV_PATH)
                 val androidReady = File(rootfs, "root/.pocket-android-tools-version").readTextOrNull() == ANDROID_TOOLS_VERSION
                 val basePath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
                 if (androidReady) {
@@ -1672,6 +1673,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
             target.parentFile?.mkdirs()
             target.writeText(settingsContent)
         }
+        AndroidBrowserBridge(context).ensureBridgeInstalled(rootfs)
         ensureWorkspaceTrust("/workspace")
     }
 
@@ -2007,7 +2009,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
             compressedBytes = 72_185_773L,
         )
         private const val CLAUDE_BUNDLED_VERSION = "2.1.263"
-        private const val CLAUDE_GUEST_PATH = "/usr/local/bin/claude"
+        internal const val CLAUDE_GUEST_PATH = "/usr/local/bin/claude"
         private val CLAUDE_BUNDLE = RuntimeBundle(
             label = "Claude Code",
             fileName = "pocketdev-claude-arm64-2026.09.1.tar.zst",

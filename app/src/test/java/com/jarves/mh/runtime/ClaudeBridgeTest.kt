@@ -21,8 +21,8 @@ class ClaudeBridgeTest {
             executable = "/usr/local/bin/claude",
             model = "claude-3-7-sonnet",
         )
+        assertFalse("Claude command must NOT contain --bare", command.contains("--bare"))
         assertTrue(command.contains("-p"))
-        assertTrue(command.contains("--bare"))
         assertTrue(command.contains("--output-format"))
         assertTrue(command.contains("stream-json"))
         assertTrue(command.contains("--include-partial-messages"))
@@ -31,7 +31,22 @@ class ClaudeBridgeTest {
         assertTrue(command.contains("claude-3-7-sonnet"))
         assertTrue(command.contains("--max-turns"))
         assertTrue(command.contains("25"))
-        assertEquals(11, command.size)
+        assertEquals(10, command.size)
+        assertEquals(
+            listOf(
+                "/usr/local/bin/claude",
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--include-partial-messages",
+                "--verbose",
+                "--model",
+                "claude-3-7-sonnet",
+                "--max-turns",
+                "25",
+            ),
+            command,
+        )
     }
 
     @Test
@@ -59,7 +74,7 @@ class ClaudeBridgeTest {
 
     @Test
     fun argvValidatorRejectsArgumentsExceedingMaxArgStrlen() {
-        val safeArgs = listOf("/usr/local/bin/claude", "--bare", "-p")
+        val safeArgs = listOf("/usr/local/bin/claude", "-p", "--output-format")
         NativeSpawnProcess.validateArgv(safeArgs) // should succeed
 
         val invalidArgs = listOf(
@@ -149,5 +164,35 @@ class ClaudeBridgeTest {
             caught = true
         }
         assertTrue(caught)
+    }
+
+    @Test
+    fun claudeCommandSupportsEffortArgument() {
+        val command = ClaudeRuntimeBridge.buildClaudeCommand(
+            executable = "/usr/local/bin/claude",
+            model = "sonnet",
+            effort = "high",
+        )
+        assertFalse("Claude command must NOT contain --bare", command.contains("--bare"))
+        assertTrue(command.contains("--model"))
+        assertTrue(command.contains("sonnet"))
+        assertTrue(command.contains("--effort"))
+        assertTrue(command.contains("high"))
+    }
+
+    @Test
+    fun claudeCommandSupportsOpusWithMediumEffort() {
+        val command = ClaudeRuntimeBridge.buildClaudeCommand(
+            executable = "/usr/local/bin/claude",
+            model = "opus",
+            effort = "medium",
+        )
+        assertFalse("Claude command must NOT contain --bare", command.contains("--bare"))
+        assertTrue(command.contains("--model"))
+        val modelIdx = command.indexOf("--model")
+        assertEquals("opus", command[modelIdx + 1])
+        assertTrue(command.contains("--effort"))
+        val effortIdx = command.indexOf("--effort")
+        assertEquals("medium", command[effortIdx + 1])
     }
 }

@@ -234,7 +234,52 @@ class AgentProviderPresetTest {
             dshApi = "openai-completions",
         )
         assertEquals(ProviderProtocol.OPENAI_CHAT, providerProtocolForAgent(profile, AgentKind.DEEPSEEK_HARNESS))
-        assertEquals(ProviderProtocol.ANTHROPIC_GATEWAY, providerProtocolForAgent(profile, AgentKind.CLAUDE_CODE))
+        // Claude Code now resolves the same configured CUSTOM API instead of always using the
+        // kind's Anthropic default, so validation and runtime routing agree with the selection.
+        assertEquals(ProviderProtocol.OPENAI_CHAT, providerProtocolForAgent(profile, AgentKind.CLAUDE_CODE))
+    }
+
+    @Test
+    fun customProtocolResolvesFromConfiguredApiForEveryAgent() {
+        val expected = mapOf(
+            "openai-completions" to ProviderProtocol.OPENAI_CHAT,
+            "openai-responses" to ProviderProtocol.OPENAI_RESPONSES,
+            "anthropic-messages" to ProviderProtocol.ANTHROPIC_GATEWAY,
+        )
+        expected.forEach { (api, protocol) ->
+            val profile = ProviderProfile(ProviderKind.CUSTOM, "https://api.example.com/v1", "m", dshApi = api)
+            assertEquals(api, protocol, providerProtocolForAgent(profile, AgentKind.CLAUDE_CODE))
+            assertEquals(api, protocol, providerProtocolForAgent(profile, AgentKind.DEEPSEEK_HARNESS))
+        }
+    }
+
+    @Test
+    fun claudeRuntimeStartsFormatGatewayOnlyForOpenAiProtocols() {
+        fun needsGateway(profile: ProviderProfile) = providerProtocolForAgent(profile, AgentKind.CLAUDE_CODE) in
+            setOf(ProviderProtocol.OPENAI_CHAT, ProviderProtocol.OPENAI_RESPONSES)
+
+        val customProfile = ProviderProfile(ProviderKind.CUSTOM, "https://api.example.com/v1", "m", dshApi = "openai-completions")
+        assertTrue(needsGateway(customProfile))
+        assertTrue(needsGateway(customProfile.copy(dshApi = "openai-responses")))
+        assertFalse(needsGateway(customProfile.copy(dshApi = "anthropic-messages")))
+        assertTrue(needsGateway(ProviderProfile(ProviderKind.NVIDIA_NIM)))
+    }
+
+    @Test
+    fun nonCustomClaudeProvidersKeepTheirFixedProtocol() {
+        // dshApi must be ignored for Claude Code outside CUSTOM, even when it carries a stale value.
+        assertEquals(
+            ProviderProtocol.ANTHROPIC,
+            providerProtocolForAgent(ProviderProfile(ProviderKind.ANTHROPIC, dshApi = "openai-completions"), AgentKind.CLAUDE_CODE),
+        )
+        assertEquals(
+            ProviderKind.KIMI.protocol,
+            providerProtocolForAgent(ProviderProfile(ProviderKind.KIMI, dshApi = "openai-responses"), AgentKind.CLAUDE_CODE),
+        )
+        assertEquals(
+            ProviderProtocol.OPENAI_CHAT,
+            providerProtocolForAgent(ProviderProfile(ProviderKind.NVIDIA_NIM), AgentKind.CLAUDE_CODE),
+        )
     }
 
     @Test
@@ -288,11 +333,14 @@ class AgentProviderPresetTest {
     @Test
     fun nativeCacheDisabledForDshEnvironment() {
         val route = DshRouteMapper.forProfile(ProviderProfile(ProviderKind.DEEPSEEK))
-        val env = DshRuntimeBridge.buildDshEnvironment(route, "secret-key-123")
-        assertEquals("1", env[DshRuntimeBridge.NARB_DISABLE_NATIVE_CACHE_ENV])
-        assertEquals(DshRuntimeBridge.DSH_HOME_GUEST_PATH, env["DSH_HOME"])
-        assertEquals("danger-full-access", env["DSH_PERMISSION_MODE"])
-        assertEquals("secret-key-123", env["DEEPSEEK_API_KEY"])
+        val envUnauthorized = DshRuntimeBridge.buildDshEnvironment(route, "secret-key-123", isExecutionAuthorized = false)
+        assertEquals("1", envUnauthorized[DshRuntimeBridge.NARB_DISABLE_NATIVE_CACHE_ENV])
+        assertEquals(DshRuntimeBridge.DSH_HOME_GUEST_PATH, envUnauthorized["DSH_HOME"])
+        assertEquals("read-only", envUnauthorized["DSH_PERMISSION_MODE"])
+        assertEquals("secret-key-123", envUnauthorized["DEEPSEEK_API_KEY"])
+
+        val envAuthorized = DshRuntimeBridge.buildDshEnvironment(route, "secret-key-123", isExecutionAuthorized = true)
+        assertEquals("danger-full-access", envAuthorized["DSH_PERMISSION_MODE"])
     }
 
     @Test
@@ -350,5 +398,64 @@ class AgentProviderPresetTest {
 
         assertEquals("dsh failed with output: $output", 0, exitCode)
         assertTrue(output.contains("Usage: dsh --profile headless") || output.contains("dsh"))
+    }
+
+    @Test
+    fun cordisPatchAndLegacySettingsGeneratedForCustomRoute() {
+        val profile = ProviderProfile(
+            kind = ProviderKind.CUSTOM,
+            baseUrl = "https://api.example.com/v1",
+            model = "qwen2.5-coder-32b-instruct",
+            dshApi = "openai-completions",
+            profileId = "example-custom-123",
+        )
+        val route = DshRouteMapper.forProfile(profile)
+        val patch = DshRuntimeBridge.buildDshCordisPatch(route, profile)
+        assertTrue(patch.contains("- id: agent-default-model"))
+        assertTrue(patch.contains("provider: ${route.name}"))
+        assertTrue(patch.contains("model: 'qwen2.5-coder-32b-instruct'"))
+        assertTrue(patch.contains("- id: llm-pi-ai"))
+        assertTrue(patch.contains("api: openai-completions"))
+        assertTrue(patch.contains("baseURL: 'https://api.example.com/v1'"))
+        assertTrue(patch.contains("- id: 'qwen2.5-coder-32b-instruct'"))
+
+        val legacy = DshRuntimeBridge.buildDshLegacySettings(route, profile)
+        assertTrue(legacy.contains("agent-default-model:"))
+        assertTrue(legacy.contains("llm-pi-ai:"))
+        assertTrue(legacy.contains("api: openai-completions"))
+        assertTrue(legacy.contains("baseURL: 'https://api.example.com/v1'"))
+    }
+
+    @Test
+    fun writeDshSettingsCreatesCordisPatchAndLegacySettings() {
+        val tempRootfs = java.io.File(System.getProperty("java.io.tmpdir", "/tmp"), "test-dsh-settings-${System.nanoTime()}")
+        tempRootfs.mkdirs()
+        try {
+            val sdkDir = java.io.File(tempRootfs, "root/.dsh/profiles/sdk").apply { mkdirs() }
+            val profile = ProviderProfile(
+                kind = ProviderKind.CUSTOM,
+                baseUrl = "https://api.example.com/v1",
+                model = "qwen2.5-coder-32b-instruct",
+                dshApi = "openai-completions",
+                profileId = "example-custom-123",
+            )
+            val route = DshRouteMapper.forProfile(profile)
+            DshRuntimeBridge.writeDshSettings(tempRootfs, route, profile)
+
+            val cordisPatchFile = java.io.File(tempRootfs, "root/.dsh/cordis.patch.yml")
+            val sdkPatchFile = java.io.File(sdkDir, "cordis.patch.yml")
+            val legacyFile = java.io.File(tempRootfs, "root/.dsh/settings.yaml")
+
+            assertTrue(cordisPatchFile.isFile)
+            assertTrue(sdkPatchFile.isFile)
+            assertTrue(legacyFile.isFile)
+
+            val patchContent = cordisPatchFile.readText()
+            assertTrue(patchContent.contains("- id: agent-default-model"))
+            assertTrue(patchContent.contains("baseURL: 'https://api.example.com/v1'"))
+            assertEquals(patchContent, sdkPatchFile.readText())
+        } finally {
+            tempRootfs.deleteRecursively()
+        }
     }
 }
