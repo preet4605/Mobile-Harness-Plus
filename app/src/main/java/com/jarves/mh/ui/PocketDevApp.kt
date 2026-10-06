@@ -194,6 +194,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jarves.mh.model.ActivityItem
 import com.jarves.mh.model.AgentKind
+import com.jarves.mh.model.ClaudeAuthMode
 import com.jarves.mh.model.ChangeItem
 import com.jarves.mh.model.ChatMessage
 import com.jarves.mh.model.ChatAttachment
@@ -207,6 +208,8 @@ import com.jarves.mh.model.ProjectKind
 import com.jarves.mh.model.ProjectChat
 import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.ProviderProfile
+import com.jarves.mh.runtime.ClaudeAuthState
+import com.jarves.mh.runtime.ClaudeAuthStatusState
 import com.jarves.mh.model.inferredDshApiForUrl
 import com.jarves.mh.model.providersForAgent
 import com.jarves.mh.model.ToolRequest
@@ -357,6 +360,17 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
             onSelectAgent = viewModel::chooseOnboardingAgent,
             onToggleTheme = viewModel::toggleTheme,
             themeMode = state.themeMode,
+            claudeSignIn = ClaudeSignInActions(
+                auth = state.claudeAuth,
+                claudeInstalled = state.installedAgentVersions.containsKey(AgentKind.CLAUDE_CODE),
+                busy = state.agentInstalling != null,
+                onSignIn = viewModel::startClaudeLogin,
+                onCancel = viewModel::cancelClaudeLogin,
+                onSubmitCode = viewModel::submitClaudeCode,
+                onSignOut = viewModel::logoutClaude,
+                onRefresh = viewModel::refreshClaudeAuthStatus,
+                onFinish = viewModel::finishClaudeOnboarding,
+            ),
         )
         state.startupStage == StartupStage.READY && !state.backgroundSetupComplete ->
             BackgroundTaskSetupScreen(
@@ -2232,6 +2246,11 @@ private fun RootScreenHost(
                     onRefreshAntigravityModels = viewModel::refreshAntigravityModels,
                     onSetAntigravityModel = viewModel::setAntigravityModel,
                     onSetAntigravityEffort = viewModel::setAntigravityEffort,
+                    onStartClaudeLogin = viewModel::startClaudeLogin,
+                    onCancelClaudeLogin = viewModel::cancelClaudeLogin,
+                    onSubmitClaudeCode = viewModel::submitClaudeCode,
+                    onLogoutClaude = viewModel::logoutClaude,
+                    onRefreshClaudeAuth = viewModel::refreshClaudeAuthStatus,
                 )
                 RootScreen.SETTINGS -> Box(
                     modifier = Modifier
@@ -2383,6 +2402,7 @@ private fun ProviderSetupScreen(
     onSelectAgent: (AgentKind) -> Unit,
     onToggleTheme: (() -> Unit)? = null,
     themeMode: AppThemeMode = AppThemeMode.DARK,
+    claudeSignIn: ClaudeSignInActions? = null,
 ) {
     val context = LocalContext.current
     var step by rememberSaveable { mutableIntStateOf(initialStep) }
@@ -2487,9 +2507,16 @@ private fun ProviderSetupScreen(
                     },
                     onSave = {
                         val url = if (selected.fixedBaseUrl) selected.defaultBaseUrl else baseUrl.trim()
-                        onSave(ProviderProfile(selected, url, model.trim(), dshApi = dshApi), apiKey)
+                        // A pasted Claude setup token means token mode; sign-in completes via claudeSignIn.onFinish.
+                        val authMode = if (selected == ProviderKind.CLAUDE && apiKey.isNotBlank()) {
+                            ClaudeAuthMode.SETUP_TOKEN_LEGACY
+                        } else {
+                            ClaudeAuthMode.NATIVE_SUBSCRIPTION
+                        }
+                        onSave(ProviderProfile(selected, url, model.trim(), dshApi = dshApi, claudeAuthMode = authMode), apiKey)
                     },
                     onChangeAgent = { showAgentPicker = true },
+                    claudeSignIn = claudeSignIn,
                 )
             }
         }
@@ -2803,6 +2830,7 @@ private fun ProviderCredentialsStep(
     onValidate: suspend (List<DiscoveredModel>) -> ConnectionValidation,
     onSave: () -> Unit,
     onChangeAgent: () -> Unit,
+    claudeSignIn: ClaudeSignInActions? = null,
 ) {
     val scope = rememberCoroutineScope()
     var models by remember(baseUrl) { mutableStateOf(emptyList<DiscoveredModel>()) }
@@ -2829,6 +2857,7 @@ private fun ProviderCredentialsStep(
             onToken = onApiKey,
             onSave = onSave,
             onChangeAgent = onChangeAgent,
+            claudeSignIn = claudeSignIn,
         )
         return
     }
@@ -3131,6 +3160,19 @@ private fun ProviderCredentialsStep(
     }
 }
 
+/** Everything the onboarding screen needs to offer "Sign in with Claude". */
+private data class ClaudeSignInActions(
+    val auth: ClaudeAuthState,
+    val claudeInstalled: Boolean,
+    val busy: Boolean,
+    val onSignIn: () -> Unit,
+    val onCancel: () -> Unit,
+    val onSubmitCode: (String) -> Unit,
+    val onSignOut: () -> Unit,
+    val onRefresh: () -> Unit,
+    val onFinish: () -> Unit,
+)
+
 @Composable
 private fun ClaudeSubscriptionCredentialsStep(
     token: String,
@@ -3138,6 +3180,7 @@ private fun ClaudeSubscriptionCredentialsStep(
     onToken: (String) -> Unit,
     onSave: () -> Unit,
     onChangeAgent: () -> Unit,
+    claudeSignIn: ClaudeSignInActions? = null,
 ) {
     var tokenVisible by rememberSaveable { mutableStateOf(false) }
     val hasToken = token.isNotBlank() || hasStoredToken
@@ -3166,6 +3209,37 @@ private fun ClaudeSubscriptionCredentialsStep(
                 "Connect a Claude Pro, Max, Team, or Enterprise subscription to Claude Code.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+        if (claudeSignIn != null) {
+            item {
+                ClaudeAccountCard(
+                    auth = claudeSignIn.auth,
+                    claudeInstalled = claudeSignIn.claudeInstalled,
+                    busy = claudeSignIn.busy,
+                    onSignIn = claudeSignIn.onSignIn,
+                    onCancel = claudeSignIn.onCancel,
+                    onSubmitCode = claudeSignIn.onSubmitCode,
+                    onSignOut = claudeSignIn.onSignOut,
+                    onRefresh = claudeSignIn.onRefresh,
+                )
+            }
+            item {
+                Button(
+                    onClick = claudeSignIn.onFinish,
+                    enabled = claudeSignIn.auth.status == ClaudeAuthStatusState.SIGNED_IN,
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                ) {
+                    Text("Continue")
+                }
+            }
+            item {
+                Text(
+                    "Or use a setup token instead",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         item {
             Surface(

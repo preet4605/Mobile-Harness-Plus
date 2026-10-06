@@ -397,7 +397,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!signedIn) preferences.clearAgentConversations(AgentKind.ANTIGRAVITY)
     }
     private val browserBridge = AndroidBrowserBridge(application) { url ->
-        openExternalUrl(url)
+        openExternalUrlOnce(url)
     }
     val claudeAuthController = ClaudeAuthController(
         context = application,
@@ -409,10 +409,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         },
         onAuthUrlDiscovered = { url ->
-            openExternalUrl(url)
+            openExternalUrlOnce(url)
         },
+        onLoginCompleted = { adoptClaudeAccountLogin() },
     )
-    private var lastOpenedClaudeAuthUrl: String? = null
+    private var lastAutoOpenedUrl: String? = null
+    private var lastAutoOpenedAtMillis = 0L
+    @Volatile private var signInAfterClaudeInstall = false
+    private var lastClaudeStatusCheckAtMillis = 0L
     private val _state = MutableStateFlow(
         AppUiState(
             onboardingComplete = preferences.onboardingComplete,
@@ -509,10 +513,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             claudeAuthController.state.collect { auth ->
                 _state.update { it.copy(claudeAuth = auth) }
-                auth.authorizationUrl?.takeIf { it != lastOpenedClaudeAuthUrl }?.let { url ->
-                    lastOpenedClaudeAuthUrl = url
-                    openExternalUrl(url)
-                }
+                syncClaudePingFromAuth()
             }
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -1149,6 +1150,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun addApiKey(kind: ProviderKind, name: String, secret: String): List<ApiKeyInfo> {
         vault.add(kind.name, name, secret)
+        if (kind == ProviderKind.CLAUDE) setClaudeAuthMode(ClaudeAuthMode.SETUP_TOKEN_LEGACY)
         val keys = vault.list(kind.name)
         refreshActiveApiKey(kind)
         return keys
@@ -1156,6 +1158,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun activateApiKey(kind: ProviderKind, keyId: String): List<ApiKeyInfo> {
         vault.activate(kind.name, keyId)
+        if (kind == ProviderKind.CLAUDE) setClaudeAuthMode(ClaudeAuthMode.SETUP_TOKEN_LEGACY)
         refreshActiveApiKey(kind)
         return vault.list(kind.name)
     }
@@ -1173,6 +1176,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             vault.purgeRevokedProviders()
             preferences.purgeRevokedProviders()
         }
+        if (kind == ProviderKind.CLAUDE && remaining.isEmpty()) setClaudeAuthMode(ClaudeAuthMode.NATIVE_SUBSCRIPTION)
         refreshActiveApiKey(kind)
         return remaining
     }
@@ -1535,13 +1539,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun finishClaudeOnboarding() {
-        val currentProvider = preferences.loadProvider(vault, AgentKind.CLAUDE_CODE)
-        val profile = currentProvider.copy(
-            kind = ProviderKind.CLAUDE,
-            claudeAuthMode = ClaudeAuthMode.NATIVE_SUBSCRIPTION,
-            hasSecret = claudeAuthController.hasNativeCredentials() || _state.value.claudeAuth.status == ClaudeAuthStatusState.SIGNED_IN,
-        )
-        preferences.saveProvider(profile, AgentKind.CLAUDE_CODE)
+        // Persists a clean Claude subscription profile (account mode) for Claude Code.
+        adoptClaudeAccountLogin()
+        val profile = preferences.loadProvider(vault, AgentKind.CLAUDE_CODE)
         preferences.onboardingComplete = true
         _state.update { it.copy(onboardingComplete = true, provider = profile, startupStage = StartupStage.READY) }
     }
@@ -1653,7 +1653,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             result.onSuccess {
                 if (kind == AgentKind.DEEPSEEK_HARNESS) preferences.dshVersion = installer.dshVersion
                 selectAgent(kind)
+                if (kind == AgentKind.CLAUDE_CODE && signInAfterClaudeInstall) {
+                    signInAfterClaudeInstall = false
+                    viewModelScope.launch { claudeAuthController.beginLogin() }
+                }
             }
+            if (result.isFailure) signInAfterClaudeInstall = false
             _state.update { current ->
                 current.copy(
                     installedAgentVersions = installer.installedAgentVersions(),
@@ -1770,13 +1775,79 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startClaudeLogin() {
-        if (_state.value.agentInstalling != null || _state.value.isRunning) return
-        lastOpenedClaudeAuthUrl = null
+        if (claudeAuthController.isLoginInFlight) return
+        if (_state.value.agentInstalling != null) {
+            _state.update { it.copy(toastMessage = "Wait for the current install to finish, then sign in.") }
+            return
+        }
+        if (_state.value.isRunning) {
+            _state.update { it.copy(toastMessage = "Stop the current task before signing in.") }
+            return
+        }
+        lastAutoOpenedUrl = null
         if (!installer.isAgentInstalled(AgentKind.CLAUDE_CODE)) {
+            // Install first; installAgent continues into the sign-in once Claude Code is ready.
+            signInAfterClaudeInstall = true
             installAgent(AgentKind.CLAUDE_CODE)
             return
         }
         viewModelScope.launch { claudeAuthController.beginLogin() }
+    }
+
+    /**
+     * After a successful account sign-in, make the account the way Claude Code authenticates:
+     * the Claude subscription provider in account mode, saved for the Claude Code agent only.
+     */
+    private fun adoptClaudeAccountLogin() {
+        val existing = preferences.loadProvider(vault, AgentKind.CLAUDE_CODE)
+        val profile = if (existing.kind == ProviderKind.CLAUDE) {
+            existing.copy(claudeAuthMode = ClaudeAuthMode.NATIVE_SUBSCRIPTION, hasSecret = true)
+        } else {
+            ProviderProfile(kind = ProviderKind.CLAUDE, claudeAuthMode = ClaudeAuthMode.NATIVE_SUBSCRIPTION, hasSecret = true)
+        }
+        val claudeIsActive = _state.value.agentKind == AgentKind.CLAUDE_CODE
+        if (claudeIsActive) {
+            preferences.saveProvider(profile, AgentKind.CLAUDE_CODE)
+        } else {
+            preferences.saveProviderForAgentOnly(profile, AgentKind.CLAUDE_CODE)
+        }
+        preferences.saveClaudeAuthMode(ClaudeAuthMode.NATIVE_SUBSCRIPTION, AgentKind.CLAUDE_CODE)
+        _state.update { current ->
+            current.copy(
+                provider = if (claudeIsActive) profile else current.provider,
+                claudeAuthMode = ClaudeAuthMode.NATIVE_SUBSCRIPTION,
+            )
+        }
+        syncClaudePingFromAuth()
+    }
+
+    /** Re-checks the Claude session when the app returns to the foreground (e.g. back from the browser). */
+    fun onAppResumed() {
+        val provider = _state.value.provider
+        if (provider.kind != ProviderKind.CLAUDE || provider.claudeAuthMode != ClaudeAuthMode.NATIVE_SUBSCRIPTION) return
+        // Each check starts a short runtime process; do not repeat it on every quick app switch.
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastClaudeStatusCheckAtMillis < CLAUDE_STATUS_RECHECK_MS) return
+        lastClaudeStatusCheckAtMillis = now
+        refreshClaudeAuthStatus()
+    }
+
+    private fun syncClaudePingFromAuth() {
+        val current = _state.value
+        if (current.agentKind != AgentKind.CLAUDE_CODE ||
+            current.provider.kind != ProviderKind.CLAUDE ||
+            current.provider.claudeAuthMode != ClaudeAuthMode.NATIVE_SUBSCRIPTION
+        ) return
+        val auth = current.claudeAuth
+        val (status, message) = when (auth.status) {
+            ClaudeAuthStatusState.SIGNED_IN -> ApiPingStatus.OK to auth.displayStatus
+            ClaudeAuthStatusState.STARTING,
+            ClaudeAuthStatusState.AWAITING_AUTH,
+            ClaudeAuthStatusState.VERIFYING,
+            -> ApiPingStatus.PINGING to auth.displayStatus
+            else -> ApiPingStatus.FAILED to "Not signed in to Claude"
+        }
+        _state.update { it.copy(apiPingStatus = status, apiPingMessage = message) }
     }
 
     fun submitClaudeCode(code: String) {
@@ -1796,11 +1867,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setClaudeAuthMode(mode: ClaudeAuthMode) {
-        preferences.claudeAuthMode = mode
+        // Only the Claude Code profile changes; other agents' providers are never rewritten.
+        preferences.saveClaudeAuthMode(mode, AgentKind.CLAUDE_CODE)
         _state.update { current ->
-            val updated = current.provider.copy(claudeAuthMode = mode)
-            preferences.saveProvider(updated, current.agentKind)
-            current.copy(provider = updated, claudeAuthMode = mode)
+            val provider = if (current.agentKind == AgentKind.CLAUDE_CODE && current.provider.kind == ProviderKind.CLAUDE) {
+                current.provider.copy(claudeAuthMode = mode)
+            } else {
+                current.provider
+            }
+            current.copy(provider = provider, claudeAuthMode = mode)
         }
     }
 
@@ -2173,6 +2248,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     apiPingMessage = if (hasAccount) "Antigravity account connected" else "Google account not signed in",
                 )
             }
+            return
+        }
+        if (profile.kind == ProviderKind.CLAUDE && profile.claudeAuthMode == ClaudeAuthMode.NATIVE_SUBSCRIPTION) {
+            // Account login has no API endpoint to ping; report the sign-in state instead.
+            syncClaudePingFromAuth()
+            refreshClaudeAuthStatus()
             return
         }
         if (profile.baseUrl.isBlank() || profile.model.isBlank()) return
@@ -3001,6 +3082,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         return repositories.values.toList()
+    }
+
+    /**
+     * Opens an automatically discovered link at most once: the CLI's own browser request, the
+     * controller callback, and a retry can all report the same link within moments.
+     */
+    private fun openExternalUrlOnce(url: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (url == lastAutoOpenedUrl && now - lastAutoOpenedAtMillis < AUTO_OPEN_DEDUPE_MS) return
+        lastAutoOpenedUrl = url
+        lastAutoOpenedAtMillis = now
+        openExternalUrl(url)
     }
 
     private fun openExternalUrl(url: String) {
@@ -4511,6 +4604,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             (event.reason.contains("sign-in", true) || event.reason.contains("authentication", true))) {
             antigravityAuthController.invalidateSession(event.reason)
         }
+        if (event is RuntimeEvent.SessionFailed && _state.value.agentKind == AgentKind.CLAUDE_CODE &&
+            _state.value.provider.claudeAuthMode == ClaudeAuthMode.NATIVE_SUBSCRIPTION &&
+            event.reason.contains("not signed in", ignoreCase = true)
+        ) {
+            claudeAuthController.markExpired()
+        }
         if (event is RuntimeEvent.SessionFailed && retryWithNextApiKey(event)) return
         _state.update { current ->
             val isStarting = event is RuntimeEvent.SessionStarted && current.activeSessionId == null
@@ -5078,6 +5177,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_ATTACHMENT_BYTES = 25L * 1024L * 1024L
         private const val MAX_IMPORTED_PROJECT_BYTES = 8L * 1024L * 1024L * 1024L
         private const val MAX_IMPORTED_ZIP_ENTRIES = 100_000
+        private const val AUTO_OPEN_DEDUPE_MS = 15_000L
+        private const val CLAUDE_STATUS_RECHECK_MS = 30_000L
         private const val LEGACY_GITHUB_TOKEN_KEY = "GITHUB_APP"
         private const val GITHUB_DEVICE_URL = "https://github.com/login/device"
         private val GITHUB_DEVICE_CODE = Regex("\\b[A-Z0-9]{4}-[A-Z0-9]{4}\\b")

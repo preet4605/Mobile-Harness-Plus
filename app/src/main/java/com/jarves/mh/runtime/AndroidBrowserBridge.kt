@@ -68,7 +68,12 @@ exec /pocket-bridge/open-url.sh "${'$'}@"
 
     fun openBrowser(url: String) {
         Log.i("BrowserBridge", "Opening browser URL: $url")
-        onUrlOpened?.invoke(url)
+        // A caller-supplied handler owns opening the link (and de-duplicating it); launching
+        // the browser here as well would open every link twice.
+        if (onUrlOpened != null) {
+            onUrlOpened.invoke(url)
+            return
+        }
         runCatching {
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

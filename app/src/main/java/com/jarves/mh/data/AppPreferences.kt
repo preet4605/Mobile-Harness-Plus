@@ -267,6 +267,37 @@ class AppPreferences(
         }.getOrDefault(com.jarves.mh.model.ClaudeAuthMode.NATIVE_SUBSCRIPTION)
         set(value) { preferences.edit().putString("claude_auth_mode", value.name).apply() }
 
+    /**
+     * Records how Claude Code authenticates (account sign-in vs setup token) for one agent
+     * without rewriting any other provider setting, so switching modes cannot disturb the
+     * provider profiles of other agents.
+     */
+    fun saveClaudeAuthMode(mode: com.jarves.mh.model.ClaudeAuthMode, agent: AgentKind = AgentKind.CLAUDE_CODE) {
+        preferences.edit()
+            .putString("claude_auth_mode", mode.name)
+            .putString("${providerPrefix(agent)}claude_auth_mode", mode.name)
+            .apply()
+    }
+
+    /** Saves [profile] only under [agent]'s own keys, leaving the globally active provider untouched. */
+    fun saveProviderForAgentOnly(profile: ProviderProfile, agent: AgentKind) {
+        val prefix = providerPrefix(agent)
+        val editor = preferences.edit()
+            .putString("${prefix}kind", profile.kind.name)
+            .putString("${prefix}base_url", profile.baseUrl)
+            .putString("${prefix}model", profile.model)
+            .putString("${prefix}dsh_api", profile.dshApi)
+            .putBoolean("${prefix}dsh_api_explicit", true)
+            .putString("${prefix}profile_id", profile.profileId)
+            .putString("${prefix}claude_auth_mode", profile.claudeAuthMode.name)
+        if (profile.kind == ProviderKind.CLAUDE) {
+            editor
+                .putString("claude_model", profile.model)
+                .putString("claude_thinking_level", profile.claudeThinkingLevel)
+        }
+        editor.apply()
+    }
+
     fun saveProvider(profile: ProviderProfile, agent: AgentKind? = null) {
         val editor = preferences.edit()
             .putString("provider_kind", profile.kind.name)
