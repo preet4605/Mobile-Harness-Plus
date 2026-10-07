@@ -1047,6 +1047,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         }
 
         val job = supervisorScope.launch {
+            var executionOwnedElsewhere = false
             try {
                 executionLock.withExecutionLock(task.taskId, task.projectId) {
                     val statusInsideLock = stateStore.get(taskId)?.status
@@ -2117,19 +2118,52 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                         }
                     }
                 }
-            } finally {
-                val currentRecord = stateStore.get(taskId)
-                if (currentRecord != null && !currentRecord.status.isTerminal &&
-                    currentRecord.status != TaskExecutionStatus.WAITING_FOR_APPROVAL &&
-                    currentRecord.status != TaskExecutionStatus.WAITING_FOR_INPUT) {
-                    val finalStatus = if (processSupervisor.isCancellationRequested(taskId)) {
-                        TaskExecutionStatus.CANCELLED
-                    } else {
-                        TaskExecutionStatus.ABANDONED
+            } catch (e: DuplicateExecutionException) {
+                // Another execution still holds this task's or project's lock (for example a
+                // previous task finishing its retry backoff or stop cleanup). Fail this launch
+                // cleanly instead of letting the exception escape the job and crash the app.
+                // A duplicate launch of the same task must not finalize the running execution.
+                executionOwnedElsewhere = executionLock.isTaskActive(taskId)
+                runCatching { Log.w(TAG, "Execution lock unavailable for task $taskId: ${e.message}") }
+                if (!executionOwnedElsewhere) {
+                    try {
+                        finalizeTask(
+                            taskId,
+                            TaskExecutionStatus.FAILED,
+                            error = "Another task is still running in this project. Wait for it to finish, then try again."
+                        )
+                    } catch (finalizeError: Exception) {
+                        runCatching { Log.e(TAG, "Failed to finalize task $taskId after lock conflict", finalizeError) }
                     }
-                    finalizeTask(taskId, finalStatus, error = "Execution ended prematurely")
                 }
-                activeJobs.remove(taskId)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Ordinary execution failures must not escape the supervisor job: with no
+                // handler they crash the app. The finally block below finalizes the task.
+                // JVM Errors (OutOfMemoryError, StackOverflowError, ...) are deliberately not caught.
+                runCatching { Log.e(TAG, "Unhandled error while executing task $taskId", e) }
+            } finally {
+                if (!executionOwnedElsewhere) {
+                    try {
+                        val currentRecord = stateStore.get(taskId)
+                        if (currentRecord != null && !currentRecord.status.isTerminal &&
+                            currentRecord.status != TaskExecutionStatus.WAITING_FOR_APPROVAL &&
+                            currentRecord.status != TaskExecutionStatus.WAITING_FOR_INPUT) {
+                            val finalStatus = when {
+                                processSupervisor.isCancellationRequested(taskId) -> TaskExecutionStatus.CANCELLED
+                                // CREATED -> ABANDONED is not a legal transition; a task that never
+                                // started is a failed launch.
+                                currentRecord.status == TaskExecutionStatus.CREATED -> TaskExecutionStatus.FAILED
+                                else -> TaskExecutionStatus.ABANDONED
+                            }
+                            finalizeTask(taskId, finalStatus, error = "Execution ended prematurely")
+                        }
+                    } catch (finalizeError: Exception) {
+                        runCatching { Log.e(TAG, "Failed to finalize task $taskId after execution ended", finalizeError) }
+                    }
+                    activeJobs.remove(taskId)
+                }
             }
         }
 
