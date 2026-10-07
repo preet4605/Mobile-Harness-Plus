@@ -25,7 +25,7 @@ class ChatLiquidGlassRegressionTest {
     }
 
     private fun functionBody(name: String): String {
-        val start = source.indexOf("private fun $name(")
+        val start = source.indexOf("fun $name(")
         assertTrue("$name not found", start >= 0)
         val end = source.indexOf("\n}\n", start)
         assertTrue("$name end not found", end > start)
@@ -152,7 +152,8 @@ class ChatLiquidGlassRegressionTest {
     @Test
     fun rootBackdrop_staysIntact() {
         val root = functionBody("RootScreenHost")
-        assertTrue(root.contains(".asBackdropSource(LiquidGlassLayers.Background)"))
+        // Root's content box is not a source; each root screen's list is (RootLiquidGlassWiringTest).
+        assertFalse(root.contains("asBackdropSource("))
         assertTrue(calls(root, "LiquidGlassFloatingNavBar").single().contains("layerSource = LiquidGlassLayers.Background"))
     }
 

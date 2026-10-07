@@ -87,7 +87,7 @@ class LiquidGlassFoundationTest {
 
     @Test
     fun liquidGlassTokens_sheetAndControlRadiiMatchHig() {
-        assertEquals(24.dp, LiquidGlassTokens.SheetRadius)
+        assertEquals(28.dp, LiquidGlassTokens.SheetRadius)
         assertEquals(14.dp, LiquidGlassTokens.ControlRadius)
         assertEquals(44.dp, LiquidGlassTokens.MinTouchTarget)
         assertTrue(LiquidGlassTokens.PillRadius > 100.dp)

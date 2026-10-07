@@ -1,7 +1,7 @@
 package com.jarves.mh.ui.theme.glass
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
@@ -11,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -42,7 +44,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -56,13 +61,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.jarves.mh.ui.theme.PocketMotion
 import com.jarves.mh.ui.theme.PocketPalette
 import com.jarves.mh.ui.theme.PocketRadius
 import com.jarves.mh.ui.theme.PocketSpacing
+import com.jarves.mh.ui.theme.tactilePress
 
 /**
  * Reusable Liquid Glass UI Primitives.
@@ -129,22 +137,19 @@ fun RowScope.LiquidGlassFloatingNavBarItem(
 ) {
     val isDark = isGlassDarkTheme()
     val activeColor = selectedTint
-    val inactiveColor = if (isDark) MaterialTheme.colorScheme.onSurfaceVariant else Color(0xFF64748B)
+    val inactiveColor = MaterialTheme.colorScheme.onSurfaceVariant
+    // Neutral selection capsule; the accent lives on the icon and label only (colour used sparingly).
+    val capsuleColor = if (isDark) LiquidGlassTokens.SelectionDark else LiquidGlassTokens.SelectionLight
 
-    val animatedBgAlpha by animateFloatAsState(
-        targetValue = if (selected) 0.10f else 0f,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-        label = "nav_item_bg_alpha"
+    val animatedCapsule by animateColorAsState(
+        targetValue = if (selected) capsuleColor else Color.Transparent,
+        animationSpec = PocketMotion.selectionSpring(),
+        label = "nav_item_capsule"
     )
     val animatedContentColor by animateColorAsState(
         targetValue = if (selected) activeColor else inactiveColor,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        animationSpec = PocketMotion.selectionSpring(),
         label = "nav_item_color"
-    )
-    val animatedScale by animateFloatAsState(
-        targetValue = if (selected) 1.01f else 1.0f,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-        label = "nav_item_scale"
     )
 
     Box(
@@ -160,12 +165,8 @@ fun RowScope.LiquidGlassFloatingNavBarItem(
                         minWidth = LiquidGlassTokens.MinTouchTarget,
                         minHeight = LiquidGlassTokens.MinTouchTarget,
                     )
-                    .graphicsLayer {
-                        scaleX = animatedScale
-                        scaleY = animatedScale
-                    }
-                    .clip(RoundedCornerShape(LiquidGlassTokens.ControlRadius))
-                    .background(activeColor.copy(alpha = animatedBgAlpha))
+                    .clip(RoundedCornerShape(LiquidGlassTokens.PillRadius))
+                    .background(animatedCapsule)
                     .clickable(
                         enabled = enabled,
                         role = Role.Tab,
@@ -177,7 +178,7 @@ fun RowScope.LiquidGlassFloatingNavBarItem(
                             this.contentDescription = contentDescription
                         }
                     }
-                    .padding(horizontal = PocketSpacing.sm, vertical = PocketSpacing.xs),
+                    .padding(horizontal = PocketSpacing.lg, vertical = PocketSpacing.xs),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
@@ -215,16 +216,26 @@ fun LiquidGlassTopBar(
     actions: @Composable (RowScope.() -> Unit)? = null,
     material: LiquidGlassMaterial = LiquidGlassMaterial.Regular,
     layerSource: String? = null,
-    shape: Shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
+    shape: Shape = RectangleShape,
     tonalElevation: Dp = 2.dp,
     windowInsets: WindowInsets = WindowInsets.statusBars,
 ) {
+    // A bar is an edge-to-edge glass band, not a floating card: no rim, just a hairline
+    // separating it from the content scrolling underneath.
+    val hairline = MaterialTheme.colorScheme.outlineVariant
     LiquidGlassSurface(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .drawWithContent {
+                drawContent()
+                val y = size.height - 0.5.dp.toPx()
+                drawLine(hairline, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.5.dp.toPx())
+            },
         material = material,
         shape = shape,
         layerSource = layerSource,
         tonalElevation = tonalElevation,
+        borderStroke = BorderStroke(0.dp, Color.Transparent),
     ) {
         Row(
             modifier = Modifier
@@ -280,7 +291,7 @@ fun LiquidGlassTopBar(
     actions: @Composable (RowScope.() -> Unit)? = null,
     material: LiquidGlassMaterial = LiquidGlassMaterial.Regular,
     layerSource: String? = null,
-    shape: Shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
+    shape: Shape = RectangleShape,
     tonalElevation: Dp = 2.dp,
     windowInsets: WindowInsets = WindowInsets.statusBars,
 ) {
@@ -339,7 +350,7 @@ fun LiquidGlassSheet(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val isDark = isGlassDarkTheme()
-    val handleColor = if (isDark) Color(0x44FFFFFF) else Color(0x33000000)
+    val handleColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isDark) 0.45f else 0.35f)
 
     LiquidGlassSurface(
         modifier = modifier.fillMaxWidth(),
@@ -357,8 +368,8 @@ fun LiquidGlassSheet(
             if (showHandleBar) {
                 Box(
                     modifier = Modifier
-                        .size(width = 36.dp, height = 4.dp)
-                        .clip(RoundedCornerShape(2.dp))
+                        .size(width = 36.dp, height = 5.dp)
+                        .clip(RoundedCornerShape(LiquidGlassTokens.PillRadius))
                         .background(handleColor)
                         .semantics { contentDescription = "Sheet handle" },
                 )
@@ -417,7 +428,6 @@ fun LiquidGlassDialog(
                     if (title != null) {
                         CompositionLocalProvider(
                             LocalTextStyle provides MaterialTheme.typography.titleLarge.copy(
-                                fontWeight = FontWeight.Bold,
                                 textAlign = TextAlign.Center,
                             )
                         ) {
@@ -631,10 +641,9 @@ fun LiquidGlassPill(
             }
             Text(
                 text = text,
-                fontSize = 11.5.sp,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                 color = accentColor,
-                fontFamily = FontFamily.Monospace,
                 maxLines = 1,
                 softWrap = false,
             )
@@ -663,80 +672,95 @@ fun <T> LiquidGlassSegmentedControl(
     accentColor: Color = PocketPalette.orangeAccent,
 ) {
     val isDark = isGlassDarkTheme()
+    val capsule = RoundedCornerShape(LiquidGlassTokens.PillRadius)
+    // Raised neutral thumb that slides between segments; no accent outline (colour used sparingly).
+    val thumbColor = if (isDark) Color.White.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.92f)
+    val thumbBorder = if (isDark) Color.White.copy(alpha = 0.10f) else Color.Black.copy(alpha = 0.06f)
+    val selectedIndex = items.indexOf(selectedItem)
+    val gap = PocketSpacing.xxs
 
     LiquidGlassSurface(
-        modifier = modifier
-            .clip(RoundedCornerShape(LiquidGlassTokens.ControlRadius)),
+        modifier = modifier.clip(capsule),
         material = material,
-        shape = RoundedCornerShape(LiquidGlassTokens.ControlRadius),
+        shape = capsule,
         layerSource = layerSource,
     ) {
-        Row(
+        BoxWithConstraints(
             modifier = Modifier
                 .padding(3.dp)
                 .fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-            verticalAlignment = Alignment.CenterVertically,
         ) {
-            items.forEach { item ->
-                val isSelected = item == selectedItem
-                val label = itemLabel(item)
-                val icon = itemIcon?.invoke(item)
-
+            val count = items.size.coerceAtLeast(1)
+            val segmentWidth = (maxWidth - gap * (count - 1)) / count
+            val thumbOffset by animateDpAsState(
+                targetValue = (segmentWidth + gap) * selectedIndex.coerceAtLeast(0),
+                animationSpec = PocketMotion.selectionSpring(),
+                label = "segmentedThumbOffset",
+            )
+            if (selectedIndex >= 0) {
                 Box(
                     modifier = Modifier
-                        .weight(1f)
-                        .defaultMinSize(minHeight = LiquidGlassTokens.MinTouchTarget)
-                        .clip(RoundedCornerShape(LiquidGlassTokens.ControlRadius - 2.dp))
-                        .then(
-                            if (isSelected) {
-                                Modifier
-                                    .background(
-                                        if (isDark) Color(0x33FFFFFF) else Color(0x55FFFFFF)
-                                    )
-                                    .border(
-                                        0.75.dp,
-                                        accentColor.copy(alpha = 0.45f),
-                                        RoundedCornerShape(LiquidGlassTokens.ControlRadius - 2.dp),
-                                    )
-                            } else Modifier
-                        )
-                        .clickable(
-                            role = Role.Tab,
-                            onClick = { onItemSelected(item) },
-                        )
-                        .semantics {
-                            selected = isSelected
-                            contentDescription = label
-                        }
-                        .padding(horizontal = PocketSpacing.xs, vertical = PocketSpacing.xs),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                    ) {
-                        if (icon != null) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = null,
-                                tint = if (isSelected) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(15.dp),
+                        .offset { IntOffset(thumbOffset.roundToPx(), 0) }
+                        .width(segmentWidth)
+                        .height(LiquidGlassTokens.MinTouchTarget)
+                        .clip(capsule)
+                        .background(thumbColor)
+                        .border(0.5.dp, thumbBorder, capsule),
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(gap),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                items.forEach { item ->
+                    val isSelected = item == selectedItem
+                    val label = itemLabel(item)
+                    val icon = itemIcon?.invoke(item)
+                    val labelColor by animateColorAsState(
+                        targetValue = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                        animationSpec = PocketMotion.selectionSpring(),
+                        label = "segmentLabelColor",
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(LiquidGlassTokens.MinTouchTarget)
+                            .clip(capsule)
+                            .clickable(
+                                role = Role.Tab,
+                                onClick = { onItemSelected(item) },
                             )
-                            Spacer(Modifier.width(PocketSpacing.xs))
+                            .semantics {
+                                selected = isSelected
+                                contentDescription = label
+                            }
+                            .padding(horizontal = PocketSpacing.xs),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            if (icon != null) {
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = null,
+                                    tint = if (isSelected) accentColor else labelColor,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                                Spacer(Modifier.width(PocketSpacing.xs))
+                            }
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                                color = labelColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                            color = if (isSelected) {
-                                if (isDark) Color.White else Color(0xFF0F172A)
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
                     }
                 }
             }
@@ -749,8 +773,9 @@ fun <T> LiquidGlassSegmentedControl(
 // ============================================================================
 
 /**
- * Modular content card providing structured visual hierarchy via Thin glass material.
- * Gracefully falls back to high-contrast opaque surface when Reduce Transparency is enabled.
+ * Content card. Cards are content, so by default they are solid (no Liquid Glass in the
+ * content layer): neutral surface, optional stained [tint] overlay, hairline or custom border.
+ * Passing a [layerSource] opts a floating card into real glass sampling the shared backdrop.
  */
 @Composable
 fun LiquidGlassCard(
@@ -764,25 +789,52 @@ fun LiquidGlassCard(
     onClick: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
-    LiquidGlassSurface(
+    if (layerSource != null) {
+        LiquidGlassSurface(
+            modifier = modifier
+                .then(
+                    if (onClick != null) {
+                        Modifier
+                            .defaultMinSize(minHeight = LiquidGlassTokens.MinTouchTarget)
+                            .clip(shape)
+                            .clickable(
+                                role = Role.Button,
+                                onClick = onClick,
+                            )
+                    } else Modifier
+                ),
+            material = material,
+            shape = shape,
+            layerSource = layerSource,
+            tint = tint,
+            borderStroke = borderStroke,
+            tonalElevation = tonalElevation,
+            content = content,
+        )
+        return
+    }
+
+    val isDark = isGlassDarkTheme()
+    val surface = if (isDark) PocketPalette.darkCardSurface else PocketPalette.lightCardSurface
+    val hairline = BorderStroke(0.5.dp, if (isDark) PocketPalette.darkBorder else PocketPalette.lightBorder)
+    val contentColor = MaterialTheme.colorScheme.onSurface
+    Box(
         modifier = modifier
             .then(
                 if (onClick != null) {
                     Modifier
                         .defaultMinSize(minHeight = LiquidGlassTokens.MinTouchTarget)
-                        .clip(shape)
-                        .clickable(
-                            role = Role.Button,
-                            onClick = onClick,
-                        )
+                        .tactilePress(onClick)
                 } else Modifier
-            ),
-        material = material,
-        shape = shape,
-        layerSource = layerSource,
-        tint = tint,
-        borderStroke = borderStroke,
-        tonalElevation = tonalElevation,
-        content = content,
-    )
+            )
+            .clip(shape)
+            .background(surface)
+            .then(if (tint != null) Modifier.background(tint) else Modifier)
+            .border(borderStroke ?: hairline, shape),
+        propagateMinConstraints = false,
+    ) {
+        CompositionLocalProvider(LocalContentColor provides contentColor) {
+            content()
+        }
+    }
 }
