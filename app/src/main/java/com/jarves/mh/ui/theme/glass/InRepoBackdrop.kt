@@ -1,6 +1,7 @@
 package com.jarves.mh.ui.theme.glass
 
 import android.os.Build
+import android.os.SystemClock
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -25,16 +26,19 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.node.CompositionLocalConsumerModifierNode
 import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.GlobalPositionAwareModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.ObserverModifierNode
+import androidx.compose.ui.node.currentValueOf
 import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.node.observeReads
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.platform.LocalGraphicsContext
 import androidx.compose.ui.unit.IntSize
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.draw.drawWithContent
@@ -191,7 +195,9 @@ class BackdropState internal constructor(
         origin: Offset,
         size: IntSize,
         scale: Float = 1f,
+        publisher: Any? = null,
     ) {
+        this.publisher = publisher
         val previousResult = currentResult
         val newEpoch = captureEpoch + 1L
         sourceOrigin = origin
@@ -208,6 +214,23 @@ class BackdropState internal constructor(
             previousResult.layer !== fallbackLayer &&
             previousResult.layer !== recordedLayer
         ) {
+            releaseLayerLater(previousResult.layer)
+        }
+    }
+
+    /** Source that published [currentResult]; only that source may clear it. */
+    private var publisher: Any? = null
+
+    /**
+     * Drops the published capture when its source leaves composition, so no consumer keeps
+     * sampling a stale frame of a screen that is no longer shown (the next source recaptures).
+     */
+    internal fun clearCapture(publisher: Any) {
+        if (this.publisher !== publisher) return
+        val previousResult = currentResult
+        this.publisher = null
+        currentResult = null
+        if (previousResult != null && previousResult.layer !== fallbackLayer) {
             releaseLayerLater(previousResult.layer)
         }
     }
@@ -323,14 +346,26 @@ internal class BackdropSourceNode(
 ) : Modifier.Node(),
     DrawModifierNode,
     ObserverModifierNode,
-    GlobalPositionAwareModifierNode {
+    GlobalPositionAwareModifierNode,
+    CompositionLocalConsumerModifierNode {
 
     private var lastCapturedInvalidator = -1L
     private var lastCapturedSize = IntSize.Zero
+    private var lastCaptureAtMs = NO_CAPTURE
+    private var pendingRecapture: Job? = null
 
     override fun onAttach() {
         super.onAttach()
         state.requestCapture()
+    }
+
+    override fun onDetach() {
+        pendingRecapture = null
+        lastCaptureAtMs = NO_CAPTURE
+        lastCapturedInvalidator = -1L
+        lastCapturedSize = IntSize.Zero
+        state.clearCapture(this)
+        super.onDetach()
     }
 
     override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
@@ -351,42 +386,93 @@ internal class BackdropSourceNode(
 
     override fun ContentDrawScope.draw() {
         // Observe generic sourceInvalidator for manual/coordinated recapture requests
+        var invalidator = 0L
         observeReads {
-            state.sourceInvalidator
+            invalidator = state.sourceInvalidator
         }
 
         // 1. Normal on-screen rendering directly to window canvas
         drawContent()
 
         // 2. Dedicated completed-capture generation for glass sampling
-        if (blurSupported() && size.minDimension > 0f) {
-            val origin = state.sourceOrigin ?: Offset.Zero
-            val intSize = size.toIntSize()
-
-            // Allocate a fresh layer for this generation — never mutate in-use consumer layers
-            val freshLayer = state.allocateCaptureLayer()
-            freshLayer.compositingStrategy = CompositingStrategy.Offscreen
-
-            try {
-                // Record the complete source subtree into the fresh capture layer
-                freshLayer.record(intSize) {
-                    this@draw.drawContent()
+        if (!blurSupported() || size.minDimension <= 0f) return
+        val intSize = size.toIntSize()
+        val now = SystemClock.uptimeMillis()
+        val waitMs = backdropRecaptureDelayMs(
+            nowMs = now,
+            lastCaptureAtMs = lastCaptureAtMs,
+            invalidated = invalidator != lastCapturedInvalidator,
+            resized = intSize != lastCapturedSize,
+            minIntervalMs = currentValueOf(LocalLiquidGlassConfig).debounceMs,
+            contentIntervalMs = CONTENT_RECAPTURE_INTERVAL_MS,
+        )
+        if (waitMs > 0L) {
+            // Throttled: one trailing redraw so the final frame of a scroll/animation is captured.
+            if (pendingRecapture?.isActive != true) {
+                pendingRecapture = coroutineScope.launch {
+                    delay(waitMs)
+                    invalidateDraw()
                 }
-                lastCapturedInvalidator = state.sourceInvalidator
-                lastCapturedSize = intSize
-
-                // Atomically publish ONLY after recording is fully complete
-                state.publishCapture(
-                    recordedLayer = freshLayer,
-                    origin = origin,
-                    size = intSize,
-                )
-            } catch (_: Throwable) {
-                // If recording failed, release the un-published freshLayer immediately
-                state.releaseLayerImmediately(freshLayer)
             }
+            return
+        }
+        pendingRecapture?.cancel()
+        pendingRecapture = null
+
+        val origin = state.sourceOrigin ?: Offset.Zero
+
+        // Allocate a fresh layer for this generation — never mutate in-use consumer layers
+        val freshLayer = state.allocateCaptureLayer()
+        freshLayer.compositingStrategy = CompositingStrategy.Offscreen
+
+        try {
+            // Record the complete source subtree into the fresh capture layer
+            freshLayer.record(intSize) {
+                this@draw.drawContent()
+            }
+            lastCapturedInvalidator = invalidator
+            lastCapturedSize = intSize
+            lastCaptureAtMs = now
+
+            // Atomically publish ONLY after recording is fully complete
+            state.publishCapture(
+                recordedLayer = freshLayer,
+                origin = origin,
+                size = intSize,
+                publisher = this@BackdropSourceNode,
+            )
+        } catch (_: Throwable) {
+            // If recording failed, release the un-published freshLayer immediately
+            state.releaseLayerImmediately(freshLayer)
         }
     }
+}
+
+internal const val NO_CAPTURE = Long.MIN_VALUE
+
+/**
+ * Redraws not caused by an explicit invalidation (scroll, requestCapture) come from content
+ * animating inside the source, e.g. a streaming reply or the thinking indicator. Glass only
+ * needs a blurred impression of that content, so it is refreshed at ~10 Hz instead of every frame.
+ */
+internal const val CONTENT_RECAPTURE_INTERVAL_MS = 100L
+
+/**
+ * How long a source must wait before its next capture; 0 means capture now.
+ * The first capture and size changes are immediate, invalidations (scroll, explicit requests)
+ * are capped at [minIntervalMs], and other content redraws at [contentIntervalMs].
+ */
+internal fun backdropRecaptureDelayMs(
+    nowMs: Long,
+    lastCaptureAtMs: Long,
+    invalidated: Boolean,
+    resized: Boolean,
+    minIntervalMs: Long,
+    contentIntervalMs: Long,
+): Long {
+    if (lastCaptureAtMs == NO_CAPTURE || resized) return 0L
+    val required = if (invalidated) minIntervalMs else contentIntervalMs
+    return (required - (nowMs - lastCaptureAtMs)).coerceAtLeast(0L)
 }
 
 /**

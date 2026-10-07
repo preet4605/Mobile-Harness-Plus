@@ -11,7 +11,8 @@ import java.io.File
  *
  * A checkpoint commit once replaced these call sites with plain Material 3 surfaces and no
  * test noticed. The project has no Compose UI test infrastructure, so this asserts the call
- * sites directly in the source that every harness (Claude Code, DeepSeek, Antigravity) renders.
+ * sites directly in the source that every harness (Claude Code, DeepSeek, Antigravity) renders,
+ * including the shared-backdrop wiring that gives Chat real blur (Phase 6B).
  */
 class ChatLiquidGlassRegressionTest {
 
@@ -63,12 +64,97 @@ class ChatLiquidGlassRegressionTest {
         assertWrappedInGlass(chat, "RoundedCornerShape(26.dp)", "Composer")
     }
 
+    /** Argument list (and trailing lambda, if [withBlock]) of the call starting at [start]. */
+    private fun callAt(body: String, start: Int, withBlock: Boolean = false): String {
+        var i = body.indexOf('(', start)
+        var depth = 0
+        while (i < body.length) {
+            when (body[i]) {
+                '(' -> depth++
+                ')' -> if (--depth == 0) break
+            }
+            i++
+        }
+        if (!withBlock) return body.substring(start, i + 1)
+        var j = body.indexOf('{', i)
+        depth = 0
+        while (j < body.length) {
+            when (body[j]) {
+                '{' -> depth++
+                '}' -> if (--depth == 0) break
+            }
+            j++
+        }
+        return body.substring(start, j + 1)
+    }
+
+    private fun calls(body: String, name: String): List<String> =
+        Regex("""(?<![A-Za-z])${Regex.escape(name)}\(""").findAll(body).map { callAt(body, it.range.first) }.toList()
+
     @Test
-    fun chatGlass_usesSharedHostWithoutBackdropCapture() {
+    fun chatGlass_bindsEveryConsumerToSharedBackgroundLayer() {
+        val surfaces = calls(chat, "LiquidGlassSurface")
+        assertEquals("Latest, telemetry, 3 chips and composer", 6, surfaces.size)
+        surfaces.forEach { call ->
+            assertTrue("Chat glass must sample the shared backdrop:\n$call", call.contains("layerSource = LiquidGlassLayers.Background"))
+            assertTrue("Chat glass must use an existing GlassRole:\n$call", Regex("""role = GlassRoles\.(Latest|Chip|Composer)""").containsMatchIn(call))
+        }
+        assertFalse("Chat must not force tint-only glass", chat.contains("layerSource = null"))
+    }
+
+    @Test
+    fun workspaceChrome_samplesBackdropOnlyWhileChatScrollsUnderIt() {
+        assertTrue(
+            Regex("""val chromeLayer = if \(selectedTab == WorkspaceTab\.CHAT\) LiquidGlassLayers\.Background else null""")
+                .containsMatchIn(workspace),
+        )
+        (calls(workspace, "LiquidGlassTopBar") + calls(workspace, "LiquidGlassSegmentedControl")).forEach { call ->
+            assertTrue("Workspace chrome must bind to chromeLayer:\n${call.take(120)}", call.contains("layerSource = chromeLayer"))
+        }
+        // Chat content runs edge to edge under the bars; other tabs stay padded and clipped.
+        assertTrue(Regex("""if \(selectedTab == WorkspaceTab\.CHAT\) \{\s*Modifier\.fillMaxSize\(\)\s*\} else \{\s*Modifier\.fillMaxSize\(\)\.padding\(padding\)\.clipToBounds\(\)""").containsMatchIn(workspace))
+        assertTrue("ChatTab must receive the bar insets as content clearance", workspace.contains("chromePadding = padding"))
+    }
+
+    @Test
+    fun chat_registersOneSharedSourceWithChromeAsSiblings() {
+        assertEquals("Exactly one backdrop source in Chat", 1, Regex("""hostBackdropSource\(\)""").findAll(chat).count())
+        val list = callAt(chat, chat.indexOf("LazyColumn("), withBlock = true)
+        assertTrue("The message list itself is the source", callAt(chat, chat.indexOf("LazyColumn(")).contains(".hostBackdropSource()"))
+        assertFalse("Glass inside its own source would record itself", list.contains("LiquidGlassSurface("))
         assertFalse(workspace.contains("rememberBackdropState("))
+        assertFalse(chat.contains("rememberBackdropState("))
         assertFalse(workspace.contains("LiquidGlassHost("))
         assertEquals("Exactly one LiquidGlassHost at the app root", 1, Regex("""\bLiquidGlassHost\(""").findAll(source).count())
-        assertFalse("Chat glass stays tint-only until real blur is designed", Regex("""layerSource = LiquidGlassLayers""").containsMatchIn(workspace))
+    }
+
+    @Test
+    fun chatChrome_floatsWithMeasuredClearance() {
+        assertEquals("Only the read-only banner may stay an opaque M3 Surface", 1, calls(chat, "Surface").size)
+        assertTrue(chat.contains("top = chromePadding.calculateTopPadding() + 12.dp"))
+        assertTrue(chat.contains("bottom = bottomChromeClearance + 16.dp"))
+        assertTrue(chat.contains(".padding(bottom = bottomChromeClearance + 10.dp)"))
+        assertTrue("Composer stack must follow the keyboard", chat.contains(".imePadding()"))
+        assertTrue(chat.contains("bottomChromeClearance = clearance"))
+    }
+
+    @Test
+    fun rootBackdrop_staysIntact() {
+        val root = functionBody("RootScreenHost")
+        assertTrue(root.contains(".asBackdropSource(LiquidGlassLayers.Background)"))
+        assertTrue(calls(root, "LiquidGlassFloatingNavBar").single().contains("layerSource = LiquidGlassLayers.Background"))
+    }
+
+    @Test
+    fun chatGlass_isHarnessAgnostic() {
+        (workspace + chat).lines()
+            .filter { it.contains("agentKind") || it.contains("AgentKind") }
+            .forEach { line ->
+                assertFalse(
+                    "Glass/backdrop must not depend on the harness: $line",
+                    Regex("""layerSource|Backdrop|LiquidGlass|chromeLayer|GlassRoles""").containsMatchIn(line),
+                )
+            }
     }
 
     @Test

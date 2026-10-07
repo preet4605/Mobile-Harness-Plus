@@ -155,6 +155,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -167,6 +168,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -247,6 +249,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.semantics.Role
 import com.jarves.mh.data.AppPreferences
+import com.jarves.mh.ui.theme.glass.GlassRoles
 import com.jarves.mh.ui.theme.glass.LiquidGlassCard
 import com.jarves.mh.ui.theme.glass.LiquidGlassConfig
 import com.jarves.mh.ui.theme.glass.LiquidGlassFloatingNavBar
@@ -258,7 +261,9 @@ import com.jarves.mh.ui.theme.glass.LiquidGlassSegmentedControl
 import com.jarves.mh.ui.theme.glass.LiquidGlassSurface
 import com.jarves.mh.ui.theme.glass.LiquidGlassTokens
 import com.jarves.mh.ui.theme.glass.LiquidGlassTopBar
+import com.jarves.mh.ui.theme.glass.LocalLiquidGlassBackdrop
 import com.jarves.mh.ui.theme.glass.asBackdropSource
+import com.jarves.mh.ui.theme.glass.hostBackdropSource
 
 import com.jarves.mh.ui.theme.AppThemeMode
 import androidx.compose.material.icons.filled.SmartToy
@@ -4423,6 +4428,9 @@ private fun WorkspaceScreen(
             onClearAll = onClearAllMemory,
         )
     }
+    // Only Chat scrolls under the chrome (it registers the shared backdrop source); the other tabs
+    // stay solid between the bars, so their chrome keeps the tint-only glass.
+    val chromeLayer = if (selectedTab == WorkspaceTab.CHAT) LiquidGlassLayers.Background else null
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         containerColor = Color.Transparent,
@@ -4519,7 +4527,7 @@ private fun WorkspaceScreen(
                     if (state.isRunning) CircularProgressIndicator(Modifier.padding(horizontal = 8.dp).size(18.dp), strokeWidth = 2.dp)
                 },
                 material = LiquidGlassMaterial.Thin,
-                layerSource = null,
+                layerSource = chromeLayer,
             )
         },
         bottomBar = {
@@ -4542,14 +4550,21 @@ private fun WorkspaceScreen(
                         itemLabel = { it.label },
                         itemIcon = { it.icon },
                         material = LiquidGlassMaterial.Regular,
-                        layerSource = null,
+                        layerSource = chromeLayer,
                         accentColor = MaterialTheme.colorScheme.primary,
                     )
                 }
             }
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding).clipToBounds()) {
+        // Chat runs edge to edge under the floating chrome; the other tabs stay between the bars.
+        Box(
+            if (selectedTab == WorkspaceTab.CHAT) {
+                Modifier.fillMaxSize()
+            } else {
+                Modifier.fillMaxSize().padding(padding).clipToBounds()
+            },
+        ) {
             when (selectedTab) {
                 WorkspaceTab.CHAT -> ChatTab(
                     state.messages,
@@ -4588,6 +4603,7 @@ private fun WorkspaceScreen(
                     mentionFiles = state.filteredMentionEntries,
                     isStopping = state.isStopping,
                     activeChatId = state.activeChatId,
+                    chromePadding = padding,
                 )
                 WorkspaceTab.FILES -> FilesTab(
                     files = state.workspaceFiles,
@@ -5115,6 +5131,7 @@ private fun ChatTab(
     mentionFiles: List<WorkspaceEntry> = emptyList(),
     isStopping: Boolean = false,
     activeChatId: String? = null,
+    chromePadding: PaddingValues = PaddingValues(0.dp),
 ) {
     val view = LocalView.current
     // Keep the screen on while the selected agent is working in this chat. Released automatically
@@ -5134,12 +5151,43 @@ private fun ChatTab(
         }
     }
     val safeMessages = remember(messages) { sanitizeChatTabMessages(messages) }
-    Column(Modifier.fillMaxSize().imePadding()) {
-        Box(Modifier.weight(1f)) {
+    val density = LocalDensity.current
+    val backdrop = LocalLiquidGlassBackdrop.current
+    // Programmatic scrolls (Latest, auto-follow) dispatch no nested scroll, so recapture the shared
+    // backdrop whenever the scroll position moves; the source throttles the actual captures.
+    LaunchedEffect(listState, backdrop) {
+        if (backdrop == null) return@LaunchedEffect
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { backdrop.requestCapture() }
+    }
+    // Height of everything floating at the bottom: the composer stack plus the tab bar or keyboard
+    // below it. Measured, so the last message always scrolls clear of the chrome.
+    var bottomChromeClearance by remember { mutableStateOf(0.dp) }
+    // Floats above the bottom bar (or the keyboard, which replaces it) over the messages.
+    val bottomChromeModifier = Modifier
+        .fillMaxWidth()
+        .padding(bottom = chromePadding.calculateBottomPadding())
+        .imePadding()
+        .onGloballyPositioned { coordinates ->
+            val parentHeight = coordinates.parentLayoutCoordinates?.size?.height ?: return@onGloballyPositioned
+            val clearance = with(density) { (parentHeight - coordinates.positionInParent().y).toDp() }
+            if (clearance != bottomChromeClearance) bottomChromeClearance = clearance
+        }
+    // The message list is the shared backdrop source and runs edge to edge; all chat chrome floats
+    // over it as siblings (never descendants) and samples it through LiquidGlassLayers.Background.
+    Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize()) {
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .hostBackdropSource(),
                 state = listState,
-                contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 16.dp),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    top = chromePadding.calculateTopPadding() + 12.dp,
+                    end = 16.dp,
+                    bottom = bottomChromeClearance + 16.dp,
+                ),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(safeMessages, key = { it.id }) { message ->
@@ -5167,7 +5215,7 @@ private fun ChatTab(
                 LiquidGlassSurface(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = 10.dp)
+                        .padding(bottom = bottomChromeClearance + 10.dp)
                         .clickable {
                             chatScope.launch {
                                 listState.animateScrollToItem(
@@ -5177,9 +5225,9 @@ private fun ChatTab(
                         },
                     material = LiquidGlassMaterial.Regular,
                     shape = RoundedCornerShape(LiquidGlassTokens.PillRadius),
-                    tint = if (isDark) Color(0xEE1E293B) else Color(0xEEFFFFFF),
                     borderStroke = BorderStroke(0.75.dp, if (isDark) Color(0x40FFFFFF) else Color(0x33000000)),
-                    layerSource = null,
+                    layerSource = LiquidGlassLayers.Background,
+                    role = GlassRoles.Latest,
                 ) {
                     Row(
                         Modifier
@@ -5207,7 +5255,7 @@ private fun ChatTab(
         if (readOnly) {
             Surface(
                 color = MaterialTheme.colorScheme.background,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.align(Alignment.BottomCenter).then(bottomChromeModifier),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
@@ -5232,14 +5280,12 @@ private fun ChatTab(
                     }
                 }
             }
-        } else Surface(
-            color = MaterialTheme.colorScheme.background,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
+        } else Box(Modifier.align(Alignment.BottomCenter).then(bottomChromeModifier)) {
+            // Transparent container: the composer and chips are the glass, messages show around them.
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                    .padding(start = 14.dp, top = 8.dp, end = 14.dp, bottom = PocketSpacing.md)
             ) {
                 if (pendingAttachments.isNotEmpty()) {
                     Row(
@@ -5352,14 +5398,20 @@ private fun ChatTab(
                     )
                 }
 
-                TokenTelemetryBar(metrics = tokenMetrics, modifier = Modifier.padding(bottom = 4.dp))
+                // Floats over messages now, so it sits on chip glass instead of a divider-separated panel.
+                if (tokenMetrics.promptTokens != 0 || tokenMetrics.completionTokens != 0) {
+                    LiquidGlassSurface(
+                        modifier = Modifier.padding(bottom = 6.dp),
+                        material = LiquidGlassMaterial.UltraThin,
+                        shape = RoundedCornerShape(10.dp),
+                        layerSource = LiquidGlassLayers.Background,
+                        role = GlassRoles.Chip,
+                    ) {
+                        TokenTelemetryBar(metrics = tokenMetrics)
+                    }
+                }
 
                 val isDark = isSystemInDarkTheme()
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f),
-                    thickness = 0.5.dp,
-                    modifier = Modifier.padding(bottom = 6.dp),
-                )
 
                 Row(
                     modifier = Modifier
@@ -5376,7 +5428,8 @@ private fun ChatTab(
                         LiquidGlassSurface(
                             material = LiquidGlassMaterial.UltraThin,
                             shape = RoundedCornerShape(10.dp),
-                            layerSource = null,
+                            layerSource = LiquidGlassLayers.Background,
+                            role = GlassRoles.Chip,
                         ) {
                             Text(
                                 "/ Commands",
@@ -5392,7 +5445,8 @@ private fun ChatTab(
                         LiquidGlassSurface(
                             material = LiquidGlassMaterial.UltraThin,
                             shape = RoundedCornerShape(10.dp),
-                            layerSource = null,
+                            layerSource = LiquidGlassLayers.Background,
+                            role = GlassRoles.Chip,
                         ) {
                             Row(Modifier.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.primary)
@@ -5407,7 +5461,8 @@ private fun ChatTab(
                             material = LiquidGlassMaterial.UltraThin,
                             shape = RoundedCornerShape(10.dp),
                             tint = if (subagentsCount + tasksCount > 0) PocketGreen.copy(alpha = 0.15f) else null,
-                            layerSource = null,
+                            layerSource = LiquidGlassLayers.Background,
+                            role = GlassRoles.Chip,
                         ) {
                             Row(Modifier.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Default.Layers, null, modifier = Modifier.size(12.dp), tint = if (subagentsCount + tasksCount > 0) PocketGreen else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -5426,7 +5481,8 @@ private fun ChatTab(
                 LiquidGlassSurface(
                     material = LiquidGlassMaterial.Regular,
                     shape = RoundedCornerShape(26.dp),
-                    layerSource = null,
+                    layerSource = LiquidGlassLayers.Background,
+                    role = GlassRoles.Composer,
                     borderStroke = BorderStroke(
                         width = 0.75.dp,
                         color = if (canSend) MaterialTheme.colorScheme.primary.copy(alpha = 0.40f) else if (isDark) Color(0x2EFFFFFF) else MaterialTheme.colorScheme.outlineVariant,

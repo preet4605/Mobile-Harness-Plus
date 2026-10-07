@@ -50,6 +50,7 @@ fun LiquidGlassSurface(
     tonalElevation: Dp = 0.dp,
     layerSource: String? = null,
     backdrop: BackdropState? = null,
+    role: GlassRole? = null,
     contentColor: Color? = null,
     onClick: (() -> Unit)? = null,
     content: @Composable () -> Unit,
@@ -97,7 +98,8 @@ fun LiquidGlassSurface(
         surfaceModifier = surfaceModifier.backdropGlass(
             backdrop = sharedBackdrop,
             shape = shape,
-            blurDp = material.blurRadius.coerceAtMost(24f),
+            // A GlassRole sets only the blur strength; tint, sheen and rim stay this shared recipe.
+            blurDp = role?.blurDp ?: material.blurRadius.coerceAtMost(24f),
             tint = Color.Transparent,
         )
     }
