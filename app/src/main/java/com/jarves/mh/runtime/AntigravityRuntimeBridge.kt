@@ -347,8 +347,8 @@ class AntigravityRuntimeBridge(
     override val isRunning: Boolean get() = activeProcess?.isAlive == true
     @Volatile private var activeSessionId: String? = null
     @Volatile private var activeTaskId: String? = null
-    @Volatile private var userStopRequested = false
-    private val stoppedTaskIds = ConcurrentHashMap.newKeySet<String>()
+    private val stopState = BridgeStopState()
+    private var userStopRequested by stopState::userStopRequested
     @Volatile private var foregroundResultPosted = false
 
     fun configureProjectRoot(projectId: String, rootPath: String) = checkpoints.configureProjectRoot(projectId, rootPath)
@@ -490,12 +490,10 @@ class AntigravityRuntimeBridge(
         val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId, effectiveAttemptId)
         activeSessionId = sessionId
         activeTaskId = taskId
-        val isTaskCancelled = (taskId != null && runCatching {
+        val cancellationActive = taskId != null && runCatching {
             com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).isCancellationActive(taskId)
-        }.getOrDefault(false)) || (taskId != null && stoppedTaskIds.contains(taskId))
-        if (isTaskCancelled || userStopRequested) {
-            userStopRequested = true
-            if (taskId != null) stoppedTaskIds.add(taskId)
+        }.getOrDefault(false)
+        if (stopState.beginSession(taskId, cancellationActive)) {
             activeSessionId = null
             activeTaskId = null
             emitFailure(sessionId, "Stopped by user")
@@ -512,7 +510,6 @@ class AntigravityRuntimeBridge(
             emitFailure(sessionId, "Task $taskId is already terminal")
             throw IllegalStateException("Task $taskId is already terminal")
         }
-        userStopRequested = false
         foregroundResultPosted = false
         finished.remove(sessionId)
         eventBus.emit(RuntimeEvent.SessionStarted(sessionId))
@@ -770,7 +767,7 @@ class AntigravityRuntimeBridge(
             com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).getTaskIdForSession(sessionId)
         }.getOrNull() ?: activeTaskId
         if (resolvedTaskId != null) {
-            stoppedTaskIds.add(resolvedTaskId)
+            stopState.requestStop(resolvedTaskId)
         }
         val proc = activeProcess
         if (proc != null) {
