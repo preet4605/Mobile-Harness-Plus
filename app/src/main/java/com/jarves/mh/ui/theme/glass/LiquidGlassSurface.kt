@@ -9,7 +9,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LocalContentColor
@@ -17,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -27,6 +27,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.jarves.mh.ui.theme.PocketPalette
@@ -56,7 +57,7 @@ fun LiquidGlassSurface(
     content: @Composable () -> Unit,
 ) {
     val config = LocalLiquidGlassConfig.current
-    val isDark = isSystemInDarkTheme()
+    val isDark = isGlassDarkTheme()
     val defaultContentColor = if (isDark) Color.White else Color(0xFF0F172A)
     val effectiveContentColor = contentColor ?: defaultContentColor
 
@@ -161,6 +162,14 @@ fun LiquidGlassSurface(
         }
     }
 }
+
+/**
+ * Dark/light decision for glass and its chrome. Follows the app's theme setting (which may differ
+ * from the system's), using the same rule as [backdropGlass].
+ */
+@Composable
+@ReadOnlyComposable
+fun isGlassDarkTheme(): Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f
 
 /**
  * Modifier to apply Liquid Glass styling to any composable.

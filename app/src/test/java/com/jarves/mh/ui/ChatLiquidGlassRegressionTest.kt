@@ -131,11 +131,22 @@ class ChatLiquidGlassRegressionTest {
     @Test
     fun chatChrome_floatsWithMeasuredClearance() {
         assertEquals("Only the read-only banner may stay an opaque M3 Surface", 1, calls(chat, "Surface").size)
-        assertTrue(chat.contains("top = chromePadding.calculateTopPadding() + 12.dp"))
-        assertTrue(chat.contains("bottom = bottomChromeClearance + 16.dp"))
-        assertTrue(chat.contains(".padding(bottom = bottomChromeClearance + 10.dp)"))
+        assertTrue(chat.contains("top = chromePadding.calculateTopPadding() + PocketSpacing.md"))
+        assertTrue(chat.contains("bottom = bottomChromeClearance + PocketSpacing.lg"))
+        assertTrue(chat.contains(".padding(bottom = bottomChromeClearance + PocketSpacing.md)"))
         assertTrue("Composer stack must follow the keyboard", chat.contains(".imePadding()"))
         assertTrue(chat.contains("bottomChromeClearance = clearance"))
+    }
+
+    @Test
+    fun chatChrome_followsAppThemeAndSharedTokens() {
+        // Glass tint and chrome text must follow the in-app theme, not only the system setting.
+        assertFalse(workspace.contains("isSystemInDarkTheme("))
+        assertFalse(chat.contains("isSystemInDarkTheme("))
+        // Composer stack and dock share one horizontal margin; secondary glass is pill-shaped.
+        assertTrue(workspace.contains(".padding(start = PocketSpacing.lg, end = PocketSpacing.lg, bottom = PocketSpacing.sm)"))
+        assertTrue(chat.contains("start = PocketSpacing.lg,") && chat.contains("end = PocketSpacing.lg,"))
+        assertEquals("Latest, telemetry and 3 chips are pills", 5, Regex("""RoundedCornerShape\(LiquidGlassTokens\.PillRadius\)""").findAll(chat).count())
     }
 
     @Test
