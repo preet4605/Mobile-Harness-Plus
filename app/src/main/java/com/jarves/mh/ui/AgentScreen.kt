@@ -1,80 +1,40 @@
 package com.jarves.mh.ui
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.PrivacyTip
-import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.SmartToy
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.ui.draw.clip
-import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,50 +43,72 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.jarves.mh.data.ApiKeyInfo
 import com.jarves.mh.model.AgentKind
+import com.jarves.mh.model.AntigravityAccount
+import com.jarves.mh.model.AntigravityAccountStatus
+import com.jarves.mh.model.AntigravityLoadBalancingStrategy
 import com.jarves.mh.model.ClaudeAuthMode
 import com.jarves.mh.model.DSH_PROTOCOL_PROVIDERS
 import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.ProviderProfile
 import com.jarves.mh.model.defaultDshApiForProvider
 import com.jarves.mh.model.inferredDshApiForUrl
-import com.jarves.mh.model.AntigravityAccount
-import com.jarves.mh.model.AntigravityAccountStatus
-import com.jarves.mh.model.AntigravityLoadBalancingStrategy
 import com.jarves.mh.model.providersForAgent
 import com.jarves.mh.network.ConnectionValidation
 import com.jarves.mh.network.DiscoveredModel
 import com.jarves.mh.network.ModelDiscoveryResult
 import com.jarves.mh.runtime.AntigravityAuthStatus
-import com.jarves.mh.ui.theme.PocketBlue
-import com.jarves.mh.ui.theme.PocketOrange
-import com.jarves.mh.ui.theme.PocketPalette
-import com.jarves.mh.ui.theme.PocketRadius
+import com.jarves.mh.ui.kit.AlertAction
+import com.jarves.mh.ui.kit.AlertRole
+import com.jarves.mh.ui.kit.BannerKind
+import com.jarves.mh.ui.kit.EmptyState
+import com.jarves.mh.ui.kit.GlassMenu
+import com.jarves.mh.ui.kit.GlassMenuItem
+import com.jarves.mh.ui.kit.GlassSheet
+import com.jarves.mh.ui.kit.LargeTitle
+import com.jarves.mh.ui.kit.LargeTitleScaffold
+import com.jarves.mh.ui.kit.LazyGroupRow
+import com.jarves.mh.ui.kit.ListIconTile
+import com.jarves.mh.ui.kit.ListInset
+import com.jarves.mh.ui.kit.ListRow
+import com.jarves.mh.ui.kit.ListRowAccessory
+import com.jarves.mh.ui.kit.ListSection
+import com.jarves.mh.ui.kit.PocketAlert
+import com.jarves.mh.ui.kit.PocketButton
+import com.jarves.mh.ui.kit.PocketButtonSize
+import com.jarves.mh.ui.kit.PocketButtonStyle
+import com.jarves.mh.ui.kit.PocketIconButton
+import com.jarves.mh.ui.kit.PocketTextField
+import com.jarves.mh.ui.kit.ProgressRing
+import com.jarves.mh.ui.kit.SearchField
+import com.jarves.mh.ui.kit.SectionHeader
+import com.jarves.mh.ui.kit.SegmentedControl
+import com.jarves.mh.ui.kit.SheetDetent
+import com.jarves.mh.ui.kit.SheetTextButton
+import com.jarves.mh.ui.kit.ToggleRow
+import com.jarves.mh.ui.kit.overlayAnchor
+import com.jarves.mh.ui.kit.rememberBanner
+import com.jarves.mh.ui.kit.rememberOverlayAnchor
+import com.jarves.mh.ui.kit.rememberTitleCollapse
+import com.jarves.mh.ui.theme.ContinuousRoundedShape
+import com.jarves.mh.ui.theme.PocketColors
+import com.jarves.mh.ui.theme.PocketShape
 import com.jarves.mh.ui.theme.PocketSpacing
-import com.jarves.mh.ui.theme.glass.LiquidGlassCard
-import com.jarves.mh.ui.theme.glass.LiquidGlassLayers
+import com.jarves.mh.ui.theme.PocketType
+import com.jarves.mh.ui.theme.emphasized
 import com.jarves.mh.ui.theme.glass.hostBackdropSource
-import com.jarves.mh.ui.theme.glass.LiquidGlassMaterial
-import com.jarves.mh.ui.theme.glass.LiquidGlassPill
-import com.jarves.mh.ui.theme.glass.LiquidGlassSegmentedControl
-import com.jarves.mh.ui.theme.glass.LiquidGlassSurface
-import com.jarves.mh.ui.theme.glass.LiquidGlassTokens
-import com.jarves.mh.ui.theme.glass.LiquidGlassTopBar
 import kotlinx.coroutines.launch
 
 private data class KeyConnectionStatus(
@@ -164,16 +146,32 @@ internal fun formatAntigravityModelTier(id: String): String = when {
     else -> ""
 }
 
+/** Short names for the engine switcher. */
+private fun AgentKind.shortName(): String = when (this) {
+    AgentKind.ANTIGRAVITY -> "Antigravity"
+    AgentKind.DEEPSEEK_HARNESS -> "DeepSeek"
+    AgentKind.CLAUDE_CODE -> "Claude Code"
+}
+
+private val Efforts = listOf("low", "medium", "high")
+
+private fun effortTitle(effort: String): String =
+    effort.replaceFirstChar { if (it.isLowerCase()) it.titlecase(java.util.Locale.ROOT) else it.toString() }
+
+private fun effortCaption(effort: String): String = when (effort) {
+    "low" -> "Fast responses with light reasoning."
+    "high" -> "The deepest reasoning; slower responses."
+    else -> "Balanced speed and reasoning."
+}
+
+/** Which sheet the Agent screen shows. */
+private enum class AgentSheet { None, Model, Provider, AddKey }
+
 /**
- * Dedicated Agent + AI connection hub.
- *
- * Replaces the old dashboard Terminal tab. Terminal is now a FAB
- * on the project/workspace screen; this screen owns:
- *  1. Status hero (active agent + model + connectivity)
- *  2. Coding agent picker + installs + updates
- *  3. AI connection (Antigravity OAuth OR provider + model + API keys)
+ * Agent: the engine switcher (Claude Code, DeepSeek, Antigravity) over grouped sections for the
+ * selected engine: its account, provider and endpoint, model (one sheet with the thinking
+ * level), credentials and connection test, then agent updates.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AgentScreen(
     state: AppUiState,
@@ -193,10 +191,10 @@ fun AgentScreen(
     onUpdateAgent: (AgentKind) -> Unit = {},
     onStartAntigravityLogin: () -> Unit = {},
     onSubmitAntigravityCode: (String) -> Unit = {},
-    onLogoutAntigravity: () -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onLogoutAntigravity: () -> Unit = {},
     onRemoveAntigravityAccount: (String) -> Unit = {},
     onSetAntigravityPrimaryAccount: (String) -> Unit = {},
-    onToggleAntigravityAccountEnabled: (String, Boolean) -> Unit = { _, _ -> },
+    @Suppress("UNUSED_PARAMETER") onToggleAntigravityAccountEnabled: (String, Boolean) -> Unit = { _, _ -> },
     onSetAntigravityLoadBalancingStrategy: (AntigravityLoadBalancingStrategy) -> Unit = {},
     onSetAntigravityFailoverEnabled: (Boolean) -> Unit = {},
     onRefreshAntigravityModels: () -> Unit = {},
@@ -207,8 +205,10 @@ fun AgentScreen(
     onSubmitClaudeCode: (String) -> Unit = {},
     onLogoutClaude: () -> Unit = {},
     onRefreshClaudeAuth: () -> Unit = {},
+    listState: LazyListState = rememberLazyListState(),
 ) {
     val scope = rememberCoroutineScope()
+    val colors = PocketColors.current
     var selectedKind by rememberSaveable(state.provider.kind) { mutableStateOf(state.provider.kind) }
     var baseUrl by rememberSaveable(state.provider.baseUrl) { mutableStateOf(state.provider.baseUrl) }
     var model by rememberSaveable(state.provider.model) { mutableStateOf(state.provider.model) }
@@ -219,12 +219,11 @@ fun AgentScreen(
     }
     var newKeyName by rememberSaveable(selectedKind) { mutableStateOf("") }
     var newApiKey by rememberSaveable(selectedKind) { mutableStateOf("") }
-    var newKeyVisible by rememberSaveable(selectedKind, savedKeys.isEmpty()) { mutableStateOf(savedKeys.isEmpty() && selectedKind != ProviderKind.ANTIGRAVITY_SERVER) }
     var models by remember(selectedKind, baseUrl) {
         mutableStateOf(if (selectedKind == ProviderKind.ANTIGRAVITY_SERVER) defaultModelsForProvider(selectedKind) else emptyList())
     }
     var modelSearch by rememberSaveable(selectedKind) { mutableStateOf("") }
-    var showModels by rememberSaveable { mutableStateOf(false) }
+    var sheet by rememberSaveable { mutableStateOf(AgentSheet.None) }
     var isDiscovering by remember { mutableStateOf(false) }
     var isValidating by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
@@ -233,8 +232,7 @@ fun AgentScreen(
     var keyConnectionStatuses by remember(selectedKind) {
         mutableStateOf<Map<String, KeyConnectionStatus>>(emptyMap())
     }
-    // Antigravity model sheet state
-    var showAntigravityModelSheet by rememberSaveable { mutableStateOf(false) }
+    var keyPendingRemoval by remember { mutableStateOf<ApiKeyInfo?>(null) }
     var antigravitySearch by rememberSaveable { mutableStateOf("") }
     var antigravityCode by rememberSaveable { mutableStateOf("") }
     var viewedAgent by rememberSaveable { mutableStateOf(state.agentKind) }
@@ -244,9 +242,7 @@ fun AgentScreen(
     }
     val viewedAgentInstalled = viewedAgent == state.agentKind ||
         state.installedAgentVersions.containsKey(viewedAgent)
-
-    val providerSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val antigravitySheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val isAntigravity = state.agentKind == AgentKind.ANTIGRAVITY
 
     val filteredModels = remember(models, modelSearch) {
         val q = modelSearch.trim()
@@ -256,19 +252,20 @@ fun AgentScreen(
     }
 
     val antigravityModelList = remember(state.antigravityModels) {
-        if (state.antigravityModels.isNotEmpty()) state.antigravityModels
-        else listOf(
-            "gemini-3.8-flash-high",
-            "gemini-3.8-flash-medium",
-            "gemini-3.6-flash-high",
-            "gemini-3.6-flash-medium",
-            "gemini-3.6-flash-low",
-            "gemini-3.1-pro-high",
-            "gemini-3.1-pro-low",
-            "claude-sonnet-4-6",
-            "claude-opus-4-6-thinking",
-            "gpt-oss-120b-medium",
-        )
+        state.antigravityModels.ifEmpty {
+            listOf(
+                "gemini-3.8-flash-high",
+                "gemini-3.8-flash-medium",
+                "gemini-3.6-flash-high",
+                "gemini-3.6-flash-medium",
+                "gemini-3.6-flash-low",
+                "gemini-3.1-pro-high",
+                "gemini-3.1-pro-low",
+                "claude-sonnet-4-6",
+                "claude-opus-4-6-thinking",
+                "gpt-oss-120b-medium",
+            )
+        }
     }
 
     val filteredAntigravityModels = remember(antigravityModelList, antigravitySearch) {
@@ -286,11 +283,10 @@ fun AgentScreen(
             selectedKind == ProviderKind.OPENCODE_ZEN ||
             isAntigravityServer
         if (effectiveKey.isBlank() && !supportsPublicDiscovery) {
-            status = "Please enter or save an API key first to discover models."
+            status = "Add an API key first to discover models."
             statusOk = false
             statusProviderMessage = null
-            newKeyVisible = true
-            showModels = true
+            sheet = AgentSheet.AddKey
             return
         }
         scope.launch {
@@ -310,12 +306,11 @@ fun AgentScreen(
                         apiKey = getSavedApiKey(kind)
                         newKeyName = ""
                         newApiKey = ""
-                        newKeyVisible = false
                     }
                     status = "Discovered ${result.models.size} models from ${selectedKind.title}."
                     statusOk = true
                     statusProviderMessage = null
-                    showModels = true
+                    sheet = AgentSheet.Model
                 }
                 is ModelDiscoveryResult.Failure -> {
                     status = result.message
@@ -327,2046 +322,1085 @@ fun AgentScreen(
         }
     }
 
-    androidx.compose.runtime.LaunchedEffect(selectedKind) {
+    LaunchedEffect(selectedKind) {
         if (selectedKind == ProviderKind.ANTIGRAVITY_SERVER) {
             val url = selectedKind.defaultBaseUrl
             val profile = ProviderProfile(selectedKind, url, model.trim(), dshApi = dshApi)
             when (val result = onDiscoverModels(profile, "")) {
-                is ModelDiscoveryResult.Success -> {
-                    models = result.models
-                }
+                is ModelDiscoveryResult.Success -> models = result.models
                 else -> {}
             }
         }
     }
 
-    // ── Live connection status calculations ──
-    val isDark = isSystemInDarkTheme()
-    val onlineColor = if (isDark) Color(0xFF58C9A3) else Color(0xFF0D7A3E)
-    val isAntigravity = state.agentKind == AgentKind.ANTIGRAVITY
-    val antigravityTesting = isAntigravity && state.apiPingStatus == ApiPingStatus.PINGING
-    val antigravityHelloFailed = isAntigravity && state.apiPingStatus == ApiPingStatus.FAILED
-    val pillLoading = antigravityTesting || (!isAntigravity && state.apiPingStatus == ApiPingStatus.PINGING)
+    val onProvider: (ProviderKind) -> Unit = { kind ->
+        selectedKind = kind
+        baseUrl = kind.defaultBaseUrl
+        model = kind.defaultModel
+        dshApi = defaultDshApiForProvider(kind)
+        models = defaultModelsForProvider(kind)
+        modelSearch = ""
+        newKeyName = ""
+        newApiKey = ""
+        status = null
+        statusProviderMessage = null
+        if (kind == ProviderKind.ANTIGRAVITY_SERVER) {
+            scope.launch {
+                val profile = ProviderProfile(kind, kind.defaultBaseUrl, kind.defaultModel, dshApi = defaultDshApiForProvider(kind))
+                when (val result = onDiscoverModels(profile, "")) {
+                    is ModelDiscoveryResult.Success -> models = result.models
+                    else -> {}
+                }
+            }
+        }
+    }
+    val onBaseUrl: (String) -> Unit = {
+        baseUrl = it
+        if (state.agentKind == AgentKind.DEEPSEEK_HARNESS && selectedKind == ProviderKind.CUSTOM) {
+            dshApi = inferredDshApiForUrl(it)
+        }
+        models = emptyList()
+        status = null
+        statusProviderMessage = null
+        keyConnectionStatuses = emptyMap()
+    }
+    val onDshApi: (String) -> Unit = {
+        dshApi = it
+        status = null
+        statusProviderMessage = null
+        keyConnectionStatuses = emptyMap()
+    }
+    val onAddKey = {
+        savedKeys = onAddApiKey(selectedKind, newKeyName, newApiKey.trim())
+        newKeyName = ""
+        newApiKey = ""
+        apiKey = getSavedApiKey(selectedKind)
+        status = "API key added for ${selectedKind.title}."
+        statusOk = true
+    }
+    val onActivateKey: (String) -> Unit = { keyId ->
+        savedKeys = onActivateApiKey(selectedKind, keyId)
+        apiKey = getSavedApiKey(selectedKind)
+        status = "Active API key changed for ${selectedKind.title}."
+        statusOk = true
+    }
+    val onRemoveKey: (String) -> Unit = { keyId ->
+        savedKeys = onRemoveApiKey(selectedKind, keyId)
+        apiKey = getSavedApiKey(selectedKind)
+        keyConnectionStatuses = keyConnectionStatuses - keyId
+        status = "API key removed from ${selectedKind.title}."
+        statusOk = true
+    }
+    val onValidate: () -> Unit = {
+        scope.launch {
+            isValidating = true
+            val activeKeyId = savedKeys.firstOrNull { it.isActive }?.id
+            if (activeKeyId != null) {
+                keyConnectionStatuses = keyConnectionStatuses +
+                    (activeKeyId to KeyConnectionStatus("Checking connection…"))
+                status = null
+            } else {
+                status = "Checking connection…"
+                statusOk = true
+            }
+            val kind = selectedKind
+            val url = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl.trim()
+            // A pasted setup token means token mode; otherwise keep whatever mode is active.
+            val authMode = if (kind == ProviderKind.CLAUDE && apiKey.isNotBlank()) {
+                ClaudeAuthMode.SETUP_TOKEN_LEGACY
+            } else {
+                state.provider.claudeAuthMode
+            }
+            val profile = ProviderProfile(kind, url, model.trim(), dshApi = dshApi, claudeAuthMode = authMode)
+            if (kind == ProviderKind.CLAUDE) {
+                onSaveProvider(profile, apiKey.trim())
+                status = "Claude subscription token saved securely. Send a message to verify your subscription."
+                statusOk = true
+                activeKeyId?.let {
+                    keyConnectionStatuses = keyConnectionStatuses +
+                        (it to KeyConnectionStatus("Subscription token saved", true, label = "Saved"))
+                }
+            } else when (val result = onValidateProvider(profile, apiKey.trim(), models)) {
+                is ConnectionValidation.Success -> {
+                    onSaveProvider(profile, apiKey.trim())
+                    if (activeKeyId != null) {
+                        keyConnectionStatuses = keyConnectionStatuses +
+                            (activeKeyId to KeyConnectionStatus(result.message, true, label = "Verified"))
+                    } else {
+                        status = result.message
+                        statusOk = true
+                    }
+                }
+                is ConnectionValidation.Failure -> {
+                    if (activeKeyId != null) {
+                        keyConnectionStatuses = keyConnectionStatuses +
+                            (activeKeyId to KeyConnectionStatus(result.message, false, result.providerMessage, result.label))
+                    } else {
+                        status = result.message
+                        statusOk = false
+                        statusProviderMessage = result.providerMessage
+                    }
+                }
+            }
+            isValidating = false
+        }
+    }
 
-    val (dot, label, pillBg) = if (isAntigravity) {
+    // Live connection state for the selected engine, shown under the switcher.
+    val (statusColor, statusLabel) = if (isAntigravity) {
         when {
-            antigravityTesting -> Triple(MaterialTheme.colorScheme.primary, "Testing…", MaterialTheme.colorScheme.primary.copy(alpha = 0.13f))
-            state.antigravityAuth.status != AntigravityAuthStatus.SIGNED_IN || antigravityHelloFailed ->
-                Triple(MaterialTheme.colorScheme.error, "Attention", MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
-            else -> Triple(onlineColor, "Online", onlineColor.copy(alpha = if (isDark) 0.13f else 0.12f))
+            state.apiPingStatus == ApiPingStatus.PINGING -> MaterialTheme.colorScheme.primary to "Testing…"
+            state.antigravityAuth.status != AntigravityAuthStatus.SIGNED_IN || state.apiPingStatus == ApiPingStatus.FAILED ->
+                colors.red to "Needs attention"
+            else -> colors.green to "Online"
         }
     } else {
         when (state.apiPingStatus) {
-            ApiPingStatus.OK -> Triple(onlineColor, "Online", onlineColor.copy(alpha = if (isDark) 0.13f else 0.12f))
-            ApiPingStatus.FAILED -> Triple(MaterialTheme.colorScheme.error, "Attention", MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
-            ApiPingStatus.PINGING -> Triple(MaterialTheme.colorScheme.primary, "Testing…", MaterialTheme.colorScheme.primary.copy(alpha = 0.13f))
-            ApiPingStatus.IDLE -> Triple(MaterialTheme.colorScheme.onSurfaceVariant, "Not tested", MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+            ApiPingStatus.OK -> colors.green to "Online"
+            ApiPingStatus.FAILED -> colors.red to "Needs attention"
+            ApiPingStatus.PINGING -> MaterialTheme.colorScheme.primary to "Testing…"
+            ApiPingStatus.IDLE -> colors.tertiaryLabel to "Not tested"
         }
     }
+    val subtitle = if (isAntigravity) {
+        "Antigravity · ${formatAntigravityModelName(state.antigravityModel)}"
+    } else {
+        "${state.agentKind.title} · ${model.ifBlank { selectedKind.title }}"
+    }
+    val collapse by rememberTitleCollapse(listState)
 
-    // ── Antigravity Model Modal Bottom Sheet ──
-    if (showAntigravityModelSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showAntigravityModelSheet = false },
-            sheetState = antigravitySheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
+    LargeTitleScaffold(title = "Agent", collapse = { collapse }) { padding ->
+        // Runs edge to edge under the glass bar and dock; it is the shared backdrop source.
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize().hostBackdropSource().imePadding(),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = bottomBarPadding + PocketSpacing.lg),
+            verticalArrangement = Arrangement.spacedBy(PocketSpacing.xl),
         ) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.82f)
-                    .padding(horizontal = 20.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Select Model", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Text(
-                            "${filteredAntigravityModels.size} available for Antigravity",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    IconButton(onClick = onRefreshAntigravityModels, enabled = !state.antigravityModelsLoading) {
-                        if (state.antigravityModelsLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        else Icon(Icons.Default.Refresh, "Refresh models")
+            item(key = "title") { LargeTitle("Agent", subtitle = subtitle) }
+
+            item(key = "switcher") {
+                Column(Modifier.padding(horizontal = ListInset)) {
+                    SegmentedControl(
+                        items = orderedAgents,
+                        selected = viewedAgent,
+                        onSelect = { agent ->
+                            viewedAgent = agent
+                            val installed = agent == state.agentKind || state.installedAgentVersions.containsKey(agent)
+                            if (installed) onSelectAgent(agent)
+                        },
+                        label = { it.shortName() },
+                        enabled = state.agentInstalling == null,
+                    )
+                    if (viewedAgent == state.agentKind) {
+                        StatusCaption(statusColor, statusLabel)
                     }
                 }
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = antigravitySearch,
-                    onValueChange = { antigravitySearch = it },
-                    leadingIcon = { Icon(Icons.Default.Search, null) },
-                    placeholder = { Text("Search model or series") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                )
-                Spacer(Modifier.height(12.dp))
+            }
 
-                if (filteredAntigravityModels.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("No matching models found", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            when {
+                state.agentInstalling == viewedAgent -> item(key = "installing") { InstallingSection(state, viewedAgent) }
+                !viewedAgentInstalled -> item(key = "install") {
+                    EmptyState(
+                        icon = Icons.Outlined.SmartToy,
+                        title = "${viewedAgent.title} isn’t installed",
+                        message = if (state.agentInstalling == null) {
+                            "Install its ${viewedAgent.downloadNote} agent package to use it with your projects."
+                        } else {
+                            "Another agent is installing. Try again when it finishes."
+                        },
+                        actionLabel = if (state.agentInstalling == null) "Install" else null,
+                        onAction = { onInstallAgent(viewedAgent) },
+                    )
+                }
+                // Selection is still switching over; nothing to configure yet.
+                viewedAgent != state.agentKind -> Unit
+                isAntigravity -> {
+                    item(key = "accounts") {
+                        AntigravityAccountsSection(
+                            state = state,
+                            code = antigravityCode,
+                            onCode = { antigravityCode = it },
+                            onStartLogin = onStartAntigravityLogin,
+                            onSubmitCode = {
+                                onSubmitAntigravityCode(antigravityCode)
+                                antigravityCode = ""
+                            },
+                            onSetPrimary = onSetAntigravityPrimaryAccount,
+                            onRemove = onRemoveAntigravityAccount,
+                        )
                     }
-                } else {
-                    LazyColumn(
-                        Modifier.weight(1f),
-                        contentPadding = PaddingValues(bottom = 24.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(filteredAntigravityModels, key = { it }) { modelId ->
-                            val isSelected = state.antigravityModel == modelId
-                            LiquidGlassCard(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(14.dp),
-                                material = if (isSelected) LiquidGlassMaterial.Regular else LiquidGlassMaterial.UltraThin,
-                                layerSource = null,
-                                borderStroke = BorderStroke(
-                                    1.dp,
-                                    if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                                ),
-                                tint = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else null,
-                                onClick = {
-                                    onSetAntigravityModel(modelId)
-                                    showAntigravityModelSheet = false
-                                },
+                    if (state.antigravityAccounts.size > 1) {
+                        item(key = "balancing") {
+                            ListSection(
+                                header = "Load balancing",
+                                footer = state.antigravityLoadBalancingStrategy.subtitle + ".",
                             ) {
-                                Row(
-                                    Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Column(Modifier.weight(1f)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                formatAntigravityModelName(modelId),
-                                                fontWeight = FontWeight.SemiBold,
-                                                fontSize = 14.sp,
-                                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                            )
-                                            val tier = formatAntigravityModelTier(modelId)
-                                            if (tier.isNotEmpty()) {
-                                                Spacer(Modifier.width(8.dp))
-                                                Surface(
-                                                    color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceVariant,
-                                                    shape = RoundedCornerShape(4.dp),
-                                                ) {
-                                                    Text(
-                                                        tier,
-                                                        fontSize = 11.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
-                                                    )
-                                                }
-                                            }
-                                        }
-                                        Text(
-                                            modelId,
-                                            fontSize = 11.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                AntigravityLoadBalancingStrategy.entries.forEach { strategy ->
+                                    ListRow(
+                                        strategy.title,
+                                        accessory = if (strategy == state.antigravityLoadBalancingStrategy) ListRowAccessory.Check else ListRowAccessory.None,
+                                        onClick = { onSetAntigravityLoadBalancingStrategy(strategy) },
+                                    )
+                                }
+                                ToggleRow(
+                                    title = "Switch accounts at quota limit",
+                                    checked = state.antigravityFailoverEnabled,
+                                    onCheckedChange = onSetAntigravityFailoverEnabled,
+                                )
+                            }
+                        }
+                    }
+                    if (state.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN) {
+                        item(key = "model") {
+                            ListSection(header = "Model") {
+                                ListRow(
+                                    "Model",
+                                    icon = Icons.Outlined.AutoAwesome,
+                                    iconTile = colors.purple,
+                                    value = formatAntigravityModelName(state.antigravityModel.ifBlank { "Choose" }),
+                                    accessory = ListRowAccessory.Chevron,
+                                    onClick = { sheet = AgentSheet.Model },
+                                )
+                                ListRow(
+                                    "Thinking",
+                                    icon = Icons.Outlined.Psychology,
+                                    iconTile = colors.indigo,
+                                    value = effortTitle(state.antigravityEffort),
+                                    accessory = ListRowAccessory.Chevron,
+                                    onClick = { sheet = AgentSheet.Model },
+                                )
+                            }
+                        }
+                        item(key = "connection") {
+                            val pinging = state.apiPingStatus == ApiPingStatus.PINGING
+                            val message = state.apiPingMessage?.takeIf { state.apiPingStatus != ApiPingStatus.IDLE }
+                            ListSection(footer = "Tools are approved automatically and run inside the private Linux workspace.") {
+                                ListRow(
+                                    if (pinging) "Testing connection…" else "Test connection",
+                                    subtitle = message,
+                                    subtitleColor = if (state.apiPingStatus == ApiPingStatus.FAILED) colors.red else null,
+                                    subtitleMaxLines = 4,
+                                    titleColor = MaterialTheme.colorScheme.primary,
+                                    leading = if (pinging) ({ ProgressRing(progress = null, size = 22.dp, strokeWidth = 2.5.dp) }) else null,
+                                    enabled = !pinging,
+                                    onClick = onPing,
+                                )
+                            }
+                        }
+                    }
+                }
+                else -> {
+                    item(key = "provider") {
+                        ListSection(header = "Provider") {
+                            ListRow(
+                                selectedKind.title,
+                                subtitle = selectedKind.subtitle,
+                                icon = Icons.Outlined.Cloud,
+                                iconTile = colors.blue,
+                                accessory = ListRowAccessory.Chevron,
+                                onClick = { sheet = AgentSheet.Provider },
+                            )
+                        }
+                    }
+                    if (selectedKind != ProviderKind.CLAUDE) {
+                        item(key = "endpoint") {
+                            EndpointSection(
+                                agentKind = state.agentKind,
+                                kind = selectedKind,
+                                baseUrl = baseUrl,
+                                onBaseUrl = onBaseUrl,
+                            )
+                        }
+                        if (state.agentKind == AgentKind.DEEPSEEK_HARNESS && selectedKind in DSH_PROTOCOL_PROVIDERS && !selectedKind.fixedProtocol) {
+                            item(key = "protocol") {
+                                ListSection(header = "Gateway protocol") {
+                                    listOf("anthropic-messages", "openai-completions", "openai-responses").forEach { option ->
+                                        ListRow(
+                                            option,
+                                            accessory = if (dshApi == option) ListRowAccessory.Check else ListRowAccessory.None,
+                                            onClick = { onDshApi(option) },
                                         )
                                     }
-                                    AgentSelectionDot(selected = isSelected)
                                 }
+                            }
+                        }
+                        item(key = "model") {
+                            ListSection(header = "Model") {
+                                ListRow(
+                                    "Model",
+                                    icon = Icons.Outlined.AutoAwesome,
+                                    iconTile = colors.purple,
+                                    value = model.ifBlank { "Choose" },
+                                    accessory = ListRowAccessory.Chevron,
+                                    onClick = { sheet = AgentSheet.Model },
+                                )
+                                ListRow(
+                                    if (isDiscovering) "Discovering models…" else "Discover models",
+                                    titleColor = MaterialTheme.colorScheme.primary,
+                                    leading = if (isDiscovering) ({ ProgressRing(progress = null, size = 22.dp, strokeWidth = 2.5.dp) }) else null,
+                                    value = if (models.isNotEmpty() && !isDiscovering) "${models.size} found" else null,
+                                    enabled = !isDiscovering,
+                                    onClick = ::discoverModels,
+                                )
+                            }
+                        }
+                    } else {
+                        item(key = "claude") {
+                            ClaudeAccountCard(
+                                auth = state.claudeAuth,
+                                claudeInstalled = state.installedAgentVersions.containsKey(AgentKind.CLAUDE_CODE),
+                                busy = state.isRunning || state.agentInstalling != null,
+                                onSignIn = onStartClaudeLogin,
+                                onCancel = onCancelClaudeLogin,
+                                onSubmitCode = onSubmitClaudeCode,
+                                onSignOut = onLogoutClaude,
+                                onRefresh = onRefreshClaudeAuth,
+                            )
+                        }
+                    }
+                    if (selectedKind == ProviderKind.ANTIGRAVITY_SERVER) {
+                        item(key = "googleAccount") { AntigravityServerAccountSection(state) }
+                    } else {
+                        item(key = "keys") {
+                            val claude = selectedKind == ProviderKind.CLAUDE
+                            ListSection(
+                                header = if (claude) "Setup token (advanced)" else "API keys",
+                                footer = if (claude) "Prefer a token? Run claude setup-token on a computer and add it here."
+                                else "Keys are encrypted in Android secure storage. Tap a key to use it.",
+                            ) {
+                                savedKeys.forEach { key ->
+                                    KeyRow(
+                                        key = key,
+                                        status = keyConnectionStatuses[key.id],
+                                        onActivate = { onActivateKey(key.id) },
+                                        onRemove = { keyPendingRemoval = key },
+                                    )
+                                }
+                                ListRow(
+                                    if (claude) "Add setup token" else "Add API key",
+                                    icon = Icons.Outlined.Add,
+                                    iconTile = MaterialTheme.colorScheme.primary,
+                                    titleColor = MaterialTheme.colorScheme.primary,
+                                    onClick = { sheet = AgentSheet.AddKey },
+                                )
+                            }
+                        }
+                    }
+                    val isAntigravityServer = selectedKind == ProviderKind.ANTIGRAVITY_SERVER
+                    // For Claude the account sign-in is the main path; saving a setup token only
+                    // appears once one has been added.
+                    if (selectedKind != ProviderKind.CLAUDE || savedKeys.isNotEmpty()) {
+                        item(key = "validate") {
+                            val hasAntigravityAuth = state.antigravityAccounts.isNotEmpty() ||
+                                state.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN
+                            val canValidate = !isDiscovering && !isValidating && (
+                                (isAntigravityServer && hasAntigravityAuth && model.isNotBlank()) ||
+                                    (!isAntigravityServer && apiKey.isNotBlank() && (selectedKind == ProviderKind.CLAUDE || (baseUrl.isNotBlank() && model.isNotBlank())))
+                                )
+                            val footer = status?.let { s -> statusProviderMessage?.let { "$s\nProvider: $it" } ?: s }
+                            ListSection(footer = footer) {
+                                ListRow(
+                                    when {
+                                        isValidating && selectedKind == ProviderKind.CLAUDE -> "Saving token…"
+                                        isValidating && isAntigravityServer -> "Verifying Antigravity Server…"
+                                        isValidating -> "Testing connection…"
+                                        selectedKind == ProviderKind.CLAUDE -> "Save subscription token"
+                                        isAntigravityServer -> "Connect and save"
+                                        else -> "Test connection"
+                                    },
+                                    titleColor = if (status != null && !statusOk) colors.red else MaterialTheme.colorScheme.primary,
+                                    leading = if (isValidating) ({ ProgressRing(progress = null, size = 22.dp, strokeWidth = 2.5.dp) }) else null,
+                                    enabled = canValidate,
+                                    onClick = onValidate,
+                                )
                             }
                         }
                     }
                 }
             }
+
+            item(key = "updates") {
+                AgentUpdatesSection(state = state, onCheck = onCheckAgentUpdates, onUpdate = onUpdateAgent)
+            }
         }
     }
 
-    // ── Provider Models Modal Bottom Sheet ──
-    if (showModels) {
-        ModalBottomSheet(
-            onDismissRequest = { showModels = false },
-            sheetState = providerSheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
-        ) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.82f)
-                    .padding(horizontal = 20.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Available Models", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Text(
-                            if (models.isEmpty()) selectedKind.title else "${filteredModels.size} of ${models.size}",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    IconButton(onClick = ::discoverModels, enabled = !isDiscovering) {
-                        if (isDiscovering) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
-                        } else {
-                            Icon(Icons.Default.Refresh, "Refresh models")
-                        }
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = modelSearch,
-                    onValueChange = { modelSearch = it },
-                    leadingIcon = { Icon(Icons.Default.Search, null) },
-                    placeholder = { Text("Search model or type custom ID") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
+    // ── Sheets and alerts ──
+    GlassSheet(
+        onDismiss = { sheet = AgentSheet.None },
+        visible = sheet == AgentSheet.Model,
+        title = "Model",
+        trailing = {
+            val loading = if (isAntigravity) state.antigravityModelsLoading else isDiscovering
+            if (loading) {
+                Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) { ProgressRing(progress = null, size = 20.dp, strokeWidth = 2.dp) }
+            } else {
+                PocketIconButton(
+                    Icons.Outlined.Refresh,
+                    if (isAntigravity) "Refresh models" else "Discover models",
+                    onClick = if (isAntigravity) onRefreshAntigravityModels else ::discoverModels,
                 )
-                Spacer(Modifier.height(12.dp))
-
-                if (status != null) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (statusOk) MaterialTheme.colorScheme.primary.copy(alpha = 0.09f)
-                        else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
-                        border = BorderStroke(
-                            1.dp,
-                            if (statusOk) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
-                            else MaterialTheme.colorScheme.error.copy(alpha = 0.35f),
-                        ),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (isDiscovering) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(15.dp),
-                                    strokeWidth = 1.6.dp,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                            } else {
-                                Icon(
-                                    if (statusOk) Icons.Default.Info else Icons.Default.Warning,
-                                    contentDescription = null,
-                                    tint = if (statusOk) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(15.dp),
-                                )
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                status.orEmpty(),
-                                fontSize = 11.sp,
-                                lineHeight = 15.sp,
-                                color = if (statusOk) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onErrorContainer,
-                                modifier = Modifier.weight(1f),
-                            )
-                            }
-                            statusProviderMessage?.let { providerMessage ->
-                                Text(
-                                    "Provider: $providerMessage",
-                                    fontSize = 10.sp,
-                                    lineHeight = 14.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(start = 23.dp, top = 5.dp),
-                                )
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(12.dp))
-                }
-
-                if (isDiscovering) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator(Modifier.size(32.dp), color = MaterialTheme.colorScheme.primary, strokeWidth = 3.dp)
-                            Spacer(Modifier.height(14.dp))
-                            Text(
-                                "Discovering models from ${selectedKind.title}…",
-                                fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                } else if (filteredModels.isEmpty()) {
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        if (modelSearch.isNotBlank()) {
-                            Surface(
-                                shape = RoundedCornerShape(14.dp),
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        model = modelSearch.trim()
-                                        modelSearch = ""
-                                        showModels = false
-                                    },
-                            ) {
-                                Row(
-                                    Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                                    Spacer(Modifier.width(10.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text("Use custom model ID:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                        Text(modelSearch.trim(), fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
-                                    }
-                                }
-                            }
-                        }
-
-
-                        Button(
-                            onClick = ::discoverModels,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                        ) {
-                            Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Discover Models from API")
-                        }
-
-                        val recommended = remember(selectedKind) { defaultModelsForProvider(selectedKind) }
-                        if (recommended.isNotEmpty()) {
-                            Text(
-                                "Recommended Models",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 4.dp),
-                            )
-                            recommended.forEach { opt ->
-                                val isSelected = model == opt.id
-                                LiquidGlassCard(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(14.dp),
-                                    material = if (isSelected) LiquidGlassMaterial.Regular else LiquidGlassMaterial.UltraThin,
-                                    layerSource = null,
-                                    borderStroke = BorderStroke(
-                                        1.dp,
-                                        if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                                    ),
-                                    tint = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else null,
-                                    onClick = {
-                                        model = opt.id
-                                        modelSearch = ""
-                                        showModels = false
-                                    },
-                                ) {
-                                    Row(
-                                        Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Column(Modifier.weight(1f)) {
-                                            Text(
-                                                opt.displayName,
-                                                fontWeight = FontWeight.SemiBold,
-                                                fontSize = 14.sp,
-                                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                            )
-                                            Text(
-                                                opt.id,
-                                                fontSize = 11.sp,
-                                                fontFamily = FontFamily.Monospace,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                        AgentSelectionDot(selected = isSelected)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    LazyColumn(
-                        Modifier.weight(1f),
-                        contentPadding = PaddingValues(bottom = 24.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        if (modelSearch.isNotBlank() && filteredModels.none { it.id.equals(modelSearch.trim(), ignoreCase = true) }) {
-                            item {
-                                LiquidGlassCard(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(14.dp),
-                                    material = LiquidGlassMaterial.UltraThin,
-                                    layerSource = null,
-                                    borderStroke = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
-                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                                    onClick = {
-                                        model = modelSearch.trim()
-                                        modelSearch = ""
-                                        showModels = false
-                                    },
-                                ) {
-                                    Row(
-                                        Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                                        Spacer(Modifier.width(10.dp))
-                                        Column(Modifier.weight(1f)) {
-                                            Text("Use custom model ID:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                            Text(modelSearch.trim(), fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        items(filteredModels, key = { it.id }) { option ->
-                            val isSelected = model == option.id
-                            LiquidGlassCard(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(14.dp),
-                                material = if (isSelected) LiquidGlassMaterial.Regular else LiquidGlassMaterial.UltraThin,
-                                layerSource = null,
-                                borderStroke = BorderStroke(
-                                    1.dp,
-                                    if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                                ),
-                                tint = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else null,
-                                onClick = {
-                                    model = option.id
-                                    modelSearch = ""
-                                    showModels = false
-                                },
-                            ) {
-                                Row(
-                                    Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Column(Modifier.weight(1f)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                option.displayName,
-                                                fontWeight = FontWeight.SemiBold,
-                                                fontSize = 14.sp,
-                                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                            if (option.isFree) {
-                                                Spacer(Modifier.width(6.dp))
-                                                Text("FREE", color = Color(0xFF58C99C), fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                            }
-                                        }
-                                        if (option.displayName != option.id) {
-                                            Text(
-                                                option.id,
-                                                fontSize = 11.sp,
-                                                fontFamily = FontFamily.Monospace,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                        }
-                                    }
-                                    AgentSelectionDot(selected = isSelected)
-                                }
-                            }
-                        }
-                    }
-                }
             }
-        }
-    }
-
-    Scaffold(
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        containerColor = Color.Transparent,
-        topBar = {
-            LiquidGlassTopBar(
-                material = LiquidGlassMaterial.Regular,
-                layerSource = LiquidGlassLayers.Background,
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
-                            modifier = Modifier.size(34.dp),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.SmartToy,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            }
-                        }
-                        Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text("AI Agent", fontWeight = FontWeight.Bold, fontSize = 17.sp)
-                            Text(
-                                if (isAntigravity) {
-                                    "Antigravity · ${formatAntigravityModelName(state.antigravityModel)}"
-                                } else {
-                                    "${state.agentKind.title} · ${model.ifBlank { selectedKind.title }}"
-                                },
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
-                },
-                actions = {
-                    LiquidGlassPill(
-                        text = if (pillLoading) "Checking" else label,
-                        accentColor = dot,
-                        tint = pillBg,
-                        material = LiquidGlassMaterial.UltraThin,
-                        layerSource = null,
-                        showDot = true,
-                    )
-                    Spacer(Modifier.width(12.dp))
+        },
+    ) {
+        if (isAntigravity) {
+            AntigravityModelList(
+                models = filteredAntigravityModels,
+                selected = state.antigravityModel,
+                effort = state.antigravityEffort,
+                search = antigravitySearch,
+                onSearch = { antigravitySearch = it },
+                onEffort = onSetAntigravityEffort,
+                onSelect = {
+                    onSetAntigravityModel(it)
+                    sheet = AgentSheet.None
                 },
             )
+        } else {
+            ProviderModelList(
+                kind = selectedKind,
+                models = models,
+                filtered = filteredModels,
+                selected = model,
+                search = modelSearch,
+                onSearch = { modelSearch = it },
+                isDiscovering = isDiscovering,
+                status = status?.takeIf { !statusOk || isDiscovering },
+                onDiscover = ::discoverModels,
+                onSelect = {
+                    model = it
+                    modelSearch = ""
+                    sheet = AgentSheet.None
+                },
+            )
+        }
+    }
+
+    GlassSheet(
+        onDismiss = { sheet = AgentSheet.None },
+        visible = sheet == AgentSheet.Provider,
+        title = "Provider",
+        detents = listOf(SheetDetent.Medium, SheetDetent.Large),
+        trailing = { SheetTextButton("Done", { sheet = AgentSheet.None }, emphasized = true) },
+    ) {
+        val kinds = remember(state.agentKind) { providersForAgent(state.agentKind) }
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = PocketSpacing.sm, bottom = PocketSpacing.xxl)) {
+            itemsIndexed(kinds, key = { _, kind -> kind.name }) { index, kind ->
+                LazyGroupRow(isFirst = index == 0, isLast = index == kinds.lastIndex) {
+                    ListRow(
+                        kind.title,
+                        subtitle = kind.subtitle,
+                        subtitleMaxLines = 1,
+                        accessory = if (kind == selectedKind) ListRowAccessory.Check else ListRowAccessory.None,
+                        onClick = {
+                            if (kind != selectedKind) onProvider(kind)
+                            sheet = AgentSheet.None
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    AddKeySheet(
+        visible = sheet == AgentSheet.AddKey,
+        kind = selectedKind,
+        name = newKeyName,
+        key = newApiKey,
+        hint = status?.takeIf { !statusOk && sheet == AgentSheet.AddKey },
+        onName = { input ->
+            // A key pasted into the name field moves to the key field.
+            if ((input.startsWith("sk-") || input.startsWith("ant-") || input.length > 30) && !input.contains(" ") && newApiKey.isBlank()) {
+                newApiKey = input.trim()
+                newKeyName = "${selectedKind.title} Key"
+            } else {
+                newKeyName = input
+            }
         },
-    ) { padding ->
-        val navBarBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        val defaultClearance = navBarBottomInset + 88.dp + 28.dp
-        val finalBottomPadding = if (bottomBarPadding > 0.dp) bottomBarPadding else defaultClearance
-        // Runs edge to edge under the glass top bar and dock; it is the shared backdrop source.
-        LazyColumn(
-            Modifier
-                .fillMaxSize()
-                .hostBackdropSource()
-                .imePadding(),
-            contentPadding = PaddingValues(
-                start = PocketSpacing.lg,
-                top = padding.calculateTopPadding() + PocketSpacing.md,
-                end = PocketSpacing.lg,
-                bottom = finalBottomPadding,
+        onKey = { newApiKey = it },
+        onDismiss = { sheet = AgentSheet.None },
+        onSave = {
+            onAddKey()
+            sheet = AgentSheet.None
+        },
+    )
+
+    keyPendingRemoval?.let { key ->
+        PocketAlert(
+            onDismiss = { keyPendingRemoval = null },
+            title = "Remove “${key.name}”?",
+            message = "The key is deleted from this device. Add it again to use it later.",
+            actions = listOf(
+                AlertAction("Cancel", AlertRole.Cancel) { keyPendingRemoval = null },
+                AlertAction("Remove", AlertRole.Destructive) {
+                    keyPendingRemoval = null
+                    onRemoveKey(key.id)
+                },
             ),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            // ── 1. Compact 3-Way Segmented Engine Selector ──
-            item {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    LiquidGlassSegmentedControl(
-                        items = orderedAgents,
-                        selectedItem = viewedAgent,
-                        onItemSelected = { agent ->
-                            if (state.agentInstalling == null) {
-                                viewedAgent = agent
-                                val isInstalled = agent == state.agentKind || state.installedAgentVersions.containsKey(agent)
-                                if (isInstalled) onSelectAgent(agent)
-                            }
-                        },
-                        itemLabel = { agent ->
-                            when (agent) {
-                                AgentKind.ANTIGRAVITY -> "Antigravity"
-                                AgentKind.DEEPSEEK_HARNESS -> "DeepSeek"
-                                AgentKind.CLAUDE_CODE -> "Claude Code"
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        material = LiquidGlassMaterial.Regular,
-                        layerSource = null,
-                        accentColor = MaterialTheme.colorScheme.primary,
-                    )
+        )
+    }
+}
 
-                    if (state.agentInstalling == viewedAgent) {
-                        Spacer(Modifier.height(6.dp))
-                        LiquidGlassCard(
-                            shape = RoundedCornerShape(12.dp),
-                            material = LiquidGlassMaterial.Thin,
-                            layerSource = null,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Column(Modifier.padding(12.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 1.6.dp)
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        state.agentMessage ?: "Installing agent binary…",
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                    )
-                                }
-                                Spacer(Modifier.height(6.dp))
-                                LinearProgressIndicator(
-                                    progress = { state.agentProgress.coerceIn(0f, 1f) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                                val downloaded = state.agentDownloadedBytes
-                                val total = state.agentTotalBytes
-                                Spacer(Modifier.height(6.dp))
-                                Row(Modifier.fillMaxWidth()) {
-                                    Text(
-                                        if (downloaded != null || total != null) {
-                                            buildString {
-                                                append(formatAgentBytes(downloaded ?: 0L))
-                                                total?.let { append(" / ${formatAgentBytes(it)}") }
-                                            }
-                                        } else {
-                                            "Processing files"
-                                        },
-                                        fontSize = 10.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    Text(
-                                        buildString {
-                                            append("${(state.agentProgress * 100).toInt()}%")
-                                            state.agentBytesPerSecond?.takeIf { it > 0L }?.let {
-                                                append(" · ${formatAgentBytes(it)}/s")
-                                            }
-                                        },
-                                        fontSize = 10.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                        }
-                    } else if (!viewedAgentInstalled) {
-                        Spacer(Modifier.height(8.dp))
-                        LiquidGlassCard(
-                            shape = RoundedCornerShape(14.dp),
-                            material = LiquidGlassMaterial.Thin,
-                            layerSource = null,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Column(Modifier.padding(16.dp)) {
-                                Text(
-                                    "${viewedAgent.title} is not installed",
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold,
-                                )
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    "Install its ${viewedAgent.downloadNote} agent package to use it with your existing projects.",
-                                    fontSize = 12.sp,
-                                    lineHeight = 17.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Spacer(Modifier.height(12.dp))
-                                Button(
-                                    onClick = { onInstallAgent(viewedAgent) },
-                                    enabled = state.agentInstalling == null,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .defaultMinSize(minHeight = 44.dp),
-                                    shape = RoundedCornerShape(12.dp),
-                                ) {
-                                    Text("Install ${viewedAgent.title}", fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+/** A coloured dot and a word for the engine's connection state. */
+@Composable
+private fun StatusCaption(color: Color, label: String) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = PocketSpacing.xs)
+            .semantics(mergeDescendants = true) { contentDescription = "Connection: $label" },
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(8.dp).clip(PocketShape.capsule).background(color))
+        Spacer(Modifier.width(PocketSpacing.xs + 2.dp))
+        Text(label, style = PocketType.footnote, color = PocketColors.current.secondaryLabel)
+    }
+}
 
-            // ── 2. Primary Configuration Card (Antigravity OR Provider) ──
-            item {
-                if (!viewedAgentInstalled || viewedAgent != state.agentKind) {
-                    // Installation/selection guidance is shown directly below the tabs.
-                } else if (state.agentKind == AgentKind.ANTIGRAVITY) {
-                    AgentAntigravityCard(
-                        state = state,
-                        code = antigravityCode,
-                        onCode = { antigravityCode = it },
-                        onStartLogin = onStartAntigravityLogin,
-                        onSubmitCode = { onSubmitAntigravityCode(antigravityCode); antigravityCode = "" },
-                        onLogout = onLogoutAntigravity,
-                        onRemoveAccount = onRemoveAntigravityAccount,
-                        onSetPrimaryAccount = onSetAntigravityPrimaryAccount,
-                        onToggleAccountEnabled = onToggleAntigravityAccountEnabled,
-                        onSetStrategy = onSetAntigravityLoadBalancingStrategy,
-                        onSetFailover = onSetAntigravityFailoverEnabled,
-                        onRefreshModels = onRefreshAntigravityModels,
-                        onOpenModelSheet = { showAntigravityModelSheet = true },
-                        onSetEffort = onSetAntigravityEffort,
-                        onTest = onPing,
-                    )
-                } else {
-                    AgentProviderCard(
-                        onStartClaudeLogin = onStartClaudeLogin,
-                        onCancelClaudeLogin = onCancelClaudeLogin,
-                        onSubmitClaudeCode = onSubmitClaudeCode,
-                        onLogoutClaude = onLogoutClaude,
-                        onRefreshClaudeAuth = onRefreshClaudeAuth,
-                        state = state,
-                        selectedKind = selectedKind,
-                        baseUrl = baseUrl,
-                        model = model,
-                        dshApi = dshApi,
-                        apiKey = apiKey,
-                        models = models,
-                        isDiscovering = isDiscovering,
-                        isValidating = isValidating,
-                        status = status,
-                        statusOk = statusOk,
-                        statusProviderMessage = statusProviderMessage,
-                        keyConnectionStatuses = keyConnectionStatuses,
-                        savedKeys = savedKeys,
-                        newKeyName = newKeyName,
-                        newApiKey = newApiKey,
-                        newKeyVisible = newKeyVisible,
-                        onProvider = { kind ->
-                            selectedKind = kind
-                            baseUrl = kind.defaultBaseUrl
-                            model = kind.defaultModel
-                            dshApi = defaultDshApiForProvider(kind)
-                            models = defaultModelsForProvider(kind)
-                            modelSearch = ""
-                            showModels = false
-                            newKeyName = ""
-                            newApiKey = ""
-                            status = null
-                            statusProviderMessage = null
-                            if (kind == ProviderKind.ANTIGRAVITY_SERVER) {
-                                scope.launch {
-                                    val profile = ProviderProfile(kind, kind.defaultBaseUrl, kind.defaultModel, dshApi = defaultDshApiForProvider(kind))
-                                    when (val result = onDiscoverModels(profile, "")) {
-                                        is ModelDiscoveryResult.Success -> {
-                                            models = result.models
-                                        }
-                                        else -> {}
-                                    }
-                                }
-                            }
-                        },
-                        onBaseUrl = {
-                            baseUrl = it
-                            if (state.agentKind == AgentKind.DEEPSEEK_HARNESS && selectedKind == ProviderKind.CUSTOM) {
-                                dshApi = inferredDshApiForUrl(it)
-                            }
-                            models = emptyList()
-                            status = null
-                            statusProviderMessage = null
-                            keyConnectionStatuses = emptyMap()
-                        },
-                        onModel = { model = it; status = null; statusProviderMessage = null; keyConnectionStatuses = emptyMap() },
-                        onDshApi = { dshApi = it; status = null; statusProviderMessage = null; keyConnectionStatuses = emptyMap() },
-                        onNewKeyName = { newKeyName = it },
-                        onNewApiKey = { newApiKey = it },
-                        onToggleNewKey = { newKeyVisible = !newKeyVisible },
-                        onAddKey = {
-                            savedKeys = onAddApiKey(selectedKind, newKeyName, newApiKey.trim())
-                            newKeyName = ""
-                            newApiKey = ""
-                            apiKey = getSavedApiKey(selectedKind)
-                            status = "API key added for ${selectedKind.title}."
-                            statusOk = true
-                        },
-                        onActivateKey = { keyId ->
-                            savedKeys = onActivateApiKey(selectedKind, keyId)
-                            apiKey = getSavedApiKey(selectedKind)
-                            status = "Active API key changed for ${selectedKind.title}."
-                            statusOk = true
-                        },
-                        onRemoveKey = { keyId ->
-                            savedKeys = onRemoveApiKey(selectedKind, keyId)
-                            apiKey = getSavedApiKey(selectedKind)
-                            keyConnectionStatuses = keyConnectionStatuses - keyId
-                            status = "API key removed from ${selectedKind.title}."
-                            statusOk = true
-                        },
-                        onOpenModelSheet = {
-                            showModels = true
-                        },
-                        onDiscover = ::discoverModels,
-                        onValidate = {
-                            scope.launch {
-                                isValidating = true
-                                val activeKeyId = savedKeys.firstOrNull { it.isActive }?.id
-                                if (activeKeyId != null) {
-                                    keyConnectionStatuses = keyConnectionStatuses +
-                                        (activeKeyId to KeyConnectionStatus("Checking connection…"))
-                                    status = null
-                                } else {
-                                    status = "Checking connection…"
-                                    statusOk = true
-                                }
-                                val kind = selectedKind
-                                val url = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl.trim()
-                                // A pasted setup token means token mode; otherwise keep whatever mode is active.
-                                val authMode = if (kind == ProviderKind.CLAUDE && apiKey.isNotBlank()) {
-                                    ClaudeAuthMode.SETUP_TOKEN_LEGACY
-                                } else {
-                                    state.provider.claudeAuthMode
-                                }
-                                val profile = ProviderProfile(kind, url, model.trim(), dshApi = dshApi, claudeAuthMode = authMode)
-                                if (kind == ProviderKind.CLAUDE) {
-                                    onSaveProvider(profile, apiKey.trim())
-                                    status = "Claude subscription token saved securely. Send a message to verify your subscription."
-                                    statusOk = true
-                                    activeKeyId?.let {
-                                        keyConnectionStatuses = keyConnectionStatuses +
-                                            (it to KeyConnectionStatus("Subscription token saved", true, label = "Saved"))
-                                    }
-                                } else when (val result = onValidateProvider(profile, apiKey.trim(), models)) {
-                                    is ConnectionValidation.Success -> {
-                                        onSaveProvider(profile, apiKey.trim())
-                                        if (activeKeyId != null) {
-                                            keyConnectionStatuses = keyConnectionStatuses +
-                                                (activeKeyId to KeyConnectionStatus(result.message, true, label = "Verified"))
-                                        } else {
-                                            status = result.message
-                                            statusOk = true
-                                        }
-                                    }
-                                    is ConnectionValidation.Failure -> {
-                                        if (activeKeyId != null) {
-                                            keyConnectionStatuses = keyConnectionStatuses +
-                                                (activeKeyId to KeyConnectionStatus(result.message, false, result.providerMessage, result.label))
-                                        } else {
-                                            status = result.message
-                                            statusOk = false
-                                            statusProviderMessage = result.providerMessage
-                                        }
-                                    }
-                                }
-                                isValidating = false
-                            }
-                        },
-                    )
-                }
-            }
+@Composable
+private fun InstallingSection(state: AppUiState, agent: AgentKind) {
+    val downloaded = state.agentDownloadedBytes
+    val total = state.agentTotalBytes
+    val detail = buildString {
+        if (downloaded != null || total != null) {
+            append(formatAgentBytes(downloaded ?: 0L))
+            total?.let { append(" of ${formatAgentBytes(it)}") }
+        } else {
+            append("Processing files")
+        }
+        state.agentBytesPerSecond?.takeIf { it > 0L }?.let { append(" · ${formatAgentBytes(it)}/s") }
+    }
+    ListSection(footer = detail) {
+        ListRow(
+            "Installing ${agent.title}",
+            subtitle = state.agentMessage ?: "Installing the agent package…",
+            leading = { ProgressRing(progress = state.agentProgress.coerceIn(0f, 1f), size = 26.dp) },
+            value = "${(state.agentProgress * 100).toInt()}%",
+        )
+    }
+}
 
-            // ── 3. Runtime Updates Card ──
-            item {
-                AgentUpdateBlock(
-                    state = state,
-                    onCheck = onCheckAgentUpdates,
-                    onUpdate = onUpdateAgent,
+@Composable
+private fun EndpointSection(
+    agentKind: AgentKind,
+    kind: ProviderKind,
+    baseUrl: String,
+    onBaseUrl: (String) -> Unit,
+) {
+    val showsProtocol = agentKind == AgentKind.DEEPSEEK_HARNESS && kind in DSH_PROTOCOL_PROVIDERS
+    ListSection(
+        header = if (kind == ProviderKind.CUSTOM) "Custom API" else "Endpoint",
+        footer = when {
+            kind == ProviderKind.CUSTOM -> "Enter the provider’s base URL, then add its API key below."
+            kind.fixedBaseUrl -> "Set by ${kind.title}."
+            else -> null
+        },
+    ) {
+        if (kind.fixedBaseUrl) {
+            ListRow("Base URL", subtitle = baseUrl, icon = Icons.Outlined.Link, iconTile = PocketColors.current.gray)
+        } else {
+            Box(Modifier.fillMaxWidth().padding(horizontal = ListInset, vertical = PocketSpacing.md)) {
+                PocketTextField(
+                    value = baseUrl,
+                    onValueChange = onBaseUrl,
+                    placeholder = "https://api.example.com/v1",
+                    label = "Base URL",
+                    monospace = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
                 )
             }
-
-            // ── 4. Subtle Footer ──
-            item {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 2.dp, bottom = 12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        "API keys encrypted in Android secure storage · Terminal is accessible from any project",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                        textAlign = TextAlign.Center,
-                        lineHeight = 16.sp,
-                    )
-                }
-            }
+        }
+        // A choosable protocol has its own section below.
+        if (showsProtocol && kind.fixedProtocol) {
+            ListRow("Protocol", value = defaultDshApiForProvider(kind))
         }
     }
 }
 
-/**
- * Modern Antigravity Configuration Bento Card.
- */
+/** One saved API key: tap to use it; its last check shows underneath; ⋯ to remove. */
 @Composable
-private fun AgentAntigravityCard(
+private fun KeyRow(key: ApiKeyInfo, status: KeyConnectionStatus?, onActivate: () -> Unit, onRemove: () -> Unit) {
+    val colors = PocketColors.current
+    val anchor = rememberOverlayAnchor()
+    var menu by remember { mutableStateOf(false) }
+    val subtitle = when {
+        status != null -> status.message + (status.providerMessage?.let { "\nProvider: $it" } ?: "")
+        key.isActive -> "In use"
+        else -> null
+    }
+    ListRow(
+        key.name,
+        subtitle = subtitle,
+        subtitleColor = when (status?.successful) {
+            true -> colors.green
+            false -> colors.red
+            null -> null
+        },
+        subtitleMaxLines = 4,
+        icon = Icons.Outlined.Key,
+        iconTile = if (key.isActive) colors.green else colors.gray,
+        accessory = if (key.isActive) ListRowAccessory.Check else ListRowAccessory.None,
+        onClick = onActivate,
+        trailing = {
+            if (status != null && status.successful == null) ProgressRing(progress = null, size = 18.dp, strokeWidth = 2.dp)
+            PocketIconButton(
+                Icons.Outlined.MoreHoriz,
+                "Options for ${key.name}",
+                onClick = { menu = true },
+                modifier = Modifier.overlayAnchor(anchor),
+                tint = colors.secondaryLabel,
+            )
+        },
+    )
+    GlassMenu(expanded = menu, onDismiss = { menu = false }, anchor = anchor) {
+        if (!key.isActive) GlassMenuItem("Use this key", onActivate, icon = Icons.Outlined.Key)
+        GlassMenuItem("Remove key", onRemove, destructive = true)
+    }
+}
+
+@Composable
+private fun AntigravityAccountsSection(
     state: AppUiState,
     code: String,
     onCode: (String) -> Unit,
     onStartLogin: () -> Unit,
     onSubmitCode: () -> Unit,
-    onLogout: () -> Unit,
-    onRemoveAccount: (String) -> Unit,
-    onSetPrimaryAccount: (String) -> Unit,
-    onToggleAccountEnabled: (String, Boolean) -> Unit,
-    onSetStrategy: (AntigravityLoadBalancingStrategy) -> Unit,
-    onSetFailover: (Boolean) -> Unit,
-    onRefreshModels: () -> Unit,
-    onOpenModelSheet: () -> Unit,
-    onSetEffort: (String) -> Unit,
-    onTest: () -> Unit,
+    onSetPrimary: (String) -> Unit,
+    onRemove: (String) -> Unit,
 ) {
+    val colors = PocketColors.current
     val clipboard = LocalClipboardManager.current
+    val banner = rememberBanner()
     val auth = state.antigravityAuth
-
-    LiquidGlassCard(
-        modifier = Modifier.fillMaxWidth(),
-        material = LiquidGlassMaterial.Thin,
-        shape = RoundedCornerShape(20.dp),
-        layerSource = null,
+    val accounts = state.antigravityAccounts
+    var pendingRemoval by remember { mutableStateOf<AntigravityAccount?>(null) }
+    ListSection(
+        header = "Google accounts",
+        footer = if (accounts.isNotEmpty()) {
+            "${accounts.size} connected · ${state.antigravityLoadBalancingStrategy.title}. Tap an account to make it primary."
+        } else {
+            "Antigravity runs on your Google account. Sign in to start."
+        },
     ) {
-        Column(
-            Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Google accounts", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                    val accountsCount = state.antigravityAccounts.size
-                    if (accountsCount > 0) {
-                        Text(
-                            "$accountsCount connected · ${state.antigravityLoadBalancingStrategy.title}",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-                LiquidGlassSurface(
-                    material = LiquidGlassMaterial.UltraThin,
-                    shape = RoundedCornerShape(10.dp),
-                    borderStroke = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
-                    onClick = onStartLogin,
-                    layerSource = null,
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .defaultMinSize(minHeight = 44.dp)
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            "+ Add account",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                }
-            }
-
-            // If login in progress, show login prompt UI
-            if (auth.status == AntigravityAuthStatus.STARTING || auth.status == AntigravityAuthStatus.COMPLETING) {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-            } else if (auth.status == AntigravityAuthStatus.AWAITING_CODE) {
-                LiquidGlassCard(
-                    shape = RoundedCornerShape(14.dp),
-                    material = LiquidGlassMaterial.UltraThin,
-                    layerSource = null,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Add Google account", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                        auth.authorizationUrl?.let { url ->
-                            OutlinedButton(
-                                onClick = { clipboard.setText(AnnotatedString(url)) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .defaultMinSize(minHeight = 44.dp),
-                                shape = RoundedCornerShape(10.dp),
-                            ) {
-                                Text("Copy Google Sign-in URL")
-                            }
-                        }
-                        OutlinedTextField(
-                            value = code,
-                            onValueChange = onCode,
-                            label = { Text("One-time authorization code") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp),
-                        )
-                        Button(
-                            onClick = onSubmitCode,
-                            enabled = code.isNotBlank(),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .defaultMinSize(minHeight = 44.dp),
-                            shape = RoundedCornerShape(10.dp),
-                        ) {
-                            Text("Complete Sign-in")
-                        }
-                    }
-                }
-            } else if (state.antigravityAccounts.isEmpty() && auth.status != AntigravityAuthStatus.SIGNED_IN) {
-                Button(
-                    onClick = onStartLogin,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 44.dp),
-                    shape = RoundedCornerShape(12.dp),
-                ) {
-                    Text(if (auth.status == AntigravityAuthStatus.ERROR) "Reconnect with Google" else "Sign in with Google")
-                }
-            }
-
-            // List of connected accounts
-            if (state.antigravityAccounts.isNotEmpty()) {
-                LiquidGlassCard(
-                    shape = RoundedCornerShape(14.dp),
-                    material = LiquidGlassMaterial.UltraThin,
-                    layerSource = null,
-                ) {
-                    Column {
-                        state.antigravityAccounts.forEachIndexed { index, account ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .defaultMinSize(minHeight = 44.dp)
-                                    .clickable { onSetPrimaryAccount(account.id) }
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                val quotaPercentage = account.remainingPercentageFor(state.antigravityModel)
-                                val isExhausted = account.status == AntigravityAccountStatus.QUOTA_EXHAUSTED || quotaPercentage == 0
-                                val isAuthError = account.status == AntigravityAccountStatus.AUTH_ERROR
-
-                                val (badgeBg, badgeBorder, badgeText) = when {
-                                    isAuthError -> Triple(
-                                        MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
-                                        MaterialTheme.colorScheme.error.copy(alpha = 0.45f),
-                                        MaterialTheme.colorScheme.error
-                                    )
-                                    isExhausted -> Triple(
-                                        Color(0xFFEA4335).copy(alpha = 0.14f),
-                                        Color(0xFFEA4335).copy(alpha = 0.45f),
-                                        Color(0xFFEA4335)
-                                    )
-                                    quotaPercentage == null -> Triple(
-                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    quotaPercentage >= 50 -> Triple(
-                                        Color(0xFF34A853).copy(alpha = 0.14f),
-                                        Color(0xFF34A853).copy(alpha = 0.35f),
-                                        Color(0xFF34A853)
-                                    )
-                                    quotaPercentage >= 15 -> Triple(
-                                        Color(0xFFFBBC04).copy(alpha = 0.16f),
-                                        Color(0xFFFBBC04).copy(alpha = 0.45f),
-                                        Color(0xFFF29900)
-                                    )
-                                    else -> Triple(
-                                        Color(0xFFEA4335).copy(alpha = 0.14f),
-                                        Color(0xFFEA4335).copy(alpha = 0.45f),
-                                        Color(0xFFEA4335)
-                                    )
-                                }
-                                val badgeLabel = when {
-                                    isAuthError -> "!"
-                                    quotaPercentage != null -> "$quotaPercentage%"
-                                    else -> "--%"
-                                }
-
-                                Box(
-                                    modifier = Modifier
-                                        .size(width = 38.dp, height = 32.dp)
-                                        .background(badgeBg, RoundedCornerShape(8.dp))
-                                        .border(1.dp, badgeBorder, RoundedCornerShape(8.dp)),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Text(
-                                        badgeLabel,
-                                        color = badgeText,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = if (badgeLabel.length >= 4) 10.sp else 11.sp,
-                                        maxLines = 1,
-                                    )
-                                }
-                                Spacer(Modifier.width(10.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            account.displayTitle,
-                                            fontWeight = FontWeight.SemiBold,
-                                            fontSize = 13.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        if (account.isPrimary) {
-                                            Spacer(Modifier.width(6.dp))
-                                            Surface(
-                                                color = Color(0xFF2E9D72).copy(alpha = 0.2f),
-                                                shape = RoundedCornerShape(4.dp),
-                                            ) {
-                                                Text(
-                                                    "PRIMARY",
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF2E9D72),
-                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                                                )
-                                            }
-                                        }
-                                    }
-                                    val cooldownRemainingMs = (account.quotaExhaustedUntil?.minus(System.currentTimeMillis())) ?: 0L
-                                    val cooldownMin = if (cooldownRemainingMs > 0L) (cooldownRemainingMs + 59_999L) / 60_000L else 0L
-                                    val statusText = when {
-                                        account.status == AntigravityAccountStatus.QUOTA_EXHAUSTED ->
-                                            if (cooldownMin > 0) "Quota limit · resets in ${cooldownMin}m" else "Quota exhausted · resetting..."
-                                        account.status == AntigravityAccountStatus.AUTH_ERROR ->
-                                            account.failureMessage ?: "Auth required"
-                                        account.isPrimary -> "Active primary · tap another to switch"
-                                        else -> "Connected · tap to set as primary"
-                                    }
-                                    val statusColor = when {
-                                        account.status == AntigravityAccountStatus.QUOTA_EXHAUSTED -> MaterialTheme.colorScheme.primary
-                                        account.status == AntigravityAccountStatus.AUTH_ERROR -> MaterialTheme.colorScheme.error
-                                        account.isPrimary -> Color(0xFF2E9D72)
-                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                                    }
-                                    Text(
-                                        statusText,
-                                        fontSize = 11.sp,
-                                        color = statusColor,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                                IconButton(
-                                    onClick = { onRemoveAccount(account.id) },
-                                    modifier = Modifier.size(44.dp),
-                                ) {
-                                    Icon(
-                                        Icons.Default.DeleteSweep,
-                                        contentDescription = "Remove account",
-                                        modifier = Modifier.size(17.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                            if (index != state.antigravityAccounts.lastIndex) {
-                                HorizontalDivider(Modifier.padding(start = 60.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                            }
-                        }
-                    }
-                }
-
-                // Load balancing settings if multiple accounts
-                if (state.antigravityAccounts.size > 1) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            "Load Balancing Strategy",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        LiquidGlassSegmentedControl(
-                            items = AntigravityLoadBalancingStrategy.entries,
-                            selectedItem = state.antigravityLoadBalancingStrategy,
-                            onItemSelected = onSetStrategy,
-                            itemLabel = { it.title },
-                            material = LiquidGlassMaterial.UltraThin,
-                            layerSource = null,
-                        )
-                        Row(
-                            Modifier.fillMaxWidth().padding(top = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                "Auto failover on quota limit",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Switch(
-                                checked = state.antigravityFailoverEnabled,
-                                onCheckedChange = onSetFailover,
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (auth.status == AntigravityAuthStatus.SIGNED_IN) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-
-                // Active Intelligence Model Tile
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Active Intelligence Model",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Box(
-                            modifier = Modifier
-                                .defaultMinSize(minWidth = 44.dp, minHeight = 44.dp)
-                                .clickable(enabled = !state.antigravityModelsLoading) { onRefreshModels() },
-                            contentAlignment = Alignment.CenterEnd,
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(start = 6.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
-                            ) {
-                                if (state.antigravityModelsLoading) {
-                                    CircularProgressIndicator(Modifier.size(11.dp), strokeWidth = 1.4.dp)
-                                    Spacer(Modifier.width(4.dp))
-                                }
-                                Text(
-                                    "Sync",
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    LiquidGlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        material = LiquidGlassMaterial.UltraThin,
-                        layerSource = null,
-                        onClick = onOpenModelSheet,
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .defaultMinSize(minHeight = 48.dp)
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), RoundedCornerShape(9.dp)),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    Icons.Default.AutoAwesome,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                            }
-                            Spacer(Modifier.width(10.dp))
-                            Column(Modifier.weight(1f)) {
-                                val currentModel = state.antigravityModel.ifBlank { "Select model" }
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        formatAntigravityModelName(currentModel),
-                                        modifier = Modifier.weight(1f),
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 14.sp,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                                Text(
-                                    currentModel,
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Spacer(Modifier.width(6.dp))
-                            Icon(
-                                Icons.Default.KeyboardArrowDown,
-                                contentDescription = "Choose model",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-
-                // Reasoning Depth (Effort) Segmented Capsule
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    val effortCaption = when (state.antigravityEffort) {
-                        "low" -> "Fast response · light reasoning"
-                        "medium" -> "Balanced speed & logic"
-                        "high" -> "Maximum reasoning depth"
-                        else -> "Balanced speed & logic"
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Reasoning Depth",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            effortCaption,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Medium,
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    LiquidGlassSegmentedControl(
-                        items = listOf("low", "medium", "high"),
-                        selectedItem = state.antigravityEffort,
-                        onItemSelected = onSetEffort,
-                        itemLabel = { it.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase(java.util.Locale.ROOT) else c.toString() } },
-                        material = LiquidGlassMaterial.UltraThin,
-                        layerSource = null,
-                    )
-                }
-            }
-
-            if (auth.status == AntigravityAuthStatus.SIGNED_IN) {
-                LiquidGlassSurface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    material = LiquidGlassMaterial.Thin,
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
-                    borderStroke = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)),
-                    shape = RoundedCornerShape(13.dp),
-                    onClick = if (state.apiPingStatus != ApiPingStatus.PINGING) onTest else null,
-                    layerSource = null,
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (state.apiPingStatus == ApiPingStatus.PINGING) {
-                            CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 1.8.dp, color = MaterialTheme.colorScheme.primary)
-                            Spacer(Modifier.width(8.dp))
-                        } else {
-                            Icon(Icons.Default.Refresh, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        Text(
-                            if (state.apiPingStatus == ApiPingStatus.PINGING) "Testing connection…" else "Test connection",
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
-
-                state.apiPingMessage?.takeIf { state.apiPingStatus != ApiPingStatus.IDLE }?.let { message ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            if (state.apiPingStatus == ApiPingStatus.FAILED) Icons.Default.Warning else Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = if (state.apiPingStatus == ApiPingStatus.FAILED) MaterialTheme.colorScheme.error else Color(0xFF2E9D72),
-                            modifier = Modifier.size(14.dp),
-                        )
-                        Spacer(Modifier.width(7.dp))
-                        Text(
-                            message,
-                            fontSize = 10.sp,
-                            lineHeight = 14.sp,
-                            color = if (state.apiPingStatus == ApiPingStatus.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-            }
-
-            Text(
-                "Automatic tool approval · Runs inside the private Linux workspace",
-                fontSize = 10.sp,
-                lineHeight = 14.sp,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                modifier = Modifier.fillMaxWidth(),
+        accounts.forEach { account ->
+            AntigravityAccountRow(
+                account = account,
+                model = state.antigravityModel,
+                onSetPrimary = { onSetPrimary(account.id) },
+                onRemove = { pendingRemoval = account },
             )
         }
-    }
-}
-
-@Composable
-private fun AgentProviderCard(
-    state: AppUiState,
-    selectedKind: ProviderKind,
-    baseUrl: String,
-    model: String,
-    dshApi: String,
-    apiKey: String,
-    models: List<DiscoveredModel>,
-    isDiscovering: Boolean,
-    isValidating: Boolean,
-    status: String?,
-    statusOk: Boolean,
-    statusProviderMessage: String?,
-    keyConnectionStatuses: Map<String, KeyConnectionStatus>,
-    savedKeys: List<ApiKeyInfo>,
-    newKeyName: String,
-    newApiKey: String,
-    newKeyVisible: Boolean,
-    onProvider: (ProviderKind) -> Unit,
-    onBaseUrl: (String) -> Unit,
-    onModel: (String) -> Unit,
-    onDshApi: (String) -> Unit,
-    onNewKeyName: (String) -> Unit,
-    onNewApiKey: (String) -> Unit,
-    onToggleNewKey: () -> Unit,
-    onAddKey: () -> Unit,
-    onActivateKey: (String) -> Unit,
-    onRemoveKey: (String) -> Unit,
-    onOpenModelSheet: () -> Unit,
-    onDiscover: () -> Unit,
-    onValidate: () -> Unit,
-    onStartClaudeLogin: () -> Unit = {},
-    onCancelClaudeLogin: () -> Unit = {},
-    onSubmitClaudeCode: (String) -> Unit = {},
-    onLogoutClaude: () -> Unit = {},
-    onRefreshClaudeAuth: () -> Unit = {},
-) {
-    val visibleKinds = remember(state.agentKind) { providersForAgent(state.agentKind) }
-    var connectionExpanded by rememberSaveable(selectedKind) { mutableStateOf(false) }
-    // Keep this state across provider changes so selecting Custom API can
-    // immediately reveal its required setup instead of resetting on recomposition.
-    var endpointExpanded by rememberSaveable(state.agentKind) { mutableStateOf(false) }
-    var keysExpanded by rememberSaveable(state.agentKind, selectedKind) { mutableStateOf(false) }
-    var addKeyExpanded by rememberSaveable(savedKeys.isEmpty(), selectedKind) {
-        mutableStateOf(savedKeys.isEmpty() && selectedKind != ProviderKind.ANTIGRAVITY_SERVER)
-    }
-    val activeKey = savedKeys.firstOrNull { it.isActive }
-    val activeKeyStatus = activeKey?.let { keyConnectionStatuses[it.id] }
-
-    LiquidGlassCard(
-        modifier = Modifier.fillMaxWidth(),
-        material = LiquidGlassMaterial.Thin,
-        shape = RoundedCornerShape(20.dp),
-        layerSource = null,
-    ) {
-        Column(
-            Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
-        ) {
-            Text("AI provider", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(12.dp))
-
-            PremiumSummaryRow(
-                icon = Icons.Default.Link,
-                title = selectedKind.title,
-                subtitle = selectedKind.subtitle,
-                expanded = connectionExpanded,
-                onClick = { connectionExpanded = !connectionExpanded },
+        when (auth.status) {
+            AntigravityAuthStatus.STARTING, AntigravityAuthStatus.COMPLETING -> ListRow(
+                "Connecting to Google…",
+                leading = { ProgressRing(progress = null, size = 22.dp, strokeWidth = 2.5.dp) },
             )
-
-            AnimatedVisibility(connectionExpanded) {
+            AntigravityAuthStatus.AWAITING_CODE -> {
+                auth.authorizationUrl?.let { url ->
+                    ListRow(
+                        "Copy Google sign-in link",
+                        icon = Icons.Outlined.ContentCopy,
+                        iconTile = colors.blue,
+                        onClick = {
+                            clipboard.setText(AnnotatedString(url))
+                            banner("Sign-in link copied. Open it in your browser.", BannerKind.Success)
+                        },
+                    )
+                }
                 Column(
-                    modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    Modifier.fillMaxWidth().padding(ListInset),
+                    verticalArrangement = Arrangement.spacedBy(PocketSpacing.md),
                 ) {
-                    LiquidGlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        material = LiquidGlassMaterial.UltraThin,
-                        layerSource = null,
-                    ) {
-                        Column {
-                            visibleKinds.forEachIndexed { index, kind ->
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .defaultMinSize(minHeight = 44.dp)
-                                        .clickable {
-                                            onProvider(kind)
-                                            connectionExpanded = false
-                                            endpointExpanded = kind == ProviderKind.CUSTOM
-                                        }
-                                        .padding(horizontal = 13.dp, vertical = 11.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(kind.title, fontWeight = FontWeight.Medium, fontSize = 13.sp)
-                                        Text(kind.subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                                    }
-                                    AgentSelectionDot(selectedKind == kind)
-                                }
-                                if (index != visibleKinds.lastIndex) {
-                                    HorizontalDivider(Modifier.padding(start = 13.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                                }
-                            }
-                        }
-                    }
-
-                }
-            }
-
-            if (selectedKind != ProviderKind.CLAUDE) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-
-                PremiumSummaryRow(
-                    icon = Icons.Default.Info,
-                    title = if (selectedKind == ProviderKind.CUSTOM) "Custom API settings" else "Endpoint & protocol",
-                    subtitle = buildString {
-                        append(baseUrl.ifBlank { "Base URL required" })
-                        if (state.agentKind == AgentKind.DEEPSEEK_HARNESS && selectedKind in DSH_PROTOCOL_PROVIDERS) {
-                            append(" · ")
-                            append(if (selectedKind.fixedProtocol) defaultDshApiForProvider(selectedKind) else dshApi)
-                        }
-                    },
-                    expanded = endpointExpanded,
-                    onClick = { endpointExpanded = !endpointExpanded },
-                )
-
-                AnimatedVisibility(endpointExpanded) {
-                    Column(
-                        modifier = Modifier.padding(top = 8.dp, bottom = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        if (selectedKind == ProviderKind.CUSTOM) {
-                            Text(
-                                "Enter the provider endpoint, then add its API key under Credentials.",
-                                fontSize = 11.sp,
-                                lineHeight = 15.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        OutlinedTextField(
-                            value = baseUrl,
-                            onValueChange = { if (!selectedKind.fixedBaseUrl) onBaseUrl(it) },
-                            label = { Text("Base URL") },
-                            supportingText = if (selectedKind.fixedBaseUrl) ({ Text("Fixed by ${selectedKind.title}") }) else null,
-                            readOnly = selectedKind.fixedBaseUrl,
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                        )
-                        if (state.agentKind == AgentKind.DEEPSEEK_HARNESS && selectedKind in DSH_PROTOCOL_PROVIDERS && !selectedKind.fixedProtocol) {
-                            Column(modifier = Modifier.fillMaxWidth()) {
-                                Text("Gateway protocol", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Spacer(Modifier.height(5.dp))
-                                LiquidGlassCard(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(12.dp),
-                                    material = LiquidGlassMaterial.UltraThin,
-                                    layerSource = null,
-                                ) {
-                                    Column {
-                                        listOf("anthropic-messages", "openai-completions", "openai-responses").forEach { option ->
-                                            Row(
-                                                Modifier
-                                                    .fillMaxWidth()
-                                                    .defaultMinSize(minHeight = 44.dp)
-                                                    .clickable { onDshApi(option) }
-                                                    .padding(horizontal = 12.dp, vertical = 9.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                            ) {
-                                                Text(option, Modifier.weight(1f), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                                                AgentSelectionDot(dshApi == option)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Model & access", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                    Box(
-                        modifier = Modifier
-                            .defaultMinSize(minWidth = 44.dp, minHeight = 44.dp)
-                            .clickable(enabled = !isDiscovering, onClick = onDiscover),
-                        contentAlignment = Alignment.CenterEnd,
-                    ) {
-                        Text(
-                            if (isDiscovering) "Discovering…" else if (models.isEmpty()) "Discover models" else "${models.size} models",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                        )
-                    }
-                }
-
-                PremiumSummaryRow(
-                    icon = Icons.Default.AutoAwesome,
-                    title = "AI model",
-                    subtitle = model.ifBlank { "Select or type a model ID" },
-                    expanded = false,
-                    onClick = onOpenModelSheet,
-                )
-            } else {
-                Spacer(Modifier.height(12.dp))
-                ClaudeAccountCard(
-                    auth = state.claudeAuth,
-                    claudeInstalled = state.installedAgentVersions.containsKey(AgentKind.CLAUDE_CODE),
-                    busy = state.isRunning || state.agentInstalling != null,
-                    onSignIn = onStartClaudeLogin,
-                    onCancel = onCancelClaudeLogin,
-                    onSubmitCode = onSubmitClaudeCode,
-                    onSignOut = onLogoutClaude,
-                    onRefresh = onRefreshClaudeAuth,
-                )
-                Text(
-                    "Prefer a token? Use the advanced setup-token option below (run `claude setup-token` on a computer).",
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 10.dp, bottom = 6.dp),
-                )
-            }
-
-            if (status != null) {
-                Column(modifier = Modifier.padding(start = 48.dp, end = 8.dp, bottom = 8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (statusOk) Icons.Default.Info else Icons.Default.Warning, null, tint = if (statusOk) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(7.dp))
-                        Text(status, fontSize = 10.sp, lineHeight = 14.sp, color = if (statusOk) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error, modifier = Modifier.weight(1f))
-                    }
-                    statusProviderMessage?.let { providerMessage ->
-                        Text("Provider: $providerMessage", fontSize = 10.sp, lineHeight = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 21.dp, top = 4.dp))
-                    }
-                }
-            }
-
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-
-            if (selectedKind == ProviderKind.ANTIGRAVITY_SERVER) {
-                val hasGoogleAccount = state.antigravityAccounts.isNotEmpty() ||
-                    state.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN
-                val primaryAccount = state.antigravityAccounts.firstOrNull { it.isPrimary }
-                    ?: state.antigravityAccounts.firstOrNull()
-                val email = primaryAccount?.email ?: state.antigravityAuth.accountEmail
-
-                PremiumSummaryRow(
-                    icon = if (hasGoogleAccount) Icons.Default.CheckCircle else Icons.Default.Warning,
-                    title = "Google Antigravity Account",
-                    subtitle = buildString {
-                        if (hasGoogleAccount) {
-                            append(email ?: "Connected")
-                            if (state.antigravityAccounts.size > 1) {
-                                append(" · ${state.antigravityAccounts.size} accounts")
-                            }
-                            append(" · Active")
-                        } else {
-                            append("No Google account connected")
-                        }
-                    },
-                    positive = hasGoogleAccount,
-                    error = !hasGoogleAccount,
-                    expanded = keysExpanded,
-                    onClick = { keysExpanded = !keysExpanded },
-                )
-
-                if (!keysExpanded) {
-                    Text(
-                        if (hasGoogleAccount) {
-                            "Antigravity Server connects through your Google account(s) using OAuth token rotation. No API key needed."
-                        } else {
-                            "Sign in with Google in Settings → Antigravity to use Antigravity Server models."
-                        },
-                        fontSize = 10.sp,
-                        lineHeight = 14.sp,
-                        color = if (hasGoogleAccount) Color(0xFF2E9D72) else MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(start = 48.dp, end = 8.dp, bottom = 8.dp),
+                    PocketTextField(
+                        value = code,
+                        onValueChange = onCode,
+                        label = "One-time authorization code",
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     )
-                }
-
-                AnimatedVisibility(keysExpanded) {
-                    Column(
-                        modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        LiquidGlassCard(
-                            shape = RoundedCornerShape(12.dp),
-                            material = LiquidGlassMaterial.UltraThin,
-                            layerSource = null,
-                        ) {
-                            Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                if (state.antigravityAccounts.isNotEmpty()) {
-                                    state.antigravityAccounts.forEach { acc ->
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .defaultMinSize(minHeight = 44.dp)
-                                                .padding(vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                        ) {
-                                            Icon(
-                                                Icons.Default.CheckCircle,
-                                                null,
-                                                tint = if (acc.isAvailableForRouting) Color(0xFF2E9D72) else MaterialTheme.colorScheme.error,
-                                                modifier = Modifier.size(15.dp),
-                                            )
-                                            Spacer(Modifier.width(8.dp))
-                                            Column(Modifier.weight(1f)) {
-                                                Text(acc.email, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                                                Text(
-                                                    if (acc.isPrimary) "Primary account · Healthy" else "Failover account · Ready",
-                                                    fontSize = 10.sp,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                )
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    Text(
-                                        "No Google account connected. Please go to Settings → Antigravity and sign in.",
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.error,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                PremiumSummaryRow(
-                    icon = Icons.Default.Key,
-                    title = if (selectedKind == ProviderKind.CLAUDE) "Setup token (advanced)" else "Credentials",
-                    subtitle = buildString {
-                        append(activeKey?.name ?: if (selectedKind == ProviderKind.CLAUDE) "No setup token saved" else "No API key saved")
-                        if (activeKey != null) append(" · Active")
-                        activeKeyStatus?.let {
-                            append(" · ")
-                            append(when (it.successful) { true -> "Verified"; false -> it.label; null -> "Checking" })
-                        }
-                    },
-                    positive = activeKeyStatus?.successful == true,
-                    error = activeKeyStatus?.successful == false,
-                    expanded = keysExpanded,
-                    onClick = { keysExpanded = !keysExpanded },
-                )
-
-                activeKeyStatus?.let { keyStatus ->
-                    if (!keysExpanded) {
-                        Text(
-                            keyStatus.message,
-                            fontSize = 10.sp,
-                            lineHeight = 14.sp,
-                            color = when (keyStatus.successful) {
-                                true -> Color(0xFF2E9D72)
-                                false -> MaterialTheme.colorScheme.error
-                                null -> MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.padding(start = 48.dp, end = 8.dp, bottom = 8.dp),
-                        )
-                        keyStatus.providerMessage?.let { providerMessage ->
-                            Text(
-                                "Provider: $providerMessage",
-                                fontSize = 10.sp,
-                                lineHeight = 14.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 48.dp, end = 8.dp, bottom = 8.dp),
-                            )
-                        }
-                    }
-                }
-
-                AnimatedVisibility(keysExpanded) {
-                    Column(
-                        modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Text(if (selectedKind == ProviderKind.CLAUDE) "Saved tokens (${savedKeys.size})" else "Saved keys (${savedKeys.size})", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
-                            Box(
-                                modifier = Modifier
-                                    .defaultMinSize(minWidth = 44.dp, minHeight = 44.dp)
-                                    .clickable { addKeyExpanded = !addKeyExpanded },
-                                contentAlignment = Alignment.CenterEnd,
-                            ) {
-                                Text(
-                                    if (addKeyExpanded) "Cancel" else "+ Add key",
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                                )
-                            }
-                        }
-                        savedKeys.forEach { key ->
-                            val keyStatus = keyConnectionStatuses[key.id]
-                            LiquidGlassCard(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(12.dp),
-                                material = LiquidGlassMaterial.UltraThin,
-                                layerSource = null,
-                            ) {
-                                Column {
-                                    Row(
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .defaultMinSize(minHeight = 44.dp)
-                                            .clickable { onActivateKey(key.id) }
-                                            .padding(start = 12.dp, top = 7.dp, bottom = 7.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Column(Modifier.weight(1f)) {
-                                            Text(key.name, fontWeight = FontWeight.Medium, fontSize = 13.sp)
-                                            Text(if (key.isActive) "Active" else "Tap to activate", fontSize = 10.sp, color = if (key.isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                                        }
-                                        AgentSelectionDot(key.isActive)
-                                        IconButton(onClick = { onRemoveKey(key.id) }) {
-                                            Icon(Icons.Default.DeleteSweep, "Remove", Modifier.size(17.dp))
-                                        }
-                                    }
-                                    keyStatus?.let {
-                                        Row(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            if (it.successful == null) CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 1.5.dp)
-                                            else Icon(if (it.successful) Icons.Default.CheckCircle else Icons.Default.Warning, null, tint = if (it.successful) Color(0xFF2E9D72) else MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
-                                            Spacer(Modifier.width(7.dp))
-                                            Column(Modifier.weight(1f)) {
-                                                Text(it.message, fontSize = 10.sp, lineHeight = 14.sp, color = if (it.successful == false) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-                                                it.providerMessage?.let { providerMessage ->
-                                                    Text("Provider: $providerMessage", fontSize = 10.sp, lineHeight = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        AnimatedVisibility(addKeyExpanded) {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedTextField(
-                                    value = newKeyName,
-                                    onValueChange = { input ->
-                                        if ((input.startsWith("sk-") || input.startsWith("ant-") || input.length > 30) && !input.contains(" ") && newApiKey.isBlank()) {
-                                            onNewApiKey(input.trim())
-                                            onNewKeyName("${selectedKind.title} Key")
-                                        } else onNewKeyName(input)
-                                    },
-                                    label = { Text(if (selectedKind == ProviderKind.CLAUDE) "Token name" else "Key name") },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(12.dp),
-                                )
-                                OutlinedTextField(
-                                    value = newApiKey,
-                                    onValueChange = onNewApiKey,
-                                    label = { Text(if (selectedKind == ProviderKind.CLAUDE) "Claude setup token" else "API key") },
-                                    singleLine = true,
-                                    visualTransformation = if (newKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                                    trailingIcon = { IconButton(onClick = onToggleNewKey) { Icon(if (newKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, "Toggle visibility") } },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(12.dp),
-                                )
-                                Button(
-                                    onClick = { onAddKey(); addKeyExpanded = false },
-                                    enabled = newKeyName.isNotBlank() && newApiKey.isNotBlank(),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .defaultMinSize(minHeight = 44.dp),
-                                    shape = RoundedCornerShape(12.dp),
-                                ) { Text(if (selectedKind == ProviderKind.CLAUDE) "Save token" else "Save API key") }
-                            }
-                        }
-                    }
+                    PocketButton("Complete sign-in", onSubmitCode, enabled = code.isNotBlank(), fullWidth = true)
                 }
             }
-
-            Spacer(Modifier.height(12.dp))
-            val isAntigravityServer = selectedKind == ProviderKind.ANTIGRAVITY_SERVER
-            val hasAntigravityAuth = state.antigravityAccounts.isNotEmpty() ||
-                state.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN
-            val canValidate = !isDiscovering && !isValidating && (
-                (isAntigravityServer && hasAntigravityAuth && model.isNotBlank()) ||
-                (!isAntigravityServer && apiKey.isNotBlank() && (selectedKind == ProviderKind.CLAUDE || (baseUrl.isNotBlank() && model.isNotBlank())))
+            else -> ListRow(
+                when {
+                    accounts.isNotEmpty() || auth.status == AntigravityAuthStatus.SIGNED_IN -> "Add account"
+                    auth.status == AntigravityAuthStatus.ERROR -> "Reconnect with Google"
+                    else -> "Sign in with Google"
+                },
+                icon = if (accounts.isEmpty()) Icons.Outlined.Person else Icons.Outlined.Add,
+                iconTile = MaterialTheme.colorScheme.primary,
+                titleColor = MaterialTheme.colorScheme.primary,
+                onClick = onStartLogin,
             )
-            // For Claude the account sign-in card is the primary path; saving a setup token is the
-            // advanced option and only appears once that section is open.
-            if (selectedKind != ProviderKind.CLAUDE || keysExpanded) {
-            LiquidGlassSurface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp),
-                // Tinted (bordered-style) button: accent wash, accent label, no outline.
-                material = LiquidGlassMaterial.Thin,
-                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                borderStroke = BorderStroke(0.dp, Color.Transparent),
-                shape = RoundedCornerShape(PocketRadius.md),
-                onClick = if (canValidate) onValidate else null,
-                layerSource = null,
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxSize(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (isValidating) {
-                        CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 1.8.dp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.width(8.dp))
-                    } else {
-                        Icon(
-                            if (selectedKind == ProviderKind.CLAUDE || isAntigravityServer) Icons.Default.Check else Icons.Default.Refresh,
-                            null,
-                            Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.primary,
-                        )
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    Text(
-                        when {
-                            isValidating && selectedKind == ProviderKind.CLAUDE -> "Saving token…"
-                            isValidating && isAntigravityServer -> "Verifying Antigravity Server…"
-                            isValidating -> "Testing connection…"
-                            selectedKind == ProviderKind.CLAUDE -> "Save subscription token"
-                            isAntigravityServer -> "Connect & Save Antigravity Server"
-                            else -> "Test connection"
-                        },
-                        color = MaterialTheme.colorScheme.primary,
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                }
-            }
-            }
         }
     }
-}
-
-@Composable
-private fun PremiumSummaryRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String,
-    positive: Boolean = false,
-    error: Boolean = false,
-    expanded: Boolean,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .defaultMinSize(minHeight = 44.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = 10.dp, horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier.size(38.dp).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f), RoundedCornerShape(11.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-            Text(
-                subtitle,
-                fontSize = 11.sp,
-                color = when {
-                    error -> MaterialTheme.colorScheme.error
-                    positive -> Color(0xFF2E9D72)
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+    pendingRemoval?.let { account ->
+        PocketAlert(
+            onDismiss = { pendingRemoval = null },
+            title = "Remove ${account.email}?",
+            message = "Antigravity stops using this account. You can sign in with it again later.",
+            actions = listOf(
+                AlertAction("Cancel", AlertRole.Cancel) { pendingRemoval = null },
+                AlertAction("Remove", AlertRole.Destructive) {
+                    pendingRemoval = null
+                    onRemove(account.id)
                 },
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Icon(
-            if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-            contentDescription = if (expanded) "Collapse" else "Expand",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            ),
         )
     }
 }
 
-/**
- * Compact Runtime Updates Card.
- */
 @Composable
-private fun AgentUpdateBlock(
+private fun AntigravityAccountRow(
+    account: AntigravityAccount,
+    model: String,
+    onSetPrimary: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    val colors = PocketColors.current
+    val anchor = rememberOverlayAnchor()
+    var menu by remember { mutableStateOf(false) }
+    val quota = account.remainingPercentageFor(model)
+    val exhausted = account.status == AntigravityAccountStatus.QUOTA_EXHAUSTED || quota == 0
+    val authError = account.status == AntigravityAccountStatus.AUTH_ERROR
+    val quotaColor = when {
+        authError || exhausted -> colors.red
+        quota == null -> colors.secondaryLabel
+        quota >= 50 -> colors.green
+        quota >= 15 -> colors.orange
+        else -> colors.red
+    }
+    val cooldownMs = account.quotaExhaustedUntil?.minus(System.currentTimeMillis()) ?: 0L
+    val cooldownMin = if (cooldownMs > 0L) (cooldownMs + 59_999L) / 60_000L else 0L
+    val subtitle = when {
+        account.status == AntigravityAccountStatus.QUOTA_EXHAUSTED ->
+            if (cooldownMin > 0) "Quota limit · resets in ${cooldownMin}m" else "Quota exhausted · resetting…"
+        authError -> account.failureMessage ?: "Sign in again"
+        account.isPrimary -> "Primary"
+        else -> "Connected"
+    }
+    ListRow(
+        account.displayTitle,
+        subtitle = subtitle,
+        subtitleColor = when {
+            authError -> colors.red
+            account.status == AntigravityAccountStatus.QUOTA_EXHAUSTED -> colors.orange
+            else -> null
+        },
+        leading = {
+            Box(
+                Modifier
+                    .size(ListIconTile)
+                    .clip(ContinuousRoundedShape(ListIconTile * 0.24f))
+                    .background(quotaColor.copy(alpha = 0.16f))
+                    .semantics { contentDescription = quota?.let { "$it percent quota left" } ?: "Quota unknown" },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    when {
+                        authError -> "!"
+                        quota != null -> "$quota"
+                        else -> "–"
+                    },
+                    style = PocketType.caption1.emphasized,
+                    color = quotaColor,
+                    maxLines = 1,
+                )
+            }
+        },
+        accessory = if (account.isPrimary) ListRowAccessory.Check else ListRowAccessory.None,
+        onClick = onSetPrimary,
+        trailing = {
+            PocketIconButton(
+                Icons.Outlined.MoreHoriz,
+                "Options for ${account.email}",
+                onClick = { menu = true },
+                modifier = Modifier.overlayAnchor(anchor),
+                tint = colors.secondaryLabel,
+            )
+        },
+    )
+    GlassMenu(expanded = menu, onDismiss = { menu = false }, anchor = anchor) {
+        if (!account.isPrimary) GlassMenuItem("Make primary", onSetPrimary, icon = Icons.Outlined.Person)
+        GlassMenuItem("Remove account", onRemove, destructive = true)
+    }
+}
+
+/** Antigravity Server (a provider for the other engines) signs in through Google accounts. */
+@Composable
+private fun AntigravityServerAccountSection(state: AppUiState) {
+    val colors = PocketColors.current
+    val accounts = state.antigravityAccounts
+    val connected = accounts.isNotEmpty() || state.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN
+    ListSection(
+        header = "Google account",
+        footer = if (connected) {
+            "Antigravity Server uses your Google accounts with rotating sign-in tokens. No API key needed."
+        } else {
+            "Switch to Antigravity above and sign in with Google to use these models."
+        },
+    ) {
+        if (accounts.isEmpty()) {
+            ListRow(
+                if (connected) state.antigravityAuth.accountEmail ?: "Connected" else "No Google account",
+                icon = Icons.Outlined.Person,
+                iconTile = if (connected) colors.green else colors.gray,
+            )
+        } else {
+            accounts.forEach { account ->
+                ListRow(
+                    account.email,
+                    subtitle = if (account.isPrimary) "Primary" else "Failover",
+                    icon = Icons.Outlined.Person,
+                    iconTile = if (account.isAvailableForRouting) colors.green else colors.red,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AntigravityModelList(
+    models: List<String>,
+    selected: String,
+    effort: String,
+    search: String,
+    onSearch: (String) -> Unit,
+    onEffort: (String) -> Unit,
+    onSelect: (String) -> Unit,
+) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = PocketSpacing.xxl)) {
+        item(key = "thinking") {
+            ListSection(header = "Thinking", footer = effortCaption(effort)) {
+                Box(Modifier.fillMaxWidth().padding(horizontal = ListInset, vertical = PocketSpacing.sm)) {
+                    SegmentedControl(Efforts, effort, onEffort, label = ::effortTitle)
+                }
+            }
+        }
+        item(key = "search") {
+            SearchField(
+                search,
+                onSearch,
+                placeholder = "Search models",
+                modifier = Modifier.padding(horizontal = ListInset).padding(top = PocketSpacing.lg),
+            )
+        }
+        item(key = "count") {
+            SectionHeader("${models.size} available", Modifier.padding(horizontal = ListInset).padding(top = PocketSpacing.sm))
+        }
+        if (models.isEmpty()) {
+            item(key = "empty") {
+                Text(
+                    "No models match “${search.trim()}”.",
+                    style = PocketType.subheadline,
+                    color = PocketColors.current.secondaryLabel,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(PocketSpacing.xl),
+                )
+            }
+        }
+        itemsIndexed(models, key = { _, id -> id }) { index, id ->
+            LazyGroupRow(isFirst = index == 0, isLast = index == models.lastIndex) {
+                val tier = formatAntigravityModelTier(id)
+                ListRow(
+                    formatAntigravityModelName(id),
+                    subtitle = if (tier.isEmpty()) id else "$tier · $id",
+                    subtitleMaxLines = 1,
+                    accessory = if (id == selected) ListRowAccessory.Check else ListRowAccessory.None,
+                    onClick = { onSelect(id) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProviderModelList(
+    kind: ProviderKind,
+    models: List<DiscoveredModel>,
+    filtered: List<DiscoveredModel>,
+    selected: String,
+    search: String,
+    onSearch: (String) -> Unit,
+    isDiscovering: Boolean,
+    status: String?,
+    onDiscover: () -> Unit,
+    onSelect: (String) -> Unit,
+) {
+    val colors = PocketColors.current
+    val custom = search.trim()
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = PocketSpacing.xxl)) {
+        item(key = "search") {
+            SearchField(
+                search,
+                onSearch,
+                placeholder = "Search or enter a model ID",
+                modifier = Modifier.padding(horizontal = ListInset).padding(top = PocketSpacing.sm),
+            )
+        }
+        if (status != null) {
+            item(key = "status") {
+                Text(
+                    status,
+                    style = PocketType.footnote,
+                    color = if (isDiscovering) colors.secondaryLabel else colors.red,
+                    modifier = Modifier.padding(horizontal = ListInset * 2, vertical = PocketSpacing.sm),
+                )
+            }
+        }
+        if (custom.isNotEmpty() && filtered.none { it.id.equals(custom, ignoreCase = true) }) {
+            item(key = "custom") {
+                ListSection(Modifier.padding(top = PocketSpacing.md)) {
+                    ListRow(
+                        "Use “$custom”",
+                        subtitle = "Custom model ID",
+                        icon = Icons.Outlined.Edit,
+                        iconTile = MaterialTheme.colorScheme.primary,
+                        onClick = { onSelect(custom) },
+                    )
+                }
+            }
+        }
+        if (filtered.isEmpty() && !isDiscovering) {
+            val recommended = defaultModelsForProvider(kind)
+            if (recommended.isNotEmpty() && custom.isEmpty()) {
+                item(key = "recommended") {
+                    ListSection(Modifier.padding(top = PocketSpacing.md), header = "Recommended") {
+                        recommended.forEach { option ->
+                            ListRow(
+                                option.displayName,
+                                subtitle = option.id,
+                                subtitleMaxLines = 1,
+                                accessory = if (option.id == selected) ListRowAccessory.Check else ListRowAccessory.None,
+                                onClick = { onSelect(option.id) },
+                            )
+                        }
+                    }
+                }
+            }
+            item(key = "discover") {
+                ListSection(Modifier.padding(top = PocketSpacing.md)) {
+                    ListRow(
+                        "Discover models from ${kind.title}",
+                        icon = Icons.Outlined.AutoAwesome,
+                        iconTile = colors.purple,
+                        titleColor = MaterialTheme.colorScheme.primary,
+                        onClick = onDiscover,
+                    )
+                }
+            }
+        } else if (filtered.isNotEmpty()) {
+            item(key = "count") {
+                SectionHeader(
+                    if (filtered.size == models.size) "${models.size} models" else "${filtered.size} of ${models.size}",
+                    Modifier.padding(horizontal = ListInset).padding(top = PocketSpacing.md),
+                )
+            }
+            itemsIndexed(filtered, key = { _, option -> option.id }) { index, option ->
+                LazyGroupRow(isFirst = index == 0, isLast = index == filtered.lastIndex) {
+                    ListRow(
+                        option.displayName,
+                        subtitle = option.id.takeIf { it != option.displayName },
+                        subtitleMaxLines = 1,
+                        value = if (option.isFree) "Free" else null,
+                        accessory = if (option.id == selected) ListRowAccessory.Check else ListRowAccessory.None,
+                        onClick = { onSelect(option.id) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AddKeySheet(
+    visible: Boolean,
+    kind: ProviderKind,
+    name: String,
+    key: String,
+    hint: String?,
+    onName: (String) -> Unit,
+    onKey: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSave: () -> Unit,
+) {
+    val claude = kind == ProviderKind.CLAUDE
+    val canSave = name.isNotBlank() && key.isNotBlank()
+    GlassSheet(
+        onDismiss = onDismiss,
+        visible = visible,
+        title = if (claude) "Add Setup Token" else "Add API Key",
+        detents = listOf(SheetDetent.Fit),
+        leading = { SheetTextButton("Cancel", onDismiss) },
+        trailing = { SheetTextButton("Save", onSave, emphasized = true, enabled = canSave) },
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = PocketSpacing.xl).padding(top = PocketSpacing.sm, bottom = PocketSpacing.xl),
+            verticalArrangement = Arrangement.spacedBy(PocketSpacing.lg),
+        ) {
+            PocketTextField(
+                value = name,
+                onValueChange = onName,
+                label = "Name",
+                placeholder = "${kind.title} Key",
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            )
+            PocketTextField(
+                value = key,
+                onValueChange = onKey,
+                label = if (claude) "Claude setup token" else "API key",
+                placeholder = if (claude) "sk-ant-oat01-…" else "Paste the key",
+                secure = true,
+                monospace = true,
+                helper = hint ?: "Stored encrypted on this device.",
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AgentUpdatesSection(
     state: AppUiState,
     onCheck: () -> Unit,
     onUpdate: (AgentKind) -> Unit,
 ) {
-    LiquidGlassCard(
-        modifier = Modifier.fillMaxWidth(),
-        material = LiquidGlassMaterial.Thin,
-        shape = RoundedCornerShape(PocketRadius.lg),
-        layerSource = null,
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .defaultMinSize(minHeight = 44.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Runtime updates", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                    Text(
-                        state.agentUpdateMessage ?: "Installed agents stay current",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                val canCheck = !state.agentUpdatesChecking && state.agentUpdating == null && state.agentInstalling == null
-                LiquidGlassSurface(
-                    material = LiquidGlassMaterial.UltraThin,
-                    shape = RoundedCornerShape(LiquidGlassTokens.PillRadius),
-                    borderStroke = BorderStroke(0.dp, Color.Transparent),
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                    onClick = if (canCheck) onCheck else null,
-                    layerSource = null,
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .defaultMinSize(minHeight = 44.dp)
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (state.agentUpdatesChecking) {
-                            CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 1.6.dp, color = MaterialTheme.colorScheme.primary)
-                        } else {
-                            Icon(Icons.Default.Refresh, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
-                        }
-                        Spacer(Modifier.width(5.dp))
-                        Text("Check updates", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                    }
-                }
+    val canCheck = !state.agentUpdatesChecking && state.agentUpdating == null && state.agentInstalling == null
+    ListSection(header = "Updates", footer = state.agentUpdateMessage ?: "Installed agents stay current.") {
+        ListRow(
+            if (state.agentUpdatesChecking) "Checking for updates…" else "Check for updates",
+            titleColor = MaterialTheme.colorScheme.primary,
+            leading = if (state.agentUpdatesChecking) ({ ProgressRing(progress = null, size = 22.dp, strokeWidth = 2.5.dp) }) else null,
+            enabled = canCheck,
+            onClick = onCheck,
+        )
+        state.agentUpdates.forEach { (agent, update) ->
+            val updating = state.agentUpdating == agent
+            val downloaded = state.agentUpdateDownloadedBytes
+            val total = state.agentUpdateTotalBytes
+            val fraction = if (updating && downloaded != null && total != null && total > 0L) {
+                (downloaded.toFloat() / total).coerceIn(0f, 1f)
+            } else {
+                state.agentUpdateProgress.coerceIn(0f, 1f)
             }
-
-            state.agentUpdates.forEach { (agent, update) ->
-                val updating = state.agentUpdating == agent
-                val downloaded = state.agentUpdateDownloadedBytes
-                val total = state.agentUpdateTotalBytes
-                val fraction = if (updating && downloaded != null && total != null && total > 0L) {
-                    (downloaded.toFloat() / total).coerceIn(0f, 1f)
-                } else state.agentUpdateProgress.coerceIn(0f, 1f)
-
-                LiquidGlassCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    material = LiquidGlassMaterial.UltraThin,
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
-                    borderStroke = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)),
-                    layerSource = null,
-                ) {
-                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(agent.title, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("v${update.installedVersion} → v${update.latestVersion}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            Text("UPDATE", color = MaterialTheme.colorScheme.primary, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
-                        }
-                        if (updating) {
-                            state.agentUpdateMessage?.let { Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                            LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
-                        } else {
-                            Button(
-                                onClick = { onUpdate(agent) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .defaultMinSize(minHeight = 44.dp),
-                                enabled = state.agentUpdating == null && state.agentInstalling == null,
-                                shape = RoundedCornerShape(10.dp),
-                            ) {
-                                Text("Update ${agent.title}", fontSize = 12.sp)
-                            }
-                        }
+            ListRow(
+                agent.title,
+                subtitle = if (updating) state.agentUpdateMessage ?: "Updating…" else "${update.installedVersion} → ${update.latestVersion}",
+                trailing = {
+                    if (updating) {
+                        ProgressRing(progress = fraction, size = 24.dp, strokeWidth = 2.5.dp)
+                    } else {
+                        PocketButton(
+                            "Update",
+                            { onUpdate(agent) },
+                            style = PocketButtonStyle.Tinted,
+                            size = PocketButtonSize.Small,
+                            enabled = state.agentUpdating == null && state.agentInstalling == null,
+                        )
                     }
-                }
-            }
+                },
+            )
         }
     }
 }
@@ -2375,42 +1409,6 @@ private fun formatAgentBytes(bytes: Long): String = when {
     bytes >= 1_048_576L -> "%.1f MB".format(bytes / 1_048_576.0)
     bytes >= 1_024L -> "%.1f KB".format(bytes / 1_024.0)
     else -> "$bytes B"
-}
-
-/**
- * Fixed-size three-dot wave. All three dots are always laid out, only their
- * alpha animates — so surrounding text never shifts while loading.
- */
-@Composable
-private fun AgentTypingDots(
-    color: Color,
-    modifier: Modifier = Modifier,
-    dotSize: androidx.compose.ui.unit.Dp = 6.dp,
-    spacing: androidx.compose.ui.unit.Dp = 4.dp,
-) {
-    val transition = rememberInfiniteTransition(label = "agent-typing")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(animation = tween(900, easing = LinearEasing), repeatMode = RepeatMode.Restart),
-        label = "wave",
-    )
-    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(spacing)) {
-        repeat(3) { index ->
-            val alpha = 0.25f + 0.75f * ((phase + index / 3f) % 1f)
-            Box(Modifier.size(dotSize).background(color.copy(alpha = alpha), CircleShape))
-        }
-    }
-}
-
-@Composable
-private fun AgentSelectionDot(selected: Boolean) {
-    Box(
-        Modifier.size(22.dp).border(if (selected) 2.dp else 1.5.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f), CircleShape),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (selected) Box(Modifier.size(10.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
-    }
 }
 
 /** Provides popular default models for providers when discovery hasn't been run or is unavailable. */

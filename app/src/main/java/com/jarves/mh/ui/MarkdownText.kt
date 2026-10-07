@@ -17,9 +17,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -217,7 +217,7 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
                             modifier = Modifier.size(28.dp),
                         ) {
                             Icon(
-                                Icons.Default.PlayArrow,
+                                Icons.Outlined.PlayArrow,
                                 contentDescription = "Run in project terminal",
                                 tint = scheme.primary,
                                 modifier = Modifier.size(18.dp),
@@ -236,7 +236,7 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
                         modifier = Modifier.size(28.dp),
                     ) {
                         Icon(
-                            imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                            imageVector = if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
                             contentDescription = "Copy code",
                             tint = if (copied) scheme.tertiary else scheme.onSurfaceVariant,
                             modifier = Modifier.size(16.dp),

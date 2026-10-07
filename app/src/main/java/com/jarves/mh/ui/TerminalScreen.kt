@@ -31,14 +31,14 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowForward
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.LightMode
-import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.West
+import androidx.compose.material.icons.outlined.East
+import androidx.compose.material.icons.outlined.ArrowDownward
+import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.LightMode
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -190,7 +190,7 @@ fun TerminalScreen(
                                 .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), RoundedCornerShape(10.dp)),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Icon(Icons.Default.Terminal, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Outlined.Terminal, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                         }
                         Spacer(Modifier.width(11.dp))
                         Column(Modifier.weight(1f)) {
@@ -198,12 +198,12 @@ fun TerminalScreen(
                             Text(subtitle, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         IconButton(onClick = onClear, modifier = Modifier.size(38.dp)) {
-                            Icon(Icons.Default.DeleteOutline, contentDescription = "Clear output", modifier = Modifier.size(20.dp))
+                            Icon(Icons.Outlined.DeleteOutline, contentDescription = "Clear output", modifier = Modifier.size(20.dp))
                         }
                         if (showThemeAction) {
                             IconButton(onClick = onToggleTheme) {
                                 Icon(
-                                    if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                    if (themeMode == AppThemeMode.DARK) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
                                     contentDescription = "Toggle theme",
                                 )
                             }
@@ -231,7 +231,7 @@ fun TerminalScreen(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Terminal,
+                                    imageVector = Icons.Outlined.Terminal,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(17.dp),
@@ -246,12 +246,12 @@ fun TerminalScreen(
                     },
                     actions = {
                         IconButton(onClick = onClear) {
-                            Icon(Icons.Default.DeleteOutline, contentDescription = "Clear output")
+                            Icon(Icons.Outlined.DeleteOutline, contentDescription = "Clear output")
                         }
                         if (showThemeAction) {
                             IconButton(onClick = onToggleTheme) {
                                 Icon(
-                                    if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                    if (themeMode == AppThemeMode.DARK) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
                                     contentDescription = "Toggle theme",
                                 )
                             }
@@ -465,10 +465,10 @@ fun TerminalScreen(
                             commandInput = TextFieldValue(commandHistory.getOrNull(historyIndex) ?: "", TextRange((commandHistory.getOrNull(historyIndex) ?: "").length))
                         }
                     }
-                    TerminalIconKeyButton(Icons.Default.ArrowBack, "Move cursor left") {
+                    TerminalIconKeyButton(Icons.Outlined.West, "Move cursor left") {
                         commandInput = commandInput.copy(selection = TextRange((commandInput.selection.start - 1).coerceAtLeast(0)))
                     }
-                    TerminalIconKeyButton(Icons.Default.ArrowForward, "Move cursor right") {
+                    TerminalIconKeyButton(Icons.Outlined.East, "Move cursor right") {
                         commandInput = commandInput.copy(selection = TextRange((commandInput.selection.end + 1).coerceAtMost(commandInput.text.length)))
                     }
                     TerminalKeyButton("ALT", "Alt modifier", active = altActive, fixedWidth = true) { altActive = !altActive }

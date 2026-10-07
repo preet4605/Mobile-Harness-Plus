@@ -112,7 +112,7 @@ class ChatLiquidGlassRegressionTest {
             assertTrue("Workspace chrome must bind to chromeLayer:\n${call.take(120)}", call.contains("layerSource = chromeLayer"))
         }
         // Chat content runs edge to edge under the bars; other tabs stay padded and clipped.
-        assertTrue(Regex("""if \(selectedTab == WorkspaceTab\.CHAT\) \{\s*Modifier\.fillMaxSize\(\)\s*\} else \{\s*Modifier\.fillMaxSize\(\)\.padding\(padding\)\.clipToBounds\(\)""").containsMatchIn(workspace))
+        assertTrue(Regex("""if \(tab == WorkspaceTab\.CHAT\) \{\s*Modifier\.fillMaxSize\(\)\s*\} else \{\s*Modifier\.fillMaxSize\(\)\.padding\(padding\)\.clipToBounds\(\)""").containsMatchIn(workspace))
         assertTrue("ChatTab must receive the bar insets as content clearance", workspace.contains("chromePadding = padding"))
     }
 
@@ -154,7 +154,7 @@ class ChatLiquidGlassRegressionTest {
         val root = functionBody("RootScreenHost")
         // Root's content box is not a source; each root screen's list is (RootLiquidGlassWiringTest).
         assertFalse(root.contains("asBackdropSource("))
-        assertTrue(calls(root, "LiquidGlassFloatingNavBar").single().contains("layerSource = LiquidGlassLayers.Background"))
+        assertTrue("Root dock is the floating glass tab bar", root.contains("FloatingTabBar("))
     }
 
     @Test

@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "MobileHarness"
 include(":app")
+include(":benchmark")

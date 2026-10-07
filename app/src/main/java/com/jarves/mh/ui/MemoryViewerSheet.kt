@@ -20,12 +20,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -110,7 +110,7 @@ fun MemoryViewerSheet(
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
-                            Icons.Default.Psychology,
+                            Icons.Outlined.Psychology,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(22.dp),
@@ -146,7 +146,7 @@ fun MemoryViewerSheet(
                     }
                 }
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close")
+                    Icon(Icons.Outlined.Close, contentDescription = "Close")
                 }
             }
 
@@ -170,7 +170,7 @@ fun MemoryViewerSheet(
                         shape = RoundedCornerShape(8.dp),
                     ) {
                         Icon(
-                            if (showAddForm) Icons.Default.Close else Icons.Default.Add,
+                            if (showAddForm) Icons.Outlined.Close else Icons.Outlined.Add,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
                         )
@@ -281,7 +281,7 @@ fun MemoryViewerSheet(
                         verticalArrangement = Arrangement.Center,
                     ) {
                         Icon(
-                            Icons.Default.Psychology,
+                            Icons.Outlined.Psychology,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                             modifier = Modifier.size(48.dp),
@@ -355,7 +355,7 @@ private fun MemoryEntryTile(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Icon(
-                                if (isAuto) Icons.Default.AutoAwesome else Icons.Default.Person,
+                                if (isAuto) Icons.Outlined.AutoAwesome else Icons.Outlined.Person,
                                 contentDescription = null,
                                 tint = sourceColor,
                                 modifier = Modifier.size(11.dp),
@@ -384,7 +384,7 @@ private fun MemoryEntryTile(
                     modifier = Modifier.size(28.dp),
                 ) {
                     Icon(
-                        Icons.Default.Delete,
+                        Icons.Outlined.Delete,
                         contentDescription = "Delete memory",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(16.dp),

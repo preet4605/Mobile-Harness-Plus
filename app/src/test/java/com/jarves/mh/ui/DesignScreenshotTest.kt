@@ -2,37 +2,46 @@ package com.jarves.mh.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.SmartToy
-import androidx.compose.material3.Icon
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.SmartToy
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.github.takahirom.roborazzi.captureScreenRoboImage
+import com.jarves.mh.data.ApiKeyInfo
+import com.jarves.mh.model.AgentKind
+import com.jarves.mh.model.AntigravityAccount
 import com.jarves.mh.model.ChatMessage
+import com.jarves.mh.model.DevStack
+import com.jarves.mh.model.ModelQuota
+import com.jarves.mh.model.ProviderKind
+import com.jarves.mh.model.ProviderProfile
 import com.jarves.mh.model.Project
 import com.jarves.mh.model.ProjectChat
 import com.jarves.mh.network.ConnectionValidation
 import com.jarves.mh.network.ModelDiscoveryResult
+import com.jarves.mh.runtime.AntigravityAuthState
+import com.jarves.mh.runtime.AntigravityAuthStatus
+import com.jarves.mh.ui.kit.FloatingTabBar
+import com.jarves.mh.ui.kit.OverlayHost
+import com.jarves.mh.ui.kit.TabBarAccessory
+import com.jarves.mh.ui.kit.TabItem
 import com.jarves.mh.ui.theme.AppThemeMode
+import com.jarves.mh.ui.theme.PocketSpacing
 import com.jarves.mh.ui.theme.PocketTheme
 import com.jarves.mh.ui.theme.glass.LiquidGlassConfig
-import com.jarves.mh.ui.theme.glass.LiquidGlassFloatingNavBar
-import com.jarves.mh.ui.theme.glass.LiquidGlassFloatingNavBarItem
 import com.jarves.mh.ui.theme.glass.LiquidGlassHost
-import com.jarves.mh.ui.theme.glass.LiquidGlassLayers
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -43,7 +52,7 @@ import org.robolectric.annotation.GraphicsMode
 /**
  * Opt-in design screenshots (Roborazzi, test-only): ./gradlew :app:testOnlineDebugUnitTest -Pscreenshots
  * Renders the main screens in light and dark into build/outputs/roborazzi for visual review.
- * The Projects dock is a stand-in for RootScreenHost (which needs a live MainViewModel).
+ * The dock is a stand-in for RootScreenHost (which needs a live MainViewModel).
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -92,31 +101,34 @@ class DesignScreenshotTest {
     }
 
     @Composable
-    private fun RootDockStandIn(content: @Composable (bottom: androidx.compose.ui.unit.Dp) -> Unit) {
-        Scaffold(
-            contentWindowInsets = WindowInsets(0, 0, 0, 0),
-            containerColor = MaterialTheme.colorScheme.background,
-            bottomBar = {
-                Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 24.dp, vertical = 12.dp)) {
-                    LiquidGlassFloatingNavBar(modifier = Modifier.fillMaxWidth(), layerSource = LiquidGlassLayers.Background) {
-                        listOf(Icons.Default.Folder to "Projects", Icons.Default.SmartToy to "Agent", Icons.Default.Settings to "Settings")
-                            .forEachIndexed { i, (icon, label) ->
-                                LiquidGlassFloatingNavBarItem(
-                                    selected = i == 0,
-                                    onClick = {},
-                                    icon = { Icon(icon, contentDescription = label) },
-                                    label = { Text(label, fontSize = 11.sp) },
-                                    selectedTint = MaterialTheme.colorScheme.primary,
-                                )
-                            }
-                    }
+    private fun RootDockStandIn(selected: Int, content: @Composable (bottom: Dp) -> Unit) {
+        OverlayHost(Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize()) {
+                content(120.dp)
+                Box(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = PocketSpacing.xl, vertical = PocketSpacing.sm),
+                ) {
+                    FloatingTabBar(
+                        tabs = listOf(
+                            TabItem("Projects", Icons.Outlined.Folder),
+                            TabItem("Agent", Icons.Outlined.SmartToy),
+                            TabItem("Settings", Icons.Outlined.Settings),
+                        ),
+                        selectedIndex = selected,
+                        onSelect = {},
+                        accessory = { TabBarAccessory(Icons.Outlined.Terminal, "Terminal", {}) },
+                    )
                 }
-            },
-        ) { _ -> Box(Modifier.fillMaxSize()) { content(120.dp) } }
+            }
+        }
     }
 
     private fun projects(dark: Boolean) = shot("projects", dark) {
-        RootDockStandIn { bottom ->
+        RootDockStandIn(0) { bottom ->
             ProjectsScreen(
                 state = baseState,
                 bottomBarPadding = bottom,
@@ -128,39 +140,52 @@ class DesignScreenshotTest {
         }
     }
 
-    private fun agent(dark: Boolean) = shot("agent", dark) {
-        RootDockStandIn { bottom ->
+    private fun agent(name: String, dark: Boolean, state: AppUiState = baseState, keys: List<ApiKeyInfo> = emptyList()) = shot(name, dark) {
+        RootDockStandIn(1) { bottom ->
             AgentScreen(
-                state = baseState,
+                state = state,
                 bottomBarPadding = bottom,
                 onSaveProvider = { _, _ -> },
                 onDiscoverModels = { _, _ -> ModelDiscoveryResult.Failure("offline") },
                 onValidateProvider = { _, _, _ -> ConnectionValidation.Success("ok") },
                 onPing = {},
-                getSavedApiKey = { "" },
-                getSavedApiKeys = { emptyList() },
-                onAddApiKey = { _, _, _ -> emptyList() },
-                onActivateApiKey = { _, _ -> emptyList() },
-                onRemoveApiKey = { _, _ -> emptyList() },
+                getSavedApiKey = { if (keys.isEmpty()) "" else "sk-test" },
+                getSavedApiKeys = { keys },
+                onAddApiKey = { _, _, _ -> keys },
+                onActivateApiKey = { _, _ -> keys },
+                onRemoveApiKey = { _, _ -> keys },
             )
         }
     }
 
+    private val deepSeekState = baseState.copy(
+        agentKind = AgentKind.DEEPSEEK_HARNESS,
+        installedAgentVersions = mapOf(AgentKind.DEEPSEEK_HARNESS to "0.9.2", AgentKind.CLAUDE_CODE to "2.1.0"),
+        provider = ProviderProfile(ProviderKind.DEEPSEEK, ProviderKind.DEEPSEEK.defaultBaseUrl, "deepseek-v4-flash"),
+        apiPingStatus = ApiPingStatus.OK,
+    )
+    private val deepSeekKeys = listOf(ApiKeyInfo("1", "Personal", isActive = true), ApiKeyInfo("2", "Work"))
+
+    private val antigravityState = baseState.copy(
+        agentKind = AgentKind.ANTIGRAVITY,
+        installedAgentVersions = mapOf(AgentKind.ANTIGRAVITY to "1.4.0"),
+        antigravityAuth = AntigravityAuthState(status = AntigravityAuthStatus.SIGNED_IN, accountEmail = "dev@example.com"),
+        antigravityAccounts = listOf(
+            AntigravityAccount(email = "dev@example.com", isPrimary = true, modelQuotas = mapOf("gemini-3.8-flash-high" to ModelQuota(0.82f))),
+            AntigravityAccount(email = "backup@example.com", modelQuotas = mapOf("gemini-3.8-flash-high" to ModelQuota(0.12f))),
+        ),
+        antigravityModel = "gemini-3.8-flash-high",
+        antigravityEffort = "medium",
+        apiPingStatus = ApiPingStatus.OK,
+    )
+
     private fun settings(dark: Boolean) = shot("settings", dark) {
-        RootDockStandIn { _ ->
+        RootDockStandIn(2) { bottom ->
             SettingsScreen(
-                state = baseState,
-                onSaveProvider = { _, _ -> },
-                onDiscoverModels = { _, _ -> ModelDiscoveryResult.Failure("offline") },
-                onValidateProvider = { _, _, _ -> ConnectionValidation.Success("ok") },
+                state = baseState.copy(installedDevStacks = setOf(DevStack.WEB, DevStack.PYTHON)),
                 onSetThemeMode = {},
-                onPing = {},
                 onClearTerminal = {},
-                getSavedApiKey = { "" },
-                getSavedApiKeys = { emptyList() },
-                onAddApiKey = { _, _, _ -> emptyList() },
-                onActivateApiKey = { _, _ -> emptyList() },
-                onRemoveApiKey = { _, _ -> emptyList() },
+                bottomBarPadding = bottom,
             )
         }
     }
@@ -186,8 +211,12 @@ class DesignScreenshotTest {
 
     @Test fun projectsLight() = projects(false)
     @Test fun projectsDark() = projects(true)
-    @Test fun agentLight() = agent(false)
-    @Test fun agentDark() = agent(true)
+    @Test fun agentLight() = agent("agent", false)
+    @Test fun agentDark() = agent("agent", true)
+    @Test fun agentKeysLight() = agent("agent-keys", false, deepSeekState, deepSeekKeys)
+    @Test fun agentKeysDark() = agent("agent-keys", true, deepSeekState, deepSeekKeys)
+    @Test fun agentAntigravityLight() = agent("agent-antigravity", false, antigravityState)
+    @Test fun agentAntigravityDark() = agent("agent-antigravity", true, antigravityState)
     @Test fun settingsLight() = settings(false)
     @Test fun settingsDark() = settings(true)
     @Test fun chatLight() = workspaceChat(false)

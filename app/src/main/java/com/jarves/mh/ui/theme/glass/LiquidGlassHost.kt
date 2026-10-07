@@ -45,7 +45,21 @@ val LocalLiquidGlassBackdrop = compositionLocalOf<BackdropState?> { null }
 @Composable
 fun Modifier.hostBackdropSource(): Modifier {
     val backdrop = LocalLiquidGlassBackdrop.current ?: return this
+    if (!LocalBackdropSourceActive.current) return this
     return this.backdropSource(backdrop)
+}
+
+/**
+ * False for content that is leaving the screen during an animated transition, so the outgoing
+ * and incoming screens never both register as the host's one backdrop source.
+ */
+val LocalBackdropSourceActive = compositionLocalOf { true }
+
+/** Scopes [content]'s backdrop source to [active], nested inside any outer scope. */
+@Composable
+fun BackdropSourceScope(active: Boolean, content: @Composable () -> Unit) {
+    val parent = LocalBackdropSourceActive.current
+    CompositionLocalProvider(LocalBackdropSourceActive provides (parent && active), content = content)
 }
 
 /**

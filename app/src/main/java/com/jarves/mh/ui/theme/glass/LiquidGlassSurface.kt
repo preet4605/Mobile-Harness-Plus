@@ -1,20 +1,14 @@
 package com.jarves.mh.ui.theme.glass
 
-import android.os.Build
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
@@ -23,26 +17,29 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.jarves.mh.ui.theme.PocketMotion
-import com.jarves.mh.ui.theme.PocketPalette
 
 /**
- * Modern Liquid Glass Surface component.
+ * A piece of Liquid Glass: floating controls and bars that sit above content.
  *
- * Implements Apple HIG Liquid Glass principles:
- * - Separates floating interactive controls from content.
- * - Dynamic backdrop refraction & blur when glass is active.
- * - Graceful fallback to high-contrast opaque surface when accessibility (Reduce Transparency) is requested.
- * - Physical top-edge rim lighting for tactile depth.
+ * - With a [layerSource] it samples the shared backdrop: blur, then on Android 13+ the lens
+ *   (edge refraction, dispersion, adaptive wash, edge light). Without one it is a translucent
+ *   wash over whatever is behind it.
+ * - Interactive glass ([onClick], or [interactive] for containers whose children handle taps)
+ *   lifts slightly toward the finger and lights up under it, then settles with a soft bounce.
+ * - Reduce transparency and increased contrast give an opaque surface with a clear border;
+ *   reduce motion removes the lift.
+ * - Inside a [GlassGroup] on the lens tier, the group draws one merged glass shape instead.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun LiquidGlassSurface(
     modifier: Modifier = Modifier,
@@ -50,108 +47,65 @@ fun LiquidGlassSurface(
     shape: Shape = RoundedCornerShape(LiquidGlassTokens.ControlRadius),
     tint: Color? = null,
     borderStroke: BorderStroke? = null,
-    tonalElevation: Dp = 0.dp,
+    @Suppress("UNUSED_PARAMETER") tonalElevation: Dp = 0.dp,
     layerSource: String? = null,
     backdrop: BackdropState? = null,
     role: GlassRole? = null,
     contentColor: Color? = null,
     onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
+    semanticRole: Role? = null,
+    contentDescription: String? = null,
+    interactive: Boolean = onClick != null,
+    allowLens: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val config = LocalLiquidGlassConfig.current
     val isDark = isGlassDarkTheme()
     val effectiveContentColor = contentColor ?: MaterialTheme.colorScheme.onSurface
+    val sharedBackdrop = if (layerSource != null) backdrop ?: LocalLiquidGlassBackdrop.current else null
+    // Large moving glass (sheets while dragging) skips the lens to stay within the frame budget.
+    val tier = glassTier(config, samplesBackdrop = sharedBackdrop != null)
+        .let { if (!allowLens && it == GlassTier.Lens) GlassTier.Blur else it }
+    val group = LocalGlassGroup.current?.takeIf { it.active && tier == GlassTier.Lens }
 
-    if (!config.isGlassActive) {
-        // High-contrast, accessibility-safe fallback surface
-        val fallbackColor = if (isDark) PocketPalette.darkCardSurface else PocketPalette.lightCardSurface
-        val fallbackBorder = borderStroke ?: BorderStroke(
-            1.dp,
-            if (isDark) PocketPalette.darkBorder else PocketPalette.lightBorder,
-        )
-
-        Surface(
-            modifier = modifier,
-            shape = shape,
-            color = fallbackColor,
-            contentColor = effectiveContentColor,
-            tonalElevation = tonalElevation,
-            border = fallbackBorder,
-            onClick = onClick ?: {},
-            enabled = onClick != null,
-        ) {
-            CompositionLocalProvider(LocalContentColor provides effectiveContentColor) {
-                content()
-            }
-        }
-        return
-    }
-
-    // Active Liquid Glass surface
-    val resolvedTint = tint ?: LiquidGlassTokens.wash(material, isDark)
-
-    var surfaceModifier = modifier.clip(shape)
-
-    // Shared host backdrop (or explicit override). No per-surface GraphicsLayer capture.
-    val sharedBackdrop = backdrop ?: LocalLiquidGlassBackdrop.current
-    if (layerSource != null && sharedBackdrop != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        surfaceModifier = surfaceModifier.backdropGlass(
-            backdrop = sharedBackdrop,
-            shape = shape,
-            // A GlassRole sets only the blur strength; tint, sheen and rim stay this shared recipe.
-            blurDp = role?.blurDp ?: material.blurRadius.coerceAtMost(24f),
-            tint = Color.Transparent,
-            // The rim is drawn once, below, for both the live-backdrop and tint-only paths.
-            drawRim = false,
-        )
-    }
-
-    // Glass: neutral wash, soft vertical sheen, and one specular rim that is
-    // brightest at the top-leading edge and fades toward the bottom-trailing edge.
-    val sheenTop = if (isDark) Color(0x1FFFFFFF) else Color(0x66FFFFFF)
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val pressScale by animateFloatAsState(
-        targetValue = if (pressed && onClick != null) PocketMotion.PressScale else 1f,
-        animationSpec = PocketMotion.pressSpring(),
-        label = "liquidGlassPressScale",
+    val press = remember { GlassPressState() }
+    val pressAmount by animateFloatAsState(
+        targetValue = if (press.pressed && interactive) 1f else 0f,
+        animationSpec = if (press.pressed) PocketMotion.spec(PocketMotion.Token.Snappy) else PocketMotion.spec(PocketMotion.Token.Release),
+        label = "glassPress",
     )
-    val pressHighlight by animateColorAsState(
-        targetValue = when {
-            !pressed || onClick == null -> Color.Transparent
-            isDark -> LiquidGlassTokens.PressHighlightDark
-            else -> LiquidGlassTokens.PressHighlightLight
-        },
-        animationSpec = PocketMotion.pressSpring(),
-        label = "liquidGlassPressHighlight",
+    val look = GlassLook(
+        wash = tint ?: LiquidGlassTokens.wash(material, isDark),
+        blurDp = role?.blurDp ?: material.blurRadius.coerceAtMost(24f),
+        isDark = isDark,
+        canvas = MaterialTheme.colorScheme.background,
+        drawRim = true,
+        rimBorder = borderStroke,
     )
 
-    surfaceModifier = surfaceModifier
-        .background(resolvedTint)
-        .background(
-            Brush.verticalGradient(
-                0f to sheenTop,
-                0.5f to Color.Transparent,
-                1f to Color.Transparent,
-            ),
-        )
-        .background(pressHighlight)
-        .border(
-            borderStroke ?: BorderStroke(0.75.dp, glassRimBrush(isDark)),
-            shape,
-        )
-
+    var surfaceModifier = modifier
+        .glassLift({ pressAmount }, press, enabled = interactive && !config.reduceMotion && tier != GlassTier.Solid)
+    surfaceModifier = if (group != null) {
+        surfaceModifier.glassGroupMember(group, shape, press) { pressAmount }
+    } else {
+        surfaceModifier
+            .glassShadow(shape, tier, isDark)
+            .glassBackground(tier, shape, sharedBackdrop, look, press) { pressAmount }
+    }
+    surfaceModifier = surfaceModifier.clip(shape)
+    if (interactive) surfaceModifier = surfaceModifier.glassPressTracking(press)
     if (onClick != null) {
-        surfaceModifier = surfaceModifier
-            .graphicsLayer {
-                scaleX = pressScale
-                scaleY = pressScale
-            }
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick,
-            )
+        surfaceModifier = surfaceModifier.combinedClickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            role = semanticRole,
+            onLongClick = onLongClick,
+            onClick = onClick,
+        )
+    }
+    if (contentDescription != null) {
+        surfaceModifier = surfaceModifier.semantics(mergeDescendants = true) { this.contentDescription = contentDescription }
     }
 
     Box(

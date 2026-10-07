@@ -27,35 +27,35 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import java.io.File
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Code
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Dns
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Layers
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.SmartToy
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.SmartToy
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -177,7 +177,7 @@ fun SlashCommandMenu(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
-                            Icons.Default.Code,
+                            Icons.Outlined.Code,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
                             tint = MaterialTheme.colorScheme.primary,
@@ -272,7 +272,7 @@ fun SlashCommandMenu(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
-                            Icons.Default.AutoAwesome,
+                            Icons.Outlined.AutoAwesome,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
                             tint = PocketBlue,
@@ -302,7 +302,7 @@ fun SlashCommandMenu(
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
-                                    Icons.Default.AutoAwesome,
+                                    Icons.Outlined.AutoAwesome,
                                     contentDescription = null,
                                     modifier = Modifier.size(16.dp),
                                     tint = PocketBlue,
@@ -379,7 +379,7 @@ fun MentionMenu(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    Icons.Default.Description,
+                    Icons.Outlined.Description,
                     contentDescription = null,
                     modifier = Modifier.size(16.dp),
                     tint = MaterialTheme.colorScheme.primary,
@@ -407,7 +407,7 @@ fun MentionMenu(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
-                            imageVector = if (entry.isDirectory) Icons.Default.Folder else Icons.Default.Description,
+                            imageVector = if (entry.isDirectory) Icons.Outlined.Folder else Icons.Outlined.Description,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
                             tint = if (entry.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -466,7 +466,7 @@ fun TokenTelemetryBar(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    Icons.Default.Speed,
+                    Icons.Outlined.Speed,
                     contentDescription = null,
                     modifier = Modifier.size(13.dp),
                     tint = telemetryColor,
@@ -540,18 +540,18 @@ fun AuxiliaryInspectorSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Layers, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                    Icon(Icons.Outlined.Layers, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
                     Spacer(Modifier.width(10.dp))
                     Text("Agent & Tasks Inspector", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (onOpenMemoryViewer != null) {
                         IconButton(onClick = onOpenMemoryViewer) {
-                            Icon(Icons.Default.Psychology, contentDescription = "Persistent Memory", tint = MaterialTheme.colorScheme.primary)
+                            Icon(Icons.Outlined.Psychology, contentDescription = "Persistent Memory", tint = MaterialTheme.colorScheme.primary)
                         }
                     }
                     IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, "Close")
+                        Icon(Icons.Outlined.Close, "Close")
                     }
                 }
             }
@@ -598,7 +598,7 @@ private fun SubagentsView(
     if (subagents.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Default.Psychology, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outlineVariant)
+                Icon(Icons.Outlined.Psychology, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outlineVariant)
                 Spacer(Modifier.height(10.dp))
                 Text("No active subagents", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("Subagents spawned by the parent agent will appear here.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
@@ -622,7 +622,7 @@ private fun SubagentsView(
                     onClick = onClearCompleted,
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                 ) {
-                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("Clear finished", fontSize = 12.sp)
                 }
@@ -646,7 +646,7 @@ private fun SubagentsView(
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f, fill = false)) {
-                                Icon(Icons.Default.SmartToy, null, tint = PocketBlue, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Outlined.SmartToy, null, tint = PocketBlue, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
                                 Text(
                                     subagent.role,
@@ -665,7 +665,7 @@ private fun SubagentsView(
                                         modifier = Modifier.size(28.dp),
                                     ) {
                                         Icon(
-                                            Icons.Default.Stop,
+                                            Icons.Outlined.Stop,
                                             contentDescription = "Stop subagent",
                                             tint = MaterialTheme.colorScheme.error,
                                             modifier = Modifier.size(18.dp),
@@ -675,7 +675,7 @@ private fun SubagentsView(
                                 // Navigation affordance: tap card to view transcript
                                 Spacer(Modifier.width(2.dp))
                                 Icon(
-                                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                    Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                                     contentDescription = "View transcript",
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                                     modifier = Modifier.size(16.dp),
@@ -732,7 +732,7 @@ private fun BackgroundTasksView(
     if (tasks.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Default.Terminal, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outlineVariant)
+                Icon(Icons.Outlined.Terminal, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outlineVariant)
                 Spacer(Modifier.height(10.dp))
                 Text("No background tasks running", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("Asynchronous commands started by the agent will be listed here.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
@@ -756,7 +756,7 @@ private fun BackgroundTasksView(
                     onClick = onClearCompleted,
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                 ) {
-                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("Clear finished", fontSize = 12.sp)
                 }
@@ -798,7 +798,7 @@ private fun BackgroundTasksView(
                                         modifier = Modifier.size(28.dp),
                                     ) {
                                         Icon(
-                                            Icons.Default.Stop,
+                                            Icons.Outlined.Stop,
                                             contentDescription = "Stop task",
                                             tint = MaterialTheme.colorScheme.error,
                                             modifier = Modifier.size(18.dp),
@@ -808,7 +808,7 @@ private fun BackgroundTasksView(
                                 // Navigation affordance
                                 Spacer(Modifier.width(2.dp))
                                 Icon(
-                                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                    Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                                     contentDescription = "View logs",
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                                     modifier = Modifier.size(16.dp),
@@ -847,7 +847,7 @@ private fun ArtifactsView(artifacts: List<ArtifactInfo>) {
     if (artifacts.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Default.Description, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outlineVariant)
+                Icon(Icons.Outlined.Description, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outlineVariant)
                 Spacer(Modifier.height(10.dp))
                 Text("No artifacts produced yet", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("Structured reports, plans, and diagrams will appear here.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
@@ -888,7 +888,7 @@ private fun TimersView(timers: List<ScheduledTimerInfo>) {
     if (timers.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Default.Timer, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outlineVariant)
+                Icon(Icons.Outlined.Timer, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outlineVariant)
                 Spacer(Modifier.height(10.dp))
                 Text("No active timers or schedules", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -959,7 +959,7 @@ fun SkillsManagerDialog(
         title = {
             Column(Modifier.fillMaxWidth()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                    Icon(Icons.Outlined.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Skills & Rules Hub", fontWeight = FontWeight.Bold, fontSize = 18.sp)
                 }
@@ -1032,7 +1032,7 @@ fun SkillsManagerDialog(
                         ) {
                             Text("Workspace Rules", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                             TextButton(onClick = { showNewRuleDialog = true }) {
-                                Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Outlined.Add, null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
                                 Text("New Rule", fontSize = 12.sp)
                             }
@@ -1071,20 +1071,20 @@ fun SkillsManagerDialog(
                                                 }
                                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                                     IconButton(onClick = { editingRule = rule }, modifier = Modifier.size(28.dp)) {
-                                                        Icon(Icons.Default.Edit, "Edit rule", modifier = Modifier.size(16.dp))
+                                                        Icon(Icons.Outlined.Edit, "Edit rule", modifier = Modifier.size(16.dp))
                                                     }
                                                     IconButton(
                                                         onClick = { onPromoteRule(File(rule.filePath), rule.name) },
                                                         modifier = Modifier.size(28.dp),
                                                     ) {
-                                                        Icon(Icons.Default.AutoAwesome, "Promote to Global", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                                        Icon(Icons.Outlined.AutoAwesome, "Promote to Global", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                                                     }
                                                     IconButton(
                                                         onClick = { expandedRuleId = if (isExpanded) null else rule.id },
                                                         modifier = Modifier.size(28.dp),
                                                     ) {
                                                         Icon(
-                                                            if (isExpanded) Icons.Default.Close else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                                            if (isExpanded) Icons.Outlined.Close else Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                                                             "Expand",
                                                             modifier = Modifier.size(16.dp),
                                                         )
@@ -1176,7 +1176,7 @@ fun SkillsManagerDialog(
                                                     modifier = Modifier.size(28.dp),
                                                 ) {
                                                     Icon(
-                                                        if (isExpanded) Icons.Default.Close else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                                        if (isExpanded) Icons.Outlined.Close else Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                                                         "Expand",
                                                         modifier = Modifier.size(16.dp),
                                                     )
@@ -1328,7 +1328,7 @@ fun SkillsManagerDialog(
                                                                 modifier = Modifier.size(28.dp),
                                                             ) {
                                                                 Icon(
-                                                                    if (isExpanded) Icons.Default.Close else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                                                    if (isExpanded) Icons.Outlined.Close else Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                                                                     "Expand",
                                                                     modifier = Modifier.size(16.dp),
                                                                 )
@@ -1365,7 +1365,7 @@ fun SkillsManagerDialog(
                                     ) {
                                         Text("Global & System Library", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                                         TextButton(onClick = { showCreateSkillDialog = true }) {
-                                            Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
+                                            Icon(Icons.Outlined.Add, null, modifier = Modifier.size(16.dp))
                                             Spacer(Modifier.width(4.dp))
                                             Text("New Skill", fontSize = 11.sp)
                                         }
@@ -1423,7 +1423,7 @@ fun SkillsManagerDialog(
                                                         ) {
                                                             Column(Modifier.padding(10.dp)) {
                                                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                                                    Icon(Icons.Default.Folder, null, tint = PocketBlue, modifier = Modifier.size(16.dp))
+                                                                    Icon(Icons.Outlined.Folder, null, tint = PocketBlue, modifier = Modifier.size(16.dp))
                                                                     Spacer(Modifier.width(6.dp))
                                                                     Text("Project: ${project.name}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                                                     Spacer(Modifier.width(4.dp))
@@ -1516,7 +1516,7 @@ fun SkillsManagerDialog(
                             ) {
                                 Text("Injected Prompt Envelopes", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                                 TextButton(onClick = { clipboardManager.setText(AnnotatedString(previewText)) }) {
-                                    Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(14.dp))
+                                    Icon(Icons.Outlined.ContentCopy, null, modifier = Modifier.size(14.dp))
                                     Spacer(Modifier.width(4.dp))
                                     Text("Copy", fontSize = 11.sp)
                                 }
@@ -1752,68 +1752,7 @@ fun ModelPickerDialog(
                                 }
                             }
                             if (isSelected) {
-                                Icon(Icons.Default.Check, null, tint = PocketGreen, modifier = Modifier.size(18.dp))
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
-        },
-    )
-}
-
-/**
- * Claude Thinking / Effort Level Dialog for quick switching on the fly.
- */
-@Composable
-fun ClaudeThinkingPickerDialog(
-    currentLevel: String,
-    onSelectLevel: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val currentEnum = ClaudeThinkingLevel.fromStored(currentLevel)
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Claude Thinking Effort") },
-        text = {
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                items(ClaudeThinkingLevel.values()) { level ->
-                    val isSelected = level == currentEnum
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                onSelectLevel(level.storageValue)
-                                onDismiss()
-                            },
-                    ) {
-                        Row(
-                            Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Column(Modifier.weight(1f, fill = false)) {
-                                Text(
-                                    level.displayName,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                    fontSize = 13.sp,
-                                )
-                                Text(
-                                    level.description,
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            if (isSelected) {
-                                Icon(Icons.Default.Check, null, tint = PocketGreen, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Outlined.Check, null, tint = PocketGreen, modifier = Modifier.size(18.dp))
                             }
                         }
                     }
@@ -1861,7 +1800,7 @@ fun TaskLogViewerDialog(
             ) {
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Terminal, null, tint = PocketGreen, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Outlined.Terminal, null, tint = PocketGreen, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(task.taskId, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, fontSize = 16.sp)
                         Spacer(Modifier.width(8.dp))
@@ -1898,7 +1837,7 @@ fun TaskLogViewerDialog(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close") }
+                IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, "Close") }
             }
 
             HorizontalDivider()
@@ -1937,7 +1876,7 @@ fun TaskLogViewerDialog(
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                     ) {
-                        Icon(Icons.Default.Stop, null, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Outlined.Stop, null, modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Stop", fontSize = 12.sp)
                     }
@@ -1968,7 +1907,7 @@ fun TaskLogViewerDialog(
                         enabled = stdinDraft.isNotBlank(),
                     ) {
                         Icon(
-                            Icons.Default.PlayArrow, "Send stdin",
+                            Icons.Outlined.PlayArrow, "Send stdin",
                             tint = if (stdinDraft.isNotBlank()) PocketGreen else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -2017,7 +1956,7 @@ fun SubagentTranscriptViewerDialog(
             ) {
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.SmartToy, null, tint = PocketBlue, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Outlined.SmartToy, null, tint = PocketBlue, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(subagent.role, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                         Spacer(Modifier.width(8.dp))
@@ -2031,7 +1970,7 @@ fun SubagentTranscriptViewerDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close") }
+                IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, "Close") }
             }
 
             HorizontalDivider()
@@ -2156,7 +2095,7 @@ fun SubagentTranscriptViewerDialog(
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                     ) {
-                        Icon(Icons.Default.Stop, null, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Outlined.Stop, null, modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Stop", fontSize = 12.sp)
                     }
@@ -2185,7 +2124,7 @@ fun SubagentTranscriptViewerDialog(
                         enabled = messageDraft.isNotBlank(),
                     ) {
                         Icon(
-                            Icons.Default.PlayArrow, "Send message",
+                            Icons.Outlined.PlayArrow, "Send message",
                             tint = if (messageDraft.isNotBlank()) PocketBlue else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }

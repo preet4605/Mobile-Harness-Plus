@@ -146,6 +146,16 @@ android {
                 buildConfigString(testSecrets.getProperty("openrouter.apiKey", "")),
             )
         }
+        // Test-only: a non-debuggable, profileable copy for the frame-timing benchmark
+        // (:benchmark). Separate app id so a benchmark run never touches the real app's data.
+        create("benchmark") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            applicationIdSuffix = ".bench"
+            versionNameSuffix = "-bench"
+            manifestPlaceholders["appName"] = "Mobile Harness (Benchmark)"
+        }
         release {
             isMinifyEnabled = false
             if (hasUploadSigning) {

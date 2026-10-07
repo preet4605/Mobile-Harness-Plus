@@ -3,21 +3,15 @@ package com.jarves.mh.ui
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,382 +20,202 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Code
-import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.LightMode
-import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.PhoneAndroid
-import androidx.compose.material.icons.filled.PrivacyTip
-import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.SmartToy
-import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.Android
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.Contrast
+import androidx.compose.material.icons.outlined.DataObject
+import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.DeveloperMode
+import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.NewReleases
+import androidx.compose.material.icons.outlined.PrivacyTip
+import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.jarves.mh.BuildConfig
-import com.jarves.mh.data.ApiKeyInfo
 import com.jarves.mh.model.AgentKind
-import com.jarves.mh.model.DEEPSEEK_HARNESS_PROVIDERS
-import com.jarves.mh.model.agentUsesConfiguredProtocol
 import com.jarves.mh.model.DevStack
-import com.jarves.mh.model.ProviderKind
-import com.jarves.mh.model.ProviderProfile
-import com.jarves.mh.model.providersForAgent
-import com.jarves.mh.network.ConnectionValidation
-import com.jarves.mh.network.DiscoveredModel
-import com.jarves.mh.network.ModelDiscoveryResult
-import com.jarves.mh.runtime.AntigravityAuthStatus
+import com.jarves.mh.ui.kit.AlertAction
+import com.jarves.mh.ui.kit.AlertRole
+import com.jarves.mh.ui.kit.GlassSheet
+import com.jarves.mh.ui.kit.LargeTitle
+import com.jarves.mh.ui.kit.LargeTitleScaffold
+import com.jarves.mh.ui.kit.ListInset
+import com.jarves.mh.ui.kit.ListRow
+import com.jarves.mh.ui.kit.ListSection
+import com.jarves.mh.ui.kit.ListRowAccessory
+import com.jarves.mh.ui.kit.PocketAlert
+import com.jarves.mh.ui.kit.PocketButton
+import com.jarves.mh.ui.kit.PocketButtonSize
+import com.jarves.mh.ui.kit.PocketButtonStyle
+import com.jarves.mh.ui.kit.PocketTextField
+import com.jarves.mh.ui.kit.ProgressRing
+import com.jarves.mh.ui.kit.SheetDetent
+import com.jarves.mh.ui.kit.SheetTextButton
+import com.jarves.mh.ui.kit.ToggleRow
+import com.jarves.mh.ui.kit.rememberHaptics
+import com.jarves.mh.ui.kit.rememberTitleCollapse
 import com.jarves.mh.ui.theme.AppThemeMode
-import com.jarves.mh.ui.theme.PocketBlue
-import com.jarves.mh.ui.theme.PocketOrange
-import com.jarves.mh.ui.theme.PocketRadius
+import com.jarves.mh.ui.theme.ContinuousRoundedShape
+import com.jarves.mh.ui.theme.DarkColorRoles
+import com.jarves.mh.ui.theme.LightColorRoles
+import com.jarves.mh.ui.theme.PocketColorRoles
+import com.jarves.mh.ui.theme.PocketColors
+import com.jarves.mh.ui.theme.PocketShape
 import com.jarves.mh.ui.theme.PocketSpacing
-import com.jarves.mh.ui.theme.glass.LiquidGlassCard
-import com.jarves.mh.ui.theme.glass.LiquidGlassLayers
-import com.jarves.mh.ui.theme.glass.LiquidGlassMaterial
-import com.jarves.mh.ui.theme.glass.LiquidGlassTopBar
+import com.jarves.mh.ui.theme.PocketType
+import com.jarves.mh.ui.theme.emphasized
 import com.jarves.mh.ui.theme.glass.hostBackdropSource
-import kotlinx.coroutines.launch
 
-private enum class SettingsSection { APPEARANCE, TOOLS, RUNTIME, UPDATE_CHANNEL }
-
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Settings: one grouped list under a large title. Appearance (light, dark or automatic, and
+ * Reduce transparency), developer toolchains, the Linux runtime, and About. Provider and
+ * account setup lives on the Agent tab.
+ */
 @Composable
 fun SettingsScreen(
     state: AppUiState,
-    onSaveProvider: (ProviderProfile, String) -> Unit,
-    onDiscoverModels: suspend (ProviderProfile, String) -> ModelDiscoveryResult,
-    onValidateProvider: suspend (ProviderProfile, String, List<DiscoveredModel>) -> ConnectionValidation,
     onSetThemeMode: (AppThemeMode) -> Unit,
-    onPing: () -> Unit,
     onClearTerminal: () -> Unit,
-    getSavedApiKey: (ProviderKind) -> String,
-    getSavedApiKeys: (ProviderKind) -> List<ApiKeyInfo>,
-    onAddApiKey: (ProviderKind, String, String) -> List<ApiKeyInfo>,
-    onActivateApiKey: (ProviderKind, String) -> List<ApiKeyInfo>,
-    onRemoveApiKey: (ProviderKind, String) -> List<ApiKeyInfo>,
     onInstallDevStack: (DevStack) -> Unit = {},
     onRemoveDevStack: (DevStack) -> Unit = {},
-    onInstallAgent: (AgentKind) -> Unit = {},
-    onCheckAgentUpdates: () -> Unit = {},
-    onUpdateAgent: (AgentKind) -> Unit = {},
-    onStartAntigravityLogin: () -> Unit = {},
-    onSubmitAntigravityCode: (String) -> Unit = {},
-    onLogoutAntigravity: () -> Unit = {},
-    onRefreshAntigravityModels: () -> Unit = {},
-    onSetAntigravityModel: (String) -> Unit = {},
-    onSetAntigravityEffort: (String) -> Unit = {},
+    reduceTransparency: Boolean = false,
+    onSetReduceTransparency: (Boolean) -> Unit = {},
     initialDebugUpdateManifestUrl: String = "",
     onSetDebugUpdateManifestUrl: (String) -> Unit = {},
     onClearDebugUpdateManifestUrl: () -> Unit = {},
+    listState: LazyListState = rememberLazyListState(),
     bottomBarPadding: Dp = 0.dp,
 ) {
     val context = LocalContext.current
-    var expanded by rememberSaveable { mutableStateOf<SettingsSection?>(null) }
+    val colors = PocketColors.current
     var terminalCleared by remember { mutableStateOf(false) }
-    var showReliabilityHelp by rememberSaveable { mutableStateOf(false) }
     var stackPendingRemoval by remember { mutableStateOf<DevStack?>(null) }
+    var showWhatsNew by rememberSaveable { mutableStateOf(false) }
+    val collapse by rememberTitleCollapse(listState)
+    val open = { url: String -> runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } }
 
-    stackPendingRemoval?.let { stack ->
-        AlertDialog(
-            onDismissRequest = { stackPendingRemoval = null },
-            title = { Text("Remove ${stack.label}?") },
-            text = {
-                Text("This removes the toolchain and its runtime caches to free storage. Your projects and source files will not be deleted.")
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        stackPendingRemoval = null
-                        onRemoveDevStack(stack)
-                    },
-                ) { Text("Remove", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = { TextButton(onClick = { stackPendingRemoval = null }) { Text("Cancel") } },
-        )
-    }
-
-    fun toggle(section: SettingsSection) {
-        expanded = if (expanded == section) null else section
-    }
-
-    Scaffold(
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        containerColor = Color.Transparent,
-        topBar = {
-            LiquidGlassTopBar(
-                material = LiquidGlassMaterial.Regular,
-                layerSource = LiquidGlassLayers.Background,
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .background(
-                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                                    shape = RoundedCornerShape(9.dp),
-                                )
-                                .border(
-                                    width = 1.dp,
-                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.32f),
-                                    shape = RoundedCornerShape(9.dp),
-                                ),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Settings,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(17.dp),
-                            )
-                        }
-                        Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text("Settings", style = MaterialTheme.typography.titleMedium)
-                            Text("Preferences & Configuration", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                },
-            )
-        },
-    ) { padding ->
-        val bottomClearance = if (bottomBarPadding > 0.dp) {
-            bottomBarPadding
-        } else {
-            WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + PocketSpacing.md
-        }
-        // Runs edge to edge under the glass top bar and dock; it is the shared backdrop source.
+    LargeTitleScaffold(title = "Settings", collapse = { collapse }) { padding ->
+        // Runs edge to edge under the glass bar and dock; it is the shared backdrop source.
         LazyColumn(
-            Modifier.fillMaxSize().hostBackdropSource().imePadding(),
-            contentPadding = PaddingValues(
-                start = PocketSpacing.lg,
-                top = padding.calculateTopPadding() + PocketSpacing.md,
-                end = PocketSpacing.lg,
-                bottom = bottomClearance,
-            ),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            state = listState,
+            modifier = Modifier.fillMaxSize().hostBackdropSource().imePadding(),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = bottomBarPadding + PocketSpacing.lg),
+            verticalArrangement = Arrangement.spacedBy(PocketSpacing.xl),
         ) {
+            item(key = "title") { LargeTitle("Settings") }
 
-            item {
-                SettingsAccordion(
-                    title = "Appearance",
-                    subtitle = when (state.themeMode) { AppThemeMode.DARK -> "Dark theme"; AppThemeMode.LIGHT -> "Light theme"; AppThemeMode.SYSTEM -> "Follow system" },
-                    icon = Icons.Default.Tune,
-                    expanded = expanded == SettingsSection.APPEARANCE,
-                    onClick = { toggle(SettingsSection.APPEARANCE) },
+            item(key = "appearance") {
+                ListSection(
+                    header = "Appearance",
+                    footer = "Reduce transparency replaces glass with solid surfaces. It also follows the system setting.",
                 ) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ModernThemeChoice("Dark", Icons.Default.DarkMode, state.themeMode == AppThemeMode.DARK, { onSetThemeMode(AppThemeMode.DARK) }, Modifier.weight(1f))
-                        ModernThemeChoice("Light", Icons.Default.LightMode, state.themeMode == AppThemeMode.LIGHT, { onSetThemeMode(AppThemeMode.LIGHT) }, Modifier.weight(1f))
-                        ModernThemeChoice("System", Icons.Default.PhoneAndroid, state.themeMode == AppThemeMode.SYSTEM, { onSetThemeMode(AppThemeMode.SYSTEM) }, Modifier.weight(1f))
-                    }
-                }
-            }
-
-            item {
-                val installedCount = state.installedDevStacks.size
-                SettingsAccordion(
-                    title = "Developer tools",
-                    subtitle = "Core tools + $installedCount optional toolchain${if (installedCount == 1) "" else "s"}",
-                    icon = Icons.Default.Code,
-                    expanded = expanded == SettingsSection.TOOLS,
-                    onClick = { toggle(SettingsSection.TOOLS) },
-                ) {
-                    Text("Node.js, npm, Git, and Claude Code are included.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(8.dp))
-                    DevStack.entries.forEachIndexed { index, stack ->
-                        val installed = stack in state.installedDevStacks
-                        val installing = state.devStackInstalling == stack
-                        val removing = installing && state.devStackRemoving
-                        Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(stack.label, fontWeight = FontWeight.SemiBold)
-                                Text(stack.installsSummary, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            }
-                            when {
-                                removing -> Text("Removing…", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                installing -> Text("${(state.devStackProgress * 100).toInt()}%", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                                installed && stack == DevStack.WEB -> Text("Included", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                installed -> TextButton(
-                                    onClick = { stackPendingRemoval = stack },
-                                    enabled = state.devStackInstalling == null,
-                                ) { Text("Remove", color = MaterialTheme.colorScheme.error) }
-                                else -> OutlinedButton(onClick = { onInstallDevStack(stack) }, enabled = state.devStackInstalling == null) { Text("Add") }
-                            }
-                        }
-                        if (installing) {
-                            Spacer(Modifier.height(4.dp))
-                            LinearProgressIndicator(
-                                progress = { state.devStackProgress.coerceIn(0f, 1f) },
-                                modifier = Modifier.fillMaxWidth().height(7.dp),
-                                color = MaterialTheme.colorScheme.primary,
-                                trackColor = MaterialTheme.colorScheme.surfaceVariant,
-                            )
-                            Spacer(Modifier.height(9.dp))
-                            state.devStackBytes?.let { (downloaded, total) ->
-                                Surface(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                                ) {
-                                    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                            Text(
-                                                "${formatTransferMb(downloaded)} of ${formatTransferMb(total)}",
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                fontFamily = FontFamily.Monospace,
-                                            )
-                                            state.devStackBytesPerSecond?.takeIf { it > 0L }?.let { speed ->
-                                                Text(
-                                                    "${formatTransferSpeed(speed)} · ${formatTransferEta(downloaded, total, speed)} left",
-                                                    fontSize = 11.sp,
-                                                    color = MaterialTheme.colorScheme.primary,
-                                                    fontFamily = FontFamily.Monospace,
-                                                )
-                                            }
-                                        }
-                                        Text(
-                                            state.devStackMessage ?: "Downloading…",
-                                            fontSize = 11.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
-                                }
-                            } ?: Text(
-                                state.devStackMessage ?: "Processing…",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        if (index != DevStack.entries.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    }
-                }
-            }
-
-            item {
-                SettingsAccordion(
-                    title = "Linux runtime",
-                    subtitle = "Ubuntu 20.04 PRoot · ARM64",
-                    icon = Icons.Default.Terminal,
-                    expanded = expanded == SettingsSection.RUNTIME,
-                    onClick = { toggle(SettingsSection.RUNTIME) },
-                ) {
-                    RuntimeInfoRow("Architecture", "ARM64 (aarch64)")
-                    RuntimeInfoRow("Environment", "Ubuntu 20.04 PRoot")
-                    RuntimeInfoRow(
-                        "Active agent",
-                        state.agentKind.title + if (state.installedAgentVersions.containsKey(state.agentKind)) "" else " · Not installed",
+                    AppearancePicker(selected = state.themeMode, onSelect = onSetThemeMode)
+                    ToggleRow(
+                        title = "Reduce transparency",
+                        checked = reduceTransparency,
+                        onCheckedChange = onSetReduceTransparency,
+                        icon = Icons.Outlined.Contrast,
+                        iconTile = colors.gray,
                     )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    Text(
-                        "Installed agents",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                }
+            }
+
+            item(key = "tools") {
+                ListSection(
+                    header = "Developer tools",
+                    footer = "Node.js, npm, Git and Claude Code are always included. Removing a toolchain keeps your projects.",
+                ) {
+                    DevStack.entries.forEach { stack ->
+                        DevStackRow(
+                            stack = stack,
+                            state = state,
+                            onAdd = { onInstallDevStack(stack) },
+                            onRemove = { stackPendingRemoval = stack },
+                        )
+                    }
+                }
+            }
+
+            item(key = "runtime") {
+                ListSection(header = "Linux runtime") {
+                    ListRow("Environment", value = "Ubuntu 20.04 PRoot")
+                    ListRow("Architecture", value = "ARM64")
+                    ListRow(
+                        "Active agent",
+                        value = state.agentKind.title + if (state.installedAgentVersions.containsKey(state.agentKind)) "" else " · Not installed",
                     )
                     if (state.installedAgentVersions.isEmpty()) {
-                        RuntimeInfoRow("Status", "No verified agent installation")
+                        ListRow("Installed agents", value = "None verified")
                     } else {
                         AgentKind.entries.forEach { agent ->
-                            state.installedAgentVersions[agent]?.let { version ->
-                                RuntimeInfoRow(agent.title, "v$version")
-                            }
+                            state.installedAgentVersions[agent]?.let { version -> ListRow(agent.title, value = "v$version") }
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedButton(
-                        onClick = { onClearTerminal(); terminalCleared = true },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Default.DeleteSweep, null, Modifier.size(17.dp))
-                        Spacer(Modifier.width(7.dp))
-                        Text(if (terminalCleared) "Terminal history cleared" else "Clear terminal history")
-                    }
-                    OutlinedButton(
-                        onClick = { showReliabilityHelp = !showReliabilityHelp },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Advanced runtime reliability")
-                    }
-                    AnimatedVisibility(showReliabilityHelp) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(
-                                "If large builds stop unexpectedly, Android Developer options may provide a child-process restriction toggle.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Button(
-                                onClick = {
-                                    runCatching { context.startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
-                                        .onFailure { context.startActivity(Intent(Settings.ACTION_SETTINGS)) }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                            ) { Text("Open Developer options") }
-                        }
-                    }
+                }
+            }
+
+            item(key = "maintenance") {
+                ListSection(footer = "If large builds stop unexpectedly, Android Developer options may offer a setting that limits child processes.") {
+                    ListRow(
+                        title = if (terminalCleared) "Terminal history cleared" else "Clear terminal history",
+                        icon = Icons.Outlined.DeleteSweep,
+                        iconTile = colors.red,
+                        enabled = !terminalCleared,
+                        onClick = {
+                            onClearTerminal()
+                            terminalCleared = true
+                        },
+                    )
+                    ListRow(
+                        title = "Developer options",
+                        icon = Icons.Outlined.DeveloperMode,
+                        iconTile = colors.gray,
+                        trailing = { OpenIcon() },
+                        onClick = {
+                            runCatching { context.startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
+                                .onFailure { context.startActivity(Intent(Settings.ACTION_SETTINGS)) }
+                        },
+                    )
                 }
             }
 
             if (BuildConfig.DEBUG) {
-                item {
+                item(key = "updateChannel") {
                     DebugUpdateChannelSection(
                         initialUrl = initialDebugUpdateManifestUrl,
                         onSave = onSetDebugUpdateManifestUrl,
@@ -410,119 +224,286 @@ fun SettingsScreen(
                 }
             }
 
-            item {
-                Surface(
-                    color = Color.Transparent,
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Settings, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("Mobile Harness+", fontWeight = FontWeight.SemiBold)
-                            Text("Local AI coding workspace", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            item(key = "about") {
+                ListSection(header = "About", footer = "Mobile Harness+ is a local AI coding workspace.") {
+                    ListRow("Version", value = BuildConfig.VERSION_NAME)
+                    ListRow(
+                        title = "What’s new",
+                        icon = Icons.Outlined.NewReleases,
+                        iconTile = colors.pink,
+                        accessory = ListRowAccessory.Chevron,
+                        onClick = { showWhatsNew = true },
+                    )
+                    ListRow(
+                        title = "Original Mobile Harness",
+                        subtitle = "Forked from Tech Jarves",
+                        icon = Icons.Outlined.Code,
+                        iconTile = colors.blue,
+                        trailing = { OpenIcon() },
+                        onClick = { open("https://github.com/techjarves/Mobile-Harness") },
+                    )
+                    ListRow(
+                        title = "Privacy policy",
+                        icon = Icons.Outlined.PrivacyTip,
+                        iconTile = colors.indigo,
+                        trailing = { OpenIcon() },
+                        onClick = { open(BuildConfig.PRIVACY_POLICY_URL) },
+                    )
+                }
+            }
+        }
+    }
+
+    stackPendingRemoval?.let { stack ->
+        PocketAlert(
+            onDismiss = { stackPendingRemoval = null },
+            title = "Remove ${stack.label}?",
+            message = "This removes the toolchain and its caches to free storage. Your projects and source files stay.",
+            actions = listOf(
+                AlertAction("Cancel", AlertRole.Cancel) { stackPendingRemoval = null },
+                AlertAction("Remove", AlertRole.Destructive) {
+                    stackPendingRemoval = null
+                    onRemoveDevStack(stack)
+                },
+            ),
+        )
+    }
+
+    GlassSheet(
+        onDismiss = { showWhatsNew = false },
+        visible = showWhatsNew,
+        title = "What’s New",
+        detents = listOf(SheetDetent.Fit),
+        trailing = { SheetTextButton("Done", { showWhatsNew = false }, emphasized = true) },
+    ) {
+        WhatsNew.forEach { (icon, title, detail) ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = PocketSpacing.xl, vertical = PocketSpacing.md)) {
+                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
+                Spacer(Modifier.width(PocketSpacing.lg))
+                Column {
+                    Text(title, style = PocketType.subheadline.emphasized, color = MaterialTheme.colorScheme.onSurface)
+                    Text(detail, style = PocketType.subheadline, color = colors.secondaryLabel)
+                }
+            }
+        }
+        Spacer(Modifier.height(PocketSpacing.lg))
+    }
+}
+
+private val WhatsNew: List<Triple<ImageVector, String, String>> = listOf(
+    Triple(Icons.Outlined.Memory, "Three engines", "Claude Code, DeepSeek Harness and Google Antigravity CLI in one workspace."),
+    Triple(Icons.Outlined.DataObject, "Subagents and background tasks", "Watch them live and stop or resume them yourself."),
+    Triple(Icons.Outlined.Storage, "Shared memory", "Project context carries across engines and chats."),
+    Triple(Icons.Outlined.Code, "Skills and rules", "Global and project skills, with five engineering discipline rules."),
+)
+
+@Composable
+private fun OpenIcon() {
+    Icon(
+        Icons.AutoMirrored.Outlined.OpenInNew,
+        contentDescription = "Opens in browser",
+        tint = PocketColors.current.tertiaryLabel,
+        modifier = Modifier.size(18.dp),
+    )
+}
+
+private fun DevStack.symbol(): ImageVector = when (this) {
+    DevStack.WEB -> Icons.Outlined.Language
+    DevStack.PYTHON -> Icons.Outlined.DataObject
+    DevStack.ANDROID -> Icons.Outlined.Android
+    DevStack.CPP -> Icons.Outlined.Memory
+    DevStack.PHP -> Icons.Outlined.Storage
+}
+
+private fun DevStack.tile(colors: PocketColorRoles): Color = when (this) {
+    DevStack.WEB -> colors.yellow
+    DevStack.PYTHON -> colors.blue
+    DevStack.ANDROID -> colors.green
+    DevStack.CPP -> colors.indigo
+    DevStack.PHP -> colors.purple
+}
+
+/** One toolchain: Add, a progress ring while it installs or is removed, then Remove. */
+@Composable
+private fun DevStackRow(stack: DevStack, state: AppUiState, onAdd: () -> Unit, onRemove: () -> Unit) {
+    val colors = PocketColors.current
+    val installed = stack in state.installedDevStacks
+    val busy = state.devStackInstalling == stack
+    val removing = busy && state.devStackRemoving
+    val idle = state.devStackInstalling == null
+    val progressLine = if (busy) {
+        state.devStackBytes?.let { (downloaded, total) ->
+            buildString {
+                append("${formatTransferMb(downloaded)} of ${formatTransferMb(total)}")
+                state.devStackBytesPerSecond?.takeIf { it > 0L }?.let { speed ->
+                    append(" · ${formatTransferSpeed(speed)} · ${formatTransferEta(downloaded, total, speed)} left")
+                }
+            }
+        } ?: (state.devStackMessage ?: if (removing) "Removing…" else "Preparing…")
+    } else {
+        null
+    }
+    ListRow(
+        title = stack.label,
+        subtitle = progressLine ?: stack.installsSummary,
+        icon = stack.symbol(),
+        iconTile = stack.tile(colors),
+        subtitleMaxLines = if (busy) 2 else 1,
+        trailing = {
+            when {
+                removing -> ProgressRing(progress = null, size = 24.dp, strokeWidth = 2.5.dp, color = colors.red)
+                busy -> ProgressRing(progress = state.devStackProgress.coerceIn(0f, 1f), size = 24.dp, strokeWidth = 2.5.dp)
+                installed && stack == DevStack.WEB -> Text("Included", style = PocketType.body, color = colors.secondaryLabel)
+                installed -> SheetTextButton("Remove", onRemove, enabled = idle, destructive = true)
+                else -> PocketButton("Add", onAdd, style = PocketButtonStyle.Gray, size = PocketButtonSize.Small, enabled = idle)
+            }
+        },
+    )
+}
+
+/**
+ * Light, Dark and Automatic as small screen previews with a selection circle under each, so the
+ * choice reads at a glance.
+ */
+@Composable
+private fun AppearancePicker(selected: AppThemeMode, onSelect: (AppThemeMode) -> Unit) {
+    val haptics = rememberHaptics()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = ListInset, vertical = PocketSpacing.lg)
+            .selectableGroup(),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+    ) {
+        listOf(AppThemeMode.LIGHT to "Light", AppThemeMode.DARK to "Dark", AppThemeMode.SYSTEM to "Automatic").forEach { (mode, label) ->
+            val isSelected = selected == mode
+            Column(
+                Modifier
+                    .selectable(
+                        selected = isSelected,
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        role = Role.RadioButton,
+                    ) {
+                        if (!isSelected) haptics.selection()
+                        onSelect(mode)
+                    }
+                    .padding(PocketSpacing.xs),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                AppearancePreview(mode)
+                Spacer(Modifier.height(PocketSpacing.sm))
+                Text(label, style = PocketType.subheadline, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.height(PocketSpacing.sm))
+                SelectionCircle(isSelected)
+            }
+        }
+    }
+}
+
+private val PreviewShape = ContinuousRoundedShape(12.dp)
+
+@Composable
+private fun AppearancePreview(mode: AppThemeMode) {
+    val colors = PocketColors.current
+    Box(
+        Modifier
+            .size(width = 62.dp, height = 112.dp)
+            .clip(PreviewShape)
+            .border(0.5.dp, colors.separator, PreviewShape)
+            .drawBehind {
+                when (mode) {
+                    AppThemeMode.LIGHT -> drawMiniScreen(LightColorRoles)
+                    AppThemeMode.DARK -> drawMiniScreen(DarkColorRoles)
+                    AppThemeMode.SYSTEM -> {
+                        drawMiniScreen(LightColorRoles)
+                        // Dark on the lower-right half, split on the diagonal.
+                        val half = Path().apply {
+                            moveTo(size.width, 0f)
+                            lineTo(size.width, size.height)
+                            lineTo(0f, size.height)
+                            close()
                         }
-                        Text("v${BuildConfig.VERSION_NAME}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        clipPath(half) { drawMiniScreen(DarkColorRoles) }
                     }
                 }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            runCatching {
-                                context.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/techjarves/Mobile-Harness")),
-                                )
-                            }
-                        }
-                        .padding(vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.Default.Code,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                        tint = PocketBlue,
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("Original Mobile Harness", fontWeight = FontWeight.Medium)
-                        Text(
-                            "Forked from Tech Jarves (github.com/techjarves/Mobile-Harness)",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Icon(
-                        Icons.AutoMirrored.Filled.OpenInNew,
-                        contentDescription = "Open upstream repository",
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            "What's New in Mobile Harness+",
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "• Multi-Engine Runtime: Google Antigravity CLI, Claude Code & DeepSeek Harness\n" +
-                            "• Live Subagent & Background Task Inspector with manual controls\n" +
-                            "• Cross-Engine Persistent Context Memory (\"AI Brain\")\n" +
-                            "• Global PRoot & project skills with 5 engineering discipline rules\n" +
-                            "• 1-tap chat message copy button with haptics & slash commands",
-                            fontSize = 11.sp,
-                            lineHeight = 16.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            runCatching {
-                                context.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse(BuildConfig.PRIVACY_POLICY_URL)),
-                                )
-                            }
-                        }
-                        .padding(vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.Default.PrivacyTip,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("Privacy policy", fontWeight = FontWeight.Medium)
-                        Text(
-                            "How local data and AI provider requests are handled",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Icon(
-                        Icons.AutoMirrored.Filled.OpenInNew,
-                        contentDescription = "Open privacy policy",
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(Modifier.height(18.dp))
+            },
+    )
+}
+
+/** A tiny grouped-list screen: canvas, a title bar and two cards of rows. */
+private fun DrawScope.drawMiniScreen(roles: PocketColorRoles) {
+    val u = size.width / 62f
+    drawRect(roles.groupedBackground)
+    drawRoundRect(roles.label.copy(alpha = 0.85f), Offset(7 * u, 14 * u), Size(26 * u, 5 * u), CornerRadius(2.5f * u))
+    var top = 26 * u
+    listOf(3, 2).forEach { rows ->
+        val height = rows * 10 * u
+        drawRoundRect(roles.groupedSurface, Offset(5 * u, top), Size(size.width - 10 * u, height), CornerRadius(5 * u))
+        repeat(rows) { i ->
+            val y = top + i * 10 * u + 3.5f * u
+            drawRoundRect(roles.accent, Offset(8 * u, y), Size(3 * u, 3 * u), CornerRadius(1 * u))
+            drawRoundRect(roles.secondaryLabel.copy(alpha = 0.5f), Offset(14 * u, y + 0.5f * u), Size(26 * u, 2 * u), CornerRadius(1 * u))
+        }
+        top += height + 6 * u
+    }
+}
+
+@Composable
+private fun SelectionCircle(selected: Boolean) {
+    val colors = PocketColors.current
+    Box(
+        Modifier
+            .size(22.dp)
+            .clip(PocketShape.capsule)
+            .then(
+                if (selected) Modifier.background(MaterialTheme.colorScheme.primary)
+                else Modifier.border(1.5.dp, colors.tertiaryLabel, PocketShape.capsule),
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (selected) Icon(Icons.Outlined.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
+    }
+}
+
+/** Debug builds only: point the update check at a temporary manifest. */
+@Composable
+private fun DebugUpdateChannelSection(
+    initialUrl: String,
+    onSave: (String) -> Unit,
+    onClear: () -> Unit,
+) {
+    var url by rememberSaveable(initialUrl) { mutableStateOf(initialUrl) }
+    val isOverridden = initialUrl.isNotBlank()
+    ListSection(
+        header = "Update channel",
+        footer = if (isOverridden) "Debug builds only. Current: $initialUrl"
+        else "Debug builds only. Paste an HTTPS manifest URL (for example from a tunnel) that serves mobile-harness-update.json and a newer APK.",
+    ) {
+        Column(Modifier.fillMaxWidth().padding(ListInset), verticalArrangement = Arrangement.spacedBy(PocketSpacing.md)) {
+            PocketTextField(
+                value = url,
+                onValueChange = { url = it },
+                placeholder = "https://…/mobile-harness-update.json",
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(PocketSpacing.sm)) {
+                PocketButton(
+                    if (isOverridden) "Replace" else "Use and check",
+                    { onSave(url) },
+                    modifier = Modifier.weight(1f),
+                    style = PocketButtonStyle.Tinted,
+                    enabled = url.startsWith("https://"),
+                    fullWidth = true,
+                )
+                PocketButton(
+                    "Reset",
+                    onClear,
+                    modifier = Modifier.weight(1f),
+                    style = PocketButtonStyle.Gray,
+                    enabled = isOverridden,
+                    fullWidth = true,
+                )
             }
         }
     }
@@ -538,533 +519,4 @@ private fun formatTransferSpeed(bytesPerSecond: Long): String = when {
 private fun formatTransferEta(downloaded: Long, total: Long, bytesPerSecond: Long): String {
     val seconds = ((total - downloaded).coerceAtLeast(0L) / bytesPerSecond.coerceAtLeast(1L)).coerceAtLeast(1L)
     return if (seconds >= 60L) "${seconds / 60}m ${seconds % 60}s" else "${seconds}s"
-}
-
-@Composable
-private fun SettingsAccordion(
-    title: String,
-    subtitle: String,
-    icon: ImageVector,
-    expanded: Boolean,
-    onClick: () -> Unit,
-    content: @Composable () -> Unit,
-) {
-    // Solid content card on the shared hairline/radius tokens (same as LiquidGlassCard).
-    LiquidGlassCard(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(PocketRadius.lg),
-    ) {
-        Column {
-            Row(
-                Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Surface(shape = RoundedCornerShape(PocketRadius.sm), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f), modifier = Modifier.size(36.dp)) {
-                    Box(contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary) }
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
-                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                Icon(
-                    if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                    if (expanded) "Collapse" else "Expand",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            AnimatedVisibility(expanded) {
-                Column {
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { content() }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AntigravityConnectionSettings(
-    state: AppUiState,
-    code: String,
-    onCode: (String) -> Unit,
-    onStartLogin: () -> Unit,
-    onSubmitCode: () -> Unit,
-    onLogout: () -> Unit,
-    onRefreshModels: () -> Unit,
-    onSetModel: (String) -> Unit,
-    onSetEffort: (String) -> Unit,
-) {
-    val clipboard = LocalClipboardManager.current
-    val auth = state.antigravityAuth
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-        shape = RoundedCornerShape(14.dp),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Official Antigravity CLI", fontWeight = FontWeight.SemiBold)
-                    val accountsCount = state.antigravityAccounts.size
-                    val subtitle = if (accountsCount > 0) {
-                        "$accountsCount connected · ${state.antigravityLoadBalancingStrategy.title}"
-                    } else {
-                        auth.message ?: if (auth.status == AntigravityAuthStatus.SIGNED_IN) {
-                            auth.accountEmail?.let { "Connected as $it" } ?: "Google account connected"
-                        } else "Sign in using Google's browser flow."
-                    }
-                    Text(
-                        subtitle,
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (state.antigravityAccounts.isNotEmpty()) {
-                    OutlinedButton(
-                        onClick = onStartLogin,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                    ) {
-                        Text("+ Add account", fontSize = 11.sp)
-                    }
-                }
-            }
-            when (auth.status) {
-                AntigravityAuthStatus.SIGNED_IN -> {
-                    OutlinedButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) {
-                        Text(if (state.antigravityAccounts.size > 1) "Disconnect all accounts" else "Log out of Antigravity")
-                    }
-                }
-                AntigravityAuthStatus.STARTING, AntigravityAuthStatus.COMPLETING -> {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                }
-                AntigravityAuthStatus.AWAITING_CODE -> {
-                    auth.authorizationUrl?.let { url ->
-                        OutlinedButton(
-                            onClick = { clipboard.setText(AnnotatedString(url)) },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("Copy Google sign-in URL") }
-                    }
-                    OutlinedTextField(
-                        value = code,
-                        onValueChange = onCode,
-                        label = { Text("One-time authorization code") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Button(onClick = onSubmitCode, enabled = code.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-                        Text("Complete sign-in")
-                    }
-                }
-                AntigravityAuthStatus.SIGNED_OUT, AntigravityAuthStatus.ERROR -> Button(
-                    onClick = onStartLogin,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text(if (auth.status == AntigravityAuthStatus.ERROR) "Reconnect with Google" else "Sign in with Google") }
-            }
-        }
-    }
-
-    if (auth.status == AntigravityAuthStatus.SIGNED_IN) {
-        Text("Model", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-        OutlinedTextField(
-            value = state.antigravityModel,
-            onValueChange = onSetModel,
-            label = { Text("Antigravity model ID") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedButton(
-            onClick = onRefreshModels,
-            enabled = !state.antigravityModelsLoading,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            if (state.antigravityModelsLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            else Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
-            Spacer(Modifier.width(7.dp))
-            Text("Refresh models")
-        }
-        state.antigravityModels.forEach { model ->
-            Row(
-                Modifier.fillMaxWidth().clickable { onSetModel(model) }.padding(vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(model, Modifier.weight(1f), fontSize = 12.sp)
-                SelectionDot(state.antigravityModel == model)
-            }
-        }
-        Text("Reasoning effort", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("low", "medium", "high").forEach { effort ->
-                OutlinedButton(onClick = { onSetEffort(effort) }, modifier = Modifier.weight(1f)) {
-                    Text(effort.replaceFirstChar(Char::uppercase))
-                }
-            }
-        }
-    }
-
-    Surface(color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f), shape = RoundedCornerShape(12.dp)) {
-        Text(
-            "Antigravity runs with automatic tool approval. It can edit files and execute commands inside the selected project. Review generated changes before keeping them.",
-            Modifier.fillMaxWidth().padding(12.dp),
-            color = MaterialTheme.colorScheme.onErrorContainer,
-            fontSize = 11.sp,
-        )
-    }
-}
-
-@Composable
-private fun ConnectionSettings(
-    state: AppUiState,
-    selectedKind: ProviderKind,
-    baseUrl: String,
-    model: String,
-    dshApi: String,
-    apiKey: String,
-    models: List<DiscoveredModel>,
-    isDiscovering: Boolean,
-    isValidating: Boolean,
-    status: String?,
-    statusOk: Boolean,
-    savedKeys: List<ApiKeyInfo>,
-    newKeyName: String,
-    newApiKey: String,
-    newKeyVisible: Boolean,
-    onPing: () -> Unit,
-    onProvider: (ProviderKind) -> Unit,
-    onBaseUrl: (String) -> Unit,
-    onModel: (String) -> Unit,
-    onDshApi: (String) -> Unit,
-    onNewKeyName: (String) -> Unit,
-    onNewApiKey: (String) -> Unit,
-    onToggleNewKey: () -> Unit,
-    onAddKey: () -> Unit,
-    onActivateKey: (String) -> Unit,
-    onRemoveKey: (String) -> Unit,
-    onModels: () -> Unit,
-    onValidate: () -> Unit,
-) {
-    val visibleKinds = remember(state.agentKind) { providersForAgent(state.agentKind) }
-    var providerExpanded by rememberSaveable { mutableStateOf(false) }
-    var addKeyExpanded by rememberSaveable(savedKeys.isEmpty()) { mutableStateOf(savedKeys.isEmpty()) }
-    Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f), shape = RoundedCornerShape(14.dp)) {
-        Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(8.dp).background(
-                when (state.apiPingStatus) {
-                    ApiPingStatus.OK -> Color(0xFF58C9A3)
-                    ApiPingStatus.FAILED -> MaterialTheme.colorScheme.error
-                    ApiPingStatus.PINGING -> MaterialTheme.colorScheme.primary
-                    ApiPingStatus.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant
-                }, CircleShape,
-            ))
-            Spacer(Modifier.width(9.dp))
-            Column(Modifier.weight(1f)) {
-                Text("Active connection", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(state.provider.model.ifBlank { "Not configured" }, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                state.activeApiKeyName?.let { name ->
-                    Text("Key: $name", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                state.apiPingMessage?.let {
-                    Text(it, fontSize = 11.sp, color = if (state.apiPingStatus == ApiPingStatus.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                }
-            }
-            OutlinedButton(onClick = onPing, enabled = state.apiPingStatus != ApiPingStatus.PINGING, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
-                Text(if (state.apiPingStatus == ApiPingStatus.PINGING) "Testing…" else "Test")
-            }
-        }
-    }
-
-    Text("Provider", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    Surface(
-        modifier = Modifier.fillMaxWidth().clickable { providerExpanded = !providerExpanded },
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-        border = BorderStroke(1.dp, if (providerExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(selectedKind.title, fontWeight = FontWeight.SemiBold)
-                Text(selectedKind.subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-            }
-            Icon(if (providerExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown, "Choose provider")
-        }
-    }
-    AnimatedVisibility(providerExpanded) {
-        Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)) {
-            Column {
-                visibleKinds.forEachIndexed { index, kind ->
-                Row(
-                    Modifier.fillMaxWidth().clickable {
-                        onProvider(kind)
-                        providerExpanded = false
-                    }.padding(horizontal = 13.dp, vertical = 11.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(kind.title, fontWeight = FontWeight.Medium)
-                        Text(kind.subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                    }
-                    SelectionDot(selectedKind == kind)
-                }
-                if (index != visibleKinds.lastIndex) HorizontalDivider(Modifier.padding(start = 13.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
-            }
-            }
-        }
-    }
-
-    if (selectedKind.fixedBaseUrl) {
-        Text(
-            selectedKind.defaultBaseUrl,
-            fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    } else {
-        OutlinedTextField(baseUrl, onBaseUrl, label = { Text("Base URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    }
-    if (agentUsesConfiguredProtocol(state.agentKind, selectedKind)) {
-        Text("Gateway protocol", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)) {
-            Column {
-                listOf("anthropic-messages", "openai-completions", "openai-responses").forEach { option ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable { onDshApi(option) }.padding(horizontal = 13.dp, vertical = 11.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(option, Modifier.weight(1f), fontSize = 13.sp)
-                        SelectionDot(dshApi == option)
-                    }
-                }
-            }
-        }
-    }
-    Text("Model", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    OutlinedTextField(model, onModel, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    OutlinedButton(onClick = onModels, enabled = baseUrl.isNotBlank() && (apiKey.isNotBlank() || selectedKind == ProviderKind.ANTIGRAVITY_SERVER) && !isDiscovering, modifier = Modifier.fillMaxWidth().height(50.dp)) {
-        if (isDiscovering) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-        else Icon(if (models.isEmpty()) Icons.Default.Search else Icons.Default.KeyboardArrowDown, null, Modifier.size(18.dp))
-        Spacer(Modifier.width(7.dp))
-        Text(if (models.isEmpty()) "Find available models" else "Available models (${models.size})")
-    }
-    if (selectedKind == ProviderKind.ANTIGRAVITY_SERVER) {
-        val hasGoogleAccount = state.antigravityAccounts.isNotEmpty() ||
-            state.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN
-        Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-            border = BorderStroke(1.dp, if (hasGoogleAccount) MaterialTheme.colorScheme.primary.copy(alpha = 0.3f) else MaterialTheme.colorScheme.error.copy(alpha = 0.3f)),
-        ) {
-            Column(Modifier.padding(14.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        if (hasGoogleAccount) Icons.Default.Check else Icons.Default.PrivacyTip,
-                        contentDescription = null,
-                        tint = if (hasGoogleAccount) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(20.dp),
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            if (hasGoogleAccount) "Google Account Connected" else "Google account not signed in",
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 13.sp,
-                            color = if (hasGoogleAccount) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
-                        )
-                        val email = state.antigravityAuth.accountEmail ?: state.antigravityAccounts.firstOrNull()?.email
-                        Text(
-                            if (hasGoogleAccount) {
-                                "${email ?: "Signed in"} · ${state.antigravityAccounts.size} account(s) active"
-                            } else {
-                                "Sign in under Antigravity settings to use Antigravity models."
-                            },
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 11.sp,
-                        )
-                    }
-                }
-            }
-        }
-    } else {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("API keys", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("${savedKeys.size} saved · automatic failover enabled", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            OutlinedButton(onClick = { addKeyExpanded = !addKeyExpanded }) {
-                Text(if (addKeyExpanded) "Cancel" else "Add key")
-            }
-        }
-        if (savedKeys.isNotEmpty()) {
-            Text("Saved API keys", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)) {
-                Column {
-                    savedKeys.forEachIndexed { index, key ->
-                        Row(
-                            Modifier.fillMaxWidth().clickable { onActivateKey(key.id) }.padding(start = 13.dp, top = 9.dp, bottom = 9.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(key.name, fontWeight = FontWeight.Medium)
-                                Text(
-                                    if (key.isActive) "Active now · tap another key to switch" else "Tap to make active",
-                                    fontSize = 11.sp,
-                                    color = if (key.isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            SelectionDot(key.isActive)
-                            IconButton(onClick = { onRemoveKey(key.id) }) {
-                                Icon(Icons.Default.DeleteSweep, "Remove ${key.name}", Modifier.size(18.dp))
-                            }
-                        }
-                        if (index != savedKeys.lastIndex) HorizontalDivider(Modifier.padding(start = 13.dp))
-                    }
-                }
-            }
-        }
-        AnimatedVisibility(addKeyExpanded) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    newKeyName,
-                    onNewKeyName,
-                    label = { Text("Key name") },
-                    placeholder = { Text("Work, Personal, Backup…") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    newApiKey,
-                    onNewApiKey,
-                    label = { Text("API key") },
-                    singleLine = true,
-                    visualTransformation = if (newKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    trailingIcon = {
-                        IconButton(onClick = onToggleNewKey) {
-                            Icon(if (newKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, "Show or hide new key")
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Button(
-                    onClick = {
-                        onAddKey()
-                        addKeyExpanded = false
-                    },
-                    enabled = newKeyName.isNotBlank() && newApiKey.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth().height(50.dp),
-                ) {
-                    Text("Save API key")
-                }
-            }
-        }
-    }
-    if (status != null) {
-        Text(status, fontSize = 12.sp, color = if (statusOk) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
-    }
-    Button(
-        onClick = onValidate,
-        enabled = baseUrl.isNotBlank() && model.isNotBlank() && (apiKey.isNotBlank() || selectedKind == ProviderKind.ANTIGRAVITY_SERVER) && !isDiscovering && !isValidating,
-        modifier = Modifier.fillMaxWidth().height(52.dp),
-    ) {
-        if (isValidating) {
-            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            Spacer(Modifier.width(8.dp))
-        }
-        Text(if (isValidating) "Checking connection" else "Test connection and save")
-    }
-}
-
-@Composable
-private fun SelectionDot(selected: Boolean) {
-    Box(
-        Modifier.size(20.dp).border(if (selected) 2.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (selected) Box(Modifier.size(9.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
-    }
-}
-
-@Composable
-private fun ModernThemeChoice(title: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Surface(
-        modifier = modifier.clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
-        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        border = BorderStroke(if (selected) 1.5.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(Modifier.padding(vertical = 13.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(icon, title, Modifier.size(20.dp), tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(5.dp))
-            Text(title, fontSize = 12.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
-        }
-    }
-}
-
-@Composable
-private fun RuntimeInfoRow(label: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-        Text(value, fontWeight = FontWeight.Medium, fontSize = 13.sp)
-    }
-}
-
-@Composable
-private fun DebugUpdateChannelSection(
-    initialUrl: String,
-    onSave: (String) -> Unit,
-    onClear: () -> Unit,
-) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    var url by rememberSaveable(initialUrl) { mutableStateOf(initialUrl) }
-    val isOverridden = initialUrl.isNotBlank()
-    SettingsAccordion(
-        title = "Update channel",
-        subtitle = if (isOverridden) "Overridden · debug only" else "Default GitHub release",
-        icon = Icons.Default.Tune,
-        expanded = expanded,
-        onClick = { expanded = !expanded },
-    ) {
-        Text(
-            "Debug builds only. Paste the temporary manifest URL from Cloudflare Tunnel, ngrok, or any HTTPS server hosting mobile-harness-update.json and a newer APK.",
-            fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = url,
-            onValueChange = { url = it },
-            label = { Text("Manifest URL") },
-            placeholder = { Text("https://your-tunnel.example/mobile-harness-update.json") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Button(
-                onClick = { onSave(url) },
-                enabled = url.startsWith("https://"),
-                modifier = Modifier.weight(1f),
-            ) {
-                Text(if (isOverridden) "Replace" else "Use & check")
-            }
-            OutlinedButton(
-                onClick = onClear,
-                enabled = isOverridden,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Reset")
-            }
-        }
-        if (isOverridden) {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Current: $initialUrl",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
 }

@@ -56,6 +56,7 @@ import androidx.compose.ui.graphics.addOutline
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.layer.CompositingStrategy
 import androidx.compose.ui.graphics.layer.GraphicsLayer
@@ -216,6 +217,20 @@ class BackdropState internal constructor(
         ) {
             releaseLayerLater(previousResult.layer)
         }
+    }
+
+    /** Glass shapes currently sampling this backdrop. With none, the source skips capturing. */
+    internal var consumers: Int = 0
+        private set
+
+    internal fun addConsumer() {
+        consumers++
+        // A shape that appears after captures were skipped needs a fresh frame.
+        requestCapture()
+    }
+
+    internal fun removeConsumer() {
+        consumers = (consumers - 1).coerceAtLeast(0)
     }
 
     /** Source that published [currentResult]; only that source may clear it. */
@@ -396,6 +411,8 @@ internal class BackdropSourceNode(
 
         // 2. Dedicated completed-capture generation for glass sampling
         if (!blurSupported() || size.minDimension <= 0f) return
+        // Nothing samples the backdrop right now: skip the capture work entirely.
+        if (state.consumers == 0 && state.hasCapture) return
         val intSize = size.toIntSize()
         val now = SystemClock.uptimeMillis()
         val waitMs = backdropRecaptureDelayMs(
@@ -420,6 +437,13 @@ internal class BackdropSourceNode(
         pendingRecapture = null
 
         val origin = state.sourceOrigin ?: Offset.Zero
+        // Captured at reduced resolution (a quarter of the pixels at 0.5): glass only shows a
+        // blurred impression, so the lost detail is invisible and every-frame capture stays cheap.
+        val scale = currentValueOf(LocalLiquidGlassConfig).scaleFactor.coerceIn(0.25f, 1f)
+        val scaledSize = IntSize(
+            (intSize.width * scale).toInt().coerceAtLeast(1),
+            (intSize.height * scale).toInt().coerceAtLeast(1),
+        )
 
         // Allocate a fresh layer for this generation — never mutate in-use consumer layers
         val freshLayer = state.allocateCaptureLayer()
@@ -427,8 +451,10 @@ internal class BackdropSourceNode(
 
         try {
             // Record the complete source subtree into the fresh capture layer
-            freshLayer.record(intSize) {
-                this@draw.drawContent()
+            freshLayer.record(scaledSize) {
+                scale(scale, scale, pivot = Offset.Zero) {
+                    this@draw.drawContent()
+                }
             }
             lastCapturedInvalidator = invalidator
             lastCapturedSize = intSize
@@ -439,6 +465,7 @@ internal class BackdropSourceNode(
                 recordedLayer = freshLayer,
                 origin = origin,
                 size = intSize,
+                scale = scale,
                 publisher = this@BackdropSourceNode,
             )
         } catch (_: Throwable) {
@@ -527,148 +554,7 @@ object GlassRoles {
     )
 }
 
-private val VibrancyFilter: ColorFilter = ColorFilter.colorMatrix(
-    ColorMatrix().apply { setToSaturation(1.5f) },
-)
-
 private fun blurSupported(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-
-/**
- * Glass background for chrome. See file header for tiers.
- */
-@Composable
-fun Modifier.backdropGlass(
-    backdrop: BackdropState?,
-    shape: Shape,
-    blurDp: Float = 20f,
-    tint: Color? = null,
-    borderStroke: BorderStroke? = null,
-    role: GlassRole? = null,
-    drawRim: Boolean = true,
-): Modifier {
-    val config = LocalLiquidGlassConfig.current
-    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-
-    if (backdrop == null || !config.isGlassActive || !blurSupported()) {
-        val solid = if (isDark) PocketPalette.darkCardSurface else PocketPalette.lightCardSurface
-        val rim = borderStroke ?: BorderStroke(
-            0.75.dp,
-            if (isDark) LiquidGlassTokens.GlassRimDark else LiquidGlassTokens.GlassRimLight,
-        )
-        return this.background(solid, shape).border(rim, shape)
-    }
-
-    // Opaque canvas under the blur: the glass replaces what is behind it. Without it, sources
-    // with transparent gaps (text on the canvas) leave the sharp content readable through the
-    // low-alpha blur smear.
-    val canvasColor = MaterialTheme.colorScheme.background
-    val washAlpha = if (isDark) (role?.washAlphaDark ?: 0.16f) else (role?.washAlphaLight ?: 0.25f)
-    val baseWashColor = if (isDark) Color(0xFF111827) else Color.White
-    val surfaceTint = tint ?: baseWashColor.copy(alpha = washAlpha)
-    val effectiveBlurDp = role?.blurDp ?: blurDp
-    val sheenColor = (if (isDark) Color(0x1FFFFFFF) else Color(0x59FFFFFF))
-        .let { it.copy(alpha = it.alpha * (role?.sheenAlpha ?: 0f)) }
-    val blurLayer = rememberGraphicsLayer()
-    var origin by remember { mutableStateOf<Offset?>(null) }
-
-    val rimBrush = glassRimBrush(isDark)
-
-    return this
-        .then(
-            if (role != null && role.shadowDp > 0f) {
-                Modifier.shadow(
-                    elevation = role.shadowDp.dp,
-                    shape = shape,
-                    clip = false,
-                    ambientColor = Color(0x14000000),
-                    spotColor = Color(0x33000000),
-                )
-            } else {
-                Modifier
-            },
-        )
-        .onGloballyPositioned { origin = it.positionInWindow() }
-        .drawWithContent {
-            val position = origin
-            val captureResult = backdrop.currentResult
-            // Read captureEpoch to automatically invalidate and synchronize with published captures
-            @Suppress("UNUSED_VARIABLE")
-            val epoch = backdrop.captureEpoch
-
-            if (captureResult == null) {
-                backdrop.requestCaptureIfMissing()
-            }
-
-            if (position != null && size.minDimension > 0f && captureResult != null) {
-                val blurRadiusPx = effectiveBlurDp.dp.toPx()
-                val offset = captureResult.consumerDrawOffset(position)
-
-                // 1. POST-RECORD RENDEREFFECT: clear renderEffect before record()
-                blurLayer.renderEffect = null
-                blurLayer.colorFilter = VibrancyFilter
-                blurLayer.alpha = 1f
-                blurLayer.compositingStrategy = CompositingStrategy.Offscreen
-
-                // 2. Sample completed capture result into blurLayer without RenderEffect attached
-                blurLayer.record(drawContext.density, layoutDirection, size.toIntSize()) {
-                    translate(
-                        left = offset.x,
-                        top = offset.y,
-                    ) {
-                        drawLayer(captureResult.layer)
-                    }
-                }
-
-                // 3. Attach RenderEffect POST-RECORD
-                blurLayer.renderEffect = BlurEffect(
-                    radiusX = blurRadiusPx,
-                    radiusY = blurRadiusPx,
-                    edgeTreatment = TileMode.Clamp,
-                )
-
-                // 4. Draw blurred layer clipped to shape
-                val outline = shape.createOutline(size, layoutDirection, this)
-                val clip = Path().apply { addOutline(outline) }
-                drawOutline(outline, canvasColor)
-                clipPath(clip) {
-                    drawLayer(blurLayer)
-                }
-
-                drawOutline(outline, surfaceTint)
-                if (sheenColor.alpha > 0f) {
-                    drawOutline(
-                        outline,
-                        Brush.verticalGradient(
-                            0f to sheenColor,
-                            0.55f to Color.Transparent,
-                            1f to Color.Transparent,
-                        ),
-                    )
-                }
-                // Directional specular rim highlight (top-left specular light, bottom subtle grounding)
-                if (drawRim) {
-                    drawOutline(
-                        outline,
-                        rimBrush,
-                        style = Stroke(width = 0.75.dp.toPx()),
-                    )
-                }
-            } else {
-                // High-contrast solid fallback while waiting for capture or if unpositioned
-                val outline = shape.createOutline(size, layoutDirection, this)
-                val solid = if (isDark) PocketPalette.darkCardSurface else PocketPalette.lightCardSurface
-                drawOutline(outline, solid)
-                if (drawRim) {
-                    drawOutline(
-                        outline,
-                        rimBrush,
-                        style = Stroke(width = 0.75.dp.toPx()),
-                    )
-                }
-            }
-            drawContent()
-        }
-}
 
 /**
  * The one specular rim shared by every glass surface: bright at the top-leading edge, nearly
@@ -694,26 +580,4 @@ internal fun glassRimBrush(isDark: Boolean): Brush = if (isDark) {
         start = Offset.Zero,
         end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
     )
-}
-
-/**
- * Drop-in glass container for chrome that samples [backdrop].
- */
-@Composable
-fun BackdropGlassSurface(
-    backdrop: BackdropState?,
-    shape: Shape,
-    modifier: Modifier = Modifier,
-    blurDp: Float = 10f,
-    tint: Color? = null,
-    borderStroke: BorderStroke? = null,
-    role: GlassRole? = null,
-    content: @Composable () -> Unit,
-) {
-    val contentColor = MaterialTheme.colorScheme.onSurface
-    Box(modifier.backdropGlass(backdrop, shape, blurDp, tint, borderStroke, role)) {
-        CompositionLocalProvider(LocalContentColor provides contentColor) {
-            content()
-        }
-    }
 }

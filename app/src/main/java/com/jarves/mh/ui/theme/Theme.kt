@@ -13,9 +13,12 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import com.jarves.mh.R
 import androidx.core.view.WindowCompat
 
 val PocketOrange = Color(0xFFF28C52)
@@ -106,16 +109,39 @@ internal val LightColors = lightColorScheme(
     surfaceContainerHighest = Color(0xFFE9E9EE),
 )
 
-private fun TextStyle.tuned(
+/** Inter (SIL OFL 1.1, bundled and subset to Latin; see assets/licenses/Inter-LICENSE.txt). */
+internal val InterFamily = FontFamily(
+    Font(R.font.inter_regular, FontWeight.Normal),
+    Font(R.font.inter_medium, FontWeight.Medium),
+    Font(R.font.inter_semibold, FontWeight.SemiBold),
+    Font(R.font.inter_bold, FontWeight.Bold),
+)
+
+/** Inter Display: the optical cut drawn for large sizes, used from 22sp up. */
+internal val InterDisplayFamily = FontFamily(
+    Font(R.font.inter_display_semibold, FontWeight.SemiBold),
+    Font(R.font.inter_display_bold, FontWeight.Bold),
+)
+
+/**
+ * Inter's published dynamic-metrics tracking for a text size, in em:
+ * a + b * e^(c * size) with a = -0.0223, b = 0.185, c = -0.1745.
+ */
+internal fun interTracking(sizeSp: Int): Float =
+    (-0.0223 + 0.185 * kotlin.math.exp(-0.1745 * sizeSp)).toFloat()
+
+internal fun TextStyle.tuned(
     size: Int,
     lineHeight: Int,
     weight: FontWeight,
-    tracking: TextUnit,
+    display: Boolean = false,
 ): TextStyle = copy(
+    fontFamily = if (display) InterDisplayFamily else InterFamily,
     fontSize = size.sp,
     lineHeight = lineHeight.sp,
     fontWeight = weight,
-    letterSpacing = tracking,
+    // The display cut is spaced for large sizes already; the text cut follows Inter's curve.
+    letterSpacing = if (display) 0.em else interTracking(size).em,
 )
 
 /**
@@ -124,21 +150,21 @@ private fun TextStyle.tuned(
  */
 internal val PocketTypography: Typography = Typography().run {
     copy(
-        displayLarge = displayLarge.tuned(40, 48, FontWeight.Bold, (-0.4).sp),
-        displayMedium = displayMedium.tuned(36, 44, FontWeight.Bold, (-0.4).sp),
-        displaySmall = displaySmall.tuned(34, 41, FontWeight.Bold, (-0.4).sp),
-        headlineLarge = headlineLarge.tuned(34, 41, FontWeight.Bold, (-0.4).sp),
-        headlineMedium = headlineMedium.tuned(28, 34, FontWeight.Bold, (-0.4).sp),
-        headlineSmall = headlineSmall.tuned(22, 28, FontWeight.Bold, (-0.3).sp),
-        titleLarge = titleLarge.tuned(20, 25, FontWeight.SemiBold, (-0.2).sp),
-        titleMedium = titleMedium.tuned(17, 22, FontWeight.SemiBold, (-0.2).sp),
-        titleSmall = titleSmall.tuned(15, 20, FontWeight.SemiBold, (-0.1).sp),
-        bodyLarge = bodyLarge.tuned(16, 22, FontWeight.Normal, (-0.2).sp),
-        bodyMedium = bodyMedium.tuned(14, 20, FontWeight.Normal, (-0.1).sp),
-        bodySmall = bodySmall.tuned(12, 16, FontWeight.Normal, 0.sp),
-        labelLarge = labelLarge.tuned(15, 20, FontWeight.SemiBold, (-0.1).sp),
-        labelMedium = labelMedium.tuned(12, 16, FontWeight.Medium, 0.sp),
-        labelSmall = labelSmall.tuned(11, 13, FontWeight.Medium, 0.1.sp),
+        displayLarge = displayLarge.tuned(40, 48, FontWeight.Bold, display = true),
+        displayMedium = displayMedium.tuned(36, 44, FontWeight.Bold, display = true),
+        displaySmall = displaySmall.tuned(34, 41, FontWeight.Bold, display = true),
+        headlineLarge = headlineLarge.tuned(34, 41, FontWeight.Bold, display = true),
+        headlineMedium = headlineMedium.tuned(28, 34, FontWeight.Bold, display = true),
+        headlineSmall = headlineSmall.tuned(22, 28, FontWeight.Bold, display = true),
+        titleLarge = titleLarge.tuned(20, 25, FontWeight.SemiBold),
+        titleMedium = titleMedium.tuned(17, 22, FontWeight.SemiBold),
+        titleSmall = titleSmall.tuned(15, 20, FontWeight.SemiBold),
+        bodyLarge = bodyLarge.tuned(16, 22, FontWeight.Normal),
+        bodyMedium = bodyMedium.tuned(14, 20, FontWeight.Normal),
+        bodySmall = bodySmall.tuned(12, 16, FontWeight.Normal),
+        labelLarge = labelLarge.tuned(15, 20, FontWeight.SemiBold),
+        labelMedium = labelMedium.tuned(12, 16, FontWeight.Medium),
+        labelSmall = labelSmall.tuned(11, 13, FontWeight.Medium),
     )
 }
 

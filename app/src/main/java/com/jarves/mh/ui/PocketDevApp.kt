@@ -1,5 +1,27 @@
 package com.jarves.mh.ui
 
+import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.runtime.CompositionLocalProvider
+import com.jarves.mh.ui.theme.PocketMotion
+import com.jarves.mh.ui.theme.PocketTransitions
+import com.jarves.mh.ui.theme.LocalSharedTransitionScope
+import com.jarves.mh.ui.theme.LocalNavAnimatedVisibilityScope
+import com.jarves.mh.ui.theme.heldWhileExiting
+import com.jarves.mh.ui.theme.isTransitionTarget
+import com.jarves.mh.ui.theme.sharedTitle
+import com.jarves.mh.ui.theme.glass.BackdropSourceScope
+import com.jarves.mh.ui.kit.*
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.SmartToy
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import android.Manifest
 import android.app.ActivityManager
 import android.content.Intent
@@ -73,57 +95,57 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.AttachFile
-import androidx.compose.material.icons.filled.Android
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Code
-import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Chat
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Dns
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.LightMode
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.BatterySaver
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Preview
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Layers
-import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Storage
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowForward
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.Send
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.Android
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Chat
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.LightMode
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.BatterySaver
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Preview
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.Storage
+import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.Warning
 import com.jarves.mh.model.BackgroundTaskStatus
 import com.jarves.mh.model.SessionTokenMetrics
 import com.jarves.mh.model.SkillInfo
 import com.jarves.mh.model.SlashCommand
 import com.jarves.mh.model.SubagentState
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Badge
@@ -152,6 +174,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.snapshotFlow
@@ -222,7 +245,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -267,34 +290,40 @@ import com.jarves.mh.ui.theme.glass.hostBackdropSource
 import com.jarves.mh.ui.theme.glass.isGlassDarkTheme
 
 import com.jarves.mh.ui.theme.AppThemeMode
-import androidx.compose.material.icons.filled.SmartToy
-import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.outlined.SmartToy
 
-private enum class RootScreen(val label: String, val icon: ImageVector) {
-    PROJECTS("Projects", Icons.Default.Folder),
-    AGENT("Agent", Icons.Default.SmartToy),
-    SETTINGS("Settings", Icons.Default.Settings),
+private enum class RootScreen(val label: String, val icon: ImageVector, val selectedIcon: ImageVector) {
+    PROJECTS("Projects", Icons.Outlined.Folder, Icons.Rounded.Folder),
+    AGENT("Agent", Icons.Outlined.SmartToy, Icons.Rounded.SmartToy),
+    SETTINGS("Settings", Icons.Outlined.Settings, Icons.Rounded.Settings),
 }
 private enum class WorkspaceTab(val label: String, val icon: ImageVector) {
-    CHAT("Chat", Icons.Default.AutoAwesome),
-    FILES("Files", Icons.Default.Folder),
-    TERMINAL("Terminal", Icons.Default.Terminal),
-    CHANGES("Changes", Icons.Default.Code),
-    PREVIEW("Preview", Icons.Default.Preview),
+    CHAT("Chat", Icons.Outlined.AutoAwesome),
+    FILES("Files", Icons.Outlined.Folder),
+    TERMINAL("Terminal", Icons.Outlined.Terminal),
+    PREVIEW("Preview", Icons.Outlined.Preview),
 }
 
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val preferences = remember(context) { AppPreferences(context) }
-    val glassConfig = remember(preferences.reduceTransparency) {
-        LiquidGlassConfig.fromPreferences(preferences, context)
+    var reduceTransparency by remember(preferences) { mutableStateOf(preferences.reduceTransparency) }
+    val glassConfig = remember(reduceTransparency) {
+        LiquidGlassConfig.resolve(context, userPreference = reduceTransparency)
     }
+    val setReduceTransparency = { on: Boolean ->
+        preferences.reduceTransparency = on
+        reduceTransparency = on
+    }
+    SideEffect { PocketMotion.reduced = glassConfig.reduceMotion }
     val projectsListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val banner = remember { BannerState() }
     LaunchedEffect(state.toastMessage) {
         state.toastMessage?.let { message ->
-            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            banner.show(message, bannerKindFor(message))
             viewModel.consumeToast()
         }
     }
@@ -304,19 +333,112 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
             .background(MaterialTheme.colorScheme.background),
         config = glassConfig,
     ) {
-        when {
-            state.startupStage == StartupStage.CHECKING -> StartupLoadingScreen(
-                state = state,
-                themeMode = state.themeMode,
+      // Sheets, menus and banners render in this window above every screen, so they are glass
+      // over the screen behind them.
+      BannerHost(banner, Modifier.fillMaxSize()) {
+       OverlayHost(Modifier.fillMaxSize()) {
+        val destination = state.appDestination()
+        SharedTransitionLayout {
+            AnimatedContent(
+                targetState = destination,
+                transitionSpec = {
+                    when {
+                        initialState.depth == targetState.depth -> PocketTransitions.crossFade()
+                        initialState.isStartup || targetState.isStartup -> PocketTransitions.settle()
+                        else -> PocketTransitions.push(forward = targetState.depth > initialState.depth)
+                    }
+                },
+                label = "app navigation",
+            ) { shown ->
+                CompositionLocalProvider(
+                    LocalSharedTransitionScope provides this@SharedTransitionLayout,
+                    LocalNavAnimatedVisibilityScope provides this,
+                ) {
+                    BackdropSourceScope(active = isTransitionTarget) {
+                        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                            AppScreen(shown, heldWhileExiting(state), viewModel, projectsListState, reduceTransparency, setReduceTransparency)
+                        }
+                    }
+                }
+            }
+        }
+       }
+      }
+    }
+}
+
+/** Banner style for a view-model status message: failures read as errors, completions as success. */
+internal fun bannerKindFor(message: String): BannerKind {
+    val text = message.lowercase()
+    return when {
+        listOf("fail", "error", "couldn't", "could not", "cannot", "can't", "unable", "denied", "invalid", "not found")
+            .any { it in text } -> BannerKind.Error
+        // Guidance ("not installed", "wait for…", "stop the…") is information, not success.
+        listOf("not ", "no longer", "wait ", "stop ", "only ", "before ").any { it in text } -> BannerKind.Info
+        listOf("saved", "copied", "deleted", "renamed", "installed", "updated", "created", "cloned", "imported", "exported", "connected", "signed in", "removed", " ready", "complete")
+            .any { it in text } -> BannerKind.Success
+        else -> BannerKind.Info
+    }
+}
+
+/** Top-level screens, in navigation depth order: startup and setup, root tabs, then a project. */
+internal enum class AppDestination(val depth: Int) {
+    Loading(1),
+    BackgroundSetup(1),
+    RuntimeSetup(1),
+    Installing(1),
+    StartupError(1),
+    AntigravityOnboarding(1),
+    ProviderSetup(1),
+    Root(2),
+    ReadOnlyProject(3),
+    Workspace(3),
+    ;
+
+    val isStartup: Boolean get() = depth == 1
+}
+
+/** Shared-element key so a project's name morphs from its row into the Workspace title. */
+internal fun projectTitleKey(projectId: String?): String = "project-title-$projectId"
+
+/** Which top-level screen [this] state shows; the order of checks is the screen priority. */
+internal fun AppUiState.appDestination(): AppDestination = when {
+    startupStage == StartupStage.CHECKING -> AppDestination.Loading
+    !backgroundSetupComplete && startupStage == StartupStage.SETUP_REQUIRED -> AppDestination.BackgroundSetup
+    startupStage == StartupStage.SETUP_REQUIRED -> AppDestination.RuntimeSetup
+    startupStage == StartupStage.INSTALLING && showDetailedSetupProgress -> AppDestination.Installing
+    startupStage == StartupStage.INSTALLING || startupStage == StartupStage.INITIALIZING -> AppDestination.Loading
+    startupStage == StartupStage.ERROR -> AppDestination.StartupError
+    startupStage == StartupStage.MODEL_SETUP && agentKind == AgentKind.ANTIGRAVITY -> AppDestination.AntigravityOnboarding
+    startupStage == StartupStage.MODEL_SETUP -> AppDestination.ProviderSetup
+    startupStage == StartupStage.READY && !backgroundSetupComplete -> AppDestination.BackgroundSetup
+    readOnlyProject != null -> AppDestination.ReadOnlyProject
+    activeProject != null && workspaceVisible -> AppDestination.Workspace
+    else -> AppDestination.Root
+}
+
+@Composable
+private fun AppScreen(
+    destination: AppDestination,
+    state: AppUiState,
+    viewModel: MainViewModel,
+    projectsListState: LazyListState,
+    reduceTransparency: Boolean,
+    setReduceTransparency: (Boolean) -> Unit,
+) {
+    when (destination) {
+        AppDestination.Loading -> StartupLoadingScreen(
+            state = state,
+            themeMode = state.themeMode,
             onToggleTheme = viewModel::toggleTheme,
         )
-        !state.backgroundSetupComplete && state.startupStage == StartupStage.SETUP_REQUIRED ->
+        AppDestination.BackgroundSetup ->
             BackgroundTaskSetupScreen(
                 themeMode = state.themeMode,
                 onToggleTheme = viewModel::toggleTheme,
                 onContinue = viewModel::finishBackgroundSetup,
             )
-        state.startupStage == StartupStage.SETUP_REQUIRED -> RuntimeSetupPromptScreen(
+        AppDestination.RuntimeSetup -> RuntimeSetupPromptScreen(
             selectedStacks = state.selectedDevStacks,
             selectedAgent = state.agentKind,
             themeMode = state.themeMode,
@@ -325,19 +447,13 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
             onSelectAgent = viewModel::selectAgent,
             onDownload = viewModel::startRuntimeSetup,
         )
-        state.startupStage == StartupStage.INSTALLING && state.showDetailedSetupProgress ->
+        AppDestination.Installing ->
             RuntimeInstallationScreen(
                 state = state,
                 themeMode = state.themeMode,
                 onToggleTheme = viewModel::toggleTheme,
             )
-        state.startupStage == StartupStage.INSTALLING || state.startupStage == StartupStage.INITIALIZING ->
-            StartupLoadingScreen(
-                state = state,
-                themeMode = state.themeMode,
-                onToggleTheme = viewModel::toggleTheme,
-            )
-        state.startupStage == StartupStage.ERROR -> StartupErrorScreen(
+        AppDestination.StartupError -> StartupErrorScreen(
             message = state.startupError,
             isOffline = state.startupErrorIsOffline,
             logs = state.startupLogs,
@@ -345,7 +461,7 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
             onToggleTheme = viewModel::toggleTheme,
             onRetry = viewModel::retryStartup,
         )
-        state.startupStage == StartupStage.MODEL_SETUP && state.agentKind == AgentKind.ANTIGRAVITY ->
+        AppDestination.AntigravityOnboarding ->
             AntigravityOnboardingScreen(
                 state = state,
                 onStartLogin = viewModel::startAntigravityLogin,
@@ -354,7 +470,7 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
                 onSelectAgent = viewModel::chooseOnboardingAgent,
                 onToggleTheme = viewModel::toggleTheme,
             )
-        state.startupStage == StartupStage.MODEL_SETUP -> ProviderSetupScreen(
+        AppDestination.ProviderSetup -> ProviderSetupScreen(
             initial = state.provider,
             onboarding = true,
             agentKind = state.agentKind,
@@ -377,19 +493,13 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
                 onFinish = viewModel::finishClaudeOnboarding,
             ),
         )
-        state.startupStage == StartupStage.READY && !state.backgroundSetupComplete ->
-            BackgroundTaskSetupScreen(
-                themeMode = state.themeMode,
-                onToggleTheme = viewModel::toggleTheme,
-                onContinue = viewModel::finishBackgroundSetup,
-            )
-        state.readOnlyProject != null -> ReadOnlyProjectScreen(
+        AppDestination.ReadOnlyProject -> ReadOnlyProjectScreen(
             state = state,
             onBack = viewModel::closeReadOnlyProject,
             onSwitchChat = viewModel::switchReadOnlyChat,
             onContinueHere = viewModel::activateReadOnlyProject,
         )
-        state.activeProject != null && state.workspaceVisible -> WorkspaceScreen(
+        AppDestination.Workspace -> WorkspaceScreen(
             state = state,
             onBack = viewModel::closeProject,
             onSend = viewModel::sendPrompt,
@@ -452,8 +562,7 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
             onClearAutoMemory = viewModel::clearAutoMemory,
             onClearAllMemory = viewModel::clearMemory,
         )
-        else -> RootScreenHost(state, viewModel, projectsListState)
-        }
+        AppDestination.Root -> RootScreenHost(state, viewModel, projectsListState, reduceTransparency, setReduceTransparency)
     }
 }
 
@@ -484,7 +593,7 @@ private fun AntigravityOnboardingScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Set up Antigravity") },
-                actions = { IconButton(onClick = onToggleTheme) { Icon(Icons.Default.DarkMode, "Toggle theme") } },
+                actions = { IconButton(onClick = onToggleTheme) { Icon(Icons.Outlined.DarkMode, "Toggle theme") } },
             )
         },
     ) { padding ->
@@ -519,7 +628,7 @@ private fun AntigravityOnboardingScreen(
                             onClick = { clipboard.setText(AnnotatedString(url)) },
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Icon(Icons.Default.ContentCopy, null, Modifier.size(18.dp))
+                            Icon(Icons.Outlined.ContentCopy, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
                             Text("Copy sign-in URL")
                         }
@@ -614,9 +723,9 @@ private fun BackgroundTaskSetupScreen(
     }
 
     val currentIcon = when (currentStep) {
-        0 -> Icons.Default.Notifications
-        1 -> Icons.Default.BatterySaver
-        else -> Icons.Default.Shield
+        0 -> Icons.Outlined.Notifications
+        1 -> Icons.Outlined.BatterySaver
+        else -> Icons.Outlined.Shield
     }
     val currentTitle = when (currentStep) {
         0 -> "Task notifications"
@@ -653,7 +762,7 @@ private fun BackgroundTaskSetupScreen(
                 actions = {
                     IconButton(onClick = onToggleTheme) {
                         Icon(
-                            if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            if (themeMode == AppThemeMode.DARK) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
                             contentDescription = "Toggle theme",
                         )
                     }
@@ -689,11 +798,11 @@ private fun BackgroundTaskSetupScreen(
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             ) {
                 Column {
-                    PermissionSummaryRow(Icons.Default.Notifications, "Notifications", notificationGranted, currentStep == 0)
+                    PermissionSummaryRow(Icons.Outlined.Notifications, "Notifications", notificationGranted, currentStep == 0)
                     HorizontalDivider(modifier = Modifier.padding(start = 58.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    PermissionSummaryRow(Icons.Default.BatterySaver, "Background", batteryGranted, currentStep == 1)
+                    PermissionSummaryRow(Icons.Outlined.BatterySaver, "Background", batteryGranted, currentStep == 1)
                     HorizontalDivider(modifier = Modifier.padding(start = 58.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    PermissionSummaryRow(Icons.Default.Shield, "Task protection", taskProtectionConfirmed, currentStep == 2)
+                    PermissionSummaryRow(Icons.Outlined.Shield, "Task protection", taskProtectionConfirmed, currentStep == 2)
                 }
             }
 
@@ -717,13 +826,13 @@ private fun BackgroundTaskSetupScreen(
                             Text("STEP ${currentStep + 1} OF 3", color = MaterialTheme.colorScheme.primary, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
                             Text(currentTitle, color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                         }
-                        if (currentGranted) Icon(Icons.Default.Check, "Granted", tint = PocketGreen)
+                        if (currentGranted) Icon(Icons.Outlined.Check, "Granted", tint = PocketGreen)
                     }
                     Spacer(Modifier.height(14.dp))
                     Text(currentDescription, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, lineHeight = 18.sp)
                     Spacer(Modifier.height(10.dp))
                     Row(verticalAlignment = Alignment.Top) {
-                        Icon(Icons.Default.Shield, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Outlined.Shield, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(7.dp))
                         Text(currentPrivacyNote, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, lineHeight = 15.sp)
                     }
@@ -783,7 +892,7 @@ private fun BackgroundTaskSetupScreen(
                             fontWeight = FontWeight.Bold,
                         )
                         Spacer(Modifier.width(8.dp))
-                        Icon(Icons.AutoMirrored.Filled.ArrowForward, null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.AutoMirrored.Outlined.ArrowForward, null, modifier = Modifier.size(18.dp))
                     }
                     if (currentStep < 2 && !currentGranted) {
                         TextButton(
@@ -839,7 +948,7 @@ private fun PermissionSummaryRow(
             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
         )
         when {
-            complete -> Icon(Icons.Default.Check, "Complete", tint = PocketGreen, modifier = Modifier.size(18.dp))
+            complete -> Icon(Icons.Outlined.Check, "Complete", tint = PocketGreen, modifier = Modifier.size(18.dp))
             active -> Text("Required", color = MaterialTheme.colorScheme.primary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
             else -> Text("Next", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
         }
@@ -854,27 +963,27 @@ private data class DevStackVisuals(
 
 private fun getDevStackVisuals(stack: DevStack): DevStackVisuals = when (stack) {
     DevStack.WEB -> DevStackVisuals(
-        icon = Icons.Default.Language,
+        icon = Icons.Outlined.Language,
         accentColor = Color(0xFF38BDF8),
         tag = "HTML · CSS · JS · TS",
     )
     DevStack.PYTHON -> DevStackVisuals(
-        icon = Icons.Default.Terminal,
+        icon = Icons.Outlined.Terminal,
         accentColor = Color(0xFFFBBF24),
         tag = "python3 + pip + venv",
     )
     DevStack.ANDROID -> DevStackVisuals(
-        icon = Icons.Default.Android,
+        icon = Icons.Outlined.Android,
         accentColor = Color(0xFF4ADE80),
         tag = "OpenJDK build tools",
     )
     DevStack.CPP -> DevStackVisuals(
-        icon = Icons.Default.Memory,
+        icon = Icons.Outlined.Memory,
         accentColor = Color(0xFFA78BFA),
         tag = "gcc + g++ + cmake",
     )
     DevStack.PHP -> DevStackVisuals(
-        icon = Icons.Default.Dns,
+        icon = Icons.Outlined.Dns,
         accentColor = Color(0xFF818CF8),
         tag = "php-cli + Composer",
     )
@@ -926,14 +1035,14 @@ private fun RuntimeSetupPromptScreen(
                 navigationIcon = {
                     if (currentStep > 0) {
                         IconButton(onClick = { currentStep = 0 }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back")
                         }
                     }
                 },
                 actions = {
                     IconButton(onClick = onToggleTheme) {
                         Icon(
-                            if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            if (themeMode == AppThemeMode.DARK) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
                             contentDescription = "Toggle theme",
                         )
                     }
@@ -992,7 +1101,7 @@ private fun RuntimeSetupPromptScreen(
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
-                                    Icons.Default.Speed,
+                                    Icons.Outlined.Speed,
                                     null,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(18.dp),
@@ -1030,21 +1139,21 @@ private fun RuntimeSetupPromptScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 1.dp)
 
                         SpecRow(
-                            icon = Icons.Default.Memory,
+                            icon = Icons.Outlined.Memory,
                             label = "Memory (RAM)",
                             value = "$totalRamLabel GB usable",
                             statusOk = true,
                         )
 
                         SpecRow(
-                            icon = Icons.Default.Code,
+                            icon = Icons.Outlined.Code,
                             label = "Processor",
                             value = Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a",
                             statusOk = arm64,
                         )
 
                         SpecRow(
-                            icon = Icons.Default.Storage,
+                            icon = Icons.Outlined.Storage,
                             label = "Required download",
                             value = "149–774 MB",
                             statusOk = true,
@@ -1085,7 +1194,7 @@ private fun RuntimeSetupPromptScreen(
                         )
                         Spacer(Modifier.width(8.dp))
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                            imageVector = Icons.AutoMirrored.Outlined.ArrowForward,
                             contentDescription = null,
                             modifier = Modifier.size(18.dp),
                         )
@@ -1137,7 +1246,7 @@ private fun RuntimeSetupPromptScreen(
                             modifier = Modifier.size(36.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp)),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Icon(Icons.Default.Terminal, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
+                            Icon(Icons.Outlined.Terminal, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
                         }
                         Spacer(Modifier.width(11.dp))
                         Column(Modifier.weight(1f)) {
@@ -1149,7 +1258,7 @@ private fun RuntimeSetupPromptScreen(
                             )
                             Text("Ubuntu  ·  Node.js  ·  npm  ·  Git", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
                         }
-                        Icon(Icons.Default.Check, "Included", tint = PocketGreen, modifier = Modifier.size(20.dp))
+                        Icon(Icons.Outlined.Check, "Included", tint = PocketGreen, modifier = Modifier.size(20.dp))
                     }
                 }
 
@@ -1213,7 +1322,7 @@ private fun RuntimeSetupPromptScreen(
 
                 Spacer(Modifier.height(14.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Storage, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(15.dp))
+                    Icon(Icons.Outlined.Storage, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(15.dp))
                     Spacer(Modifier.width(7.dp))
                     Text(
                         toolchainDownloadSummary(selectedStacks, selectedAgent),
@@ -1242,7 +1351,7 @@ private fun RuntimeSetupPromptScreen(
                         horizontalArrangement = Arrangement.Center,
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Download,
+                            imageVector = Icons.Outlined.Download,
                             contentDescription = null,
                             modifier = Modifier.size(20.dp),
                         )
@@ -1254,7 +1363,7 @@ private fun RuntimeSetupPromptScreen(
                         )
                         if (compatible) {
                             Spacer(Modifier.width(8.dp))
-                            Icon(Icons.AutoMirrored.Filled.ArrowForward, null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.AutoMirrored.Outlined.ArrowForward, null, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
@@ -1378,7 +1487,7 @@ private fun DevStackChoiceRow(
             contentAlignment = Alignment.Center,
         ) {
             if (selected) {
-                Icon(Icons.Default.Check, "Selected", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(14.dp))
+                Icon(Icons.Outlined.Check, "Selected", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(14.dp))
             }
         }
     }
@@ -1577,7 +1686,7 @@ private fun RuntimeInstallationScreen(
                 actions = {
                     IconButton(onClick = onToggleTheme) {
                         Icon(
-                            if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            if (themeMode == AppThemeMode.DARK) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
                             contentDescription = "Toggle theme",
                         )
                     }
@@ -1609,7 +1718,7 @@ private fun RuntimeInstallationScreen(
                         modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.Default.Shield, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
+                        Icon(Icons.Outlined.Shield, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
                         Spacer(Modifier.width(5.dp))
                         Text("Local setup", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
                     }
@@ -1760,175 +1869,6 @@ private fun StartupLoadingScreen(
 }
 
 @Composable
-private fun WorkspaceLaunchExperience(state: AppUiState) {
-    val pulseTransition = rememberInfiniteTransition(label = "workspace launch")
-    val glow by pulseTransition.animateFloat(
-        initialValue = 0.18f,
-        targetValue = 0.48f,
-        animationSpec = infiniteRepeatable(
-            animation = keyframes { durationMillis = 1_400 },
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "workspace glow",
-    )
-    val agentVersion = state.installedAgentVersions[state.agentKind]
-    val agentReady = state.startupMessage.contains("ready", ignoreCase = true) || state.startupProgress >= 0.75f
-
-    Text(
-        "PRIVATE MOBILE WORKSPACE",
-        color = MaterialTheme.colorScheme.primary,
-        fontSize = 10.sp,
-        fontWeight = FontWeight.Bold,
-        letterSpacing = 1.35.sp,
-    )
-    Spacer(Modifier.height(10.dp))
-    Text(
-        "Getting everything ready",
-        style = MaterialTheme.typography.headlineMedium,
-        fontWeight = FontWeight.Bold,
-    )
-    Spacer(Modifier.height(7.dp))
-    Text(
-        "Restoring your projects and reconnecting your local coding agent.",
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        fontSize = 13.sp,
-        lineHeight = 19.sp,
-    )
-    Spacer(Modifier.height(22.dp))
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)),
-        tonalElevation = 3.dp,
-    ) {
-        Column(Modifier.padding(20.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(58.dp)
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = glow), RoundedCornerShape(18.dp))
-                        .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f), RoundedCornerShape(18.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Default.AutoAwesome,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(27.dp),
-                    )
-                }
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        state.agentKind.title,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Spacer(Modifier.height(3.dp))
-                    Text(
-                        agentVersion?.let { "Verified CLI · v$it" } ?: "Connecting local agent",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 11.5.sp,
-                    )
-                }
-                Surface(
-                    color = PocketGreen.copy(alpha = 0.12f),
-                    shape = RoundedCornerShape(50),
-                    border = BorderStroke(1.dp, PocketGreen.copy(alpha = 0.3f)),
-                ) {
-                    Text(
-                        if (agentReady) "READY" else "STARTING",
-                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                        color = PocketGreen,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.7.sp,
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(20.dp))
-            LinearProgressIndicator(
-                modifier = Modifier.fillMaxWidth().height(4.dp),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant,
-            )
-            Spacer(Modifier.height(18.dp))
-            LaunchStatusRow(Icons.Default.Shield, "Private Linux environment", "Verified", complete = true)
-            Spacer(Modifier.height(13.dp))
-            LaunchStatusRow(Icons.Default.Terminal, state.agentKind.title, if (agentReady) "Ready" else "Connecting", complete = agentReady)
-            Spacer(Modifier.height(13.dp))
-            LaunchStatusRow(Icons.Default.Folder, "Project workspace", "Restoring", complete = false)
-        }
-    }
-
-    Spacer(Modifier.height(16.dp))
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        CircularProgressIndicator(
-            modifier = Modifier.size(17.dp),
-            strokeWidth = 2.dp,
-            color = MaterialTheme.colorScheme.primary,
-        )
-        Spacer(Modifier.width(11.dp))
-        Text(
-            state.startupMessage,
-            modifier = Modifier.weight(1f),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 12.sp,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-    Spacer(Modifier.height(12.dp))
-    Text(
-        "Runs locally on this device · Your project files stay private",
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-        fontSize = 10.5.sp,
-        textAlign = TextAlign.Center,
-    )
-}
-
-@Composable
-private fun LaunchStatusRow(icon: ImageVector, label: String, status: String, complete: Boolean) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            Modifier
-                .size(28.dp)
-                .background(
-                    if (complete) PocketGreen.copy(alpha = 0.11f) else MaterialTheme.colorScheme.surfaceVariant,
-                    RoundedCornerShape(9.dp),
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                if (complete) Icons.Default.Check else icon,
-                contentDescription = null,
-                tint = if (complete) PocketGreen else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(15.dp),
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Text(label, modifier = Modifier.weight(1f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
-        Text(
-            status,
-            color = if (complete) PocketGreen else MaterialTheme.colorScheme.primary,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
-}
-
-@Composable
 private fun SetupLogPanel(logs: List<String>) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     var followLatest by rememberSaveable { mutableStateOf(true) }
@@ -1958,7 +1898,7 @@ private fun SetupLogPanel(logs: List<String>) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    Icons.Default.Terminal,
+                    Icons.Outlined.Terminal,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(18.dp),
@@ -1974,7 +1914,7 @@ private fun SetupLogPanel(logs: List<String>) {
                     overflow = TextOverflow.Ellipsis,
                 )
                 Icon(
-                    if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
                     contentDescription = if (expanded) "Collapse setup details" else "Expand setup details",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2033,6 +1973,7 @@ private fun StartupErrorScreen(
     onRetry: () -> Unit,
 ) {
     val context = LocalContext.current
+    val banner = LocalBanner.current
     val clipboard = LocalClipboardManager.current
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -2048,7 +1989,7 @@ private fun StartupErrorScreen(
                 actions = {
                     IconButton(onClick = onToggleTheme) {
                         Icon(
-                            if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            if (themeMode == AppThemeMode.DARK) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
                             contentDescription = "Toggle theme",
                         )
                     }
@@ -2062,7 +2003,7 @@ private fun StartupErrorScreen(
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Icon(Icons.Default.Warning, null, Modifier.size(56.dp), tint = MaterialTheme.colorScheme.error)
+            Icon(Icons.Outlined.Warning, null, Modifier.size(56.dp), tint = MaterialTheme.colorScheme.error)
             Spacer(Modifier.height(20.dp))
             Text(
                 if (isOffline) "You're offline" else "Mobile Harness couldn't finish starting",
@@ -2081,11 +2022,11 @@ private fun StartupErrorScreen(
                 OutlinedButton(
                     onClick = {
                         clipboard.setText(AnnotatedString(logs.joinToString("\n")))
-                        Toast.makeText(context, "Setup log copied", Toast.LENGTH_SHORT).show()
+                        banner?.show("Setup log copied", BannerKind.Success)
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(17.dp))
+                    Icon(Icons.Outlined.ContentCopy, null, modifier = Modifier.size(17.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Copy setup logs")
                 }
@@ -2116,7 +2057,7 @@ private fun StartupErrorScreen(
     }
 }
 
-private fun formatMegabytes(bytes: Long): String = "%.1f MB".format(bytes / 1_048_576.0)
+internal fun formatMegabytes(bytes: Long): String = "%.1f MB".format(bytes / 1_048_576.0)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -2124,9 +2065,12 @@ private fun RootScreenHost(
     state: AppUiState,
     viewModel: MainViewModel,
     projectsListState: LazyListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() },
+    reduceTransparency: Boolean = false,
+    onSetReduceTransparency: (Boolean) -> Unit = {},
 ) {
     var screen by rememberSaveable { mutableStateOf(RootScreen.PROJECTS) }
     var showQuickTerminal by rememberSaveable { mutableStateOf(false) }
+    val terminalAnchor = rememberOverlayAnchor()
     var floatingNavMeasuredHeightDp by remember { mutableStateOf(0.dp) }
     val density = LocalDensity.current
     val keyboardVisible = WindowInsets.ime.getBottom(density) > 0
@@ -2135,70 +2079,42 @@ private fun RootScreenHost(
     val terminalLiveOutput by viewModel.terminalLiveOutput.collectAsStateWithLifecycle()
     val terminalCurrentCommand by viewModel.terminalCurrentCommand.collectAsStateWithLifecycle()
 
+    val minimize = rememberTabBarMinimizeState()
+    LaunchedEffect(screen) { minimize.expand() }
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
             if (!keyboardVisible) {
-                Column(
+                // The dock: a floating glass tab bar that shrinks to a circle while a list
+                // scrolls down, beside the Terminal circle (one piece of glass on Android 13+).
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
-                        .padding(horizontal = 24.dp, vertical = 12.dp)
+                        .padding(horizontal = PocketSpacing.xl, vertical = PocketSpacing.sm)
                         .onGloballyPositioned { coordinates ->
                             val heightDp = with(density) { coordinates.size.height.toDp() }
                             if (heightDp > 0.dp && heightDp != floatingNavMeasuredHeightDp) {
                                 floatingNavMeasuredHeightDp = heightDp
                             }
                         },
-                    horizontalAlignment = Alignment.End,
                 ) {
-                    if (screen == RootScreen.PROJECTS && !showQuickTerminal) {
-                        // The one prominent action on Projects: stained glass over the shared backdrop.
-                        LiquidGlassSurface(
-                            modifier = Modifier.semantics { role = Role.Button },
-                            material = LiquidGlassMaterial.Regular,
-                            shape = RoundedCornerShape(LiquidGlassTokens.PillRadius),
-                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.88f),
-                            contentColor = MaterialTheme.colorScheme.onPrimary,
-                            layerSource = LiquidGlassLayers.Background,
-                            onClick = { showQuickTerminal = true },
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .heightIn(min = 48.dp)
-                                    .padding(horizontal = PocketSpacing.xl),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(20.dp))
-                                Spacer(Modifier.width(PocketSpacing.sm))
-                                Text("Terminal", style = MaterialTheme.typography.labelLarge)
-                            }
-                        }
-                        Spacer(Modifier.height(PocketSpacing.md))
-                    }
-                    LiquidGlassFloatingNavBar(
-                        modifier = Modifier.fillMaxWidth(),
-                        layerSource = LiquidGlassLayers.Background,
-                    ) {
-                        RootScreen.entries.forEach { tab ->
-                            val selected = screen == tab
-                            LiquidGlassFloatingNavBarItem(
-                                selected = selected,
-                                onClick = { screen = tab },
-                                icon = { Icon(tab.icon, contentDescription = tab.label) },
-                                label = {
-                                    Text(
-                                        tab.label,
-                                        fontSize = 11.sp,
-                                        fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-                                    )
-                                },
-                                contentDescription = tab.label,
-                                selectedTint = MaterialTheme.colorScheme.primary,
+                    FloatingTabBar(
+                        tabs = RootScreen.entries.map { TabItem(it.label, it.icon, it.selectedIcon) },
+                        selectedIndex = screen.ordinal,
+                        onSelect = { screen = RootScreen.entries[it] },
+                        minimized = minimize.minimized,
+                        onExpand = minimize::expand,
+                        accessory = {
+                            TabBarAccessory(
+                                icon = Icons.Outlined.Terminal,
+                                contentDescription = "Terminal",
+                                onClick = { showQuickTerminal = true },
+                                modifier = Modifier.overlayAnchor(terminalAnchor),
                             )
-                        }
-                    }
+                        },
+                    )
                 }
             }
         },
@@ -2212,9 +2128,15 @@ private fun RootScreenHost(
         // Each screen's scrolling list registers the shared backdrop source (one on screen at a
         // time), so its glass top bar and this dock both sample real content as siblings.
         Box(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().nestedScroll(minimize.connection),
         ) {
-            when (screen) {
+            AnimatedContent(
+                targetState = screen,
+                transitionSpec = { PocketTransitions.crossFade() },
+                label = "root tab",
+            ) { tab ->
+            BackdropSourceScope(active = isTransitionTarget) {
+            when (tab) {
                 RootScreen.PROJECTS -> ProjectsScreen(
                     state = state,
                     listState = projectsListState,
@@ -2277,42 +2199,29 @@ private fun RootScreenHost(
                     SettingsScreen(
                         state = state,
                         bottomBarPadding = floatingNavClearance,
-                        onSaveProvider = { profile, key ->
-                            viewModel.updateProvider(profile, key)
-                        },
-                        onDiscoverModels = viewModel::discoverModels,
-                        onValidateProvider = viewModel::validateProvider,
                         onSetThemeMode = viewModel::setThemeMode,
-                        onPing = viewModel::pingApi,
                         onClearTerminal = viewModel::clearTerminal,
-                        getSavedApiKey = viewModel::getSavedApiKey,
-                        getSavedApiKeys = viewModel::getSavedApiKeys,
-                        onAddApiKey = viewModel::addApiKey,
-                        onActivateApiKey = viewModel::activateApiKey,
-                        onRemoveApiKey = viewModel::removeApiKey,
                         onInstallDevStack = viewModel::installDevStack,
                         onRemoveDevStack = viewModel::removeDevStack,
-                        onInstallAgent = viewModel::installAgent,
-                        onCheckAgentUpdates = viewModel::checkAgentUpdates,
-                        onUpdateAgent = viewModel::updateAgent,
-                        onStartAntigravityLogin = viewModel::startAntigravityLogin,
-                        onSubmitAntigravityCode = viewModel::submitAntigravityCode,
-                        onLogoutAntigravity = viewModel::logoutAntigravity,
-                        onRefreshAntigravityModels = viewModel::refreshAntigravityModels,
-                        onSetAntigravityModel = viewModel::setAntigravityModel,
-                        onSetAntigravityEffort = viewModel::setAntigravityEffort,
+                        reduceTransparency = reduceTransparency,
+                        onSetReduceTransparency = onSetReduceTransparency,
                         initialDebugUpdateManifestUrl = viewModel.debugUpdateManifestUrl(),
                         onSetDebugUpdateManifestUrl = viewModel::setDebugUpdateManifestUrl,
                         onClearDebugUpdateManifestUrl = viewModel::clearDebugUpdateManifestUrl,
                     )
                 }
             }
+            }
+            }
         }
     }
-    if (showQuickTerminal) {
-        QuickTerminalSheet(
-            onDismiss = { showQuickTerminal = false },
-        ) {
+    GlassSheet(
+        onDismiss = { showQuickTerminal = false },
+        visible = showQuickTerminal,
+        title = "Terminal",
+        anchor = terminalAnchor,
+    ) {
+        Box(Modifier.fillMaxSize()) {
             TerminalScreen(
                 lines = terminalLines,
                 isRunning = isTerminalRunning,
@@ -2328,80 +2237,6 @@ private fun RootScreenHost(
                 showQuickCommands = true,
                 compactHeader = true,
             )
-        }
-    }
-}
-
-@Composable
-private fun QuickTerminalSheet(
-    onDismiss: () -> Unit,
-    content: @Composable () -> Unit,
-) {
-    var sheetFraction by rememberSaveable { mutableFloatStateOf(0.45f) }
-    BackHandler(onBack = onDismiss)
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val density = LocalDensity.current
-        val maxHeightPx = with(density) { maxHeight.toPx() }
-        val keyboardVisible = WindowInsets.ime.getBottom(density) > 0
-        LaunchedEffect(keyboardVisible) {
-            if (keyboardVisible) sheetFraction = 0.85f
-        }
-        val dragState = rememberDraggableState { dragAmount ->
-            sheetFraction = (sheetFraction - dragAmount / maxHeightPx)
-                .coerceIn(0.40f, 0.85f)
-        }
-        Box(Modifier.fillMaxSize()) {
-            // Dimmed backdrop — tap to dismiss.
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.45f))
-                    .clickable(
-                        indication = null,
-                        interactionSource = remember { MutableInteractionSource() },
-                        onClick = onDismiss,
-                    ),
-            )
-            // This container consumes the keyboard inset outside the sheet rather
-            // than turning it into empty padding inside the terminal.
-            Box(Modifier.fillMaxSize().imePadding()) {
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .fillMaxHeight(sheetFraction)
-                        .draggable(
-                            state = dragState,
-                            orientation = Orientation.Vertical,
-                            startDragImmediately = false,
-                        ),
-                    shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    tonalElevation = 8.dp,
-                    shadowElevation = 28.dp,
-                ) {
-                    Column(Modifier.fillMaxSize()) {
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .height(24.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Box(
-                                Modifier
-                                    .width(36.dp)
-                                    .height(4.dp)
-                                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f), CircleShape),
-                            )
-                        }
-                        HorizontalDivider(
-                            thickness = 0.5.dp,
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                        )
-                        Box(Modifier.weight(1f).fillMaxWidth()) { content() }
-                    }
-                }
-            }
         }
     }
 }
@@ -2459,7 +2294,7 @@ private fun ProviderSetupScreen(
                 navigationIcon = {
                     if (handleBack != null) {
                         IconButton(onClick = handleBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back")
                         }
                     }
                 },
@@ -2467,7 +2302,7 @@ private fun ProviderSetupScreen(
                     if (onToggleTheme != null) {
                         IconButton(onClick = onToggleTheme) {
                             Icon(
-                                if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                if (themeMode == AppThemeMode.DARK) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
                                 contentDescription = "Toggle theme",
                             )
                         }
@@ -2603,9 +2438,9 @@ private fun DeviceCheckStep(context: Context, onContinue: () -> Unit) {
         BrandMark()
         Text("Your phone is the workspace", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text("Mobile Harness checks compatibility before downloading the private Linux runtime.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        CheckRow(Icons.Default.Memory, "Memory", "$totalRamLabel GB usable · ${if (totalRamGb >= 7.5) "Full mode" else "Lite mode"}", true)
-        CheckRow(Icons.Default.Code, "Processor", Build.SUPPORTED_ABIS.firstOrNull() ?: "Unknown", arm64)
-        CheckRow(Icons.Default.Storage, "Android", "Android ${Build.VERSION.RELEASE}", true)
+        CheckRow(Icons.Outlined.Memory, "Memory", "$totalRamLabel GB usable · ${if (totalRamGb >= 7.5) "Full mode" else "Lite mode"}", true)
+        CheckRow(Icons.Outlined.Code, "Processor", Build.SUPPORTED_ABIS.firstOrNull() ?: "Unknown", arm64)
+        CheckRow(Icons.Outlined.Storage, "Android", "Android ${Build.VERSION.RELEASE}", true)
         Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(16.dp)) {
             Text(
                 "Only open projects you trust. The local Linux environment is a compatibility layer, not a hardened security sandbox.",
@@ -2630,7 +2465,7 @@ private fun CheckRow(icon: ImageVector, title: String, value: String, passed: Bo
             Text(title, fontWeight = FontWeight.SemiBold)
             Text(value, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
         }
-        Icon(if (passed) Icons.Default.Check else Icons.Default.Warning, null, tint = if (passed) PocketGreen else MaterialTheme.colorScheme.error)
+        Icon(if (passed) Icons.Outlined.Check else Icons.Outlined.Warning, null, tint = if (passed) PocketGreen else MaterialTheme.colorScheme.error)
     }
 }
 
@@ -2661,7 +2496,7 @@ private fun ProviderChoiceStep(
                     modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.Default.Shield, null, tint = PocketGreen, modifier = Modifier.size(12.dp))
+                    Icon(Icons.Outlined.Shield, null, tint = PocketGreen, modifier = Modifier.size(12.dp))
                     Spacer(Modifier.width(5.dp))
                     Text("Secure setup", color = PocketGreen, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
                 }
@@ -2704,7 +2539,7 @@ private fun ProviderChoiceStep(
             modifier = Modifier.padding(top = 12.dp, start = 2.dp, end = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Default.Key, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
+            Icon(Icons.Outlined.Key, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
             Spacer(Modifier.width(7.dp))
             Text(
                 "API keys are encrypted in Android secure storage.",
@@ -2723,7 +2558,7 @@ private fun ProviderChoiceStep(
         ) {
             Text("Continue", fontWeight = FontWeight.Bold)
             Spacer(Modifier.width(8.dp))
-            Icon(Icons.AutoMirrored.Filled.ArrowForward, null, modifier = Modifier.size(18.dp))
+            Icon(Icons.AutoMirrored.Outlined.ArrowForward, null, modifier = Modifier.size(18.dp))
         }
         TextButton(
             onClick = onChangeAgent,
@@ -2926,14 +2761,14 @@ private fun ProviderCredentialsStep(
                         enabled = !isDiscovering,
                     ) {
                         if (isDiscovering) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        else Icon(Icons.Default.Refresh, "Refresh models")
+                        else Icon(Icons.Outlined.Refresh, "Refresh models")
                     }
                 }
                 Spacer(Modifier.height(14.dp))
                 OutlinedTextField(
                     value = modelSearch,
                     onValueChange = { modelSearch = it },
-                    leadingIcon = { Icon(Icons.Default.Search, null) },
+                    leadingIcon = { Icon(Icons.Outlined.Search, null) },
                     placeholder = { Text("Search model name or ID") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -3000,7 +2835,7 @@ private fun ProviderCredentialsStep(
                 Spacer(Modifier.weight(1f))
                 Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = CircleShape) {
                     Row(Modifier.padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Key, null, Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Outlined.Key, null, Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.width(6.dp))
                         Text("Encrypted locally", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -3052,7 +2887,7 @@ private fun ProviderCredentialsStep(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Icon(
-                                    if (hasStoredSecret) Icons.Default.Check else Icons.Default.Warning,
+                                    if (hasStoredSecret) Icons.Outlined.Check else Icons.Outlined.Warning,
                                     contentDescription = null,
                                     tint = if (hasStoredSecret) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                                     modifier = Modifier.size(20.dp),
@@ -3111,7 +2946,7 @@ private fun ProviderCredentialsStep(
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
                 }
-                Icon(if (models.isEmpty()) Icons.Default.Search else Icons.Default.KeyboardArrowDown, null, Modifier.size(19.dp))
+                Icon(if (models.isEmpty()) Icons.Outlined.Search else Icons.Outlined.KeyboardArrowDown, null, Modifier.size(19.dp))
                 Spacer(Modifier.width(8.dp))
                 Text(if (models.isEmpty()) "Find available models" else "Available models (${models.size})")
             }
@@ -3214,7 +3049,7 @@ private fun ClaudeSubscriptionCredentialsStep(
                 Spacer(Modifier.weight(1f))
                 Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = CircleShape) {
                     Row(Modifier.padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Key, null, Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Outlined.Key, null, Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.width(6.dp))
                         Text("Encrypted locally", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -3287,7 +3122,7 @@ private fun ClaudeSubscriptionCredentialsStep(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         trailingIcon = {
                             IconButton(onClick = { tokenVisible = !tokenVisible }) {
-                                Icon(if (tokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, "Toggle token visibility")
+                                Icon(if (tokenVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility, "Toggle token visibility")
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -3309,758 +3144,6 @@ private fun ClaudeSubscriptionCredentialsStep(
                 Text("Use another coding agent", fontSize = 12.sp)
             }
         }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-internal fun ProjectsScreen(
-    state: AppUiState,
-    listState: LazyListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() },
-    bottomBarPadding: Dp = 0.dp,
-    onOpen: (Project) -> Unit,
-    onCreate: (String) -> Unit,
-    onCreateQuickProject: () -> Unit,
-    onImportZip: (Uri) -> Unit,
-    onCloneGit: (String) -> Unit,
-    onStartGitHubLogin: () -> Unit,
-    onGenerateNewGitHubCode: () -> Unit,
-    onRefreshGitHub: () -> Unit,
-    onDisconnectGitHub: () -> Unit,
-    onCloneGitHub: (GitHubRepository) -> Unit,
-    onRenameProject: (String, String) -> Unit,
-    onDeleteProject: (String) -> Unit,
-    onSettings: () -> Unit,
-    onPing: () -> Unit,
-    onToggleTheme: () -> Unit,
-    onInstallUpdate: () -> Unit,
-) {
-    var showCreate by rememberSaveable { mutableStateOf(false) }
-    var showUpdateDialog by rememberSaveable { mutableStateOf(false) }
-    var showGitDialog by rememberSaveable { mutableStateOf(false) }
-    var showGitHubDialog by rememberSaveable { mutableStateOf(false) }
-    var importExpanded by rememberSaveable { mutableStateOf(false) }
-    var gitUrl by rememberSaveable { mutableStateOf("") }
-    var repositorySearch by rememberSaveable { mutableStateOf("") }
-    var name by rememberSaveable { mutableStateOf("") }
-    val projects = state.projects
-    val context = LocalContext.current
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        onInstallUpdate()
-    }
-    val importZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) onImportZip(uri)
-    }
-    LaunchedEffect(state.appUpdate?.versionCode) {
-        if (state.appUpdate != null) showUpdateDialog = true
-    }
-    Scaffold(
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        containerColor = Color.Transparent,
-        topBar = {
-            LiquidGlassTopBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        BrandMark(compact = true)
-                        Spacer(Modifier.width(9.dp))
-                        Text("Mobile Harness", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    }
-                },
-                material = LiquidGlassMaterial.Regular,
-                layerSource = LiquidGlassLayers.Background,
-            )
-        },
-    ) { padding ->
-        val navBarBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        // Explicit bottom overlay clearance fallback: Terminal FAB (56dp) + Spacer (10dp) + Floating Nav Bar (~64dp) + container padding (24dp) + safe breathing room + navigation bars insets
-        val defaultClearance = 224.dp + navBarBottomInset
-        val finalBottomPadding = if (bottomBarPadding > 0.dp) bottomBarPadding else defaultClearance
-        // Runs edge to edge under the glass top bar and dock; it is the shared backdrop source.
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize().hostBackdropSource(),
-            contentPadding = PaddingValues(
-                start = PocketSpacing.lg,
-                top = padding.calculateTopPadding() + PocketSpacing.xl,
-                end = PocketSpacing.lg,
-                bottom = finalBottomPadding,
-            ),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            item {
-                Text(
-                    "Projects",
-                    style = MaterialTheme.typography.headlineLarge,
-                )
-                Spacer(Modifier.height(PocketSpacing.lg))
-
-                // Bento-inspired modular tiles
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    BentoTile(
-                        modifier = Modifier.weight(1f),
-                        title = "Quick Project",
-                        value = "Instant Chat",
-                        subtitle = "Ephemeral scratch workspace",
-                        icon = Icons.Default.AutoAwesome,
-                        iconTint = MaterialTheme.colorScheme.primary,
-                        onClick = onCreateQuickProject,
-                    )
-                    val liveSubagentsCount = state.subagents.count { !it.state.isTerminal }
-                    BentoTile(
-                        modifier = Modifier.weight(1f),
-                        title = "Active Engine",
-                        value = if (state.agentKind == AgentKind.ANTIGRAVITY) "Antigravity" else state.provider.kind.title,
-                        subtitle = if (liveSubagentsCount > 0) "$liveSubagentsCount subagents live" else "CLI parity ready",
-                        icon = Icons.Default.SmartToy,
-                        iconTint = PocketBlue,
-                        badgeText = if (liveSubagentsCount > 0) "Live" else null,
-                        badgeColor = PocketGreen,
-                        onClick = onSettings,
-                    )
-                }
-
-                Spacer(Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    LiquidGlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(PocketRadius.md),
-                        onClick = { showCreate = true },
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(LiquidGlassTokens.MinTouchTarget + PocketSpacing.xs),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                Icons.Default.Add,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp),
-                            )
-                            Spacer(Modifier.width(PocketSpacing.sm))
-                            Text(
-                                text = "New workspace",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-                val isImportExpanded = importExpanded || state.projectImporting || state.gitCloneRunning
-                LiquidGlassCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    material = LiquidGlassMaterial.Thin,
-                    shape = RoundedCornerShape(PocketRadius.lg),
-                ) {
-                    Column {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { importExpanded = !importExpanded }
-                                .padding(horizontal = 14.dp, vertical = 13.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Bring an existing project", fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
-                                Text(
-                                    if (isImportExpanded) "Import files or clone complete Git history" else "ZIP file, Git repository, or GitHub",
-                                    fontSize = 10.5.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Icon(
-                                imageVector = if (isImportExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                contentDescription = if (isImportExpanded) "Collapse" else "Expand",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                        AnimatedVisibility(visible = isImportExpanded) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(start = 14.dp, end = 14.dp, bottom = 14.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                                    ImportSourceButton(
-                                        icon = Icons.Default.Download,
-                                        title = if (state.projectImporting) "Importing…" else "ZIP file",
-                                        enabled = !state.projectImporting && !state.gitCloneRunning,
-                                        modifier = Modifier.weight(1f),
-                                        onClick = { importZipLauncher.launch("*/*") },
-                                        loading = state.projectImporting,
-                                    )
-                                    ImportSourceButton(
-                                        icon = Icons.Default.Code,
-                                        title = if (state.gitCloneRunning) "Cloning…" else "Git URL",
-                                        enabled = !state.projectImporting && !state.gitCloneRunning,
-                                        modifier = Modifier.weight(1f),
-                                        onClick = { showGitDialog = true },
-                                        loading = state.gitCloneRunning,
-                                    )
-                                }
-                                Surface(
-                                    modifier = Modifier.fillMaxWidth().clickable(enabled = !state.gitCloneRunning) {
-                                        showGitHubDialog = true
-                                        if (state.githubAuthStatus == GitHubAuthStatus.CONNECTED && state.githubRepositories.isEmpty()) onRefreshGitHub()
-                                    },
-                                    color = MaterialTheme.colorScheme.surface,
-                                    shape = RoundedCornerShape(13.dp),
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                ) {
-                                    Row(Modifier.padding(horizontal = 12.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Code, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
-                                        Spacer(Modifier.width(10.dp))
-                                        Column(Modifier.weight(1f)) {
-                                            Text(
-                                                state.githubLogin?.let { "GitHub · @$it" } ?: "Connect GitHub",
-                                                fontSize = 12.5.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                            )
-                                            Text(
-                                                if (state.githubLogin != null) "Browse public and private repositories" else "Sign in to access your repositories",
-                                                fontSize = 10.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                }
-                                (state.projectImportMessage ?: state.gitCloneMessage)?.let { message ->
-                                    Text(message, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.primary)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            state.appUpdate?.let { update ->
-                item {
-                    Surface(
-                        modifier = Modifier.fillMaxWidth().clickable { showUpdateDialog = true },
-                        shape = RoundedCornerShape(20.dp),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.11f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
-                    ) {
-                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f), modifier = Modifier.size(46.dp)) {
-                                Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Download, null, tint = MaterialTheme.colorScheme.primary) }
-                            }
-                            Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text("Mobile Harness ${update.versionName}", fontWeight = FontWeight.Bold)
-                                Text("A new update is ready", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            Text("Update", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        }
-                    }
-                }
-            }
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 16.dp, bottom = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Workspaces",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Text(
-                        "${projects.size}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            if (projects.isEmpty()) {
-                item {
-                    LiquidGlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        material = LiquidGlassMaterial.Thin,
-                        shape = RoundedCornerShape(PocketRadius.xl),
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(28.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(PocketRadius.md),
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                                modifier = Modifier.size(52.dp),
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        Icons.Default.Folder,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(26.dp),
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                "No workspaces yet",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center,
-                            )
-                            Text(
-                                "Create a starter project or launch instantly with Quick Project.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center,
-                                lineHeight = 19.sp,
-                                fontSize = 12.5.sp,
-                            )
-                        }
-                    }
-                }
-            } else {
-                items(projects, key = { it.id }) { project ->
-                    ProjectCard(
-                        project = project,
-                        taskRunning = state.isRunning && state.activeProject?.id == project.id,
-                        terminalRunning = state.projectTerminalRunning && state.activeProject?.id == project.id,
-                        isActive = state.activeProject?.id == project.id,
-                        onOpen = { onOpen(project) },
-                        onRename = { onRenameProject(project.id, it) },
-                        onDelete = { onDeleteProject(project.id) },
-                    )
-                }
-            }
-        }
-    }
-    if (showCreate) AlertDialog(
-        onDismissRequest = { showCreate = false },
-        title = { Text("Create a starter project") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(name, { name = it }, label = { Text("Project name") }, singleLine = true)
-                if (name.isNotBlank()) {
-                    Text(
-                        "Terminal folder: /workspace/${projectSlug(name)}",
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = { onCreate(name); showCreate = false; name = "" }, enabled = name.isNotBlank()) { Text("Create") } },
-        dismissButton = { TextButton(onClick = { showCreate = false }) { Text("Cancel") } },
-    )
-    if (showGitDialog) AlertDialog(
-        onDismissRequest = { if (!state.gitCloneRunning) showGitDialog = false },
-        icon = { Icon(Icons.Default.Code, null, tint = MaterialTheme.colorScheme.primary) },
-        title = { Text("Clone Git repository") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Paste a public HTTPS repository URL. Its complete Git history and current branch will be kept.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp)
-                OutlinedTextField(
-                    value = gitUrl,
-                    onValueChange = { gitUrl = it },
-                    label = { Text("HTTPS Git URL") },
-                    placeholder = { Text("https://github.com/owner/repository.git") },
-                    singleLine = true,
-                )
-                state.gitCloneMessage?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
-            }
-        },
-        confirmButton = {
-            Button(
-                enabled = gitUrl.isNotBlank() && !state.gitCloneRunning,
-                onClick = { onCloneGit(gitUrl); showGitDialog = false; gitUrl = "" },
-            ) { Text(if (state.gitCloneRunning) "Cloning…" else "Clone project") }
-        },
-        dismissButton = { TextButton(onClick = { showGitDialog = false }, enabled = !state.gitCloneRunning) { Text("Cancel") } },
-    )
-    if (showGitHubDialog) {
-        val clipboard = LocalClipboardManager.current
-        val filteredRepositories = state.githubRepositories.filter { repository ->
-            repositorySearch.isBlank() || repository.fullName.contains(repositorySearch, ignoreCase = true)
-        }
-        AlertDialog(
-            onDismissRequest = { if (!state.gitCloneRunning) showGitHubDialog = false },
-            icon = { Icon(Icons.Default.Code, null, tint = MaterialTheme.colorScheme.primary) },
-            title = { Text(state.githubLogin?.let { "GitHub · @$it" } ?: "Connect GitHub") },
-            text = {
-                when (state.githubAuthStatus) {
-                    GitHubAuthStatus.DISCONNECTED, GitHubAuthStatus.ERROR -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(
-                            state.githubMessage ?: "Sign in with GitHub's official CLI to browse public and private repositories.",
-                            color = if (state.githubAuthStatus == GitHubAuthStatus.ERROR) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 13.sp,
-                        )
-                        Button(onClick = onStartGitHubLogin, modifier = Modifier.fillMaxWidth()) { Text("Sign in with GitHub") }
-                    }
-                    GitHubAuthStatus.STARTING -> Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                        CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.5.dp)
-                        Spacer(Modifier.height(12.dp))
-                        Text(state.githubMessage ?: "Starting GitHub sign-in…")
-                    }
-                    GitHubAuthStatus.AWAITING_USER -> Column(verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Enter this one-time code in the GitHub page opened in your browser.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Surface(
-                            modifier = Modifier.fillMaxWidth().clickable { state.githubUserCode?.let { clipboard.setText(AnnotatedString(it)) } },
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                        ) {
-                            Text(
-                                state.githubUserCode.orEmpty(),
-                                modifier = Modifier.padding(16.dp),
-                                textAlign = TextAlign.Center,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 22.sp,
-                                letterSpacing = 2.sp,
-                            )
-                        }
-                        Text("Tap the code to copy it. PocketDev will connect automatically after approval.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        OutlinedButton(
-                            onClick = onGenerateNewGitHubCode,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Generate new code")
-                        }
-                    }
-                    GitHubAuthStatus.CONNECTED -> Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(state.githubMessage ?: "Select a repository", modifier = Modifier.weight(1f), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            IconButton(onClick = onRefreshGitHub, enabled = !state.githubRepositoriesLoading) {
-                                Icon(Icons.Default.Refresh, "Refresh repositories")
-                            }
-                        }
-                        OutlinedTextField(
-                            value = repositorySearch,
-                            onValueChange = { repositorySearch = it },
-                            placeholder = { Text("Search repositories") },
-                            leadingIcon = { Icon(Icons.Default.Search, null) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        if (state.githubRepositoriesLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
-                        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 350.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(filteredRepositories, key = { it.fullName }) { repository ->
-                                Surface(
-                                    modifier = Modifier.fillMaxWidth().clickable(enabled = !state.gitCloneRunning) {
-                                        showGitHubDialog = false
-                                        onCloneGitHub(repository)
-                                    },
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                                ) {
-                                    Row(Modifier.padding(11.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(if (repository.private) Icons.Default.Key else Icons.Default.Code, null, modifier = Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary)
-                                        Spacer(Modifier.width(9.dp))
-                                        Column(Modifier.weight(1f)) {
-                                            Text(repository.fullName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                            Text("${if (repository.private) "Private" else "Public"} · ${repository.defaultBranch}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                if (state.githubAuthStatus == GitHubAuthStatus.CONNECTED) {
-                    TextButton(onClick = { showGitHubDialog = false }) { Text("Close") }
-                }
-            },
-            dismissButton = {
-                if (state.githubAuthStatus == GitHubAuthStatus.CONNECTED) {
-                    TextButton(onClick = { onDisconnectGitHub(); showGitHubDialog = false }) { Text("Disconnect") }
-                } else if (state.githubAuthStatus != GitHubAuthStatus.STARTING) {
-                    TextButton(onClick = { showGitHubDialog = false }) { Text("Cancel") }
-                }
-            },
-        )
-    }
-    val update = state.appUpdate
-    if (showUpdateDialog && update != null) {
-        val canInstall = Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()
-        val downloading = state.appUpdateStatus == AppUpdateStatus.DOWNLOADING
-        val installing = state.appUpdateStatus == AppUpdateStatus.INSTALLING
-        val total = state.appUpdateTotalBytes
-        val downloaded = state.appUpdateDownloadedBytes
-        val progress = if (total > 0) (downloaded.toFloat() / total).coerceIn(0f, 1f) else 0f
-        AlertDialog(
-            onDismissRequest = { if (!installing) showUpdateDialog = false },
-            icon = { Icon(Icons.Default.Download, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(34.dp)) },
-            title = { Text("Update to ${update.versionName}", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(update.notes.ifBlank { "Get the latest improvements and fixes for Mobile Harness." })
-                    if (update.sizeBytes > 0) Text("Download size: ${formatMegabytes(update.sizeBytes)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-                    if (!canInstall) {
-                        Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f)) {
-                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top) {
-                                Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text("Allow ‘Install unknown apps’ for Mobile Harness. Without this permission, Android will not install the update.", fontSize = 13.sp)
-                            }
-                        }
-                    }
-                    if (downloading) {
-                        if (total > 0) LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                        else LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        Text(
-                            if (total > 0) "Downloading ${formatMegabytes(downloaded)} / ${formatMegabytes(total)} · ${(progress * 100).toInt()}%" else "Downloading ${formatMegabytes(downloaded)}",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    if (installing) Text("Download verified. Opening Android installer…", color = PocketGreen, fontSize = 13.sp)
-                    state.appUpdateError?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
-                }
-            },
-            confirmButton = {
-                Button(
-                    enabled = !downloading && !installing,
-                    onClick = {
-                        if (!canInstall && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            permissionLauncher.launch(
-                                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")),
-                            )
-                        } else {
-                            onInstallUpdate()
-                        }
-                    },
-                ) {
-                    Text(when { !canInstall -> "Grant permission"; downloading -> "Downloading…"; installing -> "Installing…"; else -> "Download and install" })
-                }
-            },
-            dismissButton = { if (!installing) TextButton(onClick = { showUpdateDialog = false }) { Text("Later") } },
-        )
-    }
-}
-
-@Composable
-private fun ImportSourceButton(
-    icon: ImageVector,
-    title: String,
-    enabled: Boolean,
-    loading: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    OutlinedButton(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = modifier.height(46.dp),
-        shape = RoundedCornerShape(12.dp),
-        contentPadding = PaddingValues(horizontal = 10.dp),
-    ) {
-        if (loading) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-        else Icon(icon, null, Modifier.size(17.dp))
-        Spacer(Modifier.width(7.dp))
-        Text(title, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-    }
-}
-
-@Composable
-private fun ApiStatusChip(state: AppUiState, onSettings: () -> Unit, onPing: () -> Unit) {
-    val dotColor = when (state.apiPingStatus) {
-        ApiPingStatus.OK -> PocketGreen
-        ApiPingStatus.FAILED -> MaterialTheme.colorScheme.error
-        ApiPingStatus.PINGING -> MaterialTheme.colorScheme.primary
-        ApiPingStatus.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-    }
-    val providerLabel = when {
-        state.agentKind == AgentKind.ANTIGRAVITY ->
-            state.antigravityModel.ifBlank { state.agentKind.title }
-        state.provider.model.isNotBlank() -> state.provider.model
-        state.provider.baseUrl.isNotBlank() -> {
-            runCatching { java.net.URI(state.provider.baseUrl).host ?: state.provider.kind.title }
-                .getOrDefault(state.provider.kind.title)
-        }
-        else -> state.provider.kind.title
-    }
-
-    Surface(
-        shape = RoundedCornerShape(50),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.clickable(onClick = onSettings).padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
-        ) {
-            // Status dot
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .background(dotColor, CircleShape),
-            )
-            Spacer(Modifier.width(8.dp))
-            // Model / provider name
-            Text(
-                text = providerLabel,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-            )
-            Spacer(Modifier.width(4.dp))
-            // Ping button
-            IconButton(
-                onClick = onPing,
-                modifier = Modifier.size(28.dp),
-            ) {
-                if (state.apiPingStatus == ApiPingStatus.PINGING) {
-                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
-                } else {
-                    Icon(
-                        Icons.Default.Refresh,
-                        contentDescription = "Ping API",
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-    }
-}
-
-
-
-@Composable
-private fun ProjectCard(
-    project: Project,
-    taskRunning: Boolean,
-    terminalRunning: Boolean,
-    isActive: Boolean = false,
-    onOpen: () -> Unit,
-    onRename: (String) -> Unit,
-    onDelete: () -> Unit,
-) {
-    var menuOpen by rememberSaveable(project.id) { mutableStateOf(false) }
-    var showRename by rememberSaveable(project.id) { mutableStateOf(false) }
-    var showDelete by rememberSaveable(project.id) { mutableStateOf(false) }
-    var renameText by rememberSaveable(project.id) { mutableStateOf(project.name) }
-    LiquidGlassCard(
-        modifier = Modifier.fillMaxWidth(),
-        material = LiquidGlassMaterial.Thin,
-        shape = RoundedCornerShape(PocketRadius.lg),
-        borderStroke = if (isActive) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.42f)) else null,
-        onClick = onOpen,
-    ) {
-        Row(
-            modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Surface(
-                shape = RoundedCornerShape(PocketRadius.sm),
-                color = if (project.kind == ProjectKind.QUICK_PROJECT) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant,
-                modifier = Modifier.size(40.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = if (project.kind == ProjectKind.QUICK_PROJECT) Icons.Default.AutoAwesome else Icons.Default.Folder,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                        tint = if (project.kind == ProjectKind.QUICK_PROJECT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        project.name,
-                        modifier = Modifier.weight(1f, fill = false),
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (taskRunning || terminalRunning) {
-                        Spacer(Modifier.width(8.dp))
-                        CircularProgressIndicator(Modifier.size(11.dp), strokeWidth = 1.8.dp)
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            if (taskRunning) "Task running" else "Terminal running",
-                            color = MaterialTheme.colorScheme.primary,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    listOf(project.language.ifBlank { "Workspace" }, project.formattedUpdatedAt)
-                        .filter { it.isNotBlank() }
-                        .joinToString(" · "),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Box {
-                IconButton(
-                    onClick = { menuOpen = true },
-                    modifier = Modifier.size(44.dp),
-                ) {
-                    Icon(
-                        Icons.Default.MoreVert,
-                        contentDescription = "Project options",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text("Rename project") },
-                        leadingIcon = { Icon(Icons.Default.Edit, null) },
-                        onClick = { menuOpen = false; renameText = project.name; showRename = true },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Delete project") },
-                        leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                        onClick = { menuOpen = false; showDelete = true },
-                    )
-                }
-            }
-        }
-    }
-    if (showRename) {
-        AlertDialog(
-            onDismissRequest = { showRename = false },
-            title = { Text("Rename project") },
-            text = { OutlinedTextField(renameText, { renameText = it }, label = { Text("Project name") }, singleLine = true) },
-            confirmButton = { TextButton(onClick = { onRename(renameText); showRename = false }, enabled = renameText.isNotBlank()) { Text("Save") } },
-            dismissButton = { TextButton(onClick = { showRename = false }) { Text("Cancel") } },
-        )
-    }
-    if (showDelete) {
-        AlertDialog(
-            onDismissRequest = { showDelete = false },
-            title = { Text("Delete this project?") },
-            text = { Text("Its chats, files, attachments, changes, and terminal history will be permanently removed.") },
-            confirmButton = { TextButton(onClick = { onDelete(); showDelete = false }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
-            dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
-        )
     }
 }
 
@@ -4112,10 +3195,10 @@ private fun ReadOnlyProjectScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Projects") }
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Projects") }
                 },
                 actions = {
-                    IconButton(onClick = { showChats = true }) { Icon(Icons.Default.History, "Project chats") }
+                    IconButton(onClick = { showChats = true }) { Icon(Icons.Outlined.History, "Project chats") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
@@ -4214,6 +3297,7 @@ internal fun WorkspaceScreen(
     onClearAllMemory: () -> Unit = {},
 ) {
     BackHandler(onBack = onBack)
+    val banner = LocalBanner.current
     val context = LocalContext.current
     val isAndroidProject = state.androidProjectDetected
     val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
@@ -4231,7 +3315,7 @@ internal fun WorkspaceScreen(
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()) {
                 onBuildAndRunAndroid()
             } else {
-                Toast.makeText(context, "Allow app installs to run Android projects", Toast.LENGTH_LONG).show()
+                banner?.show("Allow app installs to run Android projects", BannerKind.Info)
             }
         },
     )
@@ -4277,6 +3361,18 @@ internal fun WorkspaceScreen(
 
     var selectedTab by rememberSaveable { mutableStateOf(WorkspaceTab.CHAT) }
     var showChats by rememberSaveable { mutableStateOf(false) }
+    var showChanges by rememberSaveable { mutableStateOf(false) }
+    val changesAnchor = rememberOverlayAnchor()
+    ChangesReviewSheet(
+        visible = showChanges && state.changes.isNotEmpty(),
+        changes = state.changes,
+        anchor = changesAnchor,
+        onDismiss = { showChanges = false },
+        onUndoAll = onUndoChanges,
+        onKeepAll = onKeepChanges,
+        onUndoFile = onUndoFileChange,
+        onKeepFile = onKeepFileChange,
+    )
     val activeChat = state.projectChats.firstOrNull { it.id == state.activeChatId }
 
     // If a file is open, show the FileViewerScreen on top
@@ -4318,7 +3414,7 @@ internal fun WorkspaceScreen(
     state.pendingTerminalCommand?.let { command ->
         AlertDialog(
             onDismissRequest = onTerminalCancel,
-            icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            icon = { Icon(Icons.Outlined.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
             title = { Text("Run potentially destructive command?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -4422,10 +3518,10 @@ internal fun WorkspaceScreen(
                         style = MaterialTheme.typography.titleSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.combinedClickable(
+                        modifier = Modifier.sharedTitle(projectTitleKey(state.activeProject?.id)).combinedClickable(
                             onClick = {},
                             onLongClick = {
-                                Toast.makeText(context, state.activeProject?.name.orEmpty(), Toast.LENGTH_LONG).show()
+                                banner?.show(state.activeProject?.name.orEmpty(), BannerKind.Info)
                             },
                         ),
                     )
@@ -4442,7 +3538,7 @@ internal fun WorkspaceScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
+                            Icons.AutoMirrored.Outlined.ArrowBack,
                             "Projects",
                         )
                     }
@@ -4468,7 +3564,7 @@ internal fun WorkspaceScreen(
                         ) {
                             if (state.androidBuildRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                             else Icon(
-                                Icons.Default.PlayArrow,
+                                Icons.Outlined.PlayArrow,
                                 "Build and run Android app",
                             )
                         }
@@ -4487,7 +3583,7 @@ internal fun WorkspaceScreen(
                             }
                         ) {
                             Icon(
-                                Icons.Default.Psychology,
+                                Icons.Outlined.Psychology,
                                 contentDescription = "Persistent Memory",
                                 tint = if (state.contextMemory.entries.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -4495,7 +3591,7 @@ internal fun WorkspaceScreen(
                     }
                     IconButton(onClick = { showChats = true }) {
                         Icon(
-                            Icons.Default.History,
+                            Icons.Outlined.History,
                             "Project chats",
                         )
                     }
@@ -4514,7 +3610,7 @@ internal fun WorkspaceScreen(
                         .padding(start = PocketSpacing.lg, end = PocketSpacing.lg, bottom = PocketSpacing.sm),
                 ) {
                     LiquidGlassSegmentedControl(
-                        items = WorkspaceTab.entries.filter { it != WorkspaceTab.CHANGES },
+                        items = WorkspaceTab.entries,
                         selectedItem = selectedTab,
                         onItemSelected = { tab ->
                             selectedTab = tab
@@ -4533,14 +3629,20 @@ internal fun WorkspaceScreen(
         },
     ) { padding ->
         // Chat runs edge to edge under the floating chrome; the other tabs stay between the bars.
+        AnimatedContent(
+            targetState = selectedTab,
+            transitionSpec = { PocketTransitions.crossFade() },
+            label = "workspace tab",
+        ) { tab ->
+        BackdropSourceScope(active = isTransitionTarget) {
         Box(
-            if (selectedTab == WorkspaceTab.CHAT) {
+            if (tab == WorkspaceTab.CHAT) {
                 Modifier.fillMaxSize()
             } else {
                 Modifier.fillMaxSize().padding(padding).clipToBounds()
             },
         ) {
-            when (selectedTab) {
+            when (tab) {
                 WorkspaceTab.CHAT -> ChatTab(
                     state.messages,
                     state.pendingApproval,
@@ -4579,6 +3681,9 @@ internal fun WorkspaceScreen(
                     isStopping = state.isStopping,
                     activeChatId = state.activeChatId,
                     chromePadding = padding,
+                    aboveComposer = if (state.changes.isNotEmpty() && !state.isRunning) {
+                        { ChangesReviewCapsule(state.changes, changesAnchor, onClick = { showChanges = true }) }
+                    } else null,
                 )
                 WorkspaceTab.FILES -> FilesTab(
                     files = state.workspaceFiles,
@@ -4613,15 +3718,10 @@ internal fun WorkspaceScreen(
                     showQuickCommands = false,
                     compactHeader = true,
                 )
-                WorkspaceTab.CHANGES -> ChangesTab(
-                    state.changes,
-                    onUndoChanges,
-                    onKeepChanges,
-                    onUndoFileChange,
-                    onKeepFileChange,
-                )
                 WorkspaceTab.PREVIEW -> PreviewTab(state.previewReady, state.previewUrl)
             }
+        }
+        }
         }
     }
 }
@@ -4643,7 +3743,7 @@ private fun ChatSwitcherDialog(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (allowCreate) {
                     Button(onClick = onCreate, enabled = switchingEnabled, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Default.Add, null)
+                        Icon(Icons.Outlined.Add, null)
                         Spacer(Modifier.width(8.dp))
                         Text("New chat")
                     }
@@ -4659,7 +3759,7 @@ private fun ChatSwitcherDialog(
                             color = if (chat.id == activeChatId) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
                         ) {
                             Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Outlined.AutoAwesome, null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(10.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(chat.title, fontWeight = if (chat.id == activeChatId) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
@@ -4669,7 +3769,7 @@ private fun ChatSwitcherDialog(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
-                                if (chat.id == activeChatId) Icon(Icons.Default.Check, "Current", tint = PocketGreen)
+                                if (chat.id == activeChatId) Icon(Icons.Outlined.Check, "Current", tint = PocketGreen)
                             }
                         }
                     }
@@ -4705,7 +3805,7 @@ private fun FileViewerScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close file") }
+                    IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Close file") }
                 },
                 actions = {
                     if (!content.isNullOrEmpty()) {
@@ -4715,7 +3815,7 @@ private fun FileViewerScreen(
                             scope.launch { delay(2000); copied = false }
                         }) {
                             Icon(
-                                if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                                if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
                                 "Copy file contents",
                                 tint = if (copied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                             )
@@ -4734,7 +3834,7 @@ private fun FileViewerScreen(
                     }
                 }
                 content == null -> {
-                    EmptyState(Icons.Default.Description, "No content", "The file could not be read.")
+                    EmptyState(Icons.Outlined.Description, "No content", "The file could not be read.")
                 }
                 isMarkdown -> {
                     LazyColumn(
@@ -4844,18 +3944,18 @@ private fun FilesTab(
                     )
                     if (expandedDirectories.isNotEmpty()) {
                         TextButton(onClick = { expandedDirectories = emptyList() }) {
-                            Icon(Icons.Default.KeyboardArrowUp, null, Modifier.size(17.dp))
+                            Icon(Icons.Outlined.KeyboardArrowUp, null, Modifier.size(17.dp))
                             Spacer(Modifier.width(3.dp))
                             Text("Collapse all", fontSize = 11.sp)
                         }
                     }
                     if (!loading && files.any { !it.isDirectory }) {
-                        IconButton(onClick = onExport) { Icon(Icons.Default.Download, "Export project as ZIP") }
+                        IconButton(onClick = onExport) { Icon(Icons.Outlined.Download, "Export project as ZIP") }
                     }
                     if (loading) {
                         CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
                     } else {
-                        IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh files") }
+                        IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Refresh, "Refresh files") }
                     }
                 }
             }
@@ -4874,7 +3974,7 @@ private fun FilesTab(
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
-                                Icons.Default.Android,
+                                Icons.Outlined.Android,
                                 null,
                                 tint = Color(0xFF34A853),
                                 modifier = Modifier.size(20.dp)
@@ -4945,7 +4045,7 @@ private fun FilesTab(
             }
         }
         if (!loading && files.isEmpty()) {
-            item { EmptyState(Icons.Default.Folder, "No files yet", "Ask your coding agent to create something in this project.") }
+            item { EmptyState(Icons.Outlined.Folder, "No files yet", "Ask your coding agent to create something in this project.") }
         }
         items(visibleFiles, key = { it.path }) { entry ->
             val isApk = !entry.isDirectory && entry.name.endsWith(".apk", ignoreCase = true)
@@ -4971,7 +4071,7 @@ private fun FilesTab(
             ) {
                 if (entry.isDirectory) {
                     Icon(
-                        if (entry.path in expandedSet) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        if (entry.path in expandedSet) Icons.Outlined.KeyboardArrowDown else Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                         if (entry.path in expandedSet) "Collapse folder" else "Expand folder",
                         Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -4980,9 +4080,9 @@ private fun FilesTab(
                 }
                 Icon(
                     when {
-                        entry.isDirectory -> Icons.Default.Folder
-                        isApk -> Icons.Default.Android
-                        else -> Icons.Default.Description
+                        entry.isDirectory -> Icons.Outlined.Folder
+                        isApk -> Icons.Outlined.Android
+                        else -> Icons.Outlined.Description
                     },
                     null,
                     tint = when {
@@ -5023,7 +4123,7 @@ private fun FilesTab(
                     } else {
                         Spacer(Modifier.width(4.dp))
                         Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                             null,
                             modifier = Modifier.size(16.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -5107,6 +4207,7 @@ private fun ChatTab(
     isStopping: Boolean = false,
     activeChatId: String? = null,
     chromePadding: PaddingValues = PaddingValues(0.dp),
+    aboveComposer: (@Composable () -> Unit)? = null,
 ) {
     val view = LocalView.current
     // Keep the screen on while the selected agent is working in this chat. Released automatically
@@ -5166,10 +4267,19 @@ private fun ChatTab(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(safeMessages, key = { it.id }) { message ->
-                    if (message.workItems.isNotEmpty()) {
-                        WorkBlockCard(message)
-                    } else {
-                        MessageBubble(message, onRunInTerminal, onOpenAttachment)
+                    // New turns fade in; no placement animation, so streaming growth never lags.
+                    Box(
+                        Modifier.animateItem(
+                            fadeInSpec = PocketMotion.spec(PocketMotion.Token.Smooth),
+                            placementSpec = null,
+                            fadeOutSpec = PocketMotion.spec(PocketMotion.Token.Quick),
+                        ),
+                    ) {
+                        if (message.workItems.isNotEmpty()) {
+                            WorkBlockCard(message)
+                        } else {
+                            MessageBubble(message, onRunInTerminal, onOpenAttachment)
+                        }
                     }
                 }
                 if (liveProcess.isNotEmpty() || thinkingActive) {
@@ -5209,7 +4319,7 @@ private fun ChatTab(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
-                            Icons.Default.KeyboardArrowDown,
+                            Icons.Outlined.KeyboardArrowDown,
                             contentDescription = null,
                             modifier = Modifier.size(17.dp),
                         )
@@ -5233,7 +4343,7 @@ private fun ChatTab(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Icon(Icons.Default.History, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(Icons.Outlined.History, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Column(Modifier.weight(1f)) {
                         Text("Read-only history", fontWeight = FontWeight.SemiBold)
                         Text(
@@ -5264,6 +4374,9 @@ private fun ChatTab(
                         bottom = if (chromePadding.calculateBottomPadding() > 0.dp) PocketSpacing.lg else PocketSpacing.sm,
                     )
             ) {
+                if (aboveComposer != null) {
+                    Box(Modifier.fillMaxWidth().padding(bottom = PocketSpacing.sm), contentAlignment = Alignment.Center) { aboveComposer() }
+                }
                 if (pendingAttachments.isNotEmpty()) {
                     Row(
                         Modifier
@@ -5425,7 +4538,7 @@ private fun ChatTab(
                             role = GlassRoles.Chip,
                         ) {
                             Row(Modifier.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.primary)
+                                Icon(Icons.Outlined.AutoAwesome, null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.primary)
                                 Spacer(Modifier.width(4.dp))
                                 Text("Skills", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
@@ -5441,7 +4554,7 @@ private fun ChatTab(
                             role = GlassRoles.Chip,
                         ) {
                             Row(Modifier.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Layers, null, modifier = Modifier.size(12.dp), tint = if (subagentsCount + tasksCount > 0) PocketGreen else MaterialTheme.colorScheme.onSurfaceVariant)
+                                Icon(Icons.Outlined.Layers, null, modifier = Modifier.size(12.dp), tint = if (subagentsCount + tasksCount > 0) PocketGreen else MaterialTheme.colorScheme.onSurfaceVariant)
                                 Spacer(Modifier.width(4.dp))
                                 Text(
                                     if (subagentsCount + tasksCount > 0) "Inspector (${subagentsCount + tasksCount})" else "Inspector",
@@ -5478,7 +4591,7 @@ private fun ChatTab(
                             modifier = Modifier.size(44.dp),
                         ) {
                             Icon(
-                                imageVector = Icons.Default.AttachFile,
+                                imageVector = Icons.Outlined.AttachFile,
                                 contentDescription = "Attach files",
                                 modifier = Modifier.size(20.dp),
                                 tint = if (pendingAttachments.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -5547,7 +4660,7 @@ private fun ChatTab(
                                     )
                                 } else {
                                     Icon(
-                                        imageVector = Icons.Default.Stop,
+                                        imageVector = Icons.Outlined.Stop,
                                         contentDescription = "Stop AI task",
                                         tint = MaterialTheme.colorScheme.onError,
                                         modifier = Modifier.size(18.dp),
@@ -5591,7 +4704,7 @@ private fun ChatTab(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.ArrowUpward,
+                                    imageVector = Icons.Outlined.ArrowUpward,
                                     contentDescription = "Send",
                                     tint = if (canSend) {
                                         MaterialTheme.colorScheme.onPrimary
@@ -5836,7 +4949,7 @@ private fun ActivitySummaryRow(
             Spacer(Modifier.width(6.dp))
         }
         Icon(
-            if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+            if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
             if (expanded) "Collapse activity" else "Expand activity",
             Modifier.size(18.dp),
             tint = muted,
@@ -5845,21 +4958,21 @@ private fun ActivitySummaryRow(
 }
 
 private fun activityIcon(item: ActivityItem?): ImageVector {
-    if (item == null) return Icons.Default.AutoAwesome
+    if (item == null) return Icons.Outlined.AutoAwesome
     val task = item.title
         .removePrefix("Running ")
         .removeSuffix(" completed")
         .trim()
     return when {
-        item.isCommand || task.equals("Bash", ignoreCase = true) -> Icons.Default.Terminal
+        item.isCommand || task.equals("Bash", ignoreCase = true) -> Icons.Outlined.Terminal
         task.equals("Write", ignoreCase = true) ||
             task.equals("Edit", ignoreCase = true) ||
-            task.equals("NotebookEdit", ignoreCase = true) -> Icons.Default.Edit
-        task.equals("Read", ignoreCase = true) -> Icons.Default.Description
+            task.equals("NotebookEdit", ignoreCase = true) -> Icons.Outlined.Edit
+        task.equals("Read", ignoreCase = true) -> Icons.Outlined.Description
         task.equals("Glob", ignoreCase = true) ||
-            task.equals("Grep", ignoreCase = true) -> Icons.Default.Search
-        task.contains("file", ignoreCase = true) -> Icons.Default.Description
-        else -> Icons.Default.AutoAwesome
+            task.equals("Grep", ignoreCase = true) -> Icons.Outlined.Search
+        task.contains("file", ignoreCase = true) -> Icons.Outlined.Description
+        else -> Icons.Outlined.AutoAwesome
     }
 }
 
@@ -5981,7 +5094,7 @@ private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Uni
             modifier = Modifier.size(LiquidGlassTokens.MinTouchTarget),
         ) {
             Icon(
-                imageVector = if (isCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                imageVector = if (isCopied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
                 contentDescription = if (isCopied) "Message copied to clipboard" else "Copy entire message",
                 tint = if (isCopied) PocketGreen else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                 modifier = Modifier.size(15.dp),
@@ -6013,7 +5126,7 @@ private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Uni
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Icon(
-                                        Icons.Default.AutoAwesome,
+                                        Icons.Outlined.AutoAwesome,
                                         contentDescription = null,
                                         modifier = Modifier.size(12.dp),
                                         tint = MaterialTheme.colorScheme.secondary,
@@ -6081,8 +5194,8 @@ private fun AttachmentChip(
     onRemove: (() -> Unit)?,
 ) {
     val icon = when {
-        attachment.mimeType.startsWith("image/") -> Icons.Default.Image
-        else -> Icons.Default.Description
+        attachment.mimeType.startsWith("image/") -> Icons.Outlined.Image
+        else -> Icons.Outlined.Description
     }
     Surface(
         modifier = Modifier.then(if (onOpen != null) Modifier.clickable(onClick = onOpen) else Modifier),
@@ -6099,7 +5212,7 @@ private fun AttachmentChip(
             }
             if (onRemove != null) {
                 IconButton(onClick = onRemove, modifier = Modifier.size(30.dp)) {
-                    Icon(Icons.Default.Close, "Remove attachment", Modifier.size(15.dp))
+                    Icon(Icons.Outlined.Close, "Remove attachment", Modifier.size(15.dp))
                 }
             }
         }
@@ -6111,7 +5224,7 @@ private fun ApprovalCard(request: ToolRequest, onApproval: (Boolean) -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.primary)
+                Icon(Icons.Outlined.Warning, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(8.dp)); Text("Review this action", fontWeight = FontWeight.Bold)
             }
             Text(request.explanation)
@@ -6133,13 +5246,13 @@ private fun FilesTab(files: List<WorkspaceEntry>, loading: Boolean, onRefresh: (
                 if (loading) {
                     CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
                 } else {
-                    IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh files") }
+                    IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Refresh, "Refresh files") }
                 }
             }
             Spacer(Modifier.height(8.dp))
         }
         if (!loading && files.isEmpty()) {
-            item { EmptyState(Icons.Default.Folder, "No files yet", "Ask your coding agent to create something in this project.") }
+            item { EmptyState(Icons.Outlined.Folder, "No files yet", "Ask your coding agent to create something in this project.") }
         }
         items(files, key = { it.path }) { entry ->
             Row(
@@ -6147,7 +5260,7 @@ private fun FilesTab(files: List<WorkspaceEntry>, loading: Boolean, onRefresh: (
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    if (entry.isDirectory) Icons.Default.Folder else Icons.Default.Description,
+                    if (entry.isDirectory) Icons.Outlined.Folder else Icons.Outlined.Description,
                     null,
                     tint = if (entry.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -6165,124 +5278,6 @@ private fun formatFileSize(bytes: Long): String = when {
     bytes < 1_024 -> "$bytes B"
     bytes < 1_048_576 -> "%.1f KB".format(bytes / 1_024.0)
     else -> "%.1f MB".format(bytes / 1_048_576.0)
-}
-
-@Composable
-private fun ChangesTab(
-    changes: List<ChangeItem>,
-    onUndo: () -> Unit,
-    onKeep: () -> Unit,
-    onUndoFile: (String) -> Unit,
-    onKeepFile: (String) -> Unit,
-) {
-    var expandedPath by rememberSaveable { mutableStateOf<String?>(null) }
-    LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f),
-                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
-            ) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
-                    Text("Changes", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text("Review everything the AI changed.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-        if (changes.isEmpty()) item { EmptyState(Icons.Default.Code, "No changes yet", "Ask Mobile Harness to update your project.") }
-        items(changes, key = { it.path }) { change ->
-            val expanded = expandedPath == change.path
-            Card(Modifier.fillMaxWidth()) {
-                Column {
-                    Row(
-                        Modifier.fillMaxWidth().clickable { expandedPath = if (expanded) null else change.path }.padding(15.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(Icons.Default.Description, null)
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(change.path, fontWeight = FontWeight.Medium, maxLines = 1)
-                            Text(
-                                if (expanded) "Hide line-by-line diff" else "Tap to review diff",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Text("+${change.additions}", color = PocketGreen)
-                        Spacer(Modifier.width(7.dp))
-                        Text("-${change.deletions}", color = MaterialTheme.colorScheme.error)
-                    }
-                    if (expanded) {
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        Column(
-                            Modifier.fillMaxWidth().background(Color(0xFF0B0E14)).horizontalScroll(rememberScrollState()),
-                        ) {
-                            change.diffLines.forEach { line -> DiffLineRow(line) }
-                        }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        Row(
-                            Modifier.fillMaxWidth().padding(12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    expandedPath = null
-                                    onUndoFile(change.path)
-                                },
-                                modifier = Modifier.weight(1f),
-                            ) { Text("Undo file") }
-                            Button(
-                                onClick = {
-                                    expandedPath = null
-                                    onKeepFile(change.path)
-                                },
-                                modifier = Modifier.weight(1f),
-                            ) { Text("Keep file") }
-                        }
-                    }
-                }
-            }
-        }
-        if (changes.isNotEmpty()) item {
-            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                OutlinedButton(onClick = onUndo, Modifier.weight(1f)) { Text("Undo task") }
-                Button(onClick = onKeep, Modifier.weight(1f)) { Text("Keep changes") }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DiffLineRow(line: DiffLine) {
-    val marker = when (line.type) {
-        DiffLineType.ADDITION -> "+"
-        DiffLineType.DELETION -> "-"
-        DiffLineType.CONTEXT -> " "
-        DiffLineType.INFO -> "·"
-    }
-    val background = when (line.type) {
-        DiffLineType.ADDITION -> Color(0xFF123226)
-        DiffLineType.DELETION -> Color(0xFF3A1D22)
-        else -> Color.Transparent
-    }
-    val foreground = when (line.type) {
-        DiffLineType.ADDITION -> Color(0xFF83E6B8)
-        DiffLineType.DELETION -> Color(0xFFFFA4A4)
-        DiffLineType.INFO -> Color(0xFF8993A4)
-        DiffLineType.CONTEXT -> Color(0xFFD5DAE3)
-    }
-    val oldNumber = line.oldLine?.toString().orEmpty().padStart(4)
-    val newNumber = line.newLine?.toString().orEmpty().padStart(4)
-    Text(
-        text = "$oldNumber $newNumber  $marker ${line.text}",
-        modifier = Modifier.fillMaxWidth().background(background).padding(horizontal = 8.dp, vertical = 2.dp),
-        color = foreground,
-        fontFamily = FontFamily.Monospace,
-        fontSize = 11.sp,
-        lineHeight = 16.sp,
-        softWrap = false,
-    )
 }
 
 @Composable
@@ -6340,7 +5335,7 @@ private fun PreviewTab(ready: Boolean, url: String?) {
                         },
                         trailingIcon = {
                             IconButton(onClick = navigate) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Open URL")
+                                Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = "Open URL")
                             }
                         },
                         isError = addressError != null,
@@ -6354,7 +5349,7 @@ private fun PreviewTab(ready: Boolean, url: String?) {
                         onClick = { webView?.reload() ?: navigate() },
                         enabled = address.isNotBlank(),
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh preview")
+                        Icon(Icons.Outlined.Refresh, contentDescription = "Refresh preview")
                     }
                 }
                 if (addressError != null) {
@@ -6371,7 +5366,7 @@ private fun PreviewTab(ready: Boolean, url: String?) {
         }
         val targetUrl = activeUrl
         if (targetUrl == null) {
-            EmptyState(Icons.Default.PlayArrow, "Preview not running", "Enter a localhost URL above, or start a local web server in the project Terminal.")
+            EmptyState(Icons.Outlined.PlayArrow, "Preview not running", "Enter a localhost URL above, or start a local web server in the project Terminal.")
         } else {
             AndroidView(
                 factory = { context ->
@@ -6472,7 +5467,7 @@ private fun BrandMark(modifier: Modifier = Modifier, compact: Boolean = false) {
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            imageVector = Icons.Default.Terminal,
+            imageVector = Icons.Outlined.Terminal,
             contentDescription = "Mobile Harness",
             modifier = Modifier.size(iconSize),
             tint = primary,

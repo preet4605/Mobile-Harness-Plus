@@ -1,6 +1,7 @@
 package com.jarves.mh.ui.theme
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -52,6 +53,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.PI
+import kotlin.math.pow
 
 /**
  * Design tokens for the app-wide Liquid design language
@@ -174,14 +177,57 @@ fun Modifier.tactilePress(
         )
 }
 
-/** Shared motion tokens: one spring for press feedback and selection changes. */
+/**
+ * Shared motion tokens. Every UI animation is a spring, so it can be interrupted and keeps its
+ * velocity. Each token is a perceptual duration and bounce, converted with mass 1 as
+ * stiffness = (2π / duration)² and dampingRatio = 1 − bounce.
+ */
 object PocketMotion {
     const val PressScale: Float = 0.97f
 
-    fun <T> pressSpring() = spring<T>(dampingRatio = 0.6f, stiffness = 500f)
+    enum class Token(val durationSeconds: Float, val bounce: Float) {
+        /** Values that follow the finger: drag offsets, sheet detents while dragging. */
+        Track(0.20f, 0f),
 
-    /** Selection moves (segmented thumb, tab capsule): settles with only a hint of overshoot. */
-    fun <T> selectionSpring() = spring<T>(dampingRatio = 0.8f, stiffness = 400f)
+        /** Colour, opacity and small state changes; tab content cross-fades. */
+        Quick(0.25f, 0f),
+
+        /** Taps, toggles, the selection capsule, menus opening. */
+        Snappy(0.35f, 0.15f),
+
+        /** Push and pop navigation, presenting sheets. */
+        Smooth(0.45f, 0f),
+
+        /** Glass shape morphs. */
+        Morph(0.50f, 0.15f),
+
+        /** Settling after a fling. */
+        Release(0.50f, 0.30f),
+        ;
+
+        val stiffness: Float
+            get() = (2.0 * PI / durationSeconds).pow(2).toFloat()
+
+        val dampingRatio: Float
+            get() = 1f - bounce
+    }
+
+    /**
+     * Reduce motion (system "Remove animations"): springs lose their bounce and navigation
+     * slides become cross-fades. Set once at the app root from the glass config.
+     */
+    var reduced: Boolean by mutableStateOf(false)
+
+    fun <T> spec(token: Token, visibilityThreshold: T? = null): SpringSpec<T> = spring(
+        dampingRatio = if (reduced) 1f else token.dampingRatio,
+        stiffness = token.stiffness,
+        visibilityThreshold = visibilityThreshold,
+    )
+
+    fun <T> pressSpring() = spring<T>(dampingRatio = if (reduced) 1f else 0.6f, stiffness = 500f)
+
+    /** Selection moves (segmented thumb, tab capsule). */
+    fun <T> selectionSpring(): SpringSpec<T> = spec(Token.Snappy)
 }
 
 /**
