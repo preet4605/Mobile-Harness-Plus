@@ -68,6 +68,10 @@ import com.jarves.mh.runtime.AntigravityAuthController
 import com.jarves.mh.runtime.AntigravityAuthState
 import com.jarves.mh.runtime.AntigravityAuthStatus
 import com.jarves.mh.runtime.AntigravityRuntimeBridge
+import com.jarves.mh.runtime.discoverAntigravityModels
+import com.jarves.mh.runtime.reconcileAntigravityModelSelection
+import com.jarves.mh.runtime.antigravityEffortFromModel
+import com.jarves.mh.runtime.antigravityModelWithEffort
 import com.jarves.mh.runtime.NativeSpawnProcess
 import com.jarves.mh.runtime.RuntimeInstallProgress
 import com.jarves.mh.runtime.RuntimeInstaller
@@ -108,6 +112,8 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -138,15 +144,6 @@ internal fun sanitizeTerminalOutput(text: String): String = text
     .replace(ANSI_TERMINAL_SEQUENCE, "")
     .filter { it == '\n' || it == '\r' || it == '\t' || it.code >= 0x20 }
 
-private val ANTIGRAVITY_MODEL_EFFORT = Regex("^(.*)-(low|medium|high)$")
-
-private fun antigravityEffortFromModel(model: String): String? =
-    ANTIGRAVITY_MODEL_EFFORT.matchEntire(model)?.groupValues?.get(2)
-
-private fun antigravityModelWithEffort(model: String, effort: String): String? {
-    val match = ANTIGRAVITY_MODEL_EFFORT.matchEntire(model) ?: return null
-    return "${match.groupValues[1]}-$effort"
-}
 
 private data class ProjectTerminalSnapshot(
     val lines: List<TerminalOutputLine> = emptyList(),
@@ -1985,64 +1982,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var antigravityModelRefreshJob: Job? = null
+
     fun refreshAntigravityModels() {
-        if (_state.value.antigravityModelsLoading || !installer.isAgentInstalled(AgentKind.ANTIGRAVITY)) return
+        if (antigravityModelRefreshJob?.isActive == true || _state.value.antigravityModelsLoading || !installer.isAgentInstalled(AgentKind.ANTIGRAVITY)) return
         _state.update { it.copy(antigravityModelsLoading = true) }
-        viewModelScope.launch(Dispatchers.IO) {
-            launch { runCatching { antigravityAccountManager.refreshAllAccountQuotas() } }
-            val result = runCatching {
-                val runtime = installer.installedRuntime()
-                val workspace = File(getApplication<Application>().filesDir, "workspaces/antigravity-models").apply { mkdirs() }
-                val account = antigravityAccountManager.selectAccountForTurn()
-                val env = if (account != null) {
-                    mapOf("HOME" to antigravityAccountManager.getAccountHomeGuestPath(account.id))
-                } else emptyMap()
-                val process = installer.process(
-                    runtime.proot,
-                    runtime.rootfs,
-                    workspace,
-                    env,
-                    listOf(com.jarves.mh.runtime.RuntimeInstaller.AGY_GUEST_PATH, "models"),
-                    guestWorkspacePath = "/workspace/antigravity-models",
-                    emulateHardLinks = false,
-                )
-                while (process.isAlive) delay(50)
-                check(process.waitFor() == 0) { "Could not list Antigravity models" }
-                val output = (process as? NativeSpawnProcess)?.outputFile?.readText().orEmpty()
-                output.lineSequence()
-                    .map { sanitizeTerminalOutput(it).trim() }
-                    .mapNotNull { line -> line.split(Regex("\\s+"), limit = 2).firstOrNull() }
-                    .filter { it.matches(Regex("[a-z0-9][a-z0-9._-]+")) }
-                    .distinct()
-                    .toList()
-                    .also { check(it.isNotEmpty()) { "Antigravity returned no models" } }
-            }
-            withContext(Dispatchers.Main) {
-                _state.update { current ->
-                    result.fold(
-                        onSuccess = { models ->
-                            val preferred = antigravityModelWithEffort(
-                                current.antigravityModel,
-                                current.antigravityEffort,
-                            )?.takeIf(models::contains)
-                            val selected = preferred
-                                ?: current.antigravityModel.takeIf(models::contains)
-                                ?: models.first()
-                            val selectedEffort = antigravityEffortFromModel(selected) ?: current.antigravityEffort
-                            preferences.antigravityModel = selected
-                            preferences.antigravityEffort = selectedEffort
-                            current.copy(
-                                antigravityModelsLoading = false,
-                                antigravityModels = models,
-                                antigravityModel = selected,
-                                antigravityEffort = selectedEffort,
-                            )
-                        },
-                        onFailure = { error -> current.copy(
-                            antigravityModelsLoading = false,
-                            toastMessage = error.message ?: "Could not load Antigravity models",
-                        ) },
+        antigravityModelRefreshJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                launch { runCatching { antigravityAccountManager.refreshAllAccountQuotas() } }
+                val result = runCatching {
+                    discoverAntigravityModels(
+                        installer = installer,
+                        accountManager = antigravityAccountManager,
+                        workspaceDir = File(getApplication<Application>().filesDir, "workspaces/antigravity-models"),
+                        cacheDir = getApplication<Application>().cacheDir,
                     )
+                }
+                withContext(Dispatchers.Main) {
+                    _state.update { current ->
+                        result.fold(
+                            onSuccess = { models ->
+                                val (selected, selectedEffort) = reconcileAntigravityModelSelection(
+                                    currentModel = current.antigravityModel,
+                                    currentEffort = current.antigravityEffort,
+                                    availableModels = models,
+                                )
+                                preferences.antigravityModel = selected
+                                preferences.antigravityEffort = selectedEffort
+                                current.copy(
+                                    antigravityModelsLoading = false,
+                                    antigravityModels = models,
+                                    antigravityModel = selected,
+                                    antigravityEffort = selectedEffort,
+                                )
+                            },
+                            onFailure = { error ->
+                                current.copy(
+                                    antigravityModelsLoading = false,
+                                    toastMessage = error.message ?: "Could not load Antigravity models",
+                                )
+                            },
+                        )
+                    }
+                }
+            } finally {
+                withContext(NonCancellable) {
+                    withContext(Dispatchers.Main) {
+                        if (_state.value.antigravityModelsLoading) {
+                            _state.update { it.copy(antigravityModelsLoading = false) }
+                        }
+                    }
                 }
             }
         }

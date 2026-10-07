@@ -1004,7 +1004,9 @@ internal fun isAuthError(raw: String): Boolean {
     return value.contains("authentication required") ||
         value.contains("authentication failed") ||
         value.contains("not signed in") ||
-        value.contains("oauth")
+        value.contains("oauth") ||
+        value.contains("invalid_grant") ||
+        value.contains("unauthorized")
 }
 
 internal fun isNetworkError(raw: String): Boolean {
