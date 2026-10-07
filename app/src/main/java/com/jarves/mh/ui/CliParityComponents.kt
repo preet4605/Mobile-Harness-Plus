@@ -180,7 +180,7 @@ fun SlashCommandMenu(
                             Icons.Default.Code,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
-                            tint = PocketOrange,
+                            tint = MaterialTheme.colorScheme.primary,
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
@@ -410,7 +410,7 @@ fun MentionMenu(
                             imageVector = if (entry.isDirectory) Icons.Default.Folder else Icons.Default.Description,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
-                            tint = if (entry.isDirectory) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = if (entry.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
@@ -540,14 +540,14 @@ fun AuxiliaryInspectorSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Layers, null, tint = PocketOrange, modifier = Modifier.size(22.dp))
+                    Icon(Icons.Default.Layers, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
                     Spacer(Modifier.width(10.dp))
                     Text("Agent & Tasks Inspector", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (onOpenMemoryViewer != null) {
                         IconButton(onClick = onOpenMemoryViewer) {
-                            Icon(Icons.Default.Psychology, contentDescription = "Persistent Memory", tint = PocketOrange)
+                            Icon(Icons.Default.Psychology, contentDescription = "Persistent Memory", tint = MaterialTheme.colorScheme.primary)
                         }
                     }
                     IconButton(onClick = onDismiss) {
@@ -703,12 +703,12 @@ private fun SubagentsView(
 private fun SubagentStateBadge(state: SubagentState) {
     val (label, bg, fg) = when (state) {
         SubagentState.RUNNING -> Triple("Running", PocketGreen.copy(alpha = 0.15f), PocketGreen)
-        SubagentState.WAITING_FOR_INPUT -> Triple("Waiting Input", PocketOrange.copy(alpha = 0.15f), PocketOrange)
+        SubagentState.WAITING_FOR_INPUT -> Triple("Waiting Input", MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), MaterialTheme.colorScheme.primary)
         SubagentState.WAITING_FOR_DEPENDENTS -> Triple("Waiting Peer", PocketBlue.copy(alpha = 0.15f), PocketBlue)
         SubagentState.DONE -> Triple("Completed", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant)
         SubagentState.ERRORED -> Triple("Error", Color(0xFFEA4335).copy(alpha = 0.15f), Color(0xFFEA4335))
         SubagentState.IDLE -> Triple("Idle", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant)
-        SubagentState.TERMINATED -> Triple("Stopped", PocketOrange.copy(alpha = 0.15f), PocketOrange)
+        SubagentState.TERMINATED -> Triple("Stopped", MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), MaterialTheme.colorScheme.primary)
     }
 
     Surface(shape = RoundedCornerShape(6.dp), color = bg) {
@@ -786,7 +786,7 @@ private fun BackgroundTasksView(
                                     fontWeight = FontWeight.SemiBold,
                                     color = when (task.status) {
                                         BackgroundTaskStatus.RUNNING -> PocketGreen
-                                        BackgroundTaskStatus.TERMINATED -> PocketOrange
+                                        BackgroundTaskStatus.TERMINATED -> MaterialTheme.colorScheme.primary
                                         BackgroundTaskStatus.FAILED -> MaterialTheme.colorScheme.error
                                         BackgroundTaskStatus.COMPLETED -> MaterialTheme.colorScheme.onSurfaceVariant
                                     },
@@ -909,7 +909,7 @@ private fun TimersView(timers: List<ScheduledTimerInfo>) {
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Text(if (timer.isCron) "Recurring Schedule" else "One-shot Timer", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Text("${timer.remainingSeconds}s remaining", fontSize = 12.sp, color = PocketOrange, fontWeight = FontWeight.SemiBold)
+                        Text("${timer.remainingSeconds}s remaining", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(timer.prompt, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -959,7 +959,7 @@ fun SkillsManagerDialog(
         title = {
             Column(Modifier.fillMaxWidth()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.AutoAwesome, null, tint = PocketOrange, modifier = Modifier.size(22.dp))
+                    Icon(Icons.Default.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Skills & Rules Hub", fontWeight = FontWeight.Bold, fontSize = 18.sp)
                 }
@@ -1077,7 +1077,7 @@ fun SkillsManagerDialog(
                                                         onClick = { onPromoteRule(File(rule.filePath), rule.name) },
                                                         modifier = Modifier.size(28.dp),
                                                     ) {
-                                                        Icon(Icons.Default.AutoAwesome, "Promote to Global", tint = PocketOrange, modifier = Modifier.size(16.dp))
+                                                        Icon(Icons.Default.AutoAwesome, "Promote to Global", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                                                     }
                                                     IconButton(
                                                         onClick = { expandedRuleId = if (isExpanded) null else rule.id },
@@ -1129,7 +1129,7 @@ fun SkillsManagerDialog(
                                 val isExpanded = expandedRuleId == rule.id
                                 val domainColor = when {
                                     rule.name.contains("coding") || rule.name.contains("architect") -> PocketBlue
-                                    rule.name.contains("design") -> PocketOrange
+                                    rule.name.contains("design") -> MaterialTheme.colorScheme.primary
                                     rule.name.contains("debug") -> PocketGreen
                                     rule.name.contains("perf") -> Color(0xFFAB47BC)
                                     rule.name.contains("sec") -> Color(0xFFEF5350)
@@ -1259,7 +1259,7 @@ fun SkillsManagerDialog(
                                                 val badgeColor = when (skill.source) {
                                                     SkillSource.PROJECT -> PocketBlue
                                                     SkillSource.LINKED -> PocketGreen
-                                                    SkillSource.GLOBAL -> PocketOrange
+                                                    SkillSource.GLOBAL -> MaterialTheme.colorScheme.primary
                                                     SkillSource.BUNDLED -> MaterialTheme.colorScheme.secondary
                                                     SkillSource.OTHER_PROJECT -> MaterialTheme.colorScheme.primary
                                                 }
@@ -1309,7 +1309,7 @@ fun SkillsManagerDialog(
                                                                 TextButton(
                                                                     onClick = { onPromoteSkill(File(skill.filePath).parentFile ?: File(skill.filePath), skill.name) },
                                                                 ) {
-                                                                    Text("Make Global", fontSize = 10.sp, color = PocketOrange)
+                                                                    Text("Make Global", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
                                                                 }
                                                             } else if (skill.source == SkillSource.LINKED) {
                                                                 TextButton(
@@ -1389,7 +1389,7 @@ fun SkillsManagerDialog(
                                                     Column(Modifier.weight(1f)) {
                                                         Text(skill.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                                         Text(skill.description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                                        Text("Source: ${skill.source.title}", fontSize = 10.sp, color = PocketOrange)
+                                                        Text("Source: ${skill.source.title}", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
                                                     }
                                                     Switch(
                                                         checked = isEnabled,
@@ -1871,7 +1871,7 @@ fun TaskLogViewerDialog(
                                 BackgroundTaskStatus.RUNNING -> PocketGreen.copy(alpha = 0.15f)
                                 BackgroundTaskStatus.COMPLETED -> MaterialTheme.colorScheme.surfaceVariant
                                 BackgroundTaskStatus.FAILED -> MaterialTheme.colorScheme.errorContainer
-                                BackgroundTaskStatus.TERMINATED -> PocketOrange.copy(alpha = 0.15f)
+                                BackgroundTaskStatus.TERMINATED -> MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
                             },
                         ) {
                             Text(
@@ -1883,7 +1883,7 @@ fun TaskLogViewerDialog(
                                     BackgroundTaskStatus.RUNNING -> PocketGreen
                                     BackgroundTaskStatus.COMPLETED -> MaterialTheme.colorScheme.onSurfaceVariant
                                     BackgroundTaskStatus.FAILED -> MaterialTheme.colorScheme.error
-                                    BackgroundTaskStatus.TERMINATED -> PocketOrange
+                                    BackgroundTaskStatus.TERMINATED -> MaterialTheme.colorScheme.primary
                                 },
                             )
                         }

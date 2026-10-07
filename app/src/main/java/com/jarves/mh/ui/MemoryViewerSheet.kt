@@ -106,13 +106,13 @@ fun MemoryViewerSheet(
                         Modifier
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(PocketOrange.copy(alpha = 0.15f)),
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
                             Icons.Default.Psychology,
                             contentDescription = null,
-                            tint = PocketOrange,
+                            tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(22.dp),
                         )
                     }
@@ -127,14 +127,14 @@ fun MemoryViewerSheet(
                             Spacer(Modifier.width(8.dp))
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
-                                color = PocketOrange.copy(alpha = 0.2f),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
                             ) {
                                 Text(
                                     "${memory.entries.size}",
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = PocketOrange,
+                                    color = MaterialTheme.colorScheme.primary,
                                 )
                             }
                         }
@@ -164,9 +164,9 @@ fun MemoryViewerSheet(
                     OutlinedButton(
                         onClick = { showAddForm = !showAddForm },
                         colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = if (showAddForm) PocketOrange else MaterialTheme.colorScheme.onSurface,
+                            contentColor = if (showAddForm) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                         ),
-                        border = BorderStroke(1.dp, if (showAddForm) PocketOrange else PocketOutline),
+                        border = BorderStroke(1.dp, if (showAddForm) MaterialTheme.colorScheme.primary else PocketOutline),
                         shape = RoundedCornerShape(8.dp),
                     ) {
                         Icon(
@@ -224,7 +224,7 @@ fun MemoryViewerSheet(
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = PocketOrange,
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
                                 unfocusedBorderColor = PocketOutline,
                             ),
                             textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
@@ -237,7 +237,7 @@ fun MemoryViewerSheet(
                             maxLines = 3,
                             modifier = Modifier.fillMaxWidth(),
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = PocketOrange,
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
                                 unfocusedBorderColor = PocketOutline,
                             ),
                         )
@@ -258,7 +258,7 @@ fun MemoryViewerSheet(
                                     }
                                 },
                                 enabled = newKey.isNotBlank() && newValue.isNotBlank(),
-                                colors = ButtonDefaults.buttonColors(containerColor = PocketOrange),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                                 shape = RoundedCornerShape(8.dp),
                             ) {
                                 Text("Save Fact", fontSize = 12.sp)
@@ -345,7 +345,7 @@ private fun MemoryEntryTile(
                 ) {
                     // Source badge
                     val isAuto = entry.source == MemorySource.AUTO
-                    val sourceColor = if (isAuto) PocketGreen else PocketOrange
+                    val sourceColor = if (isAuto) PocketGreen else MaterialTheme.colorScheme.primary
                     Surface(
                         shape = RoundedCornerShape(6.dp),
                         color = sourceColor.copy(alpha = 0.15f),

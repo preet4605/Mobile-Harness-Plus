@@ -2,6 +2,7 @@ package com.jarves.mh.ui.theme.glass
 
 import android.os.Build
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
@@ -30,6 +31,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.jarves.mh.ui.theme.PocketMotion
 import com.jarves.mh.ui.theme.PocketPalette
 
 /**
@@ -58,8 +60,7 @@ fun LiquidGlassSurface(
 ) {
     val config = LocalLiquidGlassConfig.current
     val isDark = isGlassDarkTheme()
-    val defaultContentColor = if (isDark) Color.White else Color(0xFF0F172A)
-    val effectiveContentColor = contentColor ?: defaultContentColor
+    val effectiveContentColor = contentColor ?: MaterialTheme.colorScheme.onSurface
 
     if (!config.isGlassActive) {
         // High-contrast, accessibility-safe fallback surface
@@ -87,9 +88,7 @@ fun LiquidGlassSurface(
     }
 
     // Active Liquid Glass surface
-    val resolvedTint = tint ?: if (isDark) LiquidGlassTokens.DarkGlassTint else LiquidGlassTokens.LightGlassTint
-    val rimColor = if (isDark) LiquidGlassTokens.GlassRimDark else LiquidGlassTokens.GlassRimLight
-    val borderColor = if (isDark) LiquidGlassTokens.GlassBorderDark else LiquidGlassTokens.GlassBorderLight
+    val resolvedTint = tint ?: LiquidGlassTokens.wash(material, isDark)
 
     var surfaceModifier = modifier.clip(shape)
 
@@ -102,19 +101,29 @@ fun LiquidGlassSurface(
             // A GlassRole sets only the blur strength; tint, sheen and rim stay this shared recipe.
             blurDp = role?.blurDp ?: material.blurRadius.coerceAtMost(24f),
             tint = Color.Transparent,
+            // The rim is drawn once, below, for both the live-backdrop and tint-only paths.
+            drawRim = false,
         )
     }
 
-    // Apple-style glass: translucent tint, soft vertical sheen, and a specular rim that is
+    // Glass: neutral wash, soft vertical sheen, and one specular rim that is
     // brightest at the top-leading edge and fades toward the bottom-trailing edge.
     val sheenTop = if (isDark) Color(0x1FFFFFFF) else Color(0x66FFFFFF)
-    val specular = if (isDark) Color(0x66FFFFFF) else Color(0xCCFFFFFF)
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
     val pressScale by animateFloatAsState(
-        targetValue = if (pressed && onClick != null) 0.97f else 1f,
-        animationSpec = spring(dampingRatio = 0.6f, stiffness = 500f),
+        targetValue = if (pressed && onClick != null) PocketMotion.PressScale else 1f,
+        animationSpec = PocketMotion.pressSpring(),
         label = "liquidGlassPressScale",
+    )
+    val pressHighlight by animateColorAsState(
+        targetValue = when {
+            !pressed || onClick == null -> Color.Transparent
+            isDark -> LiquidGlassTokens.PressHighlightDark
+            else -> LiquidGlassTokens.PressHighlightLight
+        },
+        animationSpec = PocketMotion.pressSpring(),
+        label = "liquidGlassPressHighlight",
     )
 
     surfaceModifier = surfaceModifier
@@ -126,17 +135,9 @@ fun LiquidGlassSurface(
                 1f to Color.Transparent,
             ),
         )
+        .background(pressHighlight)
         .border(
-            borderStroke ?: BorderStroke(
-                0.75.dp,
-                Brush.linearGradient(
-                    0f to specular,
-                    0.45f to borderColor,
-                    1f to rimColor.copy(alpha = rimColor.alpha * 0.6f),
-                    start = Offset.Zero,
-                    end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
-                ),
-            ),
+            borderStroke ?: BorderStroke(0.75.dp, glassRimBrush(isDark)),
             shape,
         )
 

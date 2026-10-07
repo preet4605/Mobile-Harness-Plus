@@ -134,19 +134,47 @@ object LiquidGlassTokens {
     val StainedBlue = PocketBlue.copy(alpha = 0.18f)
     val StainedGreen = PocketGreen.copy(alpha = 0.18f)
 
-    // Neutral monochrome tints for light and dark modes
-    val DarkGlassTint = Color(0x33151D28)
-    val LightGlassTint = Color(0x55FFFFFF)
+    // Neutral monochrome tints for light and dark modes (UltraThin-strength defaults)
+    val DarkGlassTint = Color(0x2E1C1C1E)
+    val LightGlassTint = Color(0x47FFFFFF)
+
+    /** Neutral wash bases: glass has no colour of its own, only a luminance-matched wash. */
+    val DarkGlassBase = Color(0xFF1C1C1E)
+    val LightGlassBase = Color(0xFFFFFFFF)
 
     // Border highlights for physical liquid glass rim
     val GlassRimLight = Color(0x77FFFFFF)
     val GlassRimDark = Color(0x33FFFFFF)
-    val GlassBorderLight = Color(0x3DB0BEC5)
-    val GlassBorderDark = Color(0x3D64748B)
+    val GlassBorderLight = Color(0x14000000)
+    val GlassBorderDark = Color(0x1FFFFFFF)
 
-    // Standard HIG touch-target and radius tokens
+    // Selection capsule on glass (neutral, the accent goes on the icon/label)
+    val SelectionDark = Color(0x1FFFFFFF)
+    val SelectionLight = Color(0x0F000000)
+
+    // Press highlight: glass brightens slightly under the finger
+    val PressHighlightDark = Color(0x14FFFFFF)
+    val PressHighlightLight = Color(0x0D000000)
+
+    // Standard touch-target and radius tokens (concentric with PocketRadius)
     val MinTouchTarget: Dp = 44.dp
     val ControlRadius: Dp = 14.dp
     val PillRadius: Dp = 999.dp
-    val SheetRadius: Dp = 24.dp
+    val SheetRadius: Dp = 28.dp
+
+    /**
+     * Default neutral wash for [material]. Thicker materials are more opaque for legibility;
+     * the same wash is used over a live backdrop and in tint-only glass.
+     */
+    fun wash(material: LiquidGlassMaterial, isDark: Boolean): Color {
+        val alpha = when (material) {
+            LiquidGlassMaterial.Clear -> if (isDark) 0.10f else 0.16f
+            LiquidGlassMaterial.UltraThin -> if (isDark) 0.18f else 0.28f
+            LiquidGlassMaterial.Thin -> if (isDark) 0.28f else 0.40f
+            LiquidGlassMaterial.Regular -> if (isDark) 0.36f else 0.50f
+            LiquidGlassMaterial.Thick -> if (isDark) 0.58f else 0.70f
+            is LiquidGlassMaterial.Custom -> material.defaultAlpha
+        }
+        return (if (isDark) DarkGlassBase else LightGlassBase).copy(alpha = alpha)
+    }
 }

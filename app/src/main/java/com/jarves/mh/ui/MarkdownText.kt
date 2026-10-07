@@ -47,7 +47,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.jarves.mh.ui.theme.PocketOrange
+import com.jarves.mh.ui.theme.PocketRadius
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -121,7 +121,7 @@ private fun BulletBlock(item: MarkdownBlock.BulletItem, color: Color) {
             modifier = Modifier
                 .padding(top = 8.dp, end = 8.dp)
                 .size(5.dp)
-                .background(PocketOrange, CircleShape),
+                .background(MaterialTheme.colorScheme.onSurfaceVariant, CircleShape),
         )
         Text(
             text = formatInlineMarkdown(item.text),
@@ -140,7 +140,7 @@ private fun NumberedBlock(item: MarkdownBlock.NumberedItem, color: Color) {
     ) {
         Text(
             text = item.number,
-            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = PocketOrange),
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant),
             modifier = Modifier.padding(end = 6.dp),
         )
         Text(
@@ -166,7 +166,7 @@ private fun QuoteBlock(quote: MarkdownBlock.BlockQuote) {
             modifier = Modifier
                 .width(3.dp)
                 .height(24.dp)
-                .background(PocketOrange, RoundedCornerShape(2.dp)),
+                .background(MaterialTheme.colorScheme.outline, RoundedCornerShape(2.dp)),
         )
         Spacer(Modifier.width(10.dp))
         Text(
@@ -185,28 +185,29 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
     var copied by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
+    // Code is content: a solid neutral surface that follows the app theme.
+    val scheme = MaterialTheme.colorScheme
+    val codeShape = RoundedCornerShape(PocketRadius.md)
     Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = Color(0xFF14171E),
+        shape = codeShape,
+        color = scheme.surface,
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, Color(0xFF2A2E39), RoundedCornerShape(12.dp)),
+            .border(0.5.dp, scheme.outlineVariant, codeShape),
     ) {
         Column {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFF1C202B))
+                    .background(scheme.surfaceVariant.copy(alpha = 0.5f))
                     .padding(horizontal = 12.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     text = block.language.ifBlank { "code" },
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color(0xFF9AA0A6),
-                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = scheme.onSurfaceVariant,
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val shellLanguage = block.language.lowercase() in setOf("", "bash", "sh", "shell", "zsh", "console", "terminal")
@@ -218,7 +219,7 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
                             Icon(
                                 Icons.Default.PlayArrow,
                                 contentDescription = "Run in project terminal",
-                                tint = PocketOrange,
+                                tint = scheme.primary,
                                 modifier = Modifier.size(18.dp),
                             )
                         }
@@ -237,7 +238,7 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
                         Icon(
                             imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
                             contentDescription = "Copy code",
-                            tint = if (copied) PocketOrange else Color(0xFF9AA0A6),
+                            tint = if (copied) scheme.tertiary else scheme.onSurfaceVariant,
                             modifier = Modifier.size(16.dp),
                         )
                     }
@@ -254,7 +255,7 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
                     fontFamily = FontFamily.Monospace,
                     fontSize = 13.sp,
                     lineHeight = 19.sp,
-                    color = Color(0xFFE2E8F0),
+                    color = scheme.onSurface,
                 )
             }
         }
@@ -404,7 +405,7 @@ internal fun buildInlineMarkdown(
 @Composable
 private fun formatInlineMarkdown(text: String): AnnotatedString {
     val codeBg = MaterialTheme.colorScheme.surfaceVariant
-    val codeColor = PocketOrange
+    val codeColor = MaterialTheme.colorScheme.onSurface
     val primaryColor = MaterialTheme.colorScheme.primary
 
     return remember(text, codeBg, codeColor, primaryColor) {

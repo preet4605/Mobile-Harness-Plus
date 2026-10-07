@@ -9,7 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,13 +35,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
@@ -52,9 +54,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * Dense Minimalist & Premium Utility Design Tokens.
- * Combines Editorial Minimalism, Dense Information Design, Soft-Card Neumorphic Cues,
- * and Apple/Bento Modular Composition.
+ * Design tokens for the app-wide Liquid design language
+ * (spec: project files design/liquid-design-language-2026-10-07.md).
+ * Solid neutral content surfaces, concentric radii, a 4-pt spacing scale.
  */
 object PocketSpacing {
     val xxs: Dp = 2.dp
@@ -67,31 +69,32 @@ object PocketSpacing {
     val jumbo: Dp = 32.dp
 }
 
+/** Concentric radius scale; also backs MaterialTheme.shapes (extraSmall → extraLarge). */
 object PocketRadius {
     val xs: Dp = 6.dp
-    val sm: Dp = 8.dp
+    val sm: Dp = 10.dp
     val md: Dp = 14.dp
-    val lg: Dp = 18.dp
-    val xl: Dp = 24.dp
+    val lg: Dp = 20.dp
+    val xl: Dp = 28.dp
     val full: Dp = 999.dp
 }
 
 object PocketPalette {
-    // Canvas background
-    val darkCanvas = Color(0xFF0B0E14)
-    val lightCanvas = Color(0xFFF8FAFC)
+    // Canvas background (matches colorScheme.background)
+    val darkCanvas = Color(0xFF000000)
+    val lightCanvas = Color(0xFFF2F2F7)
 
-    // Soft-card surfaces
-    val darkCardSurface = Color(0xFF131821)
+    // Solid content surfaces (matches colorScheme.surface)
+    val darkCardSurface = Color(0xFF1C1C1E)
     val lightCardSurface = Color(0xFFFFFFFF)
 
-    // Secondary/Nested tile surfaces
-    val darkTileSurface = Color(0xFF19202C)
-    val lightTileSurface = Color(0xFFF1F5F9)
+    // Secondary/Nested tile surfaces (matches colorScheme.surfaceVariant)
+    val darkTileSurface = Color(0xFF2C2C2E)
+    val lightTileSurface = Color(0xFFE9E9EE)
 
     // Hairline borders
-    val darkBorder = Color(0xFF222B38)
-    val lightBorder = Color(0xFFE2E8F0)
+    val darkBorder = Color(0xFF2C2C2E)
+    val lightBorder = Color(0xFFE5E5EA)
 
     // Top-edge light bevel highlight (subtle neumorphic rim)
     val darkRimHighlight = Color(0x14FFFFFF) // 8% white
@@ -109,41 +112,36 @@ object PocketPalette {
 }
 
 /**
- * Modifier that applies the Soft-Card UI styling:
- * Smooth rounded corners, diffuse ambient shadow, hairline border, and a subtle
- * top-edge light rim bevel for physical, tactile presence.
+ * Solid content card: neutral surface, hairline border, optional soft shadow (0 by default,
+ * content cards sit flat on the grouped canvas).
  */
 @Composable
 fun Modifier.softCard(
     shape: Shape = RoundedCornerShape(PocketRadius.lg),
-    elevation: Dp = 2.dp,
-    isDark: Boolean = isSystemInDarkTheme(),
+    elevation: Dp = 0.dp,
+    isDark: Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f,
     onClick: (() -> Unit)? = null,
 ): Modifier {
     val surfaceColor = if (isDark) PocketPalette.darkCardSurface else PocketPalette.lightCardSurface
     val borderColor = if (isDark) PocketPalette.darkBorder else PocketPalette.lightBorder
-    val rimColor = if (isDark) PocketPalette.darkRimHighlight else PocketPalette.lightRimHighlight
     val shadowColor = if (isDark) PocketPalette.darkShadow else PocketPalette.lightShadow
 
     var base = this
-        .shadow(
-            elevation = elevation,
-            shape = shape,
-            ambientColor = shadowColor,
-            spotColor = shadowColor,
+        .then(
+            if (elevation > 0.dp) {
+                Modifier.shadow(
+                    elevation = elevation,
+                    shape = shape,
+                    ambientColor = shadowColor,
+                    spotColor = shadowColor,
+                )
+            } else {
+                Modifier
+            },
         )
         .clip(shape)
         .background(surfaceColor)
-        .border(BorderStroke(1.dp, borderColor), shape)
-        .drawBehind {
-            // Draw 1dp subtle top-edge rim highlight
-            drawLine(
-                color = rimColor,
-                start = Offset(0f, 1f),
-                end = Offset(size.width, 1f),
-                strokeWidth = 2f,
-            )
-        }
+        .border(BorderStroke(0.5.dp, borderColor), shape)
 
     if (onClick != null) {
         base = base.tactilePress(onClick = onClick)
@@ -151,16 +149,39 @@ fun Modifier.softCard(
     return base
 }
 
+/** Click with the shared press response: a 0.97 spring scale instead of a ripple. */
 @Composable
 fun Modifier.tactilePress(
     onClick: () -> Unit,
 ): Modifier {
     val interactionSource = remember { MutableInteractionSource() }
-    return this.clickable(
-        interactionSource = interactionSource,
-        indication = null,
-        onClick = onClick,
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) PocketMotion.PressScale else 1f,
+        animationSpec = PocketMotion.pressSpring(),
+        label = "tactilePressScale",
     )
+    return this
+        .graphicsLayer {
+            scaleX = scale
+            scaleY = scale
+        }
+        .clickable(
+            interactionSource = interactionSource,
+            indication = null,
+            role = Role.Button,
+            onClick = onClick,
+        )
+}
+
+/** Shared motion tokens: one spring for press feedback and selection changes. */
+object PocketMotion {
+    const val PressScale: Float = 0.97f
+
+    fun <T> pressSpring() = spring<T>(dampingRatio = 0.6f, stiffness = 500f)
+
+    /** Selection moves (segmented thumb, tab capsule): settles with only a hint of overshoot. */
+    fun <T> selectionSpring() = spring<T>(dampingRatio = 0.8f, stiffness = 400f)
 }
 
 /**
@@ -176,10 +197,9 @@ fun BentoTile(
     iconTint: Color = PocketPalette.orangeAccent,
     badgeText: String? = null,
     badgeColor: Color = PocketPalette.blueAccent,
-    isDark: Boolean = isSystemInDarkTheme(),
+    isDark: Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f,
     onClick: (() -> Unit)? = null,
 ) {
-    val tileSurface = if (isDark) PocketPalette.darkTileSurface else PocketPalette.lightTileSurface
     val textPrimary = MaterialTheme.colorScheme.onSurface
     val textSecondary = MaterialTheme.colorScheme.onSurfaceVariant
 
@@ -187,7 +207,6 @@ fun BentoTile(
         modifier = modifier
             .softCard(
                 shape = RoundedCornerShape(PocketRadius.lg),
-                elevation = 1.dp,
                 isDark = isDark,
                 onClick = onClick,
             )
@@ -205,8 +224,8 @@ fun BentoTile(
                 ) {
                     if (icon != null) {
                         Surface(
-                            shape = RoundedCornerShape(PocketRadius.sm),
-                            color = iconTint.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(PocketRadius.xs),
+                            color = iconTint.copy(alpha = 0.14f),
                             modifier = Modifier.size(26.dp),
                         ) {
                             Box(contentAlignment = Alignment.Center) {
@@ -225,7 +244,6 @@ fun BentoTile(
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = textSecondary,
-                        fontSize = 11.5.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -244,9 +262,7 @@ fun BentoTile(
             Text(
                 text = value,
                 style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
                 color = textPrimary,
-                fontSize = 16.sp,
             )
 
             if (!subtitle.isNullOrBlank()) {
@@ -255,7 +271,6 @@ fun BentoTile(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
                     color = textSecondary,
-                    fontSize = 11.sp,
                     maxLines = 1,
                 )
             }
@@ -323,8 +338,7 @@ fun TactileActionButton(
         enabled = enabled,
         shape = shape,
         color = containerColor,
-        shadowElevation = if (primary) 2.dp else 1.dp,
-        border = if (!primary) BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant) else null,
+        border = if (!primary) BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant) else null,
         modifier = modifier.height(44.dp),
     ) {
         Row(
@@ -339,8 +353,7 @@ fun TactileActionButton(
             Text(
                 text = text,
                 color = contentColor,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 13.sp,
+                style = MaterialTheme.typography.labelLarge,
             )
         }
     }

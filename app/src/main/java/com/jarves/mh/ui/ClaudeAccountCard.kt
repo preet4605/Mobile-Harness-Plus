@@ -69,7 +69,7 @@ internal fun ClaudeAccountCard(
 
             when (auth.status) {
                 ClaudeAuthStatusState.SIGNED_IN -> {
-                    Text(auth.displayStatus, fontSize = 13.sp, color = PocketOrange, fontWeight = FontWeight.Medium)
+                    Text(auth.displayStatus, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
                     Text(
                         "Claude Code uses your subscription directly. No API key or token is stored by the app.",
                         fontSize = 11.sp,

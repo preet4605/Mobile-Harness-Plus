@@ -247,6 +247,8 @@ import kotlinx.coroutines.launch
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import com.jarves.mh.data.AppPreferences
 import com.jarves.mh.ui.theme.glass.GlassRoles
 import com.jarves.mh.ui.theme.glass.LiquidGlassCard
@@ -261,14 +263,12 @@ import com.jarves.mh.ui.theme.glass.LiquidGlassSurface
 import com.jarves.mh.ui.theme.glass.LiquidGlassTokens
 import com.jarves.mh.ui.theme.glass.LiquidGlassTopBar
 import com.jarves.mh.ui.theme.glass.LocalLiquidGlassBackdrop
-import com.jarves.mh.ui.theme.glass.asBackdropSource
 import com.jarves.mh.ui.theme.glass.hostBackdropSource
 import com.jarves.mh.ui.theme.glass.isGlassDarkTheme
 
 import com.jarves.mh.ui.theme.AppThemeMode
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material3.ExtendedFloatingActionButton
 
 private enum class RootScreen(val label: String, val icon: ImageVector) {
     PROJECTS("Projects", Icons.Default.Folder),
@@ -1429,13 +1429,13 @@ private fun AgentChoiceRow(
                 if (agent == AgentKind.DEEPSEEK_HARNESS) {
                     Spacer(Modifier.width(7.dp))
                     Surface(
-                        color = PocketOrange.copy(alpha = 0.14f),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
                         shape = RoundedCornerShape(50),
                     ) {
                         Text(
                             "Recommended",
                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
-                            color = PocketOrange,
+                            color = MaterialTheme.colorScheme.primary,
                             fontSize = 9.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -1597,7 +1597,7 @@ private fun RuntimeInstallationScreen(
                     "STEP 1 OF 3",
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
-                    color = PocketOrange,
+                    color = MaterialTheme.colorScheme.primary,
                     letterSpacing = 1.1.sp,
                 )
                 Spacer(Modifier.weight(1f))
@@ -2154,14 +2154,28 @@ private fun RootScreenHost(
                     horizontalAlignment = Alignment.End,
                 ) {
                     if (screen == RootScreen.PROJECTS && !showQuickTerminal) {
-                        ExtendedFloatingActionButton(
-                            onClick = { showQuickTerminal = true },
-                            icon = { Icon(Icons.Default.Terminal, contentDescription = null) },
-                            text = { Text("Terminal", fontWeight = FontWeight.SemiBold) },
-                            containerColor = MaterialTheme.colorScheme.primary,
+                        // The one prominent action on Projects: stained glass over the shared backdrop.
+                        LiquidGlassSurface(
+                            modifier = Modifier.semantics { role = Role.Button },
+                            material = LiquidGlassMaterial.Regular,
+                            shape = RoundedCornerShape(LiquidGlassTokens.PillRadius),
+                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.88f),
                             contentColor = MaterialTheme.colorScheme.onPrimary,
-                        )
-                        Spacer(Modifier.height(10.dp))
+                            layerSource = LiquidGlassLayers.Background,
+                            onClick = { showQuickTerminal = true },
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .padding(horizontal = PocketSpacing.xl),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(PocketSpacing.sm))
+                                Text("Terminal", style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+                        Spacer(Modifier.height(PocketSpacing.md))
                     }
                     LiquidGlassFloatingNavBar(
                         modifier = Modifier.fillMaxWidth(),
@@ -2195,10 +2209,10 @@ private fun RootScreenHost(
             ?: (navBarsBottomInset + 88.dp)
         val floatingNavClearance = actualNavFootprint + 28.dp
 
+        // Each screen's scrolling list registers the shared backdrop source (one on screen at a
+        // time), so its glass top bar and this dock both sample real content as siblings.
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .asBackdropSource(LiquidGlassLayers.Background),
+            modifier = Modifier.fillMaxSize(),
         ) {
             when (screen) {
                 RootScreen.PROJECTS -> ProjectsScreen(
@@ -2258,12 +2272,11 @@ private fun RootScreenHost(
                     onRefreshClaudeAuth = viewModel::refreshClaudeAuthStatus,
                 )
                 RootScreen.SETTINGS -> Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(bottom = padding.calculateBottomPadding()),
+                    modifier = Modifier.fillMaxSize(),
                 ) {
                     SettingsScreen(
                         state = state,
+                        bottomBarPadding = floatingNavClearance,
                         onSaveProvider = { profile, key ->
                             viewModel.updateProvider(profile, key)
                         },
@@ -2572,7 +2585,7 @@ private fun StepDots(step: Int) {
         repeat(3) { index ->
             Box(
                 Modifier.height(5.dp).weight(1f)
-                    .background(if (index <= step) PocketOrange else MaterialTheme.colorScheme.outlineVariant, CircleShape),
+                    .background(if (index <= step) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant, CircleShape),
             )
         }
     }
@@ -2636,7 +2649,7 @@ private fun ProviderChoiceStep(
                 "STEP 2 OF 3",
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
-                color = PocketOrange,
+                color = MaterialTheme.colorScheme.primary,
                 letterSpacing = 1.1.sp,
             )
             Spacer(Modifier.weight(1f))
@@ -2736,7 +2749,7 @@ private fun ProviderChoiceRow(
         ProviderKind.OPENCODE_ZEN -> Color(0xFF22C55E)
         ProviderKind.NVIDIA_NIM -> Color(0xFF76B900)
         ProviderKind.ANTIGRAVITY_SERVER -> Color(0xFF4285F4)
-        ProviderKind.CUSTOM -> PocketOrange
+        ProviderKind.CUSTOM -> MaterialTheme.colorScheme.primary
     }
     val mark = when (provider) {
         ProviderKind.CLAUDE -> "C"
@@ -2960,12 +2973,12 @@ private fun ProviderCredentialsStep(
                                 Box(
                                     Modifier.size(20.dp).border(
                                         if (model == option.id) 2.dp else 1.dp,
-                                        if (model == option.id) PocketOrange else MaterialTheme.colorScheme.outline,
+                                        if (model == option.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
                                         CircleShape,
                                     ),
                                     contentAlignment = Alignment.Center,
                                 ) {
-                                    if (model == option.id) Box(Modifier.size(9.dp).background(PocketOrange, CircleShape))
+                                    if (model == option.id) Box(Modifier.size(9.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
                                 }
                             }
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
@@ -2983,7 +2996,7 @@ private fun ProviderCredentialsStep(
     ) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("STEP 3 OF 3", color = PocketOrange, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Text("STEP 3 OF 3", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                 Spacer(Modifier.weight(1f))
                 Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = CircleShape) {
                     Row(Modifier.padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -3197,7 +3210,7 @@ private fun ClaudeSubscriptionCredentialsStep(
     ) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("STEP 3 OF 3", color = PocketOrange, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Text("STEP 3 OF 3", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                 Spacer(Modifier.weight(1f))
                 Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = CircleShape) {
                     Row(Modifier.padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -3259,7 +3272,7 @@ private fun ClaudeSubscriptionCredentialsStep(
                             "claude setup-token",
                             modifier = Modifier.fillMaxWidth().padding(12.dp),
                             fontFamily = FontFamily.Monospace,
-                            color = PocketOrange,
+                            color = MaterialTheme.colorScheme.primary,
                         )
                     }
                     Text("2. Sign in to Claude and paste the generated token here.", fontSize = 13.sp)
@@ -3301,7 +3314,7 @@ private fun ClaudeSubscriptionCredentialsStep(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ProjectsScreen(
+internal fun ProjectsScreen(
     state: AppUiState,
     listState: LazyListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() },
     bottomBarPadding: Dp = 0.dp,
@@ -3354,8 +3367,7 @@ private fun ProjectsScreen(
                     }
                 },
                 material = LiquidGlassMaterial.Regular,
-                shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
-                layerSource = null,
+                layerSource = LiquidGlassLayers.Background,
             )
         },
     ) { padding ->
@@ -3363,26 +3375,24 @@ private fun ProjectsScreen(
         // Explicit bottom overlay clearance fallback: Terminal FAB (56dp) + Spacer (10dp) + Floating Nav Bar (~64dp) + container padding (24dp) + safe breathing room + navigation bars insets
         val defaultClearance = 224.dp + navBarBottomInset
         val finalBottomPadding = if (bottomBarPadding > 0.dp) bottomBarPadding else defaultClearance
+        // Runs edge to edge under the glass top bar and dock; it is the shared backdrop source.
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(start = 18.dp, top = 20.dp, end = 18.dp, bottom = finalBottomPadding),
+            modifier = Modifier.fillMaxSize().hostBackdropSource(),
+            contentPadding = PaddingValues(
+                start = PocketSpacing.lg,
+                top = padding.calculateTopPadding() + PocketSpacing.xl,
+                end = PocketSpacing.lg,
+                bottom = finalBottomPadding,
+            ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
                 Text(
-                    "Projects & Workspaces",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = (-0.3).sp,
+                    "Projects",
+                    style = MaterialTheme.typography.headlineLarge,
                 )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "Local developer harness & autonomous coding environment.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 13.sp,
-                )
-                Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(PocketSpacing.lg))
 
                 // Bento-inspired modular tiles
                 Row(
@@ -3395,9 +3405,7 @@ private fun ProjectsScreen(
                         value = "Instant Chat",
                         subtitle = "Ephemeral scratch workspace",
                         icon = Icons.Default.AutoAwesome,
-                        iconTint = PocketOrange,
-                        badgeText = "Fast",
-                        badgeColor = PocketOrange,
+                        iconTint = MaterialTheme.colorScheme.primary,
                         onClick = onCreateQuickProject,
                     )
                     val liveSubagentsCount = state.subagents.count { !it.state.isTerminal }
@@ -3408,8 +3416,8 @@ private fun ProjectsScreen(
                         subtitle = if (liveSubagentsCount > 0) "$liveSubagentsCount subagents live" else "CLI parity ready",
                         icon = Icons.Default.SmartToy,
                         iconTint = PocketBlue,
-                        badgeText = if (liveSubagentsCount > 0) "Live" else "Ready",
-                        badgeColor = if (liveSubagentsCount > 0) PocketGreen else PocketBlue,
+                        badgeText = if (liveSubagentsCount > 0) "Live" else null,
+                        badgeColor = PocketGreen,
                         onClick = onSettings,
                     )
                 }
@@ -3421,41 +3429,29 @@ private fun ProjectsScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    LiquidGlassSurface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp),
-                        material = LiquidGlassMaterial.Thin,
-                        tint = PocketOrange.copy(alpha = 0.08f),
-                        borderStroke = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.28f)),
+                    LiquidGlassCard(
+                        modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(PocketRadius.md),
                         onClick = { showCreate = true },
                     ) {
                         Row(
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(LiquidGlassTokens.MinTouchTarget + PocketSpacing.xs),
                             horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Surface(
-                                shape = CircleShape,
-                                color = PocketOrange.copy(alpha = 0.16f),
-                                modifier = Modifier.size(24.dp),
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        Icons.Default.Add,
-                                        contentDescription = null,
-                                        tint = PocketOrange,
-                                        modifier = Modifier.size(15.dp),
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.width(9.dp))
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Spacer(Modifier.width(PocketSpacing.sm))
                             Text(
                                 text = "New workspace",
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 14.sp,
-                                color = MaterialTheme.colorScheme.onSurface,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
                             )
                         }
                     }
@@ -3525,7 +3521,7 @@ private fun ProjectsScreen(
                                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                                 ) {
                                     Row(Modifier.padding(horizontal = 12.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Code, null, tint = PocketOrange, modifier = Modifier.size(19.dp))
+                                        Icon(Icons.Default.Code, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
                                         Spacer(Modifier.width(10.dp))
                                         Column(Modifier.weight(1f)) {
                                             Text(
@@ -3555,19 +3551,19 @@ private fun ProjectsScreen(
                     Surface(
                         modifier = Modifier.fillMaxWidth().clickable { showUpdateDialog = true },
                         shape = RoundedCornerShape(20.dp),
-                        color = PocketOrange.copy(alpha = 0.11f),
-                        border = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.45f)),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.11f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
                     ) {
                         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Surface(shape = CircleShape, color = PocketOrange.copy(alpha = 0.18f), modifier = Modifier.size(46.dp)) {
-                                Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Download, null, tint = PocketOrange) }
+                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f), modifier = Modifier.size(46.dp)) {
+                                Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Download, null, tint = MaterialTheme.colorScheme.primary) }
                             }
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text("Mobile Harness ${update.versionName}", fontWeight = FontWeight.Bold)
                                 Text("A new update is ready", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            Text("Update", color = PocketOrange, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Update", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
                     }
                 }
@@ -3581,14 +3577,13 @@ private fun ProjectsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "Your Workspaces",
+                        "Workspaces",
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
                     )
-                    StatusPill(
-                        text = "${projects.size} active",
-                        color = PocketOrange,
+                    Text(
+                        "${projects.size}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -3608,14 +3603,14 @@ private fun ProjectsScreen(
                         ) {
                             Surface(
                                 shape = RoundedCornerShape(PocketRadius.md),
-                                color = PocketOrange.copy(alpha = 0.12f),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
                                 modifier = Modifier.size(52.dp),
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         Icons.Default.Folder,
                                         contentDescription = null,
-                                        tint = PocketOrange,
+                                        tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(26.dp),
                                     )
                                 }
@@ -3674,7 +3669,7 @@ private fun ProjectsScreen(
     )
     if (showGitDialog) AlertDialog(
         onDismissRequest = { if (!state.gitCloneRunning) showGitDialog = false },
-        icon = { Icon(Icons.Default.Code, null, tint = PocketOrange) },
+        icon = { Icon(Icons.Default.Code, null, tint = MaterialTheme.colorScheme.primary) },
         title = { Text("Clone Git repository") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -3704,7 +3699,7 @@ private fun ProjectsScreen(
         }
         AlertDialog(
             onDismissRequest = { if (!state.gitCloneRunning) showGitHubDialog = false },
-            icon = { Icon(Icons.Default.Code, null, tint = PocketOrange) },
+            icon = { Icon(Icons.Default.Code, null, tint = MaterialTheme.colorScheme.primary) },
             title = { Text(state.githubLogin?.let { "GitHub · @$it" } ?: "Connect GitHub") },
             text = {
                 when (state.githubAuthStatus) {
@@ -3775,7 +3770,7 @@ private fun ProjectsScreen(
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
                                 ) {
                                     Row(Modifier.padding(11.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(if (repository.private) Icons.Default.Key else Icons.Default.Code, null, modifier = Modifier.size(17.dp), tint = PocketOrange)
+                                        Icon(if (repository.private) Icons.Default.Key else Icons.Default.Code, null, modifier = Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary)
                                         Spacer(Modifier.width(9.dp))
                                         Column(Modifier.weight(1f)) {
                                             Text(repository.fullName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -3812,7 +3807,7 @@ private fun ProjectsScreen(
         val progress = if (total > 0) (downloaded.toFloat() / total).coerceIn(0f, 1f) else 0f
         AlertDialog(
             onDismissRequest = { if (!installing) showUpdateDialog = false },
-            icon = { Icon(Icons.Default.Download, null, tint = PocketOrange, modifier = Modifier.size(34.dp)) },
+            icon = { Icon(Icons.Default.Download, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(34.dp)) },
             title = { Text("Update to ${update.versionName}", fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -3889,7 +3884,7 @@ private fun ApiStatusChip(state: AppUiState, onSettings: () -> Unit, onPing: () 
     val dotColor = when (state.apiPingStatus) {
         ApiPingStatus.OK -> PocketGreen
         ApiPingStatus.FAILED -> MaterialTheme.colorScheme.error
-        ApiPingStatus.PINGING -> PocketOrange
+        ApiPingStatus.PINGING -> MaterialTheme.colorScheme.primary
         ApiPingStatus.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
     }
     val providerLabel = when {
@@ -3934,7 +3929,7 @@ private fun ApiStatusChip(state: AppUiState, onSettings: () -> Unit, onPing: () 
                 modifier = Modifier.size(28.dp),
             ) {
                 if (state.apiPingStatus == ApiPingStatus.PINGING) {
-                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = PocketOrange)
+                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
                 } else {
                     Icon(
                         Icons.Default.Refresh,
@@ -3968,24 +3963,24 @@ private fun ProjectCard(
         modifier = Modifier.fillMaxWidth(),
         material = LiquidGlassMaterial.Thin,
         shape = RoundedCornerShape(PocketRadius.lg),
-        borderStroke = if (isActive) BorderStroke(1.dp, PocketOrange.copy(alpha = 0.42f)) else null,
+        borderStroke = if (isActive) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.42f)) else null,
         onClick = onOpen,
     ) {
         Row(
-            modifier = Modifier.padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 6.dp),
+            modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Surface(
-                shape = RoundedCornerShape(PocketRadius.md),
-                color = if (project.kind == ProjectKind.QUICK_PROJECT) PocketOrange.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant,
-                modifier = Modifier.size(42.dp),
+                shape = RoundedCornerShape(PocketRadius.sm),
+                color = if (project.kind == ProjectKind.QUICK_PROJECT) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.size(40.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = if (project.kind == ProjectKind.QUICK_PROJECT) Icons.Default.AutoAwesome else Icons.Default.Folder,
                         contentDescription = null,
                         modifier = Modifier.size(20.dp),
-                        tint = if (project.kind == ProjectKind.QUICK_PROJECT) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = if (project.kind == ProjectKind.QUICK_PROJECT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -3995,8 +3990,7 @@ private fun ProjectCard(
                     Text(
                         project.name,
                         modifier = Modifier.weight(1f, fill = false),
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 14.5.sp,
+                        style = MaterialTheme.typography.titleSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -4013,28 +4007,14 @@ private fun ProjectCard(
                     }
                 }
                 Spacer(Modifier.height(2.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    StatusPill(
-                        text = if (project.language.isNotBlank()) project.language else "Workspace",
-                        color = PocketBlue,
-                    )
-                    Text(
-                        "/workspace/${project.slug}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 10.5.sp,
-                        fontFamily = FontFamily.Monospace,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Spacer(Modifier.height(2.dp))
                 Text(
-                    project.formattedUpdatedAt,
+                    listOf(project.language.ifBlank { "Workspace" }, project.formattedUpdatedAt)
+                        .filter { it.isNotBlank() }
+                        .joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 10.5.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             Box {
@@ -4170,7 +4150,7 @@ private fun ReadOnlyProjectScreen(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-private fun WorkspaceScreen(
+internal fun WorkspaceScreen(
     state: AppUiState,
     onBack: () -> Unit,
     onSend: (String) -> Unit,
@@ -4439,9 +4419,7 @@ private fun WorkspaceScreen(
                 title = {
                     Text(
                         state.activeProject?.name.orEmpty(),
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp,
-                        color = if (isGlassDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
+                        style = MaterialTheme.typography.titleSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.combinedClickable(
@@ -4455,8 +4433,8 @@ private fun WorkspaceScreen(
                 subtitle = {
                     Text(
                         "${activeChat?.title ?: "Chat"} · ${if (state.agentKind == AgentKind.ANTIGRAVITY) state.agentKind.title else state.provider.kind.title}",
-                        fontSize = 10.5.sp,
-                        color = if (isGlassDarkTheme()) Color(0xFF94A3B8) else Color(0xFF475569),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -4466,7 +4444,6 @@ private fun WorkspaceScreen(
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             "Projects",
-                            tint = if (isGlassDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
                         )
                     }
                 },
@@ -4493,7 +4470,6 @@ private fun WorkspaceScreen(
                             else Icon(
                                 Icons.Default.PlayArrow,
                                 "Build and run Android app",
-                                tint = if (isGlassDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
                             )
                         }
                     }
@@ -4502,7 +4478,7 @@ private fun WorkspaceScreen(
                             badge = {
                                 if (state.contextMemory.entries.isNotEmpty()) {
                                     Badge(
-                                        containerColor = com.jarves.mh.ui.theme.PocketOrange,
+                                        containerColor = MaterialTheme.colorScheme.primary,
                                         contentColor = Color.White,
                                     ) {
                                         Text("${state.contextMemory.entries.size}")
@@ -4513,7 +4489,7 @@ private fun WorkspaceScreen(
                             Icon(
                                 Icons.Default.Psychology,
                                 contentDescription = "Persistent Memory",
-                                tint = if (state.contextMemory.entries.isNotEmpty()) com.jarves.mh.ui.theme.PocketOrange else if (isGlassDarkTheme()) Color(0xFF94A3B8) else Color(0xFF475569),
+                                tint = if (state.contextMemory.entries.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
@@ -4521,7 +4497,6 @@ private fun WorkspaceScreen(
                         Icon(
                             Icons.Default.History,
                             "Project chats",
-                            tint = if (isGlassDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
                         )
                     }
                     if (state.isRunning) CircularProgressIndicator(Modifier.padding(horizontal = 8.dp).size(18.dp), strokeWidth = 2.dp)
@@ -4742,7 +4717,7 @@ private fun FileViewerScreen(
                             Icon(
                                 if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
                                 "Copy file contents",
-                                tint = if (copied) PocketOrange else MaterialTheme.colorScheme.onSurface,
+                                tint = if (copied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                             )
                         }
                     }
@@ -4755,7 +4730,7 @@ private fun FileViewerScreen(
             when {
                 loading -> {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = PocketOrange)
+                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                     }
                 }
                 content == null -> {
@@ -5011,7 +4986,7 @@ private fun FilesTab(
                     },
                     null,
                     tint = when {
-                        entry.isDirectory -> PocketOrange
+                        entry.isDirectory -> MaterialTheme.colorScheme.primary
                         isApk -> Color(0xFF34A853)
                         else -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
@@ -5211,7 +5186,6 @@ private fun ChatTab(
                 approval?.let { request -> item { ApprovalCard(request, onApproval) } }
             }
             if (!readerAtBottom) {
-                val isDark = isGlassDarkTheme()
                 LiquidGlassSurface(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -5238,14 +5212,12 @@ private fun ChatTab(
                             Icons.Default.KeyboardArrowDown,
                             contentDescription = null,
                             modifier = Modifier.size(17.dp),
-                            tint = if (isDark) Color.White else MaterialTheme.colorScheme.primary,
                         )
                         Spacer(Modifier.width(4.dp))
                         Text(
                             "Latest",
                             fontSize = 12.5.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (isDark) Color.White else MaterialTheme.colorScheme.primary,
                         )
                     }
                 }
@@ -5440,7 +5412,7 @@ private fun ChatTab(
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 11.5.sp,
-                                color = PocketOrange,
+                                color = MaterialTheme.colorScheme.primary,
                             )
                         }
                     }
@@ -5591,10 +5563,7 @@ private fun ChatTab(
                                     .then(
                                         if (canSend) {
                                             Modifier
-                                                .background(
-                                                    if (isDark) Color(0xFFF1F5F9) else MaterialTheme.colorScheme.primary,
-                                                    CircleShape,
-                                                )
+                                                .background(MaterialTheme.colorScheme.primary, CircleShape)
                                                 .border(0.75.dp, Color(0x33FFFFFF), CircleShape)
                                         } else {
                                             Modifier
@@ -5625,7 +5594,7 @@ private fun ChatTab(
                                     imageVector = Icons.Default.ArrowUpward,
                                     contentDescription = "Send",
                                     tint = if (canSend) {
-                                        if (isDark) Color(0xFF0F172A) else Color.White
+                                        MaterialTheme.colorScheme.onPrimary
                                     } else {
                                         if (isDark) Color(0x66FFFFFF) else Color(0x40000000)
                                     },
@@ -6004,110 +5973,102 @@ private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Uni
         }
     }
 
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.fromUser) Arrangement.End else Arrangement.Start) {
-        Surface(
-            color = if (message.fromUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(18.dp),
-            modifier = Modifier.fillMaxWidth(if (message.fromUser) 0.85f else 1f),
+    // User turns are compact neutral bubbles; assistant replies sit directly on the canvas as
+    // readable content. The copy action and duration live in a quiet footer under each turn.
+    val copyButton: @Composable () -> Unit = {
+        IconButton(
+            onClick = copyAction,
+            modifier = Modifier.size(LiquidGlassTokens.MinTouchTarget),
         ) {
-            Column(Modifier.padding(top = 12.dp)) {
-                SelectionContainer {
-                    if (message.fromUser) {
-                        if (message.activeSkill != null) {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = PocketBlue.copy(alpha = 0.18f),
-                                border = BorderStroke(1.dp, PocketBlue.copy(alpha = 0.35f)),
-                                modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 6.dp),
-                            ) {
+            Icon(
+                imageVector = if (isCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                contentDescription = if (isCopied) "Message copied to clipboard" else "Copy entire message",
+                tint = if (isCopied) PocketGreen else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier.size(15.dp),
+            )
+        }
+    }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (message.fromUser) Alignment.End else Alignment.Start,
+    ) {
+        SelectionContainer {
+            if (message.fromUser) {
+                // Copy sits beside the bubble, so a user turn costs no extra row.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                if (message.text.isNotBlank()) copyButton()
+                Box(Modifier.fillMaxWidth(0.85f), contentAlignment = Alignment.CenterEnd) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(PocketRadius.lg),
+                    ) {
+                        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                            if (message.activeSkill != null) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                    modifier = Modifier.padding(bottom = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Icon(
                                         Icons.Default.AutoAwesome,
                                         contentDescription = null,
                                         modifier = Modifier.size(12.dp),
-                                        tint = PocketBlue,
+                                        tint = MaterialTheme.colorScheme.secondary,
                                     )
                                     Spacer(Modifier.width(4.dp))
                                     Text(
                                         "Skill: ${message.activeSkill}",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = PocketBlue,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.secondary,
                                     )
                                 }
                             }
-                        }
-                        Text(
-                            text = message.text,
-                            modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 8.dp),
-                            style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
-                    } else {
-                        MarkdownText(
-                            markdown = message.text,
-                            modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 8.dp),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            onRunCode = onRunInTerminal,
-                        )
-                    }
-                }
-                if (message.attachments.isNotEmpty()) {
-                    Column(
-                        Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        message.attachments.forEach { attachment ->
-                            AttachmentChip(attachment = attachment, onOpen = { onOpenAttachment(attachment) }, onRemove = null)
-                        }
-                    }
-                }
-                if (message.text.isNotBlank()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(
-                                start = 14.dp,
-                                end = if (message.fromUser) 8.dp else 10.dp,
-                                bottom = 6.dp,
-                            ),
-                        horizontalArrangement = if (message.fromUser) Arrangement.End else Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (!message.fromUser) {
-                            if (message.workedMillis > 0L) {
-                                Text(
-                                    text = "Worked for ${formatDuration((message.workedMillis / 1_000L).coerceAtLeast(1L))}",
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 11.sp,
-                                )
-                            } else {
-                                Spacer(Modifier.width(1.dp))
-                            }
-                        }
-                        IconButton(
-                            onClick = copyAction,
-                            modifier = Modifier.size(28.dp),
-                        ) {
-                            Icon(
-                                imageVector = if (isCopied) Icons.Default.Check else Icons.Default.ContentCopy,
-                                contentDescription = if (isCopied) "Message copied to clipboard" else "Copy entire message",
-                                tint = when {
-                                    isCopied && message.fromUser -> PocketGreen
-                                    isCopied -> PocketOrange
-                                    message.fromUser -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.55f)
-                                    else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
-                                },
-                                modifier = Modifier.size(15.dp),
+                            Text(
+                                text = message.text,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
                     }
-                } else {
-                    Spacer(Modifier.height(4.dp))
                 }
+                }
+            } else {
+                MarkdownText(
+                    markdown = message.text,
+                    modifier = Modifier.padding(horizontal = PocketSpacing.xs),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    onRunCode = onRunInTerminal,
+                )
+            }
+        }
+        if (message.attachments.isNotEmpty()) {
+            Column(
+                Modifier
+                    .fillMaxWidth(if (message.fromUser) 0.85f else 1f)
+                    .padding(top = PocketSpacing.sm),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                message.attachments.forEach { attachment ->
+                    AttachmentChip(attachment = attachment, onOpen = { onOpenAttachment(attachment) }, onRemove = null)
+                }
+            }
+        }
+        if (message.text.isNotBlank() && !message.fromUser) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (message.workedMillis > 0L) {
+                    Text(
+                        text = "Worked for ${formatDuration((message.workedMillis / 1_000L).coerceAtLeast(1L))}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(start = PocketSpacing.xs),
+                    )
+                }
+                copyButton()
             }
         }
     }
@@ -6130,7 +6091,7 @@ private fun AttachmentChip(
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Row(Modifier.padding(start = 9.dp, end = if (onRemove == null) 10.dp else 3.dp, top = 7.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, Modifier.size(17.dp), tint = PocketOrange)
+            Icon(icon, null, Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(7.dp))
             Column(Modifier.widthIn(max = 180.dp)) {
                 Text(attachment.displayName, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -6150,7 +6111,7 @@ private fun ApprovalCard(request: ToolRequest, onApproval: (Boolean) -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Warning, null, tint = PocketOrange)
+                Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(8.dp)); Text("Review this action", fontWeight = FontWeight.Bold)
             }
             Text(request.explanation)
@@ -6188,7 +6149,7 @@ private fun FilesTab(files: List<WorkspaceEntry>, loading: Boolean, onRefresh: (
                 Icon(
                     if (entry.isDirectory) Icons.Default.Folder else Icons.Default.Description,
                     null,
-                    tint = if (entry.isDirectory) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = if (entry.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.width(11.dp))
                 Text(entry.name, Modifier.weight(1f))

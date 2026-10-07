@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -64,8 +67,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -87,6 +88,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarves.mh.BuildConfig
@@ -105,6 +107,13 @@ import com.jarves.mh.runtime.AntigravityAuthStatus
 import com.jarves.mh.ui.theme.AppThemeMode
 import com.jarves.mh.ui.theme.PocketBlue
 import com.jarves.mh.ui.theme.PocketOrange
+import com.jarves.mh.ui.theme.PocketRadius
+import com.jarves.mh.ui.theme.PocketSpacing
+import com.jarves.mh.ui.theme.glass.LiquidGlassCard
+import com.jarves.mh.ui.theme.glass.LiquidGlassLayers
+import com.jarves.mh.ui.theme.glass.LiquidGlassMaterial
+import com.jarves.mh.ui.theme.glass.LiquidGlassTopBar
+import com.jarves.mh.ui.theme.glass.hostBackdropSource
 import kotlinx.coroutines.launch
 
 private enum class SettingsSection { APPEARANCE, TOOLS, RUNTIME, UPDATE_CHANNEL }
@@ -138,6 +147,7 @@ fun SettingsScreen(
     initialDebugUpdateManifestUrl: String = "",
     onSetDebugUpdateManifestUrl: (String) -> Unit = {},
     onClearDebugUpdateManifestUrl: () -> Unit = {},
+    bottomBarPadding: Dp = 0.dp,
 ) {
     val context = LocalContext.current
     var expanded by rememberSaveable { mutableStateOf<SettingsSection?>(null) }
@@ -169,9 +179,12 @@ fun SettingsScreen(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        containerColor = Color.Transparent,
         topBar = {
-            TopAppBar(
-                modifier = Modifier.padding(top = 8.dp),
+            LiquidGlassTopBar(
+                material = LiquidGlassMaterial.Regular,
+                layerSource = LiquidGlassLayers.Background,
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
@@ -197,18 +210,28 @@ fun SettingsScreen(
                         }
                         Spacer(Modifier.width(10.dp))
                         Column {
-                            Text("Settings", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
-                            Text("Preferences & Configuration", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Settings", style = MaterialTheme.typography.titleMedium)
+                            Text("Preferences & Configuration", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
     ) { padding ->
+        val bottomClearance = if (bottomBarPadding > 0.dp) {
+            bottomBarPadding
+        } else {
+            WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + PocketSpacing.md
+        }
+        // Runs edge to edge under the glass top bar and dock; it is the shared backdrop source.
         LazyColumn(
-            Modifier.fillMaxSize().padding(padding).imePadding(),
-            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
+            Modifier.fillMaxSize().hostBackdropSource().imePadding(),
+            contentPadding = PaddingValues(
+                start = PocketSpacing.lg,
+                top = padding.calculateTopPadding() + PocketSpacing.md,
+                end = PocketSpacing.lg,
+                bottom = bottomClearance,
+            ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
 
@@ -250,7 +273,7 @@ fun SettingsScreen(
                             }
                             when {
                                 removing -> Text("Removing…", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                installing -> Text("${(state.devStackProgress * 100).toInt()}%", color = PocketOrange, fontWeight = FontWeight.Bold)
+                                installing -> Text("${(state.devStackProgress * 100).toInt()}%", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                                 installed && stack == DevStack.WEB -> Text("Included", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 installed -> TextButton(
                                     onClick = { stackPendingRemoval = stack },
@@ -264,7 +287,7 @@ fun SettingsScreen(
                             LinearProgressIndicator(
                                 progress = { state.devStackProgress.coerceIn(0f, 1f) },
                                 modifier = Modifier.fillMaxWidth().height(7.dp),
-                                color = PocketOrange,
+                                color = MaterialTheme.colorScheme.primary,
                                 trackColor = MaterialTheme.colorScheme.surfaceVariant,
                             )
                             Spacer(Modifier.height(9.dp))
@@ -286,7 +309,7 @@ fun SettingsScreen(
                                                 Text(
                                                     "${formatTransferSpeed(speed)} · ${formatTransferEta(downloaded, total, speed)} left",
                                                     fontSize = 11.sp,
-                                                    color = PocketOrange,
+                                                    color = MaterialTheme.colorScheme.primary,
                                                     fontFamily = FontFamily.Monospace,
                                                 )
                                             }
@@ -393,7 +416,7 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Settings, null, Modifier.size(20.dp), tint = PocketOrange)
+                        Icon(Icons.Default.Settings, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text("Mobile Harness+", fontWeight = FontWeight.SemiBold)
@@ -526,24 +549,23 @@ private fun SettingsAccordion(
     onClick: () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    Surface(
+    // Solid content card on the shared hairline/radius tokens (same as LiquidGlassCard).
+    LiquidGlassCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shape = RoundedCornerShape(PocketRadius.lg),
     ) {
         Column {
             Row(
-                Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp),
+                Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Surface(shape = RoundedCornerShape(11.dp), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), modifier = Modifier.size(40.dp)) {
-                    Box(contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary) }
+                Surface(shape = RoundedCornerShape(PocketRadius.sm), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f), modifier = Modifier.size(36.dp)) {
+                    Box(contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary) }
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(title, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                    Text(subtitle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 Icon(
                     if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
@@ -729,7 +751,7 @@ private fun ConnectionSettings(
                 when (state.apiPingStatus) {
                     ApiPingStatus.OK -> Color(0xFF58C9A3)
                     ApiPingStatus.FAILED -> MaterialTheme.colorScheme.error
-                    ApiPingStatus.PINGING -> PocketOrange
+                    ApiPingStatus.PINGING -> MaterialTheme.colorScheme.primary
                     ApiPingStatus.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant
                 }, CircleShape,
             ))
@@ -738,7 +760,7 @@ private fun ConnectionSettings(
                 Text("Active connection", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(state.provider.model.ifBlank { "Not configured" }, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 state.activeApiKeyName?.let { name ->
-                    Text("Key: $name", fontSize = 11.sp, color = PocketOrange, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Key: $name", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 state.apiPingMessage?.let {
                     Text(it, fontSize = 11.sp, color = if (state.apiPingStatus == ApiPingStatus.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -755,7 +777,7 @@ private fun ConnectionSettings(
         modifier = Modifier.fillMaxWidth().clickable { providerExpanded = !providerExpanded },
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-        border = BorderStroke(1.dp, if (providerExpanded) PocketOrange else MaterialTheme.colorScheme.outlineVariant),
+        border = BorderStroke(1.dp, if (providerExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
     ) {
         Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -885,7 +907,7 @@ private fun ConnectionSettings(
                                 Text(
                                     if (key.isActive) "Active now · tap another key to switch" else "Tap to make active",
                                     fontSize = 11.sp,
-                                    color = if (key.isActive) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = if (key.isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                             SelectionDot(key.isActive)
@@ -954,10 +976,10 @@ private fun ConnectionSettings(
 @Composable
 private fun SelectionDot(selected: Boolean) {
     Box(
-        Modifier.size(20.dp).border(if (selected) 2.dp else 1.dp, if (selected) PocketOrange else MaterialTheme.colorScheme.outline, CircleShape),
+        Modifier.size(20.dp).border(if (selected) 2.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        if (selected) Box(Modifier.size(9.dp).background(PocketOrange, CircleShape))
+        if (selected) Box(Modifier.size(9.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
     }
 }
 
@@ -966,11 +988,11 @@ private fun ModernThemeChoice(title: String, icon: ImageVector, selected: Boolea
     Surface(
         modifier = modifier.clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
-        color = if (selected) PocketOrange.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        border = BorderStroke(if (selected) 1.5.dp else 1.dp, if (selected) PocketOrange else MaterialTheme.colorScheme.outlineVariant),
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        border = BorderStroke(if (selected) 1.5.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(Modifier.padding(vertical = 13.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(icon, title, Modifier.size(20.dp), tint = if (selected) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant)
+            Icon(icon, title, Modifier.size(20.dp), tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(5.dp))
             Text(title, fontSize = 12.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
         }

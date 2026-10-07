@@ -180,6 +180,21 @@ android {
     packaging.jniLibs.pickFirsts += "**/libc++_shared.so"
     packaging.jniLibs.useLegacyPackaging = true
     androidResources.noCompress += "zst"
+    testOptions {
+        // Robolectric screenshot tests (Roborazzi) need merged resources and the test manifest.
+        unitTests.isIncludeAndroidResources = true
+    }
+}
+
+// Screenshot tests are opt-in: ./gradlew :app:testOnlineDebugUnitTest -Pscreenshots
+tasks.withType<Test>().configureEach {
+    if (!project.hasProperty("screenshots")) {
+        exclude("**/*ScreenshotTest*")
+    } else {
+        systemProperty("robolectric.pixelCopyRenderMode", "hardware")
+        systemProperty("roborazzi.test.record", "true")
+        systemProperty("roborazzi.output.dir", layout.buildDirectory.dir("outputs/roborazzi").get().asFile.absolutePath)
+    }
 }
 
 tasks.matching { it.name.startsWith("mergeOffline") && it.name.endsWith("Assets") }
@@ -228,6 +243,11 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250107")
     testImplementation("org.xerial:sqlite-jdbc:3.45.1.0")
+    testImplementation(platform("androidx.compose:compose-bom:2025.02.00"))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.50.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.50.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

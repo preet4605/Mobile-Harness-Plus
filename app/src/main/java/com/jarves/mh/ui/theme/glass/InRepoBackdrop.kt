@@ -544,6 +544,7 @@ fun Modifier.backdropGlass(
     tint: Color? = null,
     borderStroke: BorderStroke? = null,
     role: GlassRole? = null,
+    drawRim: Boolean = true,
 ): Modifier {
     val config = LocalLiquidGlassConfig.current
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
@@ -557,6 +558,10 @@ fun Modifier.backdropGlass(
         return this.background(solid, shape).border(rim, shape)
     }
 
+    // Opaque canvas under the blur: the glass replaces what is behind it. Without it, sources
+    // with transparent gaps (text on the canvas) leave the sharp content readable through the
+    // low-alpha blur smear.
+    val canvasColor = MaterialTheme.colorScheme.background
     val washAlpha = if (isDark) (role?.washAlphaDark ?: 0.16f) else (role?.washAlphaLight ?: 0.25f)
     val baseWashColor = if (isDark) Color(0xFF111827) else Color.White
     val surfaceTint = tint ?: baseWashColor.copy(alpha = washAlpha)
@@ -566,27 +571,7 @@ fun Modifier.backdropGlass(
     val blurLayer = rememberGraphicsLayer()
     var origin by remember { mutableStateOf<Offset?>(null) }
 
-    val rimBrush = if (isDark) {
-        Brush.linearGradient(
-            colors = listOf(
-                Color.White.copy(alpha = 0.42f),
-                Color.White.copy(alpha = 0.06f),
-                Color.White.copy(alpha = 0.14f),
-            ),
-            start = Offset.Zero,
-            end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
-        )
-    } else {
-        Brush.linearGradient(
-            colors = listOf(
-                Color.White.copy(alpha = 0.75f),
-                Color(0x08000000),
-                Color(0x18000000),
-            ),
-            start = Offset.Zero,
-            end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
-        )
-    }
+    val rimBrush = glassRimBrush(isDark)
 
     return this
         .then(
@@ -644,6 +629,7 @@ fun Modifier.backdropGlass(
                 // 4. Draw blurred layer clipped to shape
                 val outline = shape.createOutline(size, layoutDirection, this)
                 val clip = Path().apply { addOutline(outline) }
+                drawOutline(outline, canvasColor)
                 clipPath(clip) {
                     drawLayer(blurLayer)
                 }
@@ -660,24 +646,54 @@ fun Modifier.backdropGlass(
                     )
                 }
                 // Directional specular rim highlight (top-left specular light, bottom subtle grounding)
-                drawOutline(
-                    outline,
-                    rimBrush,
-                    style = Stroke(width = 0.75.dp.toPx()),
-                )
+                if (drawRim) {
+                    drawOutline(
+                        outline,
+                        rimBrush,
+                        style = Stroke(width = 0.75.dp.toPx()),
+                    )
+                }
             } else {
                 // High-contrast solid fallback while waiting for capture or if unpositioned
                 val outline = shape.createOutline(size, layoutDirection, this)
                 val solid = if (isDark) PocketPalette.darkCardSurface else PocketPalette.lightCardSurface
                 drawOutline(outline, solid)
-                drawOutline(
-                    outline,
-                    rimBrush,
-                    style = Stroke(width = 0.75.dp.toPx()),
-                )
+                if (drawRim) {
+                    drawOutline(
+                        outline,
+                        rimBrush,
+                        style = Stroke(width = 0.75.dp.toPx()),
+                    )
+                }
             }
             drawContent()
         }
+}
+
+/**
+ * The one specular rim shared by every glass surface: bright at the top-leading edge, nearly
+ * clear across the middle, with faint grounding at the bottom-trailing edge.
+ */
+internal fun glassRimBrush(isDark: Boolean): Brush = if (isDark) {
+    Brush.linearGradient(
+        colors = listOf(
+            Color.White.copy(alpha = 0.42f),
+            Color.White.copy(alpha = 0.06f),
+            Color.White.copy(alpha = 0.14f),
+        ),
+        start = Offset.Zero,
+        end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
+    )
+} else {
+    Brush.linearGradient(
+        colors = listOf(
+            Color.White.copy(alpha = 0.75f),
+            Color(0x08000000),
+            Color(0x18000000),
+        ),
+        start = Offset.Zero,
+        end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
+    )
 }
 
 /**
@@ -694,8 +710,7 @@ fun BackdropGlassSurface(
     role: GlassRole? = null,
     content: @Composable () -> Unit,
 ) {
-    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val contentColor = if (isDark) Color.White else Color(0xFF0F172A)
+    val contentColor = MaterialTheme.colorScheme.onSurface
     Box(modifier.backdropGlass(backdrop, shape, blurDp, tint, borderStroke, role)) {
         CompositionLocalProvider(LocalContentColor provides contentColor) {
             content()
