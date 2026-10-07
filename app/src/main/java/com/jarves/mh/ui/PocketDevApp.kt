@@ -33,7 +33,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -264,6 +263,7 @@ import com.jarves.mh.ui.theme.glass.LiquidGlassTopBar
 import com.jarves.mh.ui.theme.glass.LocalLiquidGlassBackdrop
 import com.jarves.mh.ui.theme.glass.asBackdropSource
 import com.jarves.mh.ui.theme.glass.hostBackdropSource
+import com.jarves.mh.ui.theme.glass.isGlassDarkTheme
 
 import com.jarves.mh.ui.theme.AppThemeMode
 import androidx.compose.material.icons.filled.SmartToy
@@ -4441,7 +4441,7 @@ private fun WorkspaceScreen(
                         state.activeProject?.name.orEmpty(),
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 15.sp,
-                        color = if (isSystemInDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
+                        color = if (isGlassDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.combinedClickable(
@@ -4456,7 +4456,7 @@ private fun WorkspaceScreen(
                     Text(
                         "${activeChat?.title ?: "Chat"} · ${if (state.agentKind == AgentKind.ANTIGRAVITY) state.agentKind.title else state.provider.kind.title}",
                         fontSize = 10.5.sp,
-                        color = if (isSystemInDarkTheme()) Color(0xFF94A3B8) else Color(0xFF475569),
+                        color = if (isGlassDarkTheme()) Color(0xFF94A3B8) else Color(0xFF475569),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -4466,7 +4466,7 @@ private fun WorkspaceScreen(
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             "Projects",
-                            tint = if (isSystemInDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
+                            tint = if (isGlassDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
                         )
                     }
                 },
@@ -4493,7 +4493,7 @@ private fun WorkspaceScreen(
                             else Icon(
                                 Icons.Default.PlayArrow,
                                 "Build and run Android app",
-                                tint = if (isSystemInDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
+                                tint = if (isGlassDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
                             )
                         }
                     }
@@ -4513,7 +4513,7 @@ private fun WorkspaceScreen(
                             Icon(
                                 Icons.Default.Psychology,
                                 contentDescription = "Persistent Memory",
-                                tint = if (state.contextMemory.entries.isNotEmpty()) com.jarves.mh.ui.theme.PocketOrange else if (isSystemInDarkTheme()) Color(0xFF94A3B8) else Color(0xFF475569),
+                                tint = if (state.contextMemory.entries.isNotEmpty()) com.jarves.mh.ui.theme.PocketOrange else if (isGlassDarkTheme()) Color(0xFF94A3B8) else Color(0xFF475569),
                             )
                         }
                     }
@@ -4521,7 +4521,7 @@ private fun WorkspaceScreen(
                         Icon(
                             Icons.Default.History,
                             "Project chats",
-                            tint = if (isSystemInDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
+                            tint = if (isGlassDarkTheme()) Color(0xFFF8FAFC) else Color(0xFF0F172A),
                         )
                     }
                     if (state.isRunning) CircularProgressIndicator(Modifier.padding(horizontal = 8.dp).size(18.dp), strokeWidth = 2.dp)
@@ -4536,7 +4536,7 @@ private fun WorkspaceScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
-                        .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
+                        .padding(start = PocketSpacing.lg, end = PocketSpacing.lg, bottom = PocketSpacing.sm),
                 ) {
                     LiquidGlassSegmentedControl(
                         items = WorkspaceTab.entries.filter { it != WorkspaceTab.CHANGES },
@@ -5184,9 +5184,9 @@ private fun ChatTab(
                 state = listState,
                 contentPadding = PaddingValues(
                     start = 16.dp,
-                    top = chromePadding.calculateTopPadding() + 12.dp,
+                    top = chromePadding.calculateTopPadding() + PocketSpacing.md,
                     end = 16.dp,
-                    bottom = bottomChromeClearance + 16.dp,
+                    bottom = bottomChromeClearance + PocketSpacing.lg,
                 ),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -5211,11 +5211,11 @@ private fun ChatTab(
                 approval?.let { request -> item { ApprovalCard(request, onApproval) } }
             }
             if (!readerAtBottom) {
-                val isDark = isSystemInDarkTheme()
+                val isDark = isGlassDarkTheme()
                 LiquidGlassSurface(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = bottomChromeClearance + 10.dp)
+                        .padding(bottom = bottomChromeClearance + PocketSpacing.md)
                         .clickable {
                             chatScope.launch {
                                 listState.animateScrollToItem(
@@ -5225,7 +5225,6 @@ private fun ChatTab(
                         },
                     material = LiquidGlassMaterial.Regular,
                     shape = RoundedCornerShape(LiquidGlassTokens.PillRadius),
-                    borderStroke = BorderStroke(0.75.dp, if (isDark) Color(0x40FFFFFF) else Color(0x33000000)),
                     layerSource = LiquidGlassLayers.Background,
                     role = GlassRoles.Latest,
                 ) {
@@ -5285,7 +5284,13 @@ private fun ChatTab(
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .padding(start = 14.dp, top = 8.dp, end = 14.dp, bottom = PocketSpacing.md)
+                    .padding(
+                        start = PocketSpacing.lg,
+                        top = PocketSpacing.sm,
+                        end = PocketSpacing.lg,
+                        // A clear gap above the floating tab dock; a tight one above the keyboard.
+                        bottom = if (chromePadding.calculateBottomPadding() > 0.dp) PocketSpacing.lg else PocketSpacing.sm,
+                    )
             ) {
                 if (pendingAttachments.isNotEmpty()) {
                     Row(
@@ -5401,9 +5406,8 @@ private fun ChatTab(
                 // Floats over messages now, so it sits on chip glass instead of a divider-separated panel.
                 if (tokenMetrics.promptTokens != 0 || tokenMetrics.completionTokens != 0) {
                     LiquidGlassSurface(
-                        modifier = Modifier.padding(bottom = 6.dp),
                         material = LiquidGlassMaterial.UltraThin,
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(LiquidGlassTokens.PillRadius),
                         layerSource = LiquidGlassLayers.Background,
                         role = GlassRoles.Chip,
                     ) {
@@ -5411,12 +5415,12 @@ private fun ChatTab(
                     }
                 }
 
-                val isDark = isSystemInDarkTheme()
+                val isDark = isGlassDarkTheme()
 
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 8.dp, start = 2.dp, end = 2.dp),
+                        .padding(horizontal = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -5427,7 +5431,7 @@ private fun ChatTab(
                     }) {
                         LiquidGlassSurface(
                             material = LiquidGlassMaterial.UltraThin,
-                            shape = RoundedCornerShape(10.dp),
+                            shape = RoundedCornerShape(LiquidGlassTokens.PillRadius),
                             layerSource = LiquidGlassLayers.Background,
                             role = GlassRoles.Chip,
                         ) {
@@ -5444,7 +5448,7 @@ private fun ChatTab(
                     ChatChipTouchTarget(onClick = onOpenSkills) {
                         LiquidGlassSurface(
                             material = LiquidGlassMaterial.UltraThin,
-                            shape = RoundedCornerShape(10.dp),
+                            shape = RoundedCornerShape(LiquidGlassTokens.PillRadius),
                             layerSource = LiquidGlassLayers.Background,
                             role = GlassRoles.Chip,
                         ) {
@@ -5459,7 +5463,7 @@ private fun ChatTab(
                     ChatChipTouchTarget(onClick = onOpenInspector) {
                         LiquidGlassSurface(
                             material = LiquidGlassMaterial.UltraThin,
-                            shape = RoundedCornerShape(10.dp),
+                            shape = RoundedCornerShape(LiquidGlassTokens.PillRadius),
                             tint = if (subagentsCount + tasksCount > 0) PocketGreen.copy(alpha = 0.15f) else null,
                             layerSource = LiquidGlassLayers.Background,
                             role = GlassRoles.Chip,
@@ -5579,7 +5583,7 @@ private fun ChatTab(
                                 }
                             }
                         } else {
-                            val isDark = isSystemInDarkTheme()
+                            val isDark = isGlassDarkTheme()
                             Box(
                                 modifier = Modifier
                                     .size(44.dp)

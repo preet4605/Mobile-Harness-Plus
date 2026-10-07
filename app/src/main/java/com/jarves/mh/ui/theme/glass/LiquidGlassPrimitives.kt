@@ -8,7 +8,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -128,7 +127,7 @@ fun RowScope.LiquidGlassFloatingNavBarItem(
     badge: @Composable (() -> Unit)? = null,
     selectedTint: Color = PocketPalette.orangeAccent,
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = isGlassDarkTheme()
     val activeColor = selectedTint
     val inactiveColor = if (isDark) MaterialTheme.colorScheme.onSurfaceVariant else Color(0xFF64748B)
 
@@ -339,7 +338,7 @@ fun LiquidGlassSheet(
     contentPadding: PaddingValues = PaddingValues(PocketSpacing.lg),
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = isGlassDarkTheme()
     val handleColor = if (isDark) Color(0x44FFFFFF) else Color(0x33000000)
 
     LiquidGlassSurface(
@@ -483,7 +482,7 @@ fun LiquidGlassInputCapsule(
     keyboardActions: KeyboardActions = KeyboardActions.Default,
     contentDescription: String? = "Text input",
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = isGlassDarkTheme()
     val textColor = MaterialTheme.colorScheme.onSurface
     val placeholderColor = MaterialTheme.colorScheme.onSurfaceVariant
 
@@ -663,7 +662,7 @@ fun <T> LiquidGlassSegmentedControl(
     layerSource: String? = LiquidGlassLayers.Background,
     accentColor: Color = PocketPalette.orangeAccent,
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = isGlassDarkTheme()
 
     LiquidGlassSurface(
         modifier = modifier
