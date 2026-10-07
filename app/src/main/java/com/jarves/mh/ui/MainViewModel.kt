@@ -247,6 +247,8 @@ data class AppUiState(
     val previewUrl: String? = null,
     val isRunning: Boolean = false,
     val activeSessionId: String? = null,
+    /** Sessions of earlier attempts of the current task; their events never reach the chat again. */
+    val retiredSessionIds: Set<String> = emptySet(),
     val toastMessage: String? = null,
     val projectTerminalLines: List<TerminalOutputLine> = emptyList(),
     val projectTerminalLiveOutput: String = "",
@@ -377,6 +379,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var githubAuthJob: kotlinx.coroutines.Job? = null
     @Volatile private var lastOpenedAntigravityAuthUrl: String? = null
     private var activeRuntimeRequest: RuntimeRetryRequest? = null
+    /** Task whose sessions the chat follows; set by sendPrompt, read from supervisor threads. */
+    @Volatile private var activeUiTaskId: String? = null
     private val failedApiKeyIds = mutableSetOf<String>()
     private val attemptedProfileIds = mutableSetOf<String>()
     @Volatile private var pendingTranscriptWrite: TranscriptWrite? = null
@@ -4262,6 +4266,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 taskFinishedAtMillis = null,
                 workSegmentStartedAtMillis = startedAt,
                 currentTaskRequest = requestText,
+                retiredSessionIds = emptySet(),
             )
         }
         touchProject(project.id)
@@ -4332,16 +4337,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         supervisor.registerFallbackDecider(taskRecord.taskId) { taskId, errorMsg ->
             applyFallbackForTask(taskId, errorMsg)
         }
-        supervisor.executeTask(taskRecord.taskId) { task ->
+        activeUiTaskId = taskRecord.taskId
+        // SessionFailed clears activeRuntimeRequest, so each retry falls back to the last
+        // request this task ran rather than silently starting nothing.
+        var lastTaskRequest: RuntimeRetryRequest? = activeRuntimeRequest
+        val job = supervisor.executeTask(taskRecord.taskId) { task ->
             try {
-                activeRuntimeRequest?.let { request ->
+                lastTaskRequest?.let { previous ->
+                    val request = RuntimeSessionRouting.requestForAttempt(
+                        activeRuntimeRequest, activeRuntimeRequest?.taskId, previous, task.taskId,
+                    )
                     val snapshot = supervisor.getBrainSnapshot(task.taskId)
                     val effectiveAttemptId = snapshot?.attemptId ?: "${task.taskId}:attempt-${task.retryCount}"
-                    activeRuntimeRequest = request.copy(
+                    val attemptRequest = request.copy(
                         taskId = task.taskId,
                         attemptId = effectiveAttemptId,
                         brainSnapshot = snapshot,
                     )
+                    activeRuntimeRequest = attemptRequest
+                    lastTaskRequest = attemptRequest
+                    // Each attempt runs in a new bridge session: follow it, not the failed one.
+                    // Bridges bind every session to the task before emitting SessionStarted, so the
+                    // task's bound session here is the previous attempt's, even if the chat never saw it.
+                    val previousSessionId = supervisor.stateStore.get(task.taskId)?.sessionId
+                    _state.update {
+                        RuntimeSessionRouting.prepareForAttempt(
+                            it, activeUiTaskId, task.taskId, task.projectId, previousSessionId, requestText,
+                        )
+                    }
                     val sessionId = request.runtime.startSession(
                         request.project.id,
                         request.project.slug,
@@ -4384,6 +4407,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 throw t
+            }
+        }
+        // A launch the supervisor refused before any session started (for example the previous
+        // task still holds the project lock) emits no runtime events; release the chat here.
+        val launchedTaskId = taskRecord.taskId
+        job.invokeOnCompletion {
+            val record = supervisor.stateStore.get(launchedTaskId) ?: return@invokeOnCompletion
+            if (!record.status.isTerminal || record.sessionId != null) return@invokeOnCompletion
+            _state.update { current ->
+                if (activeUiTaskId != launchedTaskId || !current.isRunning || current.activeSessionId != null) {
+                    current
+                } else {
+                    current.copy(
+                        isRunning = false,
+                        liveThinking = false,
+                        liveProcess = emptyList(),
+                        currentTaskRequest = null,
+                        toastMessage = record.lastError ?: "Task could not start.",
+                    )
+                }
             }
         }
     }
@@ -4612,8 +4655,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (event is RuntimeEvent.SessionFailed && retryWithNextApiKey(event)) return
         _state.update { current ->
-            val isStarting = event is RuntimeEvent.SessionStarted && current.activeSessionId == null
-            if (!current.isRunning || (!isStarting && current.activeSessionId != event.sessionId)) {
+            if (!RuntimeSessionRouting.accepts(current, event)) {
                 current
             } else when (event) {
                 is RuntimeEvent.SessionStarted -> current.copy(
