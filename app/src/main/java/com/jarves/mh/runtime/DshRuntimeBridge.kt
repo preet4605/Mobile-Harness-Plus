@@ -55,8 +55,8 @@ class DshRuntimeBridge(
     override val isRunning: Boolean get() = activeProcess?.isAlive == true
     @Volatile private var activeSessionId: String? = null
     @Volatile private var activeTaskId: String? = null
-    @Volatile private var userStopRequested: Boolean = false
-    private val stoppedTaskIds = ConcurrentHashMap.newKeySet<String>()
+    private val stopState = BridgeStopState()
+    private var userStopRequested by stopState::userStopRequested
     @Volatile private var activeProjectSlug: String? = null
     @Volatile private var taskStartedAtElapsedRealtime: Long = 0L
     @Volatile private var lastForegroundProgressAt: Long = 0L
@@ -89,12 +89,10 @@ class DshRuntimeBridge(
         finishedSessions.remove(sessionId)
         activeSessionId = sessionId
         activeTaskId = taskId
-        val isTaskCancelled = (taskId != null && runCatching {
+        val cancellationActive = taskId != null && runCatching {
             com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).isCancellationActive(taskId)
-        }.getOrDefault(false)) || (taskId != null && stoppedTaskIds.contains(taskId))
-        if (isTaskCancelled || userStopRequested) {
-            userStopRequested = true
-            if (taskId != null) stoppedTaskIds.add(taskId)
+        }.getOrDefault(false)
+        if (stopState.beginSession(taskId, cancellationActive)) {
             activeSessionId = null
             activeTaskId = null
             emitFailureOnce(sessionId, "Stopped by user")
@@ -111,7 +109,6 @@ class DshRuntimeBridge(
             emitFailureOnce(sessionId, "Task $taskId is already terminal")
             throw IllegalStateException("Task $taskId is already terminal")
         }
-        userStopRequested = false
         activeProjectSlug = projectSlug
         taskStartedAtElapsedRealtime = android.os.SystemClock.elapsedRealtime()
         lastForegroundProgressAt = 0L
@@ -433,7 +430,7 @@ class DshRuntimeBridge(
             com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).getTaskIdForSession(sessionId)
         }.getOrNull() ?: activeTaskId
         if (resolvedTaskId != null) {
-            stoppedTaskIds.add(resolvedTaskId)
+            stopState.requestStop(resolvedTaskId)
         }
         val proc = activeProcess
         if (proc != null) {
