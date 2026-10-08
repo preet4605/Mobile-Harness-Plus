@@ -103,7 +103,6 @@ object SlashCommandEngine {
             description = "Autonomous execution mode running tasks to verified completion",
             category = SlashCommandCategory.AGENT_WORKFLOW,
             parameterHint = "<goal description>",
-            supportedAgents = setOf(AgentKind.ANTIGRAVITY, AgentKind.CLAUDE_CODE),
         ),
         SlashCommand(
             name = "review",

@@ -63,6 +63,11 @@ class SlashCommandEngineTest {
         assertTrue(allAgy.any { it.name == "browser" })
         assertTrue(allDsh.none { it.name == "browser" })
 
+        // Goal is a plain prompt workflow, so every harness offers it
+        AgentKind.entries.forEach { agent ->
+            assertTrue(SlashCommandEngine.filterCommands("/", agent).any { it.name == "goal" })
+        }
+
         // Status, skills, and rules exist
         assertTrue(allAgy.any { it.name == "status" })
         assertTrue(allAgy.any { it.name == "skills" })
