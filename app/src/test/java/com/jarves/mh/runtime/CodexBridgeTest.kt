@@ -17,7 +17,9 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 /**
  * Fixtures under `src/test/resources/codex` are real `codex exec --json` captures (codex-cli
@@ -874,5 +876,36 @@ class CodexTurnRunnerTest {
             job.join()
         }
         assertTrue(io.forceKillCalls >= 1)
+    }
+}
+
+class CodexBridgeHelpersTest {
+    @get:Rule val folder = TemporaryFolder()
+
+    private fun authFile(rootfs: java.io.File) = java.io.File(rootfs, "root/.codex/auth.json")
+
+    @Test
+    fun missingCredentialsAreNotSignedIn() {
+        assertFalse(CodexRuntimeBridge.hasChatGptCredentials(folder.root))
+    }
+
+    @Test
+    fun emptyOrPlaceholderCredentialFileIsNotSignedIn() {
+        authFile(folder.root).apply { parentFile!!.mkdirs(); writeText("") }
+        assertFalse(CodexRuntimeBridge.hasChatGptCredentials(folder.root))
+        authFile(folder.root).writeText("{}")
+        assertFalse(CodexRuntimeBridge.hasChatGptCredentials(folder.root))
+    }
+
+    @Test
+    fun credentialFileCountsAsSignedIn() {
+        authFile(folder.root).apply { parentFile!!.mkdirs(); writeText("""{"auth_mode":"chatgpt"}""") }
+        assertTrue(CodexRuntimeBridge.hasChatGptCredentials(folder.root))
+    }
+
+    @Test
+    fun directoryNamedLikeTheCredentialFileIsNotSignedIn() {
+        authFile(folder.root).mkdirs()
+        assertFalse(CodexRuntimeBridge.hasChatGptCredentials(folder.root))
     }
 }

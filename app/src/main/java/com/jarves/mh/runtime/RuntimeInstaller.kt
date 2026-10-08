@@ -71,6 +71,7 @@ class RuntimeInstaller(private val context: Context) {
     private val devStacksFile = File(rootfs, ".pocket-dev-stacks.json")
     private val dshMarker = File(rootfs, ".pocket-dsh-version")
     private val agyMarker = File(rootfs, ".pocket-agy-version")
+    private val codexMarker = File(rootfs, ".pocket-codex-version")
     private val githubCliMarker = File(rootfs, ".pocket-github-cli-version")
     private val dshAndroidCompatibilityMarker = File(rootfs, ".pocket-dsh-android-compat-version")
     private val macosMetadataRepairMarker = File(rootfs, ".pocket-macos-metadata-repair")
@@ -269,6 +270,13 @@ class RuntimeInstaller(private val context: Context) {
     }
 
     val agyVersion: String get() = agyMarker.readTextOrNull().orEmpty()
+
+    val codexVersion: String get() = codexMarker.readTextOrNull().orEmpty()
+
+    /** The marker is written only after the binary passed verification, so it implies a usable install. */
+    fun isCodexInstalled(): Boolean = isInstalled() &&
+        File(rootfs, CodexLaunchBuilder.CODEX_GUEST_PATH.removePrefix("/")).canExecute() &&
+        !codexMarker.readTextOrNull().isNullOrBlank()
 
     val githubCliVersion: String get() = githubCliMarker.readTextOrNull().orEmpty()
 
