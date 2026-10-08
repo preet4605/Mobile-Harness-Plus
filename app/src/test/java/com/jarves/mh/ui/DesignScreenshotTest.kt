@@ -260,6 +260,10 @@ class DesignScreenshotTest {
         ),
     )
 
+    private val filesChangesState = filesState.copy(changes = listOf(ChangeItem("app/src/main/java/Settings.kt", 1, 0)))
+
+    private val filesManyChangesState = filesState.copy(changes = (1..12).map { ChangeItem("app/src/main/java/File$it.kt", it, 0) })
+
     private val fileState = workspaceState.copy(
         openedFilePath = "app/src/main/java/Settings.kt",
         openedFileContent = "package demo\n\nimport androidx.compose.runtime.Composable\n\n@Composable\nfun Settings(prefs: Preferences) {\n    val mode by prefs.themeMode.collectAsState(ThemeMode.SYSTEM)\n    ThemeToggle(mode, onChange = prefs::setThemeMode)\n}\n",
@@ -307,6 +311,9 @@ class DesignScreenshotTest {
     @Test fun chatApprovalDark() = workspace("chat-approval", true, approvalState)
     @Test fun filesLight() = workspace("files", false, filesState, WorkspaceTab.FILES)
     @Test fun filesDark() = workspace("files", true, filesState, WorkspaceTab.FILES)
+    @Test fun filesChangesLight() = workspace("files-changes", false, filesChangesState, WorkspaceTab.FILES)
+    @Test fun filesChangesDark() = workspace("files-changes", true, filesChangesState, WorkspaceTab.FILES)
+    @Test fun filesManyChangesDark() = workspace("files-many-changes", true, filesManyChangesState, WorkspaceTab.FILES)
     @Test fun fileViewerLight() = workspace("file-viewer", false, fileState)
     @Test fun fileViewerDark() = workspace("file-viewer", true, fileState)
 

@@ -89,7 +89,7 @@ internal fun ChangesFilesSection(
         SectionCard {
             ListRow(
                 title = changesSummary(changes),
-                subtitle = "+$added −$removed · Review each diff",
+                subtitle = "+$added −$removed · Review changes",
                 icon = Icons.Outlined.Description,
                 iconTile = colors.blue,
                 accessory = ListRowAccessory.Chevron,
