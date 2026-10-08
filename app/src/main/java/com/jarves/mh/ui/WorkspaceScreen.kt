@@ -133,8 +133,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
@@ -192,6 +195,7 @@ import com.jarves.mh.ui.kit.SymbolTile
 import com.jarves.mh.ui.kit.largeTitleBarPadding
 import com.jarves.mh.ui.kit.overlayAnchor
 import com.jarves.mh.ui.kit.rememberBanner
+import com.jarves.mh.ui.kit.rememberHaptics
 import com.jarves.mh.ui.kit.rememberOverlayAnchor
 import com.jarves.mh.ui.theme.ContinuousRoundedShape
 import com.jarves.mh.ui.theme.PocketColors
@@ -2121,65 +2125,17 @@ private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Uni
         }
     }
 
-    // User turns are compact bubbles; assistant replies sit directly on the canvas as readable
-    // content. The copy action and duration live in a quiet footer under each turn.
-    val copyButton: @Composable () -> Unit = {
-        PocketIconButton(
-            icon = if (isCopied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
-            contentDescription = if (isCopied) "Message copied to clipboard" else "Copy entire message",
-            onClick = copyAction,
-            tint = if (isCopied) colors.green else colors.tertiaryLabel,
-            iconSize = 15.dp,
-        )
-    }
+    // User turns are compact bubbles with their actions on a long press; assistant replies sit
+    // directly on the canvas as selectable content, with the duration and copy in a quiet footer
+    // once the turn has finished.
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = if (message.fromUser) Alignment.End else Alignment.Start,
     ) {
-        SelectionContainer {
-            if (message.fromUser) {
-                // Copy sits beside the bubble, so a user turn costs no extra row.
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    if (message.text.isNotBlank()) copyButton()
-                    Box(Modifier.fillMaxWidth(0.85f), contentAlignment = Alignment.CenterEnd) {
-                        Column(
-                            Modifier
-                                .clip(PocketShape.lg)
-                                .background(colors.groupedSurface)
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                        ) {
-                            if (message.activeSkill != null) {
-                                Row(
-                                    modifier = Modifier.padding(bottom = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Icon(
-                                        Icons.Outlined.AutoAwesome,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(12.dp),
-                                        tint = MaterialTheme.colorScheme.primary,
-                                    )
-                                    Spacer(Modifier.width(PocketSpacing.xs))
-                                    Text(
-                                        "Skill: ${message.activeSkill}",
-                                        style = PocketType.caption1.emphasized,
-                                        color = MaterialTheme.colorScheme.primary,
-                                    )
-                                }
-                            }
-                            Text(
-                                text = message.text,
-                                style = PocketType.body,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
-                    }
-                }
-            } else {
+        if (message.fromUser) {
+            UserBubble(message, onCopy = copyAction)
+        } else {
+            SelectionContainer {
                 MarkdownText(
                     markdown = message.text,
                     modifier = Modifier.padding(horizontal = PocketSpacing.xs),
@@ -2201,19 +2157,84 @@ private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Uni
                 }
             }
         }
-        if (message.text.isNotBlank() && !message.fromUser) {
+        if (message.text.isNotBlank() && !message.fromUser && message.workedMillis > 0L) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (message.workedMillis > 0L) {
-                    Text(
-                        text = "Worked for ${formatDuration((message.workedMillis / 1_000L).coerceAtLeast(1L))}",
-                        style = PocketType.footnote,
-                        color = colors.secondaryLabel,
-                        modifier = Modifier.padding(start = PocketSpacing.xs),
-                    )
-                }
-                copyButton()
+                Text(
+                    text = "Worked for ${formatDuration((message.workedMillis / 1_000L).coerceAtLeast(1L))}",
+                    style = PocketType.footnote,
+                    color = colors.secondaryLabel,
+                    modifier = Modifier.padding(start = PocketSpacing.xs),
+                )
+                PocketIconButton(
+                    icon = if (isCopied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
+                    contentDescription = if (isCopied) "Message copied to clipboard" else "Copy entire message",
+                    onClick = copyAction,
+                    tint = if (isCopied) colors.green else colors.tertiaryLabel,
+                    iconSize = 15.dp,
+                )
             }
         }
+    }
+}
+
+/** The person's own turn: a bubble whose long press (or accessibility action) offers Copy. */
+@Composable
+private fun UserBubble(message: ChatMessage, onCopy: () -> Unit) {
+    val colors = PocketColors.current
+    val banner = rememberBanner()
+    val haptics = rememberHaptics()
+    val anchor = rememberOverlayAnchor()
+    var menuOpen by remember { mutableStateOf(false) }
+    val canCopy = message.text.isNotBlank()
+    val copy = {
+        onCopy()
+        banner("Copied", BannerKind.Success)
+    }
+    Box(Modifier.fillMaxWidth(0.85f), contentAlignment = Alignment.CenterEnd) {
+        Column(
+            Modifier
+                .overlayAnchor(anchor)
+                .clip(PocketShape.lg)
+                .background(colors.groupedSurface)
+                .then(
+                    if (canCopy) {
+                        Modifier
+                            .pointerInput(message.id) {
+                                detectTapGestures(onLongPress = { haptics.longPress(); menuOpen = true })
+                            }
+                            .semantics { customActions = listOf(CustomAccessibilityAction("Copy") { copy(); true }) }
+                    } else Modifier,
+                )
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+        ) {
+            if (message.activeSkill != null) {
+                Row(
+                    modifier = Modifier.padding(bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Outlined.AutoAwesome,
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(PocketSpacing.xs))
+                    Text(
+                        "Skill: ${message.activeSkill}",
+                        style = PocketType.caption1.emphasized,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            Text(
+                text = message.text,
+                style = PocketType.body,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+    }
+    GlassMenu(expanded = menuOpen, onDismiss = { menuOpen = false }, anchor = anchor) {
+        GlassMenuItem("Copy", copy, icon = Icons.Outlined.ContentCopy)
     }
 }
 

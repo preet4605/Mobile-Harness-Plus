@@ -156,6 +156,7 @@ import com.jarves.mh.ui.kit.ListRow
 import com.jarves.mh.ui.kit.ListRowAccessory
 import com.jarves.mh.ui.kit.ListSection
 import com.jarves.mh.ui.kit.LocalBanner
+import com.jarves.mh.ui.kit.MonogramTile
 import com.jarves.mh.ui.kit.PocketButton
 import com.jarves.mh.ui.kit.PocketButtonSize
 import com.jarves.mh.ui.kit.PocketButtonStyle
@@ -353,28 +354,6 @@ private fun BrandMark(modifier: Modifier = Modifier, size: Dp = HeroSymbol) {
         contentAlignment = Alignment.Center,
     ) {
         Icon(Icons.Outlined.Terminal, contentDescription = null, tint = Color.White, modifier = Modifier.size(size * 0.56f))
-    }
-}
-
-/** Letters on a coloured tile: the mark of an agent or provider. */
-@Composable
-private fun MonogramTile(text: String, color: Color, size: Dp = ListIconTile) {
-    val large = size > ListIconTile
-    val style = when {
-        large && text.length > 1 -> PocketType.title2
-        large -> PocketType.title1
-        text.length > 1 -> PocketType.caption2.emphasized
-        else -> PocketType.subheadline.emphasized
-    }
-    Box(
-        Modifier
-            .size(size)
-            .clip(ContinuousRoundedShape(size * 0.24f))
-            .background(color)
-            .clearAndSetSemantics { },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(text, style = style, color = Color.White, maxLines = 1, softWrap = false)
     }
 }
 

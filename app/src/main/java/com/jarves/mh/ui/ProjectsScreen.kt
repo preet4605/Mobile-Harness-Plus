@@ -83,6 +83,7 @@ import com.jarves.mh.ui.kit.ListInset
 import com.jarves.mh.ui.kit.ListRow
 import com.jarves.mh.ui.kit.ListRowAccessory
 import com.jarves.mh.ui.kit.ListSection
+import com.jarves.mh.ui.kit.MonogramTile
 import com.jarves.mh.ui.kit.PocketAlert
 import com.jarves.mh.ui.kit.PocketButton
 import com.jarves.mh.ui.kit.PocketButtonSize
@@ -92,6 +93,7 @@ import com.jarves.mh.ui.kit.ProgressRing
 import com.jarves.mh.ui.kit.SearchField
 import com.jarves.mh.ui.kit.SheetDetent
 import com.jarves.mh.ui.kit.SheetTextButton
+import com.jarves.mh.ui.kit.SymbolTile
 import com.jarves.mh.ui.kit.overlayAnchor
 import com.jarves.mh.ui.kit.rememberHaptics
 import com.jarves.mh.ui.kit.rememberOverlayAnchor
@@ -126,10 +128,20 @@ internal fun engineSummary(state: AppUiState): String {
 }
 
 /** A stable tile colour per project, so a project keeps its colour everywhere. */
-internal fun projectTileColor(project: Project, colors: PocketColorRoles): Color {
-    if (project.kind == ProjectKind.QUICK_PROJECT) return colors.orange
-    val palette = listOf(colors.blue, colors.indigo, colors.purple, colors.teal, colors.green, colors.pink, colors.cyan, colors.brown)
-    return palette[Math.floorMod(project.id.hashCode(), palette.size)]
+/** A project's language as a short monogram and colour ("Kt" purple), or null when there is none. */
+internal fun projectBadge(language: String, colors: PocketColorRoles): Pair<String, Color>? {
+    val name = language.trim()
+    return when (name.lowercase()) {
+        "", "general", "workspace" -> null
+        "kotlin" -> "Kt" to colors.purple
+        "java" -> "J" to colors.red
+        "typescript" -> "TS" to colors.blue
+        "javascript" -> "JS" to colors.yellow
+        "python" -> "Py" to colors.green
+        "rust" -> "Rs" to colors.brown
+        "go" -> "Go" to colors.cyan
+        else -> name.take(2).replaceFirstChar { it.uppercase() } to colors.gray
+    }
 }
 
 /**
@@ -390,8 +402,14 @@ private fun ProjectRow(
             else -> listOf(project.language.ifBlank { "Workspace" }, project.formattedUpdatedAt).filter { it.isNotBlank() }.joinToString(" · ")
         },
         subtitleMaxLines = 1,
-        icon = if (project.kind == ProjectKind.QUICK_PROJECT) Icons.Outlined.AutoAwesome else Icons.Outlined.Folder,
-        iconTile = projectTileColor(project, colors),
+        leading = {
+            val badge = projectBadge(project.language, colors)
+            when {
+                project.kind == ProjectKind.QUICK_PROJECT -> SymbolTile(Icons.Outlined.AutoAwesome, colors.orange)
+                badge != null -> MonogramTile(badge.first, badge.second, tinted = true)
+                else -> SymbolTile(Icons.Outlined.Folder, colors.gray)
+            }
+        },
         accessory = ListRowAccessory.Chevron,
         modifier = Modifier
             .overlayAnchor(anchor)

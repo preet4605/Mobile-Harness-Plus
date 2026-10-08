@@ -87,11 +87,13 @@ class DesignScreenshotTest {
             text = "I added a `ThemeMode` preference and a toggle in **Settings**. The choice is saved with DataStore and applied on launch.\n\n" +
                 "```kotlin\nval mode by prefs.themeMode.collectAsState(ThemeMode.SYSTEM)\nPocketTheme(mode) { App() }\n```\n\n" +
                 "Changed files:\n- `SettingsScreen.kt`\n- `Preferences.kt`\n- `MainActivity.kt`",
+            workedMillis = 42_000,
         ),
         ChatMessage(fromUser = true, text = "Great. Can you also add a test for the preference?"),
         ChatMessage(
             fromUser = false,
             text = "Done. `PreferencesTest` covers the default value, a write, and a read after restart. All 14 tests pass.",
+            workedMillis = 68_000,
         ),
     )
     private val baseState = AppUiState(projects = projects)

@@ -39,10 +39,12 @@ import androidx.compose.ui.geometry.toRect
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.ParentDataModifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -343,6 +345,39 @@ fun SymbolTile(icon: ImageVector, color: Color, modifier: Modifier = Modifier, s
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(size * 0.6f))
+    }
+}
+
+/**
+ * Letters on a rounded tile: the mark of an agent, a provider or a project's language. [tinted]
+ * gives a soft tile with coloured letters for quiet lists; otherwise white letters on [color].
+ */
+@Composable
+fun MonogramTile(text: String, color: Color, modifier: Modifier = Modifier, size: Dp = ListIconTile, tinted: Boolean = false) {
+    val isDark = PocketColors.current.isDark
+    val large = size > ListIconTile
+    val style = when {
+        large && text.length > 1 -> PocketType.title2
+        large -> PocketType.title1
+        text.length > 1 && tinted -> PocketType.footnote.emphasized
+        text.length > 1 -> PocketType.caption2.emphasized
+        else -> PocketType.subheadline.emphasized
+    }
+    val fill = if (tinted) color.copy(alpha = if (isDark) 0.24f else 0.16f) else color
+    val ink = when {
+        !tinted -> Color.White
+        isDark -> color
+        else -> lerp(color, Color.Black, 0.3f)
+    }
+    Box(
+        modifier
+            .size(size)
+            .clip(com.jarves.mh.ui.theme.ContinuousRoundedShape(size * 0.24f))
+            .background(fill)
+            .clearAndSetSemantics { },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, style = style, color = ink, maxLines = 1, softWrap = false)
     }
 }
 

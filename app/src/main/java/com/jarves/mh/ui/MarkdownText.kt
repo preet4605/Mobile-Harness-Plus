@@ -1,5 +1,6 @@
 package com.jarves.mh.ui
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -35,7 +36,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -244,10 +250,12 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
                     }
                 }
             }
+            val scroll = rememberScrollState()
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
+                    .scrollEdgeFade(scroll)
+                    .horizontalScroll(scroll)
                     .padding(12.dp),
             ) {
                 Text(
@@ -261,6 +269,28 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
         }
     }
 }
+
+private val CodeEdgeFade = 24.dp
+
+/** Fades long code lines out at the edge they continue past, so a clipped line reads as scrollable. */
+private fun Modifier.scrollEdgeFade(scroll: ScrollState): Modifier = this
+    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    .drawWithContent {
+        drawContent()
+        val fade = CodeEdgeFade.toPx()
+        if (scroll.value < scroll.maxValue) {
+            drawRect(
+                Brush.horizontalGradient(listOf(Color.Black, Color.Transparent), startX = size.width - fade, endX = size.width),
+                blendMode = BlendMode.DstIn,
+            )
+        }
+        if (scroll.value > 0) {
+            drawRect(
+                Brush.horizontalGradient(listOf(Color.Transparent, Color.Black), startX = 0f, endX = fade),
+                blendMode = BlendMode.DstIn,
+            )
+        }
+    }
 
 internal fun buildInlineMarkdown(
     text: String,
