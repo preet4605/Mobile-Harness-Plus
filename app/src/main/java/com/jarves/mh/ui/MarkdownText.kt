@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.sp
 import com.jarves.mh.ui.theme.PocketColors
 import com.jarves.mh.ui.theme.PocketRadius
 import com.jarves.mh.ui.theme.PocketShape
+import com.jarves.mh.ui.theme.PocketSpacing
 import com.jarves.mh.ui.theme.PocketType
 import com.jarves.mh.ui.theme.emphasized
 import kotlinx.coroutines.delay
@@ -85,7 +86,7 @@ fun MarkdownText(
 ) {
     val blocks = remember(markdown) { parseMarkdown(markdown) }
 
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(PocketSpacing.sm)) {
         blocks.forEach { block ->
             when (block) {
                 is MarkdownBlock.Header -> HeaderBlock(block)
@@ -95,7 +96,7 @@ fun MarkdownText(
                 is MarkdownBlock.BlockQuote -> QuoteBlock(block)
                 is MarkdownBlock.HorizontalRule -> HorizontalDivider(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                    modifier = Modifier.padding(vertical = 4.dp),
+                    modifier = Modifier.padding(vertical = PocketSpacing.xs),
                 )
                 is MarkdownBlock.Paragraph -> {
                     RichInlineText(
@@ -120,7 +121,7 @@ private fun HeaderBlock(header: MarkdownBlock.Header) {
         text = formatInlineMarkdown(header.text),
         style = style,
         color = MaterialTheme.colorScheme.onSurface,
-        modifier = Modifier.padding(top = 4.dp),
+        modifier = Modifier.padding(top = PocketSpacing.xs),
     )
 }
 
@@ -141,7 +142,7 @@ private fun BulletBlock(item: MarkdownBlock.BulletItem, color: Color) {
         Box(
             modifier = Modifier
                 .width(ListMarkerWidth)
-                .padding(top = 8.dp),
+                .padding(top = PocketSpacing.sm),
         ) {
             Box(
                 modifier = Modifier
@@ -186,7 +187,7 @@ private fun QuoteBlock(quote: MarkdownBlock.BlockQuote) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = PocketSpacing.md, vertical = PocketSpacing.sm),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -195,7 +196,7 @@ private fun QuoteBlock(quote: MarkdownBlock.BlockQuote) {
                 .height(24.dp)
                 .background(MaterialTheme.colorScheme.outline, RoundedCornerShape(2.dp)),
         )
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(PocketSpacing.sm))
         InlineMarkdownText(
             text = formatInlineMarkdown(quote.text),
             style = MaterialTheme.typography.bodyMedium.copy(
@@ -227,7 +228,7 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(scheme.surfaceVariant.copy(alpha = 0.5f))
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                    .padding(horizontal = PocketSpacing.md, vertical = PocketSpacing.xs),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -277,7 +278,7 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
                     .fillMaxWidth()
                     .scrollEdgeFade(scroll)
                     .horizontalScroll(scroll)
-                    .padding(12.dp),
+                    .padding(PocketSpacing.md),
             ) {
                 Text(
                     text = block.code,
@@ -570,7 +571,7 @@ private fun RichInlineText(
         InlineMarkdownText(text = formatInlineMarkdown(text), style = style, color = color, modifier = modifier)
         return
     }
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(PocketSpacing.sm)) {
         segments.forEach { segment ->
             when (segment) {
                 is InlineSegment.Prose -> InlineMarkdownText(text = formatInlineMarkdown(segment.text), style = style, color = color)
@@ -588,7 +589,7 @@ private fun LongCodeBlock(code: String) {
             .fillMaxWidth()
             .clip(PocketShape.sm)
             .background(PocketColors.current.codeSurface)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .padding(horizontal = PocketSpacing.md, vertical = PocketSpacing.sm),
     ) {
         Text(code, style = PocketType.codeSmall, color = MaterialTheme.colorScheme.onSurface)
     }
