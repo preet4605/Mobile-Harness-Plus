@@ -38,7 +38,9 @@ import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.NewReleases
 import androidx.compose.material.icons.outlined.PrivacyTip
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Storage
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -102,9 +104,9 @@ import com.jarves.mh.ui.theme.emphasized
 import com.jarves.mh.ui.theme.glass.hostBackdropSource
 
 /**
- * Settings: one grouped list under a large title. Appearance (light, dark or automatic, and
- * Reduce transparency), developer toolchains, the Linux runtime, and About. Provider and
- * account setup lives on the Agent tab.
+ * Settings: one grouped list under a large title. The active agent (opens the Agent tab),
+ * Appearance (light, dark or automatic, and Reduce transparency), developer toolchains, the Linux
+ * runtime, and About. Provider and account setup lives on the Agent tab.
  */
 @Composable
 fun SettingsScreen(
@@ -118,6 +120,7 @@ fun SettingsScreen(
     initialDebugUpdateManifestUrl: String = "",
     onSetDebugUpdateManifestUrl: (String) -> Unit = {},
     onClearDebugUpdateManifestUrl: () -> Unit = {},
+    onOpenAgent: () -> Unit = {},
     listState: LazyListState = rememberLazyListState(),
     bottomBarPadding: Dp = 0.dp,
 ) {
@@ -138,6 +141,20 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(PocketSpacing.xl),
         ) {
             item(key = "title") { LargeTitle("Settings") }
+
+            item(key = "account") {
+                ListSection {
+                    val installed = state.installedAgentVersions.containsKey(state.agentKind)
+                    ListRow(
+                        title = state.agentKind.title,
+                        subtitle = if (installed) "Installed · v${state.installedAgentVersions[state.agentKind]}" else "Not installed",
+                        icon = Icons.Outlined.SmartToy,
+                        iconTile = colors.orange,
+                        accessory = ListRowAccessory.Chevron,
+                        onClick = onOpenAgent,
+                    )
+                }
+            }
 
             item(key = "appearance") {
                 ListSection(
@@ -173,17 +190,15 @@ fun SettingsScreen(
 
             item(key = "runtime") {
                 ListSection(header = "Linux runtime") {
-                    ListRow("Environment", value = "Ubuntu 20.04 PRoot")
-                    ListRow("Architecture", value = "ARM64")
-                    ListRow(
-                        "Active agent",
-                        value = state.agentKind.title + if (state.installedAgentVersions.containsKey(state.agentKind)) "" else " · Not installed",
-                    )
+                    ListRow("Environment", value = "Ubuntu 20.04 PRoot", icon = Icons.Outlined.Terminal, iconTile = colors.green)
+                    ListRow("Architecture", value = "ARM64", icon = Icons.Outlined.Memory, iconTile = colors.gray)
                     if (state.installedAgentVersions.isEmpty()) {
-                        ListRow("Installed agents", value = "None verified")
+                        ListRow("Installed agents", value = "None verified", icon = Icons.Outlined.SmartToy, iconTile = colors.indigo)
                     } else {
                         AgentKind.entries.forEach { agent ->
-                            state.installedAgentVersions[agent]?.let { version -> ListRow(agent.title, value = "v$version") }
+                            state.installedAgentVersions[agent]?.let { version ->
+                                ListRow(agent.title, value = "v$version", icon = Icons.Outlined.SmartToy, iconTile = colors.indigo)
+                            }
                         }
                     }
                 }

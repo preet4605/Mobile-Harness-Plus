@@ -479,6 +479,7 @@ private fun RootScreenHost(
                         initialDebugUpdateManifestUrl = viewModel.debugUpdateManifestUrl(),
                         onSetDebugUpdateManifestUrl = viewModel::setDebugUpdateManifestUrl,
                         onClearDebugUpdateManifestUrl = viewModel::clearDebugUpdateManifestUrl,
+                        onOpenAgent = { screen = RootScreen.AGENT },
                     )
                 }
             }
