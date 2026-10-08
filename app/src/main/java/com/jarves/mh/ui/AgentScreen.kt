@@ -245,7 +245,8 @@ fun AgentScreen(
     val orderedAgents = remember(state.primaryAgentKind) {
         listOf(state.primaryAgentKind) + AgentKind.entries.filterNot { it == state.primaryAgentKind }
     }
-    val viewedAgentInstalled = viewedAgent == state.agentKind ||
+    // Codex is checked even while selected: an install from before its helper shipped needs a repair.
+    val viewedAgentInstalled = (viewedAgent == state.agentKind && viewedAgent != AgentKind.CODEX) ||
         state.installedAgentVersions.containsKey(viewedAgent)
     val isAntigravity = state.agentKind == AgentKind.ANTIGRAVITY
 

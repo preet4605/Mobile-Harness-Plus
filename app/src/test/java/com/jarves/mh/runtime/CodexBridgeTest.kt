@@ -59,6 +59,26 @@ class CodexJsonlParserTest {
     }
 
     @Test
+    fun codeModeFixtureYieldsTheSameCommandEventsAsDirectTools() {
+        val events = CodexFixtures.events("code-mode.jsonl")
+        val started = events.filterIsInstance<CodexEvent.CommandStarted>().single()
+        assertEquals("/bin/bash -lc 'echo hi > made-by-codex.txt && cat made-by-codex.txt'", started.command)
+        val finished = events.filterIsInstance<CodexEvent.CommandFinished>().single()
+        assertEquals(0, finished.exitCode)
+        assertEquals("hi\n", finished.output)
+        assertTrue(events.last() is CodexEvent.TurnCompleted)
+    }
+
+    @Test
+    fun missingCodeModeHelperIsReportedAsAnoticeNotACrash() {
+        val events = CodexFixtures.events("code-mode-no-host.jsonl")
+        val notice = events.filterIsInstance<CodexEvent.Notice>().single()
+        assertTrue(notice.message.contains("code-mode host"))
+        assertTrue(events.none { it is CodexEvent.CommandStarted })
+        assertTrue(events.last() is CodexEvent.TurnCompleted)
+    }
+
+    @Test
     fun authFailureFixtureYieldsErrorThenTurnFailed() {
         val events = CodexFixtures.events("auth-failure.jsonl")
         val error = events.filterIsInstance<CodexEvent.StreamError>().single()

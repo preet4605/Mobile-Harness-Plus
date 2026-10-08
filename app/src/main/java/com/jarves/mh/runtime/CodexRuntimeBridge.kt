@@ -128,7 +128,7 @@ class CodexRuntimeBridge(
                 }
                 startForegroundRuntime(projectSlug, taskId)
                 check(installer.isCodexInstalled()) {
-                    "Codex is not installed. Open Settings → Coding agent to install it."
+                    "Codex is not installed or needs repair. Open Settings → Coding agent and tap Install."
                 }
                 val installed = installer.installedRuntime()
                 if (route is CodexRoute.ChatGptLogin && !hasChatGptCredentials(installed.rootfs)) {

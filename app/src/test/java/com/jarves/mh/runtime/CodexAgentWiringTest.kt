@@ -197,6 +197,60 @@ class CodexArchiveTest {
     }
 
     @Test
+    fun extractsSeveralEntriesInOnePassWhateverTheirOrder() {
+        val host = ByteArray(3_000) { (it % 97).toByte() }
+        val tgz = archive(listOf("package/z" to ByteArray(4), "package/bin/host" to host, "package/bin/codex" to payload))
+        val codexOut = File(folder.root, "out/codex")
+        val hostOut = File(folder.root, "out/host")
+        CodexArchive.extractEntries(
+            tgz,
+            listOf(
+                CodexArchiveTarget("package/bin/codex", codexOut, payload.size.toLong()),
+                CodexArchiveTarget("package/bin/host", hostOut, host.size.toLong()),
+            ),
+        )
+        assertTrue(codexOut.readBytes().contentEquals(payload))
+        assertTrue(hostOut.readBytes().contentEquals(host))
+    }
+
+    @Test
+    fun aMissingSecondEntryRemovesTheFirstToo() {
+        val tgz = archive(listOf("package/bin/codex" to payload))
+        val codexOut = File(folder.root, "out/codex")
+        val hostOut = File(folder.root, "out/host")
+        assertThrows(IllegalStateException::class.java) {
+            CodexArchive.extractEntries(
+                tgz,
+                listOf(
+                    CodexArchiveTarget("package/bin/codex", codexOut, payload.size.toLong()),
+                    CodexArchiveTarget("package/bin/host", hostOut, 10L),
+                ),
+            )
+        }
+        assertFalse(codexOut.exists())
+        assertFalse(hostOut.exists())
+    }
+
+    @Test
+    fun aWrongSizedSecondEntryRemovesBothFiles() {
+        val host = ByteArray(300)
+        val tgz = archive(listOf("package/bin/codex" to payload, "package/bin/host" to host))
+        val codexOut = File(folder.root, "out/codex")
+        val hostOut = File(folder.root, "out/host")
+        assertThrows(IllegalArgumentException::class.java) {
+            CodexArchive.extractEntries(
+                tgz,
+                listOf(
+                    CodexArchiveTarget("package/bin/codex", codexOut, payload.size.toLong()),
+                    CodexArchiveTarget("package/bin/host", hostOut, host.size + 1L),
+                ),
+            )
+        }
+        assertFalse(codexOut.exists())
+        assertFalse(hostOut.exists())
+    }
+
+    @Test
     fun wrongSizeIsRejectedAndLeavesNothingBehind() {
         val tgz = archive(listOf("package/bin/codex" to payload))
         val out = File(folder.root, "out/codex")
@@ -244,6 +298,62 @@ class CodexArchiveTest {
         assertTrue(CodexInstallSpec.ARCHIVE_URL.contains(CodexInstallSpec.VERSION))
         assertTrue(CodexInstallSpec.ARCHIVE_URL.startsWith("https://registry.npmjs.org/"))
         assertTrue(CodexInstallSpec.BINARY_ENTRY.contains("aarch64"))
-        assertTrue(CodexInstallSpec.REQUIRED_FREE_BYTES > CodexInstallSpec.ARCHIVE_BYTES + CodexInstallSpec.BINARY_BYTES)
+        assertTrue(CodexInstallSpec.HOST_ENTRY.contains("aarch64"))
+        assertTrue(CodexInstallSpec.HOST_ENTRY.endsWith("/bin/codex-code-mode-host"))
+        assertEquals(
+            CodexLaunchBuilder.CODEX_GUEST_PATH.substringBeforeLast('/') + "/codex-code-mode-host",
+            CodexLaunchBuilder.CODEX_CODE_MODE_HOST_GUEST_PATH,
+        )
+        assertTrue(
+            CodexInstallSpec.REQUIRED_FREE_BYTES >
+                CodexInstallSpec.ARCHIVE_BYTES + CodexInstallSpec.BINARY_BYTES + CodexInstallSpec.HOST_BYTES,
+        )
+        assertTrue(CodexInstallSpec.requiredFreeBytes(includeBinary = false) < CodexInstallSpec.requiredFreeBytes(includeBinary = true))
+        assertTrue(
+            CodexInstallSpec.requiredFreeBytes(includeBinary = false) > CodexInstallSpec.ARCHIVE_BYTES + CodexInstallSpec.HOST_BYTES,
+        )
+    }
+}
+
+class CodexInstallLayoutTest {
+    @get:Rule val folder = TemporaryFolder()
+
+    private fun rootfs(binary: Boolean, helper: Boolean, executable: Boolean = true): File {
+        val root = folder.newFolder()
+        val bin = File(root, "usr/local/bin").apply { mkdirs() }
+        if (binary) File(bin, "codex").apply { writeBytes(ByteArray(8)); setExecutable(executable) }
+        if (helper) File(bin, "codex-code-mode-host").apply { writeBytes(ByteArray(8)); setExecutable(executable) }
+        return root
+    }
+
+    @Test
+    fun completeNeedsBinaryHelperAndMarker() {
+        val root = rootfs(binary = true, helper = true)
+        assertTrue(CodexInstallLayout.isComplete(root, CodexInstallSpec.VERSION))
+        assertFalse(CodexInstallLayout.isComplete(root, null))
+        assertFalse(CodexInstallLayout.isComplete(root, "  "))
+    }
+
+    @Test
+    fun anInstallFromBeforeTheHelperShippedIsNotCompleteButItsBinaryIsKept() {
+        val root = rootfs(binary = true, helper = false)
+        assertFalse(CodexInstallLayout.isComplete(root, CodexInstallSpec.VERSION))
+        assertTrue(CodexInstallLayout.binaryUsable(root, CodexInstallSpec.VERSION))
+    }
+
+    @Test
+    fun aMissingOrNonExecutableBinaryIsNeverReused() {
+        assertFalse(CodexInstallLayout.binaryUsable(rootfs(binary = false, helper = true), CodexInstallSpec.VERSION))
+        assertFalse(CodexInstallLayout.isComplete(rootfs(binary = false, helper = true), CodexInstallSpec.VERSION))
+        val notExecutable = rootfs(binary = true, helper = true, executable = false)
+        assertFalse(CodexInstallLayout.binaryUsable(notExecutable, CodexInstallSpec.VERSION))
+        assertFalse(CodexInstallLayout.isComplete(notExecutable, CodexInstallSpec.VERSION))
+    }
+
+    @Test
+    fun aBinaryFromAnotherVersionIsReplaced() {
+        val root = rootfs(binary = true, helper = true)
+        assertFalse(CodexInstallLayout.binaryUsable(root, "0.160.0"))
+        assertFalse(CodexInstallLayout.binaryUsable(root, null))
     }
 }

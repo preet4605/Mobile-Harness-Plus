@@ -99,6 +99,9 @@ internal object CodexRouteMapper {
 /** Builds the `codex exec` argument vector and environment. Pure; no Android dependencies. */
 internal object CodexLaunchBuilder {
     const val CODEX_GUEST_PATH = "/usr/local/bin/codex"
+
+    /** Codex looks for this file next to its own executable; it must stay in the same directory. */
+    const val CODEX_CODE_MODE_HOST_GUEST_PATH = "/usr/local/bin/codex-code-mode-host"
     const val CODEX_HOME_GUEST_PATH = "/root/.codex"
 
     /**

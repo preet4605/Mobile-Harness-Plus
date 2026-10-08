@@ -278,8 +278,7 @@ class RuntimeInstaller(private val context: Context) {
 
     /** The marker is written only after the binary passed verification, so it implies a usable install. */
     fun isCodexInstalled(): Boolean = isInstalled() &&
-        File(rootfs, CodexLaunchBuilder.CODEX_GUEST_PATH.removePrefix("/")).canExecute() &&
-        !codexMarker.readTextOrNull().isNullOrBlank()
+        CodexInstallLayout.isComplete(rootfs, codexMarker.readTextOrNull())
 
     val githubCliVersion: String get() = githubCliMarker.readTextOrNull().orEmpty()
 
@@ -583,8 +582,10 @@ class RuntimeInstaller(private val context: Context) {
 
     /**
      * Downloads the pinned official Codex arm64 build from the npm registry, checks the archive
-     * SHA-512, extracts only the `codex` binary and proves it starts under PRoot before the version
-     * marker is written. A failure at any step leaves no executable and no marker behind.
+     * SHA-512, extracts only the `codex` binary and its `codex-code-mode-host` helper, and proves
+     * both start under PRoot before the version marker is written. A device that already has the
+     * main binary (installed before the helper was shipped) keeps it and only gains the helper. A
+     * failure at any step leaves no half-written executable and no new marker behind.
      */
     private suspend fun ensureCodexInstalled(
         proot: File,
@@ -595,15 +596,19 @@ class RuntimeInstaller(private val context: Context) {
         check(!BuildConfig.OFFLINE_RUNTIME_BUNDLES) {
             "Codex is too large to bundle. Install it from the online APK."
         }
-        check(CodexArchive.hasFreeSpace(context.filesDir, CodexInstallSpec.REQUIRED_FREE_BYTES)) {
-            "Not enough free storage for Codex. It needs about " +
-                "${CodexInstallSpec.REQUIRED_FREE_BYTES / (1024L * 1024L)} MB."
+        val destination = CodexInstallLayout.binary(rootfs)
+        val helper = CodexInstallLayout.helper(rootfs)
+        val keepBinary = CodexInstallLayout.binaryUsable(rootfs, codexMarker.readTextOrNull())
+        val requiredBytes = CodexInstallSpec.requiredFreeBytes(includeBinary = !keepBinary)
+        check(CodexArchive.hasFreeSpace(context.filesDir, requiredBytes)) {
+            "Not enough free storage for Codex. It needs about ${requiredBytes / (1024L * 1024L)} MB."
         }
         downloads.mkdirs()
         val archive = File(downloads, "codex-${CodexInstallSpec.VERSION}-linux-arm64.tgz")
-        val destination = File(rootfs, CodexLaunchBuilder.CODEX_GUEST_PATH.removePrefix("/"))
-        val staged = File(destination.parentFile, ".codex-${CodexInstallSpec.VERSION}.installing")
+        val stagedBinary = File(destination.parentFile, ".codex-${CodexInstallSpec.VERSION}.installing")
+        val stagedHelper = File(helper.parentFile, ".codex-code-mode-host-${CodexInstallSpec.VERSION}.installing")
         val end = 0.995f
+        var replacedBinary = false
         try {
             onProgress(RuntimeInstallProgress("Downloading Codex ${CodexInstallSpec.VERSION}", fraction))
             val downloadSpan = (end - fraction) * 0.8f
@@ -625,19 +630,32 @@ class RuntimeInstaller(private val context: Context) {
                 )
             }
             onProgress(RuntimeInstallProgress("Installing Codex ${CodexInstallSpec.VERSION}", fraction + (end - fraction) * 0.85f, indeterminate = true))
-            CodexArchive.extractEntry(archive, CodexInstallSpec.BINARY_ENTRY, staged, CodexInstallSpec.BINARY_BYTES)
-            Os.chmod(staged.absolutePath, 0b111101101)
-            destination.delete()
-            Os.rename(staged.absolutePath, destination.absolutePath)
+            val targets = buildList {
+                if (!keepBinary) add(CodexArchiveTarget(CodexInstallSpec.BINARY_ENTRY, stagedBinary, CodexInstallSpec.BINARY_BYTES))
+                add(CodexArchiveTarget(CodexInstallSpec.HOST_ENTRY, stagedHelper, CodexInstallSpec.HOST_BYTES))
+            }
+            CodexArchive.extractEntries(archive, targets)
+            if (!keepBinary) {
+                Os.chmod(stagedBinary.absolutePath, 0b111101101)
+                destination.delete()
+                Os.rename(stagedBinary.absolutePath, destination.absolutePath)
+                replacedBinary = true
+            }
+            Os.chmod(stagedHelper.absolutePath, 0b111101101)
+            helper.delete()
+            Os.rename(stagedHelper.absolutePath, helper.absolutePath)
         } finally {
-            runCatching { staged.delete() }
+            runCatching { stagedBinary.delete() }
+            runCatching { stagedHelper.delete() }
             runCatching { archive.delete() }
         }
         try {
             onProgress(RuntimeInstallProgress("Checking Codex", fraction + (end - fraction) * 0.95f, indeterminate = true))
             verifyGuest(proot, "${CodexLaunchBuilder.CODEX_GUEST_PATH} --version", "Codex verification failed")
+            verifyGuest(proot, "${CodexLaunchBuilder.CODEX_CODE_MODE_HOST_GUEST_PATH} --help", "Codex helper verification failed")
         } catch (e: Exception) {
-            runCatching { destination.delete() }
+            runCatching { helper.delete() }
+            if (replacedBinary) runCatching { destination.delete() }
             throw e
         }
         codexMarker.writeText(CodexInstallSpec.VERSION)
