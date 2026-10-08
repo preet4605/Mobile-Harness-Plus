@@ -15,7 +15,8 @@ import androidx.annotation.RequiresApi
  * 3. Vibrancy: saturation boost of the sample, composited over the opaque canvas.
  * 4. Adaptive wash: the wash gets denser where the sample is bright (dark mode) or dark (light
  *    mode), keeping labels on the glass readable without a CPU read-back.
- * 5. Edge light: a soft inner highlight facing the light direction (thickness).
+ * 5. Edge light: a soft inner highlight facing the light direction, and in light mode a faint
+ *    shade on the far side, so the rim reads as thick glass even over a plain background.
  * 6. Press glow: a soft light spot at the touch point.
  * 7. Groups only: the shape mask and rim come from a smooth union of the member shapes, so
  *    nearby glass pieces blend into one and pull apart as they move.
@@ -38,6 +39,7 @@ uniform float adaptive;
 uniform float dark;
 uniform float2 light;
 uniform float edgeLight;
+uniform float edgeShade;
 uniform float3 glow;
 uniform float glowRadius;
 uniform float maskShape;
@@ -95,6 +97,8 @@ half4 main(float2 p) {
     float away = max(dot(n, -light), 0.0);
     float band = 1.0 - smoothstep(0.0, max(lensHeight, 1.0) * 0.7, inside);
     rgb += edgeLight * band * (0.35 + 0.65 * facing + 0.3 * away);
+    rgb = min(rgb, float3(1.0));
+    rgb -= edgeShade * band * (0.4 + 0.6 * away);
 
     if (glow.z > 0.0) {
         float2 dp = p - glow.xy;

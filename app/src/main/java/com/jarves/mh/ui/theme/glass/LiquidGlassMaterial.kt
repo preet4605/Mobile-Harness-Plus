@@ -30,7 +30,7 @@ sealed class LiquidGlassMaterial(
      * Balances backdrop peeking with high foreground legibility.
      */
     data object Regular : LiquidGlassMaterial(
-        blurRadius = 24f,
+        blurRadius = 10f,
         refraction = 0.14f,
         dispersion = 0.04f,
         edge = 0.12f,
@@ -42,7 +42,7 @@ sealed class LiquidGlassMaterial(
      * High translucency with subtle edge refraction.
      */
     data object Clear : LiquidGlassMaterial(
-        blurRadius = 12f,
+        blurRadius = 6f,
         refraction = 0.08f,
         dispersion = 0.02f,
         edge = 0.08f,
@@ -53,7 +53,7 @@ sealed class LiquidGlassMaterial(
      * Ultra-thin standard material for subtle content layer accents and micro-controls.
      */
     data object UltraThin : LiquidGlassMaterial(
-        blurRadius = 8f,
+        blurRadius = 4f,
         refraction = 0.04f,
         dispersion = 0.01f,
         edge = 0.05f,
@@ -64,7 +64,7 @@ sealed class LiquidGlassMaterial(
      * Thin standard material for cards and secondary panels within content.
      */
     data object Thin : LiquidGlassMaterial(
-        blurRadius = 16f,
+        blurRadius = 8f,
         refraction = 0.09f,
         dispersion = 0.03f,
         edge = 0.08f,
@@ -164,14 +164,16 @@ object LiquidGlassTokens {
 
     /**
      * Default neutral wash for [material]. Thicker materials are more opaque for legibility;
-     * the same wash is used over a live backdrop and in tint-only glass.
+     * the same wash is used over a live backdrop and in tint-only glass. Controls and bars stay
+     * light enough that content keeps its shape underneath; sheets and menus ([Thick]) carry text
+     * and stay dense.
      */
     fun wash(material: LiquidGlassMaterial, isDark: Boolean): Color {
         val alpha = when (material) {
             LiquidGlassMaterial.Clear -> if (isDark) 0.10f else 0.16f
-            LiquidGlassMaterial.UltraThin -> if (isDark) 0.18f else 0.28f
-            LiquidGlassMaterial.Thin -> if (isDark) 0.28f else 0.40f
-            LiquidGlassMaterial.Regular -> if (isDark) 0.36f else 0.50f
+            LiquidGlassMaterial.UltraThin -> if (isDark) 0.14f else 0.22f
+            LiquidGlassMaterial.Thin -> if (isDark) 0.20f else 0.30f
+            LiquidGlassMaterial.Regular -> if (isDark) 0.26f else 0.36f
             LiquidGlassMaterial.Thick -> if (isDark) 0.58f else 0.70f
             is LiquidGlassMaterial.Custom -> material.defaultAlpha
         }

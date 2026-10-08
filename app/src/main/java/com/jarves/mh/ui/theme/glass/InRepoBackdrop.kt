@@ -519,16 +519,16 @@ class GlassRole(
 object GlassRoles {
     /** Workspace tab island. */
     val Nav = GlassRole(
-        blurDp = 28f,
+        blurDp = 10f,
         shadowDp = 8f,
         sheenAlpha = 1f,
         washAlphaDark = 0.16f,
         washAlphaLight = 0.26f,
     )
 
-    /** Chat composer capsule — strongest spatial diffusion destroying high-frequency text. */
+    /** Chat composer capsule: the most diffusion, so text behind it never competes with what you type. */
     val Composer = GlassRole(
-        blurDp = 36f,
+        blurDp = 14f,
         shadowDp = 6f,
         sheenAlpha = 1f,
         washAlphaDark = 0.24f,
@@ -537,7 +537,7 @@ object GlassRoles {
 
     /** Floating "Latest" pill — medium diffusion. */
     val Latest = GlassRole(
-        blurDp = 20f,
+        blurDp = 8f,
         shadowDp = 4f,
         sheenAlpha = 0.75f,
         washAlphaDark = 0.11f,
@@ -546,7 +546,7 @@ object GlassRoles {
 
     /** Small chips (commands / skills / inspector) — light diffusion. */
     val Chip = GlassRole(
-        blurDp = 14f,
+        blurDp = 6f,
         shadowDp = 0f,
         sheenAlpha = 0.6f,
         washAlphaDark = 0.09f,

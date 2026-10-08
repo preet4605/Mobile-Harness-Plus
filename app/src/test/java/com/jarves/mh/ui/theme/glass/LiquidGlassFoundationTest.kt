@@ -28,7 +28,7 @@ class LiquidGlassFoundationTest {
 
         assertTrue("Expected BackdropFilter.Glass instance", filter is BackdropFilter.Glass)
         val glass = filter as BackdropFilter.Glass
-        assertEquals(24f, glass.blurRadiusIntensity, 0.001f)
+        assertEquals(10f, glass.blurRadiusIntensity, 0.001f)
         assertEquals(16f, glass.cornerRadiusDp, 0.001f)
         assertEquals(0.14f, glass.refraction, 0.001f)
         assertEquals(0.04f, glass.dispersion, 0.001f)
@@ -124,10 +124,10 @@ class LiquidGlassFoundationTest {
         assertTrue(GlassRoles.Composer.blurDp > GlassRoles.Nav.blurDp)
         assertTrue(GlassRoles.Nav.blurDp > GlassRoles.Latest.blurDp)
         assertTrue(GlassRoles.Latest.blurDp > GlassRoles.Chip.blurDp)
-        assertEquals(36f, GlassRoles.Composer.blurDp, 0.001f)
-        assertEquals(28f, GlassRoles.Nav.blurDp, 0.001f)
-        assertEquals(20f, GlassRoles.Latest.blurDp, 0.001f)
-        assertEquals(14f, GlassRoles.Chip.blurDp, 0.001f)
+        assertEquals(14f, GlassRoles.Composer.blurDp, 0.001f)
+        assertEquals(10f, GlassRoles.Nav.blurDp, 0.001f)
+        assertEquals(8f, GlassRoles.Latest.blurDp, 0.001f)
+        assertEquals(6f, GlassRoles.Chip.blurDp, 0.001f)
     }
 }
 

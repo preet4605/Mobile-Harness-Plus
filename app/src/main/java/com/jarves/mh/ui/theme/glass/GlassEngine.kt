@@ -152,7 +152,10 @@ internal fun Modifier.glassLift(amount: () -> Float, press: GlassPressState, ena
 
 private fun Offset.isSpecified() = x.isFinite() && y.isFinite()
 
-private val Vibrancy: ColorFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(1.5f) })
+/** Saturation lift of the sample: enough to keep colour alive under the wash, not candy. */
+private const val GlassSaturation = 1.3f
+
+private val Vibrancy: ColorFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(GlassSaturation) })
 
 /** Light comes from the top-leading corner and eases toward the finger while pressed. */
 internal fun glassLightDirection(size: Size, press: Offset, pressAmount: Float): Offset {
@@ -341,13 +344,14 @@ internal fun RuntimeShader.setGlassUniforms(
     setFloatUniform("lensHeight", lensHeight)
     setFloatUniform("refraction", refraction)
     setFloatUniform("dispersion", config.dispersion.coerceIn(0f, 0.3f))
-    setFloatUniform("saturation", 1.5f)
+    setFloatUniform("saturation", GlassSaturation)
     setFloatUniform("canvas", look.canvas.red, look.canvas.green, look.canvas.blue, 1f)
     setFloatUniform("wash", look.wash.red, look.wash.green, look.wash.blue, look.wash.alpha)
     setFloatUniform("adaptive", if (config.adaptiveWash) 0.22f else 0f)
     setFloatUniform("dark", if (look.isDark) 1f else 0f)
     setFloatUniform("light", light.x, light.y)
     setFloatUniform("edgeLight", if (config.edgeLight) (if (look.isDark) 0.07f else 0.12f) else 0f)
+    setFloatUniform("edgeShade", if (config.edgeLight && !look.isDark) 0.06f else 0f)
     val glowAt = if (glowPoint.isSpecified()) glowPoint else Offset.Zero
     setFloatUniform("glow", glowAt.x, glowAt.y, if (glowPoint.isSpecified()) glowStrength else 0f)
     setFloatUniform("glowRadius", glowRadius)
@@ -356,9 +360,9 @@ internal fun RuntimeShader.setGlassUniforms(
     setFloatUniform("rimStrength", rimStrength)
 }
 
-/** A soft vertical sheen on the top half (Blur and Tint tiers). */
+/** A faint vertical sheen on the top half (Blur and Tint tiers): light on glass, not a gloss. */
 private fun DrawScope.drawSheen(outline: Outline, isDark: Boolean) {
-    val top = if (isDark) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.40f)
+    val top = if (isDark) Color.White.copy(alpha = 0.08f) else Color.White.copy(alpha = 0.20f)
     drawOutline(outline, Brush.verticalGradient(0f to top, 0.5f to Color.Transparent, 1f to Color.Transparent))
 }
 
@@ -438,6 +442,6 @@ internal fun Modifier.glassShadow(shape: Shape, tier: GlassTier, isDark: Boolean
         shadowElevation = sizeClass.shadowDp.dp.toPx() * (if (isDark) 0.6f else 1f)
         this.shape = shape
         clip = false
-        ambientShadowColor = Color.Black.copy(alpha = if (isDark) 0.4f else 0.10f)
-        spotShadowColor = Color.Black.copy(alpha = if (isDark) 0.5f else 0.16f)
+        ambientShadowColor = Color.Black.copy(alpha = if (isDark) 0.4f else 0.12f)
+        spotShadowColor = Color.Black.copy(alpha = if (isDark) 0.5f else 0.20f)
     }
