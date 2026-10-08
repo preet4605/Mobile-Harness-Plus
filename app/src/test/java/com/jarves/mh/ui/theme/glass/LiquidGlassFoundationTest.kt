@@ -45,7 +45,7 @@ class LiquidGlassFoundationTest {
 
         assertTrue("Expected BackdropFilter.Blur instance", filter is BackdropFilter.Blur)
         val blur = filter as BackdropFilter.Blur
-        assertEquals(36f, blur.blurRadiusIntensity, 0.001f)
+        assertEquals(16f, blur.blurRadiusIntensity, 0.001f)
     }
 
     @Test

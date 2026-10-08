@@ -76,7 +76,7 @@ sealed class LiquidGlassMaterial(
      * High opacity to guarantee contrast and WCAG AA legibility over complex text/lists.
      */
     data object Thick : LiquidGlassMaterial(
-        blurRadius = 36f,
+        blurRadius = 16f,
         refraction = 0.18f,
         dispersion = 0.05f,
         edge = 0.15f,
