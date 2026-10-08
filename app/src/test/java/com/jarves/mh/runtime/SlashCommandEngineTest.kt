@@ -75,6 +75,13 @@ class SlashCommandEngineTest {
     }
 
     @Test
+    fun effortIsOfferedToEveryAgent() {
+        AgentKind.entries.forEach { agent ->
+            assertTrue(SlashCommandEngine.filterCommands("/effort", agent).any { it.name == "effort" })
+        }
+    }
+
+    @Test
     fun buildPromptForCommand_formatsCorrectlyWithOrWithoutArgs() {
         val planCmd = SlashCommandEngine.ALL_SLASH_COMMANDS.first { it.name == "plan" }
         val promptWithArgs = SlashCommandEngine.buildPromptForCommand(planCmd, "Refactor database", AgentKind.ANTIGRAVITY)

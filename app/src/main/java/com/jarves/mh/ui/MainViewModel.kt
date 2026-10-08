@@ -32,6 +32,11 @@ import com.jarves.mh.model.ProjectChat
 import com.jarves.mh.model.ModelSlot
 import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.modelSlotFor
+import com.jarves.mh.model.ModelChoiceCheck
+import com.jarves.mh.model.checkModelChoice
+import com.jarves.mh.model.effortLabel
+import com.jarves.mh.model.effortLevelsFor
+import com.jarves.mh.model.normalizeEffortChoice
 import com.jarves.mh.provider.ProviderFailureClass
 import com.jarves.mh.provider.ProviderFailureClassifier
 import com.jarves.mh.provider.ProviderFallbackPlanner
@@ -331,6 +336,7 @@ data class AppUiState(
     val modelPickerVisible: Boolean = false,
     /** Saved model list for the active provider; refreshed when the picker opens. */
     val providerModels: List<com.jarves.mh.network.DiscoveredModel> = emptyList(),
+    val effortPickerVisible: Boolean = false,
     val mentionMenuVisible: Boolean = false,
     val filteredMentionEntries: List<WorkspaceEntry> = emptyList(),
     /** True while the two-stage graceful→force interrupt sequence is in progress. */
@@ -2035,25 +2041,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Stores [model] in the slot the active agent runs. Returns false when the active agent does not accept it. */
-    fun applyModelChoice(model: String): Boolean {
+    /** Applies a model picked or typed in chat. A blank ID is only valid for Codex, where it means Codex's default. */
+    fun applyModelChoice(model: String): ModelChoiceCheck {
         val trimmed = model.trim()
-        if (trimmed.isBlank()) return false
         val current = _state.value
         return when (modelSlotFor(current.agentKind, current.provider.kind)) {
             ModelSlot.ANTIGRAVITY -> {
-                setAntigravityModel(trimmed)
-                true
+                val check = checkModelChoice(trimmed, current.antigravityModels)
+                if (check != ModelChoiceCheck.REJECTED) setAntigravityModel(trimmed)
+                check
             }
             ModelSlot.CLAUDE_SUBSCRIPTION -> {
-                val known = com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS.any { it.id.equals(trimmed, ignoreCase = true) }
-                if (known) setClaudeModel(trimmed)
-                known
+                val check = checkModelChoice(trimmed, com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS.map { it.id })
+                if (check == ModelChoiceCheck.APPLIED) setClaudeModel(trimmed)
+                check
             }
             ModelSlot.PROVIDER -> {
-                val updated = current.provider.copy(model = trimmed)
-                preferences.saveProvider(updated, current.agentKind)
-                _state.update { it.copy(provider = updated) }
-                true
+                val isCodexDefault = trimmed.isEmpty() && current.provider.kind == ProviderKind.CHATGPT
+                val check = if (isCodexDefault) {
+                    ModelChoiceCheck.APPLIED
+                } else {
+                    checkModelChoice(trimmed, savedModelsFor(current.agentKind, current.provider).map { it.id })
+                }
+                if (check != ModelChoiceCheck.REJECTED) {
+                    val updated = current.provider.copy(model = trimmed)
+                    preferences.saveProvider(updated, current.agentKind)
+                    _state.update { it.copy(provider = updated) }
+                }
+                check
             }
         }
     }
@@ -2117,8 +2132,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setAntigravityEffort(effort: String) {
-        if (effort !in setOf("low", "medium", "high")) return
+    /** Returns false when the effort is unknown or the selected model does not offer it. */
+    fun setAntigravityEffort(effort: String): Boolean {
+        if (effort !in setOf("low", "medium", "high")) return false
         val current = _state.value
         val matchingModel = antigravityModelWithEffort(current.antigravityModel, effort)
             ?.takeIf { candidate -> current.antigravityModels.isEmpty() || candidate in current.antigravityModels }
@@ -2127,7 +2143,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             matchingModel == null
         ) {
             _state.update { it.copy(toastMessage = "This model does not offer ${effort.replaceFirstChar(Char::uppercase)} reasoning") }
-            return
+            return false
         }
         preferences.antigravityEffort = effort
         matchingModel?.let { preferences.antigravityModel = it }
@@ -2137,6 +2153,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 antigravityModel = matchingModel ?: it.antigravityModel,
             )
         }
+        return true
     }
 
     private var antigravityModelRefreshJob: Job? = null
@@ -3858,6 +3875,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun toggleEffortPicker(visible: Boolean? = null) {
+        _state.update { current ->
+            val open = visible ?: !current.effortPickerVisible
+            current.copy(
+                effortPickerVisible = open,
+                providerModels = if (open) savedModelsFor(current.agentKind, current.provider) else current.providerModels,
+            )
+        }
+    }
+
+    /** Picker choice: applies it and closes the picker. A refusal shows as a toast. */
+    fun chooseEffortFromPicker(value: String) {
+        toggleEffortPicker(false)
+        val change = applyEffortChoice(value)
+        if (change is EffortChange.Refused) _state.update { it.copy(toastMessage = change.reason) }
+    }
+
+    /** Applies an /effort argument to the active agent. Codex levels come from the selected model's saved list. */
+    fun applyEffortChoice(choice: String): EffortChange {
+        val current = _state.value
+        val agent = current.agentKind
+        val codexLevels = codexModelLevelsNow()
+        val levels = effortLevelsFor(agent, codexLevels)
+            ?: return EffortChange.Refused("${agent.title} doesn't have an effort setting yet.")
+        val value = normalizeEffortChoice(agent, choice, codexLevels)
+            ?: return EffortChange.Refused(
+                buildString {
+                    append("`${choice.trim()}` isn't an effort level here. Choose one of: ${levels.joinToString(", ")}.")
+                    if (agent == AgentKind.CODEX && codexLevels.isEmpty()) {
+                        append(" Discover models in Settings to see the levels this model supports.")
+                    }
+                },
+            )
+        when (agent) {
+            AgentKind.CLAUDE_CODE -> setClaudeThinkingLevel(value)
+            AgentKind.ANTIGRAVITY -> if (!setAntigravityEffort(value)) {
+                return EffortChange.Refused("This model does not offer ${effortLabel(agent, value)} reasoning.")
+            }
+            AgentKind.CODEX -> setCodexReasoningEffort(value)
+            AgentKind.DEEPSEEK_HARNESS -> Unit
+        }
+        return EffortChange.Applied(effortLabel(agent, value))
+    }
+
+    /** Codex levels the selected model lists in the saved catalog. Empty for other agents or when unknown. */
+    private fun codexModelLevelsNow(): List<String> {
+        val current = _state.value
+        if (current.agentKind != AgentKind.CODEX) return emptyList()
+        return com.jarves.mh.model.codexEffortChoices(savedModelsFor(current.agentKind, current.provider), current.provider.model)
+    }
+
     /** Model lists saved by Discover in Settings, for this agent's provider and endpoint. */
     fun savedModelsFor(agent: AgentKind, provider: ProviderProfile): List<com.jarves.mh.network.DiscoveredModel> =
         preferences.loadModelList(agent, provider.kind, provider.baseUrl)
@@ -4070,11 +4138,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "model" -> {
                 val trimmed = args.trim()
                 if (trimmed.isNotBlank()) {
-                    val applied = applyModelChoice(trimmed)
-                    val reply = if (applied) {
-                        "Switched model to `$trimmed`."
-                    } else {
-                        "`$trimmed` is not a Claude model. Choose one from /model."
+                    val reply = when (applyModelChoice(trimmed)) {
+                        ModelChoiceCheck.APPLIED -> "Switched model to `$trimmed`."
+                        ModelChoiceCheck.UNCHECKED ->
+                            "Switched model to `$trimmed`. ${_state.value.agentKind.title} has no model list to check it against."
+                        ModelChoiceCheck.REJECTED ->
+                            "`$trimmed` is not in the ${_state.value.agentKind.title} model list. Choose one from /model, or run Discover in Settings to refresh it."
                     }
                     _state.update {
                         it.copy(
@@ -4085,6 +4154,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     persistMessages()
                 } else {
                     toggleModelPicker(true)
+                }
+            }
+            "effort" -> {
+                val trimmed = args.trim()
+                val agent = _state.value.agentKind
+                if (trimmed.isBlank()) {
+                    if (effortLevelsFor(agent, codexModelLevelsNow()) == null) {
+                        _state.update {
+                            it.copy(
+                                messages = it.messages + ChatMessage(fromUser = true, text = "/effort") +
+                                    ChatMessage(fromUser = false, text = "${agent.title} doesn't have an effort setting yet."),
+                            )
+                        }
+                        persistMessages()
+                    } else {
+                        toggleEffortPicker(true)
+                    }
+                } else {
+                    val reply = when (val change = applyEffortChoice(trimmed)) {
+                        is EffortChange.Applied -> "Set effort to **${change.label}** for ${agent.title}."
+                        is EffortChange.Refused -> change.reason
+                    }
+                    _state.update {
+                        it.copy(
+                            messages = it.messages + ChatMessage(fromUser = true, text = "/effort $trimmed") +
+                                ChatMessage(fromUser = false, text = reply),
+                        )
+                    }
+                    persistMessages()
                 }
             }
             "thinking" -> {
@@ -5429,4 +5527,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
     }
+}
+
+/** Outcome of an /effort choice: the label of the level now in use, or why it was refused. */
+sealed interface EffortChange {
+    data class Applied(val label: String) : EffortChange
+    data class Refused(val reason: String) : EffortChange
 }

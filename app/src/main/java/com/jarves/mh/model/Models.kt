@@ -187,6 +187,47 @@ fun codexEffortToLaunch(stored: String?, modelId: String, models: List<Discovere
     return level.takeIf { choices.isEmpty() || level in choices }
 }
 
+/** The /effort argument that means Codex's own default. It is stored as a blank value. */
+const val CODEX_DEFAULT_EFFORT_ARG = "default"
+
+/**
+ * Effort levels the active agent takes through /effort, in display order. Codex lists its default first and then
+ * the levels its selected model reports. Null means the agent has no effort setting.
+ */
+fun effortLevelsFor(agent: AgentKind, codexModelLevels: List<String>): List<String>? = when (agent) {
+    AgentKind.CLAUDE_CODE -> ClaudeThinkingLevel.entries.map { it.id }
+    AgentKind.ANTIGRAVITY -> listOf("low", "medium", "high")
+    AgentKind.CODEX -> listOf(CODEX_DEFAULT_EFFORT_ARG) + codexModelLevels
+    AgentKind.DEEPSEEK_HARNESS -> null
+}
+
+/** Canonical stored value for an /effort argument, or null when the agent has no such level. Codex default is blank. */
+fun normalizeEffortChoice(agent: AgentKind, choice: String, codexModelLevels: List<String>): String? {
+    val levels = effortLevelsFor(agent, codexModelLevels) ?: return null
+    val value = choice.trim().lowercase(Locale.ROOT)
+    if (value !in levels) return null
+    return if (agent == AgentKind.CODEX && value == CODEX_DEFAULT_EFFORT_ARG) "" else value
+}
+
+/** Short label for an effort value shown to the user. */
+fun effortLabel(agent: AgentKind, value: String): String = when {
+    agent == AgentKind.CLAUDE_CODE -> ClaudeThinkingLevel.fromStored(value).displayName
+    agent == AgentKind.CODEX && (value.isBlank() || value == CODEX_DEFAULT_EFFORT_ARG) -> "Default"
+    agent == AgentKind.CODEX && value == "xhigh" -> "XHigh"
+    else -> value.replaceFirstChar { it.titlecase(Locale.ROOT) }
+}
+
+/** Result of checking a model ID against the list the provider or agent offers. */
+enum class ModelChoiceCheck { APPLIED, UNCHECKED, REJECTED }
+
+/** An empty [known] list means nothing to check against, so the ID is taken as typed and marked unchecked. */
+fun checkModelChoice(model: String, known: List<String>): ModelChoiceCheck = when {
+    model.isBlank() -> ModelChoiceCheck.REJECTED
+    known.isEmpty() -> ModelChoiceCheck.UNCHECKED
+    known.any { it.equals(model, ignoreCase = true) } -> ModelChoiceCheck.APPLIED
+    else -> ModelChoiceCheck.REJECTED
+}
+
 val DSH_PROTOCOL_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.KIMI,
     ProviderKind.OPENCODE_ZEN,

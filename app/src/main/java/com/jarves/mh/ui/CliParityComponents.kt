@@ -1664,6 +1664,51 @@ fun ModelPickerDialog(
     }
 }
 
+/** One row in the /effort picker. [value] is the /effort argument; [label] is what the user reads. */
+data class EffortOption(val value: String, val label: String)
+
+/** /effort without an argument: the active agent's levels. Choosing one applies it and closes the sheet. */
+@Composable
+fun EffortPickerDialog(
+    options: List<EffortOption>,
+    current: String,
+    notice: String?,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    GlassSheet(
+        onDismiss = onDismiss,
+        title = "Effort",
+        detents = listOf(SheetDetent.Fit),
+        trailing = { SheetTextButton("Done", onDismiss, emphasized = true) },
+    ) {
+        LazyColumn(
+            Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(top = PocketSpacing.xs, bottom = PocketSpacing.xxl),
+        ) {
+            itemsIndexed(options) { index, option ->
+                LazyGroupRow(isFirst = index == 0, isLast = index == options.lastIndex && notice == null) {
+                    ListRow(
+                        title = option.label,
+                        accessory = if (option.value == current) ListRowAccessory.Check else ListRowAccessory.None,
+                        onClick = { onSelect(option.value) },
+                    )
+                }
+            }
+            if (notice != null) {
+                item(key = "effortNotice") {
+                    LazyGroupRow(isFirst = options.isEmpty(), isLast = true) {
+                        ListRow(
+                            title = notice,
+                            subtitleMaxLines = 2,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 /** Quick switch for Claude's reasoning effort. Choosing a level applies it and closes the sheet. */
 @Composable
 fun ClaudeThinkingPickerDialog(

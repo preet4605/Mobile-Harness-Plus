@@ -326,6 +326,8 @@ private fun AppScreen(
             onOpenModelPicker = { viewModel.toggleModelPicker(true) },
             onCloseModelPicker = { viewModel.toggleModelPicker(false) },
             onSelectModel = { viewModel.applyModelChoice(it) },
+            onCloseEffortPicker = { viewModel.toggleEffortPicker(false) },
+            onSelectEffort = viewModel::chooseEffortFromPicker,
             onOpenMemoryViewer = { viewModel.setMemoryViewerVisible(true) },
             onCloseMemoryViewer = { viewModel.setMemoryViewerVisible(false) },
             onAddMemoryEntry = { k, v -> viewModel.upsertMemory(k, v) },

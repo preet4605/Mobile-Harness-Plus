@@ -59,6 +59,13 @@ object SlashCommandEngine {
             supportedAgents = setOf(AgentKind.CLAUDE_CODE),
         ),
         SlashCommand(
+            name = "effort",
+            description = "Show or set this agent's reasoning effort",
+            category = SlashCommandCategory.CONFIG,
+            isLocalOnly = true,
+            parameterHint = "[level]",
+        ),
+        SlashCommand(
             name = "skills",
             description = "View and manage active, linked, and global skills",
             category = SlashCommandCategory.CONFIG,
