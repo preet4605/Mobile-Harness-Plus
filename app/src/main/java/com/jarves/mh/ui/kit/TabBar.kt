@@ -92,171 +92,173 @@ fun FloatingTabBar(
     onExpand: () -> Unit = {},
     accessory: (@Composable () -> Unit)? = null,
 ) {
-    val haptics = rememberHaptics()
-    val density = LocalDensity.current
-    val collapse = remember { Animatable(if (minimized) 1f else 0f) }
-    LaunchedEffect(minimized) { collapse.animateTo(if (minimized) 1f else 0f, PocketMotion.spec(Token.Morph)) }
-    val scope = rememberCoroutineScope()
-    val position = remember { Animatable(selectedIndex.toFloat()) }
-    var dragging by remember { mutableStateOf(false) }
-    LaunchedEffect(selectedIndex) {
-        if (!dragging) position.animateTo(selectedIndex.toFloat(), PocketMotion.spec(Token.Snappy))
-    }
-    val dragScale = remember { Animatable(1f) }
-    val colors = PocketColors.current
-    val accent = MaterialTheme.colorScheme.primary
-    val heightPx = with(density) { TabBarHeight.toPx() }
+    CappedTextScale {
+        val haptics = rememberHaptics()
+        val density = LocalDensity.current
+        val collapse = remember { Animatable(if (minimized) 1f else 0f) }
+        LaunchedEffect(minimized) { collapse.animateTo(if (minimized) 1f else 0f, PocketMotion.spec(Token.Morph)) }
+        val scope = rememberCoroutineScope()
+        val position = remember { Animatable(selectedIndex.toFloat()) }
+        var dragging by remember { mutableStateOf(false) }
+        LaunchedEffect(selectedIndex) {
+            if (!dragging) position.animateTo(selectedIndex.toFloat(), PocketMotion.spec(Token.Snappy))
+        }
+        val dragScale = remember { Animatable(1f) }
+        val colors = PocketColors.current
+        val accent = MaterialTheme.colorScheme.primary
+        val heightPx = with(density) { TabBarHeight.toPx() }
 
-    var fullWidth by remember { mutableIntStateOf(0) }
-    GlassGroup(modifier, spacing = 14.dp) {
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(PocketSpacing.md),
-        ) {
-            LiquidGlassSurface(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(TabBarHeight)
-                    .layout { measurable, constraints ->
-                        // The glass morphs from the full bar into a circle at the leading edge;
-                        // the slot keeps its width so the accessory never jumps.
-                        val full = constraints.maxWidth
-                        if (full != fullWidth) fullWidth = full
-                        val target = lerp(full.toFloat(), heightPx, collapse.value).roundToInt().coerceIn(heightPx.roundToInt(), full)
-                        val placeable = measurable.measure(constraints.copy(minWidth = target, maxWidth = target))
-                        layout(full, placeable.height) { placeable.place(0, 0) }
-                    },
-                shape = PocketShape.capsule,
-                layerSource = LiquidGlassLayers.Background,
+        var fullWidth by remember { mutableIntStateOf(0) }
+        GlassGroup(modifier, spacing = 14.dp) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(PocketSpacing.md),
             ) {
-                Box(Modifier.fillMaxSize()) {
-                    // Expanded tabs.
-                    Row(
-                        Modifier
-                            .fillMaxHeight()
-                            // Tabs keep their full-bar layout while the glass narrows (clipped),
-                            // so labels never squeeze during the morph.
-                            .layout { measurable, constraints ->
-                                val w = if (fullWidth > 0) fullWidth else constraints.maxWidth
-                                val placeable = measurable.measure(constraints.copy(minWidth = w, maxWidth = w))
-                                layout(constraints.maxWidth, placeable.height) { placeable.place(0, 0) }
-                            }
-                            .padding4()
-                            .graphicsLayer { alpha = (1f - collapse.value * 2f).coerceIn(0f, 1f) }
-                            .drawBehind {
-                                val n = tabs.size.coerceAtLeast(1)
-                                val w = size.width / n
-                                val scale = dragScale.value
-                                val pillW = w * scale
-                                val pillH = size.height * (0.92f + (scale - 1f) * 0.4f).coerceAtMost(1f)
-                                val x = position.value * w + (w - pillW) / 2f
-                                val y = (size.height - pillH) / 2f
-                                drawRoundRect(
-                                    color = if (dragging) colors.secondaryFill else colors.tertiaryFill,
-                                    topLeft = Offset(x, y),
-                                    size = Size(pillW, pillH),
-                                    cornerRadius = CornerRadius(pillH / 2f),
-                                )
-                            }
-                            .then(
-                                if (minimized) Modifier else Modifier.pointerInput(tabs.size) {
+                LiquidGlassSurface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(TabBarHeight)
+                        .layout { measurable, constraints ->
+                            // The glass morphs from the full bar into a circle at the leading edge;
+                            // the slot keeps its width so the accessory never jumps.
+                            val full = constraints.maxWidth
+                            if (full != fullWidth) fullWidth = full
+                            val target = lerp(full.toFloat(), heightPx, collapse.value).roundToInt().coerceIn(heightPx.roundToInt(), full)
+                            val placeable = measurable.measure(constraints.copy(minWidth = target, maxWidth = target))
+                            layout(full, placeable.height) { placeable.place(0, 0) }
+                        },
+                    shape = PocketShape.capsule,
+                    layerSource = LiquidGlassLayers.Background,
+                ) {
+                    Box(Modifier.fillMaxSize()) {
+                        // Expanded tabs.
+                        Row(
+                            Modifier
+                                .fillMaxHeight()
+                                // Tabs keep their full-bar layout while the glass narrows (clipped),
+                                // so labels never squeeze during the morph.
+                                .layout { measurable, constraints ->
+                                    val w = if (fullWidth > 0) fullWidth else constraints.maxWidth
+                                    val placeable = measurable.measure(constraints.copy(minWidth = w, maxWidth = w))
+                                    layout(constraints.maxWidth, placeable.height) { placeable.place(0, 0) }
+                                }
+                                .padding4()
+                                .graphicsLayer { alpha = (1f - collapse.value * 2f).coerceIn(0f, 1f) }
+                                .drawBehind {
                                     val n = tabs.size.coerceAtLeast(1)
-                                    detectHorizontalDragGestures(
-                                        onDragStart = { start ->
-                                            dragging = true
-                                            scope.launch { dragScale.animateTo(1.12f, PocketMotion.spec(Token.Snappy)) }
-                                            scope.launch { position.snapTo((start.x / (size.width / n.toFloat()) - 0.5f).coerceIn(0f, n - 1f)) }
-                                        },
-                                        onDragEnd = {
-                                            dragging = false
-                                            val target = position.value.roundToInt().coerceIn(0, n - 1)
-                                            scope.launch { dragScale.animateTo(1f, PocketMotion.spec(Token.Release)) }
-                                            scope.launch { position.animateTo(target.toFloat(), PocketMotion.spec(Token.Release)) }
-                                            if (target != selectedIndex) {
-                                                haptics.selection()
-                                                onSelect(target)
-                                            }
-                                        },
-                                        onDragCancel = {
-                                            dragging = false
-                                            scope.launch { dragScale.animateTo(1f, PocketMotion.spec(Token.Release)) }
-                                            scope.launch { position.animateTo(selectedIndex.toFloat(), PocketMotion.spec(Token.Release)) }
-                                        },
-                                    ) { change, amount ->
-                                        change.consume()
-                                        val before = position.value.roundToInt()
-                                        val next = (position.value + amount / (size.width / n.toFloat())).coerceIn(0f, n - 1f)
-                                        scope.launch { position.snapTo(next) }
-                                        if (next.roundToInt() != before) haptics.selection()
-                                    }
-                                },
-                            )
-                            .selectableGroup(),
-                    ) {
-                        tabs.forEachIndexed { index, tab ->
-                            val selected = index == selectedIndex
-                            val tint = if (selected) accent else MaterialTheme.colorScheme.onSurface
-                            Column(
-                                Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight()
-                                    .selectable(
-                                        selected = selected,
-                                        enabled = !minimized,
-                                        role = Role.Tab,
-                                        interactionSource = null,
-                                        indication = null,
-                                    ) {
-                                        if (!selected) {
-                                            haptics.selection()
-                                            onSelect(index)
+                                    val w = size.width / n
+                                    val scale = dragScale.value
+                                    val pillW = w * scale
+                                    val pillH = size.height * (0.92f + (scale - 1f) * 0.4f).coerceAtMost(1f)
+                                    val x = position.value * w + (w - pillW) / 2f
+                                    val y = (size.height - pillH) / 2f
+                                    drawRoundRect(
+                                        color = if (dragging) colors.secondaryFill else colors.tertiaryFill,
+                                        topLeft = Offset(x, y),
+                                        size = Size(pillW, pillH),
+                                        cornerRadius = CornerRadius(pillH / 2f),
+                                    )
+                                }
+                                .then(
+                                    if (minimized) Modifier else Modifier.pointerInput(tabs.size) {
+                                        val n = tabs.size.coerceAtLeast(1)
+                                        detectHorizontalDragGestures(
+                                            onDragStart = { start ->
+                                                dragging = true
+                                                scope.launch { dragScale.animateTo(1.12f, PocketMotion.spec(Token.Snappy)) }
+                                                scope.launch { position.snapTo((start.x / (size.width / n.toFloat()) - 0.5f).coerceIn(0f, n - 1f)) }
+                                            },
+                                            onDragEnd = {
+                                                dragging = false
+                                                val target = position.value.roundToInt().coerceIn(0, n - 1)
+                                                scope.launch { dragScale.animateTo(1f, PocketMotion.spec(Token.Release)) }
+                                                scope.launch { position.animateTo(target.toFloat(), PocketMotion.spec(Token.Release)) }
+                                                if (target != selectedIndex) {
+                                                    haptics.selection()
+                                                    onSelect(target)
+                                                }
+                                            },
+                                            onDragCancel = {
+                                                dragging = false
+                                                scope.launch { dragScale.animateTo(1f, PocketMotion.spec(Token.Release)) }
+                                                scope.launch { position.animateTo(selectedIndex.toFloat(), PocketMotion.spec(Token.Release)) }
+                                            },
+                                        ) { change, amount ->
+                                            change.consume()
+                                            val before = position.value.roundToInt()
+                                            val next = (position.value + amount / (size.width / n.toFloat())).coerceIn(0f, n - 1f)
+                                            scope.launch { position.snapTo(next) }
+                                            if (next.roundToInt() != before) haptics.selection()
                                         }
                                     },
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center,
-                            ) {
-                                Icon(
-                                    if (selected) tab.selectedIcon else tab.icon,
-                                    contentDescription = null,
-                                    tint = tint,
-                                    modifier = Modifier.size(24.dp),
                                 )
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    tab.label,
-                                    style = PocketType.caption2.medium,
-                                    color = tint,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Clip,
-                                )
+                                .selectableGroup(),
+                        ) {
+                            tabs.forEachIndexed { index, tab ->
+                                val selected = index == selectedIndex
+                                val tint = if (selected) accent else MaterialTheme.colorScheme.onSurface
+                                Column(
+                                    Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .selectable(
+                                            selected = selected,
+                                            enabled = !minimized,
+                                            role = Role.Tab,
+                                            interactionSource = null,
+                                            indication = null,
+                                        ) {
+                                            if (!selected) {
+                                                haptics.selection()
+                                                onSelect(index)
+                                            }
+                                        },
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                ) {
+                                    Icon(
+                                        if (selected) tab.selectedIcon else tab.icon,
+                                        contentDescription = null,
+                                        tint = tint,
+                                        modifier = Modifier.size(24.dp),
+                                    )
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        tab.label,
+                                        style = PocketType.caption2.medium,
+                                        color = tint,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Clip,
+                                    )
+                                }
                             }
                         }
-                    }
-                    // Minimized: the selected tab's symbol in a circle.
-                    if (collapse.value > 0f) {
-                        val tab = tabs.getOrNull(selectedIndex)
-                        Box(
-                            Modifier
-                                .size(TabBarHeight)
-                                .graphicsLayer { alpha = ((collapse.value - 0.5f) * 2f).coerceIn(0f, 1f) }
-                                .then(
-                                    if (minimized) Modifier
-                                        .selectable(selected = true, role = Role.Button, interactionSource = null, indication = null) { onExpand() }
-                                        .semantics {
-                                            contentDescription = "${tab?.label ?: ""}, show tab bar"
-                                            onClick(label = "Show tab bar") { onExpand(); true }
-                                        }
-                                    else Modifier,
-                                ),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            if (tab != null) Icon(tab.selectedIcon, contentDescription = null, tint = accent, modifier = Modifier.size(24.dp))
+                        // Minimized: the selected tab's symbol in a circle.
+                        if (collapse.value > 0f) {
+                            val tab = tabs.getOrNull(selectedIndex)
+                            Box(
+                                Modifier
+                                    .size(TabBarHeight)
+                                    .graphicsLayer { alpha = ((collapse.value - 0.5f) * 2f).coerceIn(0f, 1f) }
+                                    .then(
+                                        if (minimized) Modifier
+                                            .selectable(selected = true, role = Role.Button, interactionSource = null, indication = null) { onExpand() }
+                                            .semantics {
+                                                contentDescription = "${tab?.label ?: ""}, show tab bar"
+                                                onClick(label = "Show tab bar") { onExpand(); true }
+                                            }
+                                        else Modifier,
+                                    ),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (tab != null) Icon(tab.selectedIcon, contentDescription = null, tint = accent, modifier = Modifier.size(24.dp))
+                            }
                         }
                     }
                 }
+                if (accessory != null) accessory()
             }
-            if (accessory != null) accessory()
         }
     }
 }

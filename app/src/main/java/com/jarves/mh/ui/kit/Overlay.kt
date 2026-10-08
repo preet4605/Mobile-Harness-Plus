@@ -480,41 +480,43 @@ private fun SheetHeader(
     trailing: (@Composable RowScope.() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier.fillMaxWidth()) {
-        Box(Modifier.fillMaxWidth().padding(top = 5.dp), contentAlignment = Alignment.Center) {
-            Box(
-                Modifier
-                    .size(width = 36.dp, height = 5.dp)
-                    .background(PocketColors.current.tertiaryLabel, PocketShape.capsule),
-            )
-        }
-        if (title != null || leading != null || trailing != null) {
-            Box(Modifier.fillMaxWidth().height(BarHeight).padding(horizontal = ListInset)) {
-                Row(
-                    Modifier.fillMaxSize(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (leading != null) leading()
-                    Spacer(Modifier.weight(1f))
-                    if (trailing != null) trailing()
-                }
-                if (title != null) {
-                    Text(
-                        title,
-                        style = PocketType.headline,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(horizontal = 96.dp)
-                            .semantics { heading() },
-                    )
-                }
+    CappedTextScale {
+        Column(modifier.fillMaxWidth()) {
+            Box(Modifier.fillMaxWidth().padding(top = 5.dp), contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier
+                        .size(width = 36.dp, height = 5.dp)
+                        .background(PocketColors.current.tertiaryLabel, PocketShape.capsule),
+                )
             }
-        } else {
-            Spacer(Modifier.height(PocketSpacing.sm))
+            if (title != null || leading != null || trailing != null) {
+                Box(Modifier.fillMaxWidth().height(BarHeight).padding(horizontal = ListInset)) {
+                    Row(
+                        Modifier.fillMaxSize(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (leading != null) leading()
+                        Spacer(Modifier.weight(1f))
+                        if (trailing != null) trailing()
+                    }
+                    if (title != null) {
+                        Text(
+                            title,
+                            style = PocketType.headline,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(horizontal = 96.dp)
+                                .semantics { heading() },
+                        )
+                    }
+                }
+            } else {
+                Spacer(Modifier.height(PocketSpacing.sm))
+            }
         }
     }
 }

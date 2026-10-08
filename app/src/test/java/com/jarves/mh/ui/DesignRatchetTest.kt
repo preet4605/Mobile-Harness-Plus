@@ -15,10 +15,7 @@ class DesignRatchetTest {
     private data class Ceiling(val fontSizes: Int, val shapes: Int, val colors: Int)
 
     private val ceilings = mapOf(
-        "CliParityComponents.kt" to Ceiling(108, 35, 14),
         "MarkdownText.kt" to Ceiling(5, 3, 0),
-        "MemoryViewerSheet.kt" to Ceiling(12, 7, 0),
-        "PocketDevApp.kt" to Ceiling(108, 53, 38),
         "TerminalScreen.kt" to Ceiling(10, 5, 7),
     )
 

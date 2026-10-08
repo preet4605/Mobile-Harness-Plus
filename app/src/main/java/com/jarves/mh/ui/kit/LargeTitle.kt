@@ -107,41 +107,43 @@ fun LargeTitleBar(
     trailing: (@Composable RowScope.() -> Unit)? = null,
     alwaysShowTitle: Boolean = false,
 ) {
-    Box(modifier.fillMaxWidth()) {
-        // Soft scroll edge: content blurs and fades into the canvas under the bar.
-        ScrollEdgeEffect(Modifier.matchParentSize(), fromTop = true) { (collapse() * 2f).coerceIn(0f, 1f) }
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .windowInsetsPadding(WindowInsets.statusBars)
-                .padding(bottom = PocketSpacing.md),
-        ) {
-            Row(
+    CappedTextScale {
+        Box(modifier.fillMaxWidth()) {
+            // Soft scroll edge: content blurs and fades into the canvas under the bar.
+            ScrollEdgeEffect(Modifier.matchParentSize(), fromTop = true) { (collapse() * 2f).coerceIn(0f, 1f) }
+            Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(BarHeight)
-                    .padding(horizontal = ListInset),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(bottom = PocketSpacing.md),
             ) {
-                if (leading != null) leading()
-                Spacer(Modifier.weight(1f))
-                if (trailing != null) trailing()
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(BarHeight)
+                        .padding(horizontal = ListInset),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
+                ) {
+                    if (leading != null) leading()
+                    Spacer(Modifier.weight(1f))
+                    if (trailing != null) trailing()
+                }
+                Text(
+                    title,
+                    style = PocketType.headline,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 112.dp)
+                        .graphicsLayer {
+                            alpha = if (alwaysShowTitle) 1f else ((collapse() - 0.55f) / 0.45f).coerceIn(0f, 1f)
+                        },
+                )
             }
-            Text(
-                title,
-                style = PocketType.headline,
-                color = MaterialTheme.colorScheme.onBackground,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(horizontal = 112.dp)
-                    .graphicsLayer {
-                        alpha = if (alwaysShowTitle) 1f else ((collapse() - 0.55f) / 0.45f).coerceIn(0f, 1f)
-                    },
-            )
         }
     }
 }

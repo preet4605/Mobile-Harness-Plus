@@ -30,6 +30,8 @@ class AppNavigationMotionTest {
     }
 
     private val app by lazy { read("PocketDevApp.kt") }
+    private val workspace by lazy { read("WorkspaceScreen.kt") }
+    private val screens by lazy { app + workspace }
 
     @Test
     fun springTokens_followDurationAndBounce() {
@@ -63,17 +65,17 @@ class AppNavigationMotionTest {
 
     @Test
     fun everyScreenSwitch_isAnimated() {
-        listOf("app navigation", "root tab", "workspace tab").forEach { label ->
-            assertTrue("$label must be an AnimatedContent", app.contains("label = \"$label\""))
+        listOf("app navigation", "root tab", "workspace tab", "file viewer").forEach { label ->
+            assertTrue("$label must be an AnimatedContent", screens.contains("label = \"$label\""))
         }
         assertFalse("app screens must not hard-cut on a bare when", app.contains("        when {\n            state.startupStage"))
         assertFalse(app.contains("when (screen) {"))
-        assertFalse(app.contains("when (selectedTab) {"))
+        assertFalse(screens.contains("when (selectedTab) {"))
     }
 
     @Test
     fun onlyTheDestinationScreen_isTheBackdropSource() {
-        assertEquals(3, Regex("""BackdropSourceScope\(active = isTransitionTarget\)""").findAll(app).count())
+        assertEquals(4, Regex("""BackdropSourceScope\(active = isTransitionTarget\)""").findAll(screens).count())
         assertTrue("outgoing screens keep showing what they showed", app.contains("heldWhileExiting(state)"))
     }
 

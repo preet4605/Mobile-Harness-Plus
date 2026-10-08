@@ -7,62 +7,37 @@ import org.junit.Test
 import java.io.File
 
 /**
- * Source-level guard for the shared Workspace/Chat Liquid Glass chrome (LG-1/LG-4).
+ * Source-level guard for the Workspace and Chat liquid glass chrome.
  *
  * A checkpoint commit once replaced these call sites with plain Material 3 surfaces and no
- * test noticed. The project has no Compose UI test infrastructure, so this asserts the call
- * sites directly in the source that every harness (Claude Code, DeepSeek, Antigravity) renders,
- * including the shared-backdrop wiring that gives Chat real blur (Phase 6B).
+ * test noticed. This asserts the call sites directly in the source that every harness (Claude
+ * Code, DeepSeek, Antigravity) renders, including the shared-backdrop wiring that gives Chat
+ * real blur: the message list is the one source and all chrome floats over it as siblings.
  */
 class ChatLiquidGlassRegressionTest {
 
-    private val source: String by lazy {
-        val relative = "src/main/java/com/jarves/mh/ui/PocketDevApp.kt"
-        listOf(File(relative), File("app/$relative"))
+    private fun read(name: String): String {
+        val relative = "src/main/java/com/jarves/mh/ui/$name"
+        return listOf(File(relative), File("app/$relative"))
             .firstOrNull { it.isFile }
             ?.readText()
-            ?: error("PocketDevApp.kt not found from ${File(".").absolutePath}")
+            ?: error("$name not found from ${File(".").absolutePath}")
     }
 
-    private fun functionBody(name: String): String {
-        val start = source.indexOf("fun $name(")
+    private val source: String by lazy { read("WorkspaceScreen.kt") }
+    private val app: String by lazy { read("PocketDevApp.kt") }
+
+    private fun functionBody(name: String, text: String = source): String {
+        val start = text.indexOf("fun $name(")
         assertTrue("$name not found", start >= 0)
-        val end = source.indexOf("\n}\n", start)
+        val end = text.indexOf("\n}\n", start)
         assertTrue("$name end not found", end > start)
-        return source.substring(start, end)
+        return text.substring(start, end)
     }
 
     private val workspace by lazy { functionBody("WorkspaceScreen") }
     private val chat by lazy { functionBody("ChatTab") }
-
-    /** The closest `Surface(` call before [marker] must be a `LiquidGlassSurface(`. */
-    private fun assertWrappedInGlass(body: String, marker: String, component: String) {
-        val markerIndex = body.indexOf(marker)
-        assertTrue("$component marker '$marker' not found", markerIndex >= 0)
-        val surfaceIndex = body.lastIndexOf("Surface(", markerIndex)
-        assertTrue("$component has no enclosing surface", surfaceIndex >= 0)
-        val prefix = body.substring((surfaceIndex - "LiquidGlass".length).coerceAtLeast(0), surfaceIndex)
-        assertEquals("$component must render via LiquidGlassSurface", "LiquidGlass", prefix)
-    }
-
-    @Test
-    fun workspace_topBarAndTabs_useLiquidGlass() {
-        assertTrue("Workspace top bar must be LiquidGlassTopBar", workspace.contains("LiquidGlassTopBar("))
-        assertTrue("Workspace tabs must be LiquidGlassSegmentedControl", workspace.contains("LiquidGlassSegmentedControl("))
-        assertFalse("Workspace must not fall back to M3 TopAppBar", workspace.contains("TopAppBar("))
-        assertFalse("Workspace must not fall back to M3 NavigationBar", workspace.contains("NavigationBar("))
-        assertTrue(workspace.contains("containerColor = Color.Transparent"))
-        assertTrue(workspace.contains("contentWindowInsets = WindowInsets(0, 0, 0, 0)"))
-    }
-
-    @Test
-    fun chat_latestChipsAndComposer_useLiquidGlassSurface() {
-        assertWrappedInGlass(chat, "\"Latest\"", "Latest pill")
-        assertWrappedInGlass(chat, "\"/ Commands\"", "Commands chip")
-        assertWrappedInGlass(chat, "Text(\"Skills\"", "Skills chip")
-        assertWrappedInGlass(chat, "\"Inspector (", "Inspector chip")
-        assertWrappedInGlass(chat, "RoundedCornerShape(26.dp)", "Composer")
-    }
+    private val composer by lazy { functionBody("Composer") }
 
     /** Argument list (and trailing lambda, if [withBlock]) of the call starting at [start]. */
     private fun callAt(body: String, start: Int, withBlock: Boolean = false): String {
@@ -92,66 +67,75 @@ class ChatLiquidGlassRegressionTest {
         Regex("""(?<![A-Za-z])${Regex.escape(name)}\(""").findAll(body).map { callAt(body, it.range.first) }.toList()
 
     @Test
-    fun chatGlass_bindsEveryConsumerToSharedBackgroundLayer() {
-        val surfaces = calls(chat, "LiquidGlassSurface")
-        assertEquals("Latest, telemetry, 3 chips and composer", 6, surfaces.size)
-        surfaces.forEach { call ->
-            assertTrue("Chat glass must sample the shared backdrop:\n$call", call.contains("layerSource = LiquidGlassLayers.Background"))
-            assertTrue("Chat glass must use an existing GlassRole:\n$call", Regex("""role = GlassRoles\.(Latest|Chip|Composer)""").containsMatchIn(call))
+    fun workspace_floatingGlassBarAndSwitcher_noMaterialChrome() {
+        assertTrue("Workspace uses its floating glass bar", workspace.contains("WorkspaceBar("))
+        assertTrue("Views switch with the segmented control", workspace.contains("SegmentedControl("))
+        assertTrue("Bar actions are one glass group", workspace.contains("GlassToolbarGroup {"))
+        assertTrue("The bar softens content under it", functionBody("WorkspaceBar").contains("ScrollEdgeEffect("))
+        listOf("TopAppBar(", "Scaffold(", "NavigationBar(", "AlertDialog(", "ModalBottomSheet(", "Card(").forEach {
+            assertFalse("Workspace must not fall back to Material $it", Regex("""(?<![A-Za-z])${Regex.escape(it)}""").containsMatchIn(source))
         }
-        assertFalse("Chat must not force tint-only glass", chat.contains("layerSource = null"))
     }
 
     @Test
-    fun workspaceChrome_samplesBackdropOnlyWhileChatScrollsUnderIt() {
-        assertTrue(
-            Regex("""val chromeLayer = if \(selectedTab == WorkspaceTab\.CHAT\) LiquidGlassLayers\.Background else null""")
-                .containsMatchIn(workspace),
-        )
-        (calls(workspace, "LiquidGlassTopBar") + calls(workspace, "LiquidGlassSegmentedControl")).forEach { call ->
-            assertTrue("Workspace chrome must bind to chromeLayer:\n${call.take(120)}", call.contains("layerSource = chromeLayer"))
+    fun everyGlassSurface_samplesTheSharedBackground() {
+        val surfaces = calls(source, "LiquidGlassSurface")
+        assertTrue("Latest, activity, attachment, + button, composer and read-only banner", surfaces.size >= 6)
+        surfaces.forEach { call ->
+            assertTrue("Chat glass must sample the shared backdrop:\n$call", call.contains("layerSource = LiquidGlassLayers.Background"))
         }
-        // Chat content runs edge to edge under the bars; other tabs stay padded and clipped.
-        assertTrue(Regex("""if \(tab == WorkspaceTab\.CHAT\) \{\s*Modifier\.fillMaxSize\(\)\s*\} else \{\s*Modifier\.fillMaxSize\(\)\.padding\(padding\)\.clipToBounds\(\)""").containsMatchIn(workspace))
-        assertTrue("ChatTab must receive the bar insets as content clearance", workspace.contains("chromePadding = padding"))
+        assertFalse("Chat must not force tint-only glass", source.contains("layerSource = null"))
+        assertTrue(calls(chat, "LiquidGlassSurface").single().contains("role = GlassRoles.Latest"))
+        assertEquals("+ button and field share the composer glass", 2, calls(composer, "LiquidGlassSurface").count { it.contains("role = GlassRoles.Composer") })
     }
 
     @Test
     fun chat_registersOneSharedSourceWithChromeAsSiblings() {
         assertEquals("Exactly one backdrop source in Chat", 1, Regex("""hostBackdropSource\(\)""").findAll(chat).count())
-        val list = callAt(chat, chat.indexOf("LazyColumn("), withBlock = true)
-        assertTrue("The message list itself is the source", callAt(chat, chat.indexOf("LazyColumn(")).contains(".hostBackdropSource()"))
+        val listStart = chat.indexOf("LazyColumn(")
+        assertTrue("The message list itself is the source", callAt(chat, listStart).contains(".hostBackdropSource()"))
+        val list = callAt(chat, listStart, withBlock = true)
         assertFalse("Glass inside its own source would record itself", list.contains("LiquidGlassSurface("))
-        assertFalse(workspace.contains("rememberBackdropState("))
-        assertFalse(chat.contains("rememberBackdropState("))
-        assertFalse(workspace.contains("LiquidGlassHost("))
-        assertEquals("Exactly one LiquidGlassHost at the app root", 1, Regex("""\bLiquidGlassHost\(""").findAll(source).count())
+        assertFalse("The composer is not inside the list", list.contains("Composer("))
+        assertTrue("The composer floats after the list", chat.indexOf("Composer(") > chat.indexOf(list))
+        assertFalse(source.contains("rememberBackdropState("))
+        assertFalse(source.contains("LiquidGlassHost("))
+        assertEquals("Exactly one LiquidGlassHost at the app root", 1, Regex("""\bLiquidGlassHost\(""").findAll(app).count())
+    }
+
+    @Test
+    fun workspaceTabs_scrollingViewsAreSources_othersStartBelowTheBar() {
+        assertEquals("Files list is its view's one source", 1, Regex("""hostBackdropSource\(\)""").findAll(functionBody("FilesTab")).count())
+        assertEquals("Terminal and Preview start below the bar", 2, Regex("""\.padding\(top = top\)""").findAll(workspace).count())
+        assertTrue(workspace.contains("topClearance = top"))
+        assertTrue("The bar is measured, not guessed", workspace.contains("Modifier.onSizeChanged(onBarSize)"))
     }
 
     @Test
     fun chatChrome_floatsWithMeasuredClearance() {
-        assertEquals("Only the read-only banner may stay an opaque M3 Surface", 1, calls(chat, "Surface").size)
-        assertTrue(chat.contains("top = chromePadding.calculateTopPadding() + PocketSpacing.md"))
+        assertEquals("No opaque Material surfaces in Chat", 0, calls(chat, "Surface").size)
+        assertTrue(chat.contains("top = topClearance + PocketSpacing.md"))
         assertTrue(chat.contains("bottom = bottomChromeClearance + PocketSpacing.lg"))
         assertTrue(chat.contains(".padding(bottom = bottomChromeClearance + PocketSpacing.md)"))
+        assertTrue("Composer stack clears the navigation bar", chat.contains(".navigationBarsPadding()"))
         assertTrue("Composer stack must follow the keyboard", chat.contains(".imePadding()"))
         assertTrue(chat.contains("bottomChromeClearance = clearance"))
+        assertTrue("Messages soften under the composer", chat.contains("ScrollEdgeEffect("))
     }
 
     @Test
     fun chatChrome_followsAppThemeAndSharedTokens() {
         // Glass tint and chrome text must follow the in-app theme, not only the system setting.
-        assertFalse(workspace.contains("isSystemInDarkTheme("))
-        assertFalse(chat.contains("isSystemInDarkTheme("))
-        // Composer stack and dock share one horizontal margin; secondary glass is pill-shaped.
-        assertTrue(workspace.contains(".padding(start = PocketSpacing.lg, end = PocketSpacing.lg, bottom = PocketSpacing.sm)"))
+        assertFalse(source.contains("isSystemInDarkTheme("))
         assertTrue(chat.contains("start = PocketSpacing.lg,") && chat.contains("end = PocketSpacing.lg,"))
-        assertEquals("Latest, telemetry and 3 chips are pills", 5, Regex("""RoundedCornerShape\(LiquidGlassTokens\.PillRadius\)""").findAll(chat).count())
+        listOf("fontSize =", "RoundedCornerShape(", "Color(0x").forEach {
+            assertFalse("Workspace takes $it from the design tokens", source.contains(it))
+        }
     }
 
     @Test
     fun rootBackdrop_staysIntact() {
-        val root = functionBody("RootScreenHost")
+        val root = functionBody("RootScreenHost", app)
         // Root's content box is not a source; each root screen's list is (RootLiquidGlassWiringTest).
         assertFalse(root.contains("asBackdropSource("))
         assertTrue("Root dock is the floating glass tab bar", root.contains("FloatingTabBar("))
@@ -159,20 +143,25 @@ class ChatLiquidGlassRegressionTest {
 
     @Test
     fun chatGlass_isHarnessAgnostic() {
-        (workspace + chat).lines()
+        source.lines()
             .filter { it.contains("agentKind") || it.contains("AgentKind") }
             .forEach { line ->
                 assertFalse(
                     "Glass/backdrop must not depend on the harness: $line",
-                    Regex("""layerSource|Backdrop|LiquidGlass|chromeLayer|GlassRoles""").containsMatchIn(line),
+                    Regex("""layerSource|Backdrop|LiquidGlass|GlassRoles""").containsMatchIn(line),
                 )
             }
     }
 
     @Test
     fun chatControls_keep44dpTouchTargets() {
-        assertEquals("All three chips use the 44dp touch wrapper", 3, Regex("""ChatChipTouchTarget\(onClick""").findAll(chat).count())
-        assertFalse("Workspace/Chat icon controls must not shrink below 44dp", Regex("""\.size\((3\d|4[0-3])\.dp\)""").containsMatchIn(workspace))
-        assertTrue(source.contains(".heightIn(min = LiquidGlassTokens.MinTouchTarget)\n            .clickable(role = Role.Button"))
+        assertTrue("Composer never compresses below 52dp", source.contains("private val ComposerMinHeight = 52.dp"))
+        assertTrue(composer.contains(".heightIn(min = ComposerMinHeight)"))
+        val action = functionBody("ComposerActionButton")
+        assertTrue("Send and stop take the touch from a 44dp box", action.indexOf(".size(LiquidGlassTokens.MinTouchTarget)") in 0 until action.indexOf(".clickable("))
+        listOf("ActivityCapsule", "FileRow").forEach {
+            assertTrue("$it rows are at least 44dp", functionBody(it).contains(".heightIn(min = LiquidGlassTokens.MinTouchTarget)"))
+        }
+        assertTrue("Latest pill is at least 44dp", chat.contains(".heightIn(min = LiquidGlassTokens.MinTouchTarget)"))
     }
 }

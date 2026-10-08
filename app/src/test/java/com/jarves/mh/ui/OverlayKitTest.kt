@@ -29,6 +29,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import com.jarves.mh.ui.kit.BannerHost
+import com.jarves.mh.ui.kit.CappedTextScale
+import com.jarves.mh.ui.kit.ChromeMaxFontScale
 import com.jarves.mh.ui.kit.BannerKind
 import com.jarves.mh.ui.kit.BannerState
 import com.jarves.mh.ui.kit.FloatingTabBar
@@ -221,5 +223,23 @@ class OverlayKitTest {
         assertEquals(BannerKind.Success, bannerKindFor("Saved AGENTS.md."))
         assertEquals(BannerKind.Info, bannerKindFor("Android build tools are not installed. Add Android in Settings."))
         assertEquals(BannerKind.Info, bannerKindFor("Stop the current agent before switching."))
+    }
+
+    @Test
+    fun chromeText_growsOnlyToTheCap() {
+        var systemScale by androidx.compose.runtime.mutableFloatStateOf(2f)
+        var seen = 0f
+        compose.setContent {
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(2f, systemScale),
+            ) {
+                CappedTextScale { seen = androidx.compose.ui.platform.LocalDensity.current.fontScale }
+            }
+        }
+        compose.waitForIdle()
+        assertEquals(ChromeMaxFontScale, seen, 1e-6f)
+        systemScale = 1.1f
+        compose.waitForIdle()
+        assertEquals("Below the cap nothing changes", 1.1f, seen, 1e-6f)
     }
 }
