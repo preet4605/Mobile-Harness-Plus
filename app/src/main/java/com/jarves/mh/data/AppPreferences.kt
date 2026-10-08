@@ -166,6 +166,11 @@ class AppPreferences(
         }
         set(value) { preferences.edit().putBoolean("agent_antigravity_signed_in", value).apply() }
 
+    /** Mirror of whether Codex holds ChatGPT credentials; the credentials themselves stay in the runtime. */
+    var codexSignedIn: Boolean
+        get() = preferences.getBoolean("agent_codex_signed_in", false)
+        set(value) { preferences.edit().putBoolean("agent_codex_signed_in", value).apply() }
+
     var antigravityAccountEmail: String
         get() {
             val accounts = loadAntigravityAccounts()
@@ -358,7 +363,7 @@ class AppPreferences(
             agent == AgentKind.DEEPSEEK_HARNESS && (!hasAgentProfile || legacyClaudeDefaultInDeepSeek) -> ProviderKind.DEEPSEEK
             storedKind != null && storedKind in providersForAgent(agent) -> storedKind
             agent == AgentKind.DEEPSEEK_HARNESS -> ProviderKind.DEEPSEEK
-            agent == AgentKind.CODEX -> ProviderKind.CUSTOM
+            agent == AgentKind.CODEX -> ProviderKind.CHATGPT
             else -> ProviderKind.ANTHROPIC
         }
         val useStoredValues = storedKind == kind
@@ -451,7 +456,7 @@ class AppPreferences(
             kind = kind,
             baseUrl = effectiveBaseUrl,
             model = effectiveModel,
-            hasSecret = (!tokenHarborKeyDeleted && !revokedKeyDeleted && !isStoredRevoked) && (vault.contains(kind.name) || (kind == ProviderKind.ANTIGRAVITY_SERVER) || isNativeClaude),
+            hasSecret = (!tokenHarborKeyDeleted && !revokedKeyDeleted && !isStoredRevoked) && (vault.contains(kind.name) || (kind == ProviderKind.ANTIGRAVITY_SERVER) || isNativeClaude || (kind == ProviderKind.CHATGPT && codexSignedIn)),
             dshApi = effectiveDshApi,
             claudeAuthMode = storedAuthMode,
             claudeThinkingLevel = claudeThinking,

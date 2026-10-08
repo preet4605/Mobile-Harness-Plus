@@ -206,6 +206,10 @@ fun AgentScreen(
     onSubmitClaudeCode: (String) -> Unit = {},
     onLogoutClaude: () -> Unit = {},
     onRefreshClaudeAuth: () -> Unit = {},
+    onStartCodexLogin: () -> Unit = {},
+    onCancelCodexLogin: () -> Unit = {},
+    onLogoutCodex: () -> Unit = {},
+    onRefreshCodexAuth: () -> Unit = {},
     listState: LazyListState = rememberLazyListState(),
 ) {
     val scope = rememberCoroutineScope()
@@ -278,6 +282,12 @@ fun AgentScreen(
     }
 
     fun discoverModels() {
+        if (selectedKind == ProviderKind.CHATGPT) {
+            status = "Model lists aren't available with ChatGPT sign-in. Enter a model ID, or leave it blank for Codex's default."
+            statusOk = false
+            statusProviderMessage = null
+            return
+        }
         val isAntigravityServer = selectedKind == ProviderKind.ANTIGRAVITY_SERVER
         val effectiveKey = apiKey.trim().ifBlank { newApiKey.trim() }
         val supportsPublicDiscovery = selectedKind == ProviderKind.LLM_ROUTER ||
@@ -345,6 +355,8 @@ fun AgentScreen(
         newApiKey = ""
         status = null
         statusProviderMessage = null
+        // The ChatGPT account has nothing to test or save by hand; selecting it is the whole choice.
+        if (kind == ProviderKind.CHATGPT) onSaveProvider(ProviderProfile(kind, "", ""), "")
         if (kind == ProviderKind.ANTIGRAVITY_SERVER) {
             scope.launch {
                 val profile = ProviderProfile(kind, kind.defaultBaseUrl, kind.defaultModel, dshApi = defaultDshApiForProvider(kind))
@@ -604,7 +616,34 @@ fun AgentScreen(
                             )
                         }
                     }
-                    if (selectedKind != ProviderKind.CLAUDE) {
+                    if (selectedKind == ProviderKind.CHATGPT) {
+                        item(key = "codexAccount") {
+                            CodexAccountCard(
+                                auth = state.codexAuth,
+                                codexInstalled = state.installedAgentVersions.containsKey(AgentKind.CODEX),
+                                busy = state.isRunning || state.agentInstalling != null,
+                                onSignIn = onStartCodexLogin,
+                                onCancel = onCancelCodexLogin,
+                                onSignOut = onLogoutCodex,
+                                onRefresh = onRefreshCodexAuth,
+                            )
+                        }
+                        item(key = "model") {
+                            ListSection(
+                                header = "Model",
+                                footer = "Leave this on Codex default unless you need a specific model.",
+                            ) {
+                                ListRow(
+                                    "Model",
+                                    icon = Icons.Outlined.AutoAwesome,
+                                    iconTile = colors.purple,
+                                    value = model.ifBlank { "Codex default" },
+                                    accessory = ListRowAccessory.Chevron,
+                                    onClick = { sheet = AgentSheet.Model },
+                                )
+                            }
+                        }
+                    } else if (selectedKind != ProviderKind.CLAUDE) {
                         item(key = "endpoint") {
                             EndpointSection(
                                 agentKind = state.agentKind,
@@ -662,7 +701,7 @@ fun AgentScreen(
                     }
                     if (selectedKind == ProviderKind.ANTIGRAVITY_SERVER) {
                         item(key = "googleAccount") { AntigravityServerAccountSection(state) }
-                    } else {
+                    } else if (selectedKind != ProviderKind.CHATGPT) {
                         item(key = "keys") {
                             val claude = selectedKind == ProviderKind.CLAUDE
                             ListSection(
@@ -691,7 +730,7 @@ fun AgentScreen(
                     val isAntigravityServer = selectedKind == ProviderKind.ANTIGRAVITY_SERVER
                     // For Claude the account sign-in is the main path; saving a setup token only
                     // appears once one has been added.
-                    if (selectedKind != ProviderKind.CLAUDE || savedKeys.isNotEmpty()) {
+                    if (selectedKind != ProviderKind.CHATGPT && (selectedKind != ProviderKind.CLAUDE || savedKeys.isNotEmpty())) {
                         item(key = "validate") {
                             val hasAntigravityAuth = state.antigravityAccounts.isNotEmpty() ||
                                 state.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN
@@ -736,7 +775,7 @@ fun AgentScreen(
             val loading = if (isAntigravity) state.antigravityModelsLoading else isDiscovering
             if (loading) {
                 Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) { ProgressRing(progress = null, size = 20.dp, strokeWidth = 2.dp) }
-            } else {
+            } else if (selectedKind != ProviderKind.CHATGPT || isAntigravity) {
                 PocketIconButton(
                     Icons.Outlined.Refresh,
                     if (isAntigravity) "Refresh models" else "Discover models",
@@ -773,6 +812,8 @@ fun AgentScreen(
                     model = it
                     modelSearch = ""
                     sheet = AgentSheet.None
+                    // No Test connection step exists for the ChatGPT account, so the choice is saved here.
+                    if (selectedKind == ProviderKind.CHATGPT) onSaveProvider(ProviderProfile(selectedKind, "", it.trim()), "")
                 },
             )
         }
@@ -1263,6 +1304,18 @@ private fun ProviderModelList(
                 }
             }
         }
+        if (kind == ProviderKind.CHATGPT && custom.isEmpty()) {
+            item(key = "codexDefault") {
+                ListSection(Modifier.padding(top = PocketSpacing.md)) {
+                    ListRow(
+                        "Codex default",
+                        subtitle = "Let Codex choose the model for your plan",
+                        accessory = if (selected.isBlank()) ListRowAccessory.Check else ListRowAccessory.None,
+                        onClick = { onSelect("") },
+                    )
+                }
+            }
+        }
         if (filtered.isEmpty() && !isDiscovering) {
             val recommended = defaultModelsForProvider(kind)
             if (recommended.isNotEmpty() && custom.isEmpty()) {
@@ -1280,7 +1333,7 @@ private fun ProviderModelList(
                     }
                 }
             }
-            item(key = "discover") {
+            if (kind != ProviderKind.CHATGPT) item(key = "discover") {
                 ListSection(Modifier.padding(top = PocketSpacing.md)) {
                     ListRow(
                         "Discover models from ${kind.title}",

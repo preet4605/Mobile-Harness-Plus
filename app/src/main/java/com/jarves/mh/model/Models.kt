@@ -56,6 +56,15 @@ enum class ProviderKind(
     val fixedProtocol: Boolean = false,
 ) {
     CLAUDE("Claude subscription", "Pro, Max, Team or Enterprise", ProviderProtocol.CLAUDE_LOGIN, "", "default"),
+    CHATGPT(
+        "ChatGPT account",
+        "Plus, Pro, Business or Enterprise sign-in",
+        ProviderProtocol.OPENAI_RESPONSES,
+        "",
+        "",
+        fixedBaseUrl = true,
+        fixedProtocol = true,
+    ),
     ANTHROPIC("Anthropic API", "Usage billed through Console", ProviderProtocol.ANTHROPIC, "https://api.anthropic.com", "claude-sonnet-4-6"),
     LLM_ROUTER("OpenRouter", "Use your OpenRouter API key", ProviderProtocol.OPENROUTER, "https://openrouter.ai/api", "~anthropic/claude-sonnet-latest"),
     DEEPSEEK("DeepSeek", "Use your DeepSeek API key", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.deepseek.com/anthropic", "deepseek-v4-flash"),
@@ -146,10 +155,12 @@ val DEEPSEEK_HARNESS_PROVIDERS: Set<ProviderKind> = setOf(
 )
 
 /**
- * Provider kinds usable with [AgentKind.CODEX]. Codex 0.161.0 only speaks the OpenAI Responses API,
- * so CUSTOM is offered with its protocol forced to Responses at launch time (see CodexRouteMapper).
+ * Provider kinds usable with [AgentKind.CODEX]. CHATGPT is Codex's own account sign-in (blank model
+ * means "Codex default"). Codex 0.161.0 only speaks the OpenAI Responses API, so CUSTOM is offered
+ * with its protocol forced to Responses at launch time (see CodexRouteMapper).
  */
 val CODEX_PROVIDERS: Set<ProviderKind> = setOf(
+    ProviderKind.CHATGPT,
     ProviderKind.CUSTOM,
 )
 
@@ -212,7 +223,9 @@ fun providerProtocolForAgent(profile: ProviderProfile, agent: AgentKind): Provid
 /** Provider choices shown for the selected coding agent. */
 fun providersForAgent(agent: AgentKind): List<ProviderKind> = when (agent) {
     AgentKind.DEEPSEEK_HARNESS -> ProviderKind.entries.filter { it in DEEPSEEK_HARNESS_PROVIDERS }
-    AgentKind.CLAUDE_CODE -> ProviderKind.entries.filterNot { it == ProviderKind.OPENCODE_ZEN }
+    AgentKind.CLAUDE_CODE -> ProviderKind.entries.filterNot {
+        it == ProviderKind.OPENCODE_ZEN || it == ProviderKind.CHATGPT
+    }
     AgentKind.ANTIGRAVITY -> emptyList()
     AgentKind.CODEX -> ProviderKind.entries.filter { it in CODEX_PROVIDERS }
 }

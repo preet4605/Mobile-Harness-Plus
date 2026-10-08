@@ -57,6 +57,9 @@ import com.jarves.mh.runtime.ClaudeAuthController
 import com.jarves.mh.runtime.ClaudeAuthState
 import com.jarves.mh.runtime.ClaudeAuthStatusState
 import com.jarves.mh.runtime.ClaudeRuntimeBridge
+import com.jarves.mh.runtime.CodexAuthController
+import com.jarves.mh.runtime.CodexAuthState
+import com.jarves.mh.runtime.CodexAuthStatus
 import com.jarves.mh.runtime.CodexRuntimeBridge
 import com.jarves.mh.model.AntigravityAccount
 import com.jarves.mh.model.AntigravityAccountStatus
@@ -284,6 +287,7 @@ data class AppUiState(
     val antigravityAuth: AntigravityAuthState = AntigravityAuthState(),
     val antigravityAccounts: List<AntigravityAccount> = emptyList(),
     val claudeAuth: ClaudeAuthState = ClaudeAuthState(),
+    val codexAuth: CodexAuthState = CodexAuthState(),
     val claudeAuthMode: ClaudeAuthMode = ClaudeAuthMode.NATIVE_SUBSCRIPTION,
     val antigravityLoadBalancingStrategy: AntigravityLoadBalancingStrategy = AntigravityLoadBalancingStrategy.LEAST_RECENTLY_USED,
     val antigravityFailoverEnabled: Boolean = true,
@@ -416,9 +420,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         },
         onLoginCompleted = { adoptClaudeAccountLogin() },
     )
+    val codexAuthController = CodexAuthController(
+        context = application,
+        onSignedInChanged = { signedIn ->
+            preferences.codexSignedIn = signedIn
+            _state.update { current ->
+                if (current.provider.kind == ProviderKind.CHATGPT) {
+                    current.copy(provider = current.provider.copy(hasSecret = signedIn))
+                } else current
+            }
+        },
+        onLoginCompleted = { adoptCodexAccountLogin() },
+    )
     private var lastAutoOpenedUrl: String? = null
     private var lastAutoOpenedAtMillis = 0L
     @Volatile private var signInAfterClaudeInstall = false
+    @Volatile private var signInAfterCodexInstall = false
     private var lastClaudeStatusCheckAtMillis = 0L
     private val _state = MutableStateFlow(
         AppUiState(
@@ -522,6 +539,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { claudeAuthController.queryAuthStatus() }
+        }
+        viewModelScope.launch {
+            codexAuthController.state.collect { auth ->
+                _state.update { it.copy(codexAuth = auth) }
+                syncCodexPingFromAuth()
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { codexAuthController.refreshStatus() }
         }
         if (antigravityAuthController.hasOfficialCredential() &&
             (!preferences.antigravitySignedIn || preferences.antigravityAccountEmail.isBlank())
@@ -1532,7 +1558,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val hasSecret = secret.isNotBlank() || vault.contains(profile.secretId) ||
             (profile.kind == ProviderKind.ANTIGRAVITY_SERVER && (antigravityAccountManager.accountsList().isNotEmpty() || antigravityAuthController.hasOfficialCredential())) ||
-            (isClaudeNative && (claudeAuthController.hasNativeCredentials() || _state.value.claudeAuth.status == ClaudeAuthStatusState.SIGNED_IN))
+            (isClaudeNative && (claudeAuthController.hasNativeCredentials() || _state.value.claudeAuth.status == ClaudeAuthStatusState.SIGNED_IN)) ||
+            (profile.kind == ProviderKind.CHATGPT && codexAuthController.hasCredentials())
         val saved = profile.copy(
             hasSecret = hasSecret,
         )
@@ -1547,6 +1574,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Persists a clean Claude subscription profile (account mode) for Claude Code.
         adoptClaudeAccountLogin()
         val profile = preferences.loadProvider(vault, AgentKind.CLAUDE_CODE)
+        preferences.onboardingComplete = true
+        _state.update { it.copy(onboardingComplete = true, provider = profile, startupStage = StartupStage.READY) }
+    }
+
+    fun finishCodexOnboarding() {
+        // Persists a clean ChatGPT-account profile for Codex.
+        adoptCodexAccountLogin()
+        val profile = preferences.loadProvider(vault, AgentKind.CODEX)
         preferences.onboardingComplete = true
         _state.update { it.copy(onboardingComplete = true, provider = profile, startupStage = StartupStage.READY) }
     }
@@ -1662,8 +1697,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     signInAfterClaudeInstall = false
                     viewModelScope.launch { claudeAuthController.beginLogin() }
                 }
+                if (kind == AgentKind.CODEX && signInAfterCodexInstall) {
+                    signInAfterCodexInstall = false
+                    viewModelScope.launch { codexAuthController.beginLogin() }
+                }
             }
-            if (result.isFailure) signInAfterClaudeInstall = false
+            if (result.isFailure) {
+                signInAfterClaudeInstall = false
+                signInAfterCodexInstall = false
+            }
             _state.update { current ->
                 current.copy(
                     installedAgentVersions = installer.installedAgentVersions(),
@@ -1826,8 +1868,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         syncClaudePingFromAuth()
     }
 
+    fun startCodexLogin() {
+        if (codexAuthController.isLoginInFlight) return
+        if (_state.value.agentInstalling != null) {
+            _state.update { it.copy(toastMessage = "Wait for the current install to finish, then sign in.") }
+            return
+        }
+        if (_state.value.isRunning) {
+            _state.update { it.copy(toastMessage = "Stop the current task before signing in.") }
+            return
+        }
+        if (!installer.isAgentInstalled(AgentKind.CODEX)) {
+            // Install first; installAgent continues into the sign-in once Codex is ready.
+            signInAfterCodexInstall = true
+            installAgent(AgentKind.CODEX)
+            return
+        }
+        viewModelScope.launch { codexAuthController.beginLogin() }
+    }
+
+    fun cancelCodexLogin() {
+        codexAuthController.cancelLogin()
+    }
+
+    fun logoutCodex() {
+        viewModelScope.launch {
+            runCatching { codexAuthController.logout() }
+                .onFailure { error -> _state.update { it.copy(toastMessage = error.message ?: "Could not sign out") } }
+        }
+    }
+
+    fun refreshCodexAuthStatus() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { codexAuthController.refreshStatus() }
+        }
+    }
+
+    /**
+     * After a successful ChatGPT sign-in, make the account the way Codex authenticates: the ChatGPT
+     * provider, saved for the Codex agent only. A model the user already picked is kept.
+     */
+    private fun adoptCodexAccountLogin() {
+        val existing = preferences.loadProvider(vault, AgentKind.CODEX)
+        val profile = if (existing.kind == ProviderKind.CHATGPT) {
+            existing.copy(hasSecret = true)
+        } else {
+            ProviderProfile(kind = ProviderKind.CHATGPT, hasSecret = true)
+        }
+        val codexIsActive = _state.value.agentKind == AgentKind.CODEX
+        if (codexIsActive) {
+            preferences.saveProvider(profile, AgentKind.CODEX)
+        } else {
+            preferences.saveProviderForAgentOnly(profile, AgentKind.CODEX)
+        }
+        _state.update { current ->
+            current.copy(provider = if (codexIsActive) profile else current.provider)
+        }
+        syncCodexPingFromAuth()
+    }
+
+    private fun syncCodexPingFromAuth() {
+        val current = _state.value
+        if (current.agentKind != AgentKind.CODEX || current.provider.kind != ProviderKind.CHATGPT) return
+        val auth = current.codexAuth
+        val (status, message) = when (auth.status) {
+            CodexAuthStatus.SIGNED_IN -> ApiPingStatus.OK to auth.displayStatus
+            CodexAuthStatus.STARTING, CodexAuthStatus.AWAITING_AUTH -> ApiPingStatus.PINGING to auth.displayStatus
+            else -> ApiPingStatus.FAILED to "Not signed in to ChatGPT"
+        }
+        _state.update { it.copy(apiPingStatus = status, apiPingMessage = message) }
+    }
+
     /** Re-checks the Claude session when the app returns to the foreground (e.g. back from the browser). */
     fun onAppResumed() {
+        if (_state.value.provider.kind == ProviderKind.CHATGPT) refreshCodexAuthStatus()
         val provider = _state.value.provider
         if (provider.kind != ProviderKind.CLAUDE || provider.claudeAuthMode != ClaudeAuthMode.NATIVE_SUBSCRIPTION) return
         // Each check starts a short runtime process; do not repeat it on every quick app switch.
@@ -2175,6 +2289,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     suspend fun discoverModels(profile: ProviderProfile, secret: String): ModelDiscoveryResult {
+        if (profile.kind == ProviderKind.CHATGPT) {
+            return ModelDiscoveryResult.Failure("Model lists aren't available with ChatGPT sign-in. Enter a model ID, or leave it blank for Codex's default.")
+        }
         if (profile.kind == ProviderKind.CLAUDE) {
             return ModelDiscoveryResult.Success(com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS, "Claude Code")
         }
@@ -2208,6 +2325,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         secret: String,
         models: List<com.jarves.mh.network.DiscoveredModel>,
     ): ConnectionValidation {
+        if (profile.kind == ProviderKind.CHATGPT) {
+            return if (codexAuthController.hasCredentials()) {
+                ConnectionValidation.Success("Signed in with ChatGPT.")
+            } else {
+                ConnectionValidation.Failure("Not signed in to ChatGPT. Sign in first.", label = "Sign in needed")
+            }
+        }
         if (profile.kind == ProviderKind.ANTIGRAVITY_SERVER) {
             val hasAccount = antigravityAccountManager.accountsList().any { it.isAvailableForRouting } ||
                 antigravityAuthController.hasOfficialCredential()
@@ -2251,6 +2375,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // Account login has no API endpoint to ping; report the sign-in state instead.
             syncClaudePingFromAuth()
             refreshClaudeAuthStatus()
+            return
+        }
+        if (profile.kind == ProviderKind.CHATGPT) {
+            syncCodexPingFromAuth()
+            refreshCodexAuthStatus()
             return
         }
         if (profile.baseUrl.isBlank() || profile.model.isBlank()) return
@@ -4645,6 +4774,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             event.reason.contains("not signed in", ignoreCase = true)
         ) {
             claudeAuthController.markExpired()
+        }
+        if (event is RuntimeEvent.SessionFailed && _state.value.agentKind == AgentKind.CODEX &&
+            _state.value.provider.kind == ProviderKind.CHATGPT &&
+            event.reason.contains("not signed in", ignoreCase = true)
+        ) {
+            codexAuthController.markExpired()
         }
         if (event is RuntimeEvent.SessionFailed && retryWithNextApiKey(event)) return
         _state.update { current ->

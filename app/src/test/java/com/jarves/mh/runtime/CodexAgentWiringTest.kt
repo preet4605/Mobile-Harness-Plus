@@ -73,7 +73,7 @@ class CodexAgentModelTest {
 
     @Test
     fun codexOffersOnlyResponsesCapableProviders() {
-        assertEquals(listOf(ProviderKind.CUSTOM), providersForAgent(AgentKind.CODEX))
+        assertEquals(listOf(ProviderKind.CHATGPT, ProviderKind.CUSTOM), providersForAgent(AgentKind.CODEX))
     }
 
     @Test
@@ -89,6 +89,16 @@ class CodexAgentModelTest {
         assertFalse(providersForAgent(AgentKind.CLAUDE_CODE).contains(ProviderKind.OPENCODE_ZEN))
         assertTrue(providersForAgent(AgentKind.DEEPSEEK_HARNESS).contains(ProviderKind.DEEPSEEK))
         assertTrue(providersForAgent(AgentKind.ANTIGRAVITY).isEmpty())
+    }
+
+    @Test
+    fun theChatGptAccountIsOfferedOnlyToCodex() {
+        AgentKind.entries.filterNot { it == AgentKind.CODEX }.forEach {
+            assertFalse("$it must not offer ChatGPT sign-in", providersForAgent(it).contains(ProviderKind.CHATGPT))
+        }
+        assertTrue(ProviderKind.CHATGPT.fixedBaseUrl)
+        assertEquals("", ProviderProfile(ProviderKind.CHATGPT).resolvedBaseUrl)
+        assertEquals("", ProviderKind.CHATGPT.defaultModel)
     }
 
     @Test
@@ -108,16 +118,39 @@ class CodexPreferencesTest {
     private val app get() = RuntimeEnvironment.getApplication()
 
     @Test
-    fun codexDefaultsToTheCustomProvider() {
+    fun codexDefaultsToTheChatGptAccount() {
         val profile = AppPreferences(app).loadProvider(ApiKeyVault(app), AgentKind.CODEX)
-        assertEquals(ProviderKind.CUSTOM, profile.kind)
+        assertEquals(ProviderKind.CHATGPT, profile.kind)
+        assertEquals("", profile.model)
+        assertFalse(profile.hasSecret)
+    }
+
+    @Test
+    fun chatGptProfileReflectsTheSignedInMirror() {
+        val prefs = AppPreferences(app)
+        val vault = ApiKeyVault(app)
+        prefs.saveProviderForAgentOnly(ProviderProfile(ProviderKind.CHATGPT), AgentKind.CODEX)
+        assertFalse(prefs.loadProvider(vault, AgentKind.CODEX).hasSecret)
+        prefs.codexSignedIn = true
+        val profile = prefs.loadProvider(vault, AgentKind.CODEX)
+        assertEquals(ProviderKind.CHATGPT, profile.kind)
+        assertTrue(profile.hasSecret)
+        prefs.codexSignedIn = false
+        assertFalse(prefs.loadProvider(vault, AgentKind.CODEX).hasSecret)
+    }
+
+    @Test
+    fun aSavedChatGptModelSurvivesReload() {
+        val prefs = AppPreferences(app)
+        prefs.saveProviderForAgentOnly(ProviderProfile(ProviderKind.CHATGPT, "", "gpt-x"), AgentKind.CODEX)
+        assertEquals("gpt-x", prefs.loadProvider(ApiKeyVault(app), AgentKind.CODEX).model)
     }
 
     @Test
     fun codexIgnoresAProviderOnlyOtherAgentsCanUse() {
         val prefs = AppPreferences(app)
         prefs.saveProviderForAgentOnly(ProviderProfile(ProviderKind.ANTHROPIC), AgentKind.CODEX)
-        assertEquals(ProviderKind.CUSTOM, prefs.loadProvider(ApiKeyVault(app), AgentKind.CODEX).kind)
+        assertEquals(ProviderKind.CHATGPT, prefs.loadProvider(ApiKeyVault(app), AgentKind.CODEX).kind)
     }
 
     @Test

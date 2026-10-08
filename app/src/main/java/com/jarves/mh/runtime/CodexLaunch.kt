@@ -40,6 +40,7 @@ internal object CodexRouteMapper {
     fun forProfile(profile: ProviderProfile): CodexRoute {
         val model = profile.model.trim()
         return when (profile.kind) {
+            ProviderKind.CHATGPT -> CodexRoute.ChatGptLogin(model)
             ProviderKind.CUSTOM -> {
                 // The stored protocol is ignored: Codex always speaks Responses unless the URL's own
                 // suffix says otherwise (e.g. /chat/completions), which is rejected below.

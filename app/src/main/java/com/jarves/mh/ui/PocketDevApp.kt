@@ -254,6 +254,16 @@ private fun AppScreen(
                 onRefresh = viewModel::refreshClaudeAuthStatus,
                 onFinish = viewModel::finishClaudeOnboarding,
             ),
+            codexSignIn = CodexSignInActions(
+                auth = state.codexAuth,
+                codexInstalled = state.installedAgentVersions.containsKey(AgentKind.CODEX),
+                busy = state.agentInstalling != null,
+                onSignIn = viewModel::startCodexLogin,
+                onCancel = viewModel::cancelCodexLogin,
+                onSignOut = viewModel::logoutCodex,
+                onRefresh = viewModel::refreshCodexAuthStatus,
+                onFinish = viewModel::finishCodexOnboarding,
+            ),
         )
         AppDestination.ReadOnlyProject -> ReadOnlyProjectScreen(
             state = state,
@@ -462,6 +472,10 @@ private fun RootScreenHost(
                     onSubmitClaudeCode = viewModel::submitClaudeCode,
                     onLogoutClaude = viewModel::logoutClaude,
                     onRefreshClaudeAuth = viewModel::refreshClaudeAuthStatus,
+                    onStartCodexLogin = viewModel::startCodexLogin,
+                    onCancelCodexLogin = viewModel::cancelCodexLogin,
+                    onLogoutCodex = viewModel::logoutCodex,
+                    onRefreshCodexAuth = viewModel::refreshCodexAuthStatus,
                 )
                 RootScreen.SETTINGS -> Box(
                     modifier = Modifier.fillMaxSize(),

@@ -394,6 +394,18 @@ class CodexLaunchBuilderTest {
 
 class CodexRouteMapperTest {
     @Test
+    fun chatGptAccountUsesCodexOwnLoginWithTheChosenModel() {
+        assertEquals(
+            CodexRoute.ChatGptLogin(""),
+            CodexRouteMapper.forProfile(ProviderProfile(ProviderKind.CHATGPT)),
+        )
+        assertEquals(
+            CodexRoute.ChatGptLogin("gpt-x"),
+            CodexRouteMapper.forProfile(ProviderProfile(ProviderKind.CHATGPT, "", " gpt-x ")),
+        )
+    }
+
+    @Test
     fun opencodeZenIsNotOfferedBecauseResponsesSupportIsUnverified() {
         val error = assertThrows(CodexUnsupportedProviderException::class.java) {
             CodexRouteMapper.forProfile(ProviderProfile(ProviderKind.OPENCODE_ZEN))

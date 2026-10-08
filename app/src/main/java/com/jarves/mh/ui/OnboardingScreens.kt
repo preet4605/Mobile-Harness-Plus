@@ -141,6 +141,8 @@ import com.jarves.mh.network.ModelDiscoveryResult
 import com.jarves.mh.runtime.AntigravityAuthStatus
 import com.jarves.mh.runtime.ClaudeAuthState
 import com.jarves.mh.runtime.ClaudeAuthStatusState
+import com.jarves.mh.runtime.CodexAuthState
+import com.jarves.mh.runtime.CodexAuthStatus
 import com.jarves.mh.runtime.RuntimeExecutionService
 import com.jarves.mh.runtime.RuntimeSetupService
 import com.jarves.mh.runtime.supportsArm64Runtime
@@ -459,6 +461,7 @@ private fun agentTint(agent: AgentKind): Color {
 
 private fun providerMonogram(provider: ProviderKind): String = when (provider) {
     ProviderKind.CLAUDE -> "C"
+    ProviderKind.CHATGPT -> "GPT"
     ProviderKind.ANTHROPIC -> "A"
     ProviderKind.LLM_ROUTER -> "OR"
     ProviderKind.DEEPSEEK -> "DS"
@@ -474,6 +477,7 @@ private fun providerTint(provider: ProviderKind): Color {
     val colors = PocketColors.current
     return when (provider) {
         ProviderKind.CLAUDE -> colors.orange
+        ProviderKind.CHATGPT -> colors.green
         ProviderKind.ANTHROPIC -> colors.brown
         ProviderKind.LLM_ROUTER -> colors.blue
         ProviderKind.DEEPSEEK -> colors.indigo
@@ -1414,6 +1418,18 @@ internal data class ClaudeSignInActions(
     val onFinish: () -> Unit,
 )
 
+/** Everything the onboarding screen needs to offer "Sign in with ChatGPT" for Codex. */
+internal data class CodexSignInActions(
+    val auth: CodexAuthState,
+    val codexInstalled: Boolean,
+    val busy: Boolean,
+    val onSignIn: () -> Unit,
+    val onCancel: () -> Unit,
+    val onSignOut: () -> Unit,
+    val onRefresh: () -> Unit,
+    val onFinish: () -> Unit,
+)
+
 @Composable
 internal fun ProviderSetupScreen(
     initial: ProviderProfile,
@@ -1428,6 +1444,7 @@ internal fun ProviderSetupScreen(
     onToggleTheme: (() -> Unit)? = null,
     themeMode: AppThemeMode = AppThemeMode.DARK,
     claudeSignIn: ClaudeSignInActions? = null,
+    codexSignIn: CodexSignInActions? = null,
 ) {
     var step by rememberSaveable { mutableIntStateOf(initialStep) }
     var selected by rememberSaveable { mutableStateOf(initial.kind) }
@@ -1525,6 +1542,7 @@ internal fun ProviderSetupScreen(
                     },
                     onChangeAgent = { showAgentPicker = true },
                     claudeSignIn = claudeSignIn,
+                    codexSignIn = codexSignIn,
                 )
             }
         }
@@ -1598,6 +1616,7 @@ private fun ProviderCredentialsStep(
     onSave: () -> Unit,
     onChangeAgent: () -> Unit,
     claudeSignIn: ClaudeSignInActions? = null,
+    codexSignIn: CodexSignInActions? = null,
 ) {
     val scope = rememberCoroutineScope()
     val colors = PocketColors.current
@@ -1629,6 +1648,18 @@ private fun ProviderCredentialsStep(
             onSave = onSave,
             onChangeAgent = onChangeAgent,
             claudeSignIn = claudeSignIn,
+        )
+        return
+    }
+
+    if (provider == ProviderKind.CHATGPT && codexSignIn != null) {
+        CodexChatGptCredentialsStep(
+            title = title,
+            eyebrow = eyebrow,
+            onBack = onBack,
+            onToggleTheme = onToggleTheme,
+            onChangeAgent = onChangeAgent,
+            codexSignIn = codexSignIn,
         )
         return
     }
@@ -1940,6 +1971,47 @@ private fun ClaudeSubscriptionCredentialsStep(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CodexChatGptCredentialsStep(
+    title: String,
+    eyebrow: String?,
+    onBack: (() -> Unit)?,
+    onToggleTheme: (() -> Unit)?,
+    onChangeAgent: () -> Unit,
+    codexSignIn: CodexSignInActions,
+) {
+    OnboardingScaffold(
+        title = title,
+        onToggleTheme = onToggleTheme,
+        onBack = onBack,
+        actions = {
+            PocketButton(
+                "Continue",
+                codexSignIn.onFinish,
+                enabled = codexSignIn.auth.status == CodexAuthStatus.SIGNED_IN,
+                size = PocketButtonSize.Large,
+                fullWidth = true,
+            )
+            PocketButton("Use another coding agent", onChangeAgent, style = PocketButtonStyle.Plain, fullWidth = true)
+        },
+    ) {
+        OnboardingHero(
+            title = "ChatGPT account",
+            message = "Connect a ChatGPT Plus, Pro, Business, or Enterprise plan to Codex.",
+            eyebrow = eyebrow,
+        ) { MonogramTile(providerMonogram(ProviderKind.CHATGPT), providerTint(ProviderKind.CHATGPT), size = HeroSymbol) }
+        CodexAccountCard(
+            auth = codexSignIn.auth,
+            codexInstalled = codexSignIn.codexInstalled,
+            busy = codexSignIn.busy,
+            onSignIn = codexSignIn.onSignIn,
+            onCancel = codexSignIn.onCancel,
+            onSignOut = codexSignIn.onSignOut,
+            onRefresh = codexSignIn.onRefresh,
+        )
     }
 }
 
