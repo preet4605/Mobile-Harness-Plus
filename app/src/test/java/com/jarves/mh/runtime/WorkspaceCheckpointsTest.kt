@@ -36,6 +36,16 @@ class WorkspaceCheckpointsTest {
     }
 
     @Test
+    fun `isInternalRuntimePath keeps chat attachment folders out of checkpoints only`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder("checkpoints_attachments"))
+        val chatId = "3f2b8c1e-7d4a-4b6e-9a1f-0c2d3e4f5a6b"
+
+        assertTrue(checkpoints.isInternalRuntimePath("attachments/$chatId/report.pdf"))
+        assertFalse(checkpoints.isInternalRuntimePath("attachments/notes.md"))
+        assertFalse(checkpoints.isInternalRuntimePath("docs/attachments/$chatId/x.png"))
+    }
+
+    @Test
     fun `snapshot and changedFiles ignores build directory changes`() {
         val filesDir = tempFolder.newFolder("app_files")
         val checkpoints = WorkspaceCheckpoints(filesDir)

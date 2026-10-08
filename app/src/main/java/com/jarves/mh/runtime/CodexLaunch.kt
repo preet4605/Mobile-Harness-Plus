@@ -1,8 +1,12 @@
 package com.jarves.mh.runtime
 
+import com.jarves.mh.model.ATTACHMENTS_DIRECTORY
+import com.jarves.mh.model.AttachmentKind
+import com.jarves.mh.model.AttachmentPrompt
 import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.ProviderProfile
 import com.jarves.mh.model.ProviderProtocol
+import com.jarves.mh.model.attachmentExtension
 import com.jarves.mh.provider.ProviderEndpointNormalizer
 
 /** Raised when the selected provider cannot drive Codex. The message is shown to the user as-is. */
@@ -114,6 +118,7 @@ internal object CodexLaunchBuilder {
         guestWorkspacePath: String,
         lastMessageGuestPath: String,
         reasoningEffort: String? = null,
+        imagePaths: List<String> = emptyList(),
     ): List<String> =
         buildList {
             add(CODEX_GUEST_PATH)
@@ -127,6 +132,11 @@ internal object CodexLaunchBuilder {
             add("danger-full-access")
             add("-C")
             add(guestWorkspacePath)
+            // `-i` is variadic: one flag per image keeps the trailing `-` (stdin prompt) out of the image list.
+            imagePaths.forEach {
+                add("-i")
+                add(it)
+            }
             if (route.model.isNotBlank()) {
                 add("-m")
                 add(route.model)
@@ -143,6 +153,17 @@ internal object CodexLaunchBuilder {
             }
             add("-")
         }
+
+    /** Attached images the Codex CLI can take with `-i`, in attachment order. Other files stay as prompt text. */
+    fun imagePaths(prompt: String, guestWorkspacePath: String): List<String> {
+        val folder = "$guestWorkspacePath/$ATTACHMENTS_DIRECTORY/"
+        return AttachmentPrompt.parse(prompt)
+            .filter { it.kind == AttachmentKind.IMAGE && attachmentExtension(it.displayName) in CODEX_IMAGE_EXTENSIONS }
+            .map { it.path }
+            .filter { it.startsWith(folder) }
+    }
+
+    private val CODEX_IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif", "webp")
 
     internal fun configOverrides(route: CodexRoute): List<String> = buildList {
         add("approval_policy=${tomlString("never")}")

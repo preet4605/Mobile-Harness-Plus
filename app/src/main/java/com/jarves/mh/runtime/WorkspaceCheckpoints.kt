@@ -3,6 +3,7 @@ package com.jarves.mh.runtime
 import com.jarves.mh.model.ChangeItem
 import com.jarves.mh.model.DiffLine
 import com.jarves.mh.model.DiffLineType
+import com.jarves.mh.model.isAttachmentStoragePath
 import java.io.File
 import java.security.MessageDigest
 import java.util.Locale
@@ -612,6 +613,7 @@ class WorkspaceCheckpoints(private val filesDir: File) {
         if (normalized.isEmpty()) return false
         val segments = normalized.split('/')
         return segments.any { it in IGNORED_DIRECTORY_NAMES } ||
+            isAttachmentStoragePath(normalized) ||
             normalized == ".claude.json" ||
             normalized.endsWith(".apk.part")
     }

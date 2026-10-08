@@ -155,7 +155,8 @@ class CodexRuntimeBridge(
                     route.model,
                     prefs.loadModelList(AgentKind.CODEX, provider.kind, provider.baseUrl),
                 )
-                val command = CodexLaunchBuilder.command(route, guestWorkspacePath, "/tmp/${lastFile.name}", reasoningEffort)
+                val imagePaths = CodexLaunchBuilder.imagePaths(prompt, guestWorkspacePath)
+                val command = CodexLaunchBuilder.command(route, guestWorkspacePath, "/tmp/${lastFile.name}", reasoningEffort, imagePaths)
                 val environment = CodexLaunchBuilder.environment(route, secret)
                 Log.d(TAG, "Route: ${route::class.simpleName}, Model: ${route.model.ifBlank { "default" }}")
                 val process = installer.process(

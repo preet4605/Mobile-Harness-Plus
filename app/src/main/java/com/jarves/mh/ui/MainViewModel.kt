@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
 import android.os.SystemClock
 import android.os.Build
 import android.system.Os
@@ -25,6 +26,16 @@ import com.jarves.mh.model.AgentKind
 import com.jarves.mh.model.ChangeItem
 import com.jarves.mh.model.ChatMessage
 import com.jarves.mh.model.ChatAttachment
+import com.jarves.mh.model.ATTACHMENTS_DIRECTORY
+import com.jarves.mh.model.AttachmentPrompt
+import com.jarves.mh.model.MAX_ATTACHMENT_BYTES
+import com.jarves.mh.model.attachmentExtension
+import com.jarves.mh.model.attachmentTooLargeMessage
+import com.jarves.mh.model.cleanAttachmentName
+import com.jarves.mh.model.isAttachmentStoragePath
+import com.jarves.mh.model.resolveAttachmentMimeType
+import com.jarves.mh.model.splitAttachmentName
+import com.jarves.mh.model.storedAttachmentName
 import com.jarves.mh.model.DevStack
 import com.jarves.mh.model.Project
 import com.jarves.mh.model.ProjectKind
@@ -3648,7 +3659,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ".git", ".claude", ".gradle", ".idea", ".next", ".cache",
             "node_modules", ".venv", "venv", "__pycache__", "build",
         )
-        return relativePath.split('/').any { it in excludedNames } || isClaudeRuntimeMetadata(relativePath)
+        return relativePath.split('/').any { it in excludedNames } ||
+            isClaudeRuntimeMetadata(relativePath) ||
+            isAttachmentStoragePath(relativePath)
     }
 
     fun addChatAttachments(uris: List<Uri>) {
@@ -3715,56 +3728,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun copyChatAttachment(project: Project, chatId: String, uri: Uri): ChatAttachment {
         val resolver = getApplication<Application>().contentResolver
-        var displayName = "attachment"
+        var reportedName: String? = null
         var declaredSize = -1L
         resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
             if (cursor.moveToFirst()) {
-                cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { displayName = cursor.getString(it) ?: displayName }
-                cursor.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 }?.let { declaredSize = cursor.getLong(it) }
+                cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { reportedName = cursor.getString(it) }
+                cursor.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 && !cursor.isNull(it) }?.let { declaredSize = cursor.getLong(it) }
             }
         }
-        val mimeType = resolver.getType(uri).orEmpty().ifBlank { "application/octet-stream" }
-        val extension = displayName.substringAfterLast('.', "").lowercase()
-        val supportedTextExtensions = setOf(
-            "txt", "md", "markdown", "json", "jsonl", "csv", "tsv", "xml", "yaml", "yml", "log",
-            "kt", "kts", "java", "py", "js", "mjs", "cjs", "ts", "tsx", "jsx", "html", "htm",
-            "css", "scss", "sass", "less", "c", "cc", "cpp", "h", "hpp", "sh", "bash", "zsh",
-            "gradle", "properties", "toml", "ini", "conf", "sql",
-        )
-        val supported = mimeType.startsWith("image/") ||
-            mimeType.startsWith("text/") || mimeType == "application/json" || mimeType == "application/xml" ||
-            mimeType.endsWith("+json") || mimeType.endsWith("+xml") || extension in supportedTextExtensions
-        require(supported) { "Only images and text files are supported" }
-        require(declaredSize <= MAX_ATTACHMENT_BYTES || declaredSize < 0) { "$displayName is larger than 25 MB" }
-        val safeName = sanitizeAttachmentName(displayName)
+        val displayName = cleanAttachmentName(reportedName ?: uri.lastPathSegment)
+            .ifBlank { "attachment-${UUID.randomUUID().toString().take(8)}" }
+        require(declaredSize <= MAX_ATTACHMENT_BYTES) { attachmentTooLargeMessage(displayName) }
+        val mimeType = resolveAttachmentMimeType(resolver.getType(uri), attachmentExtension(displayName)) {
+            MimeTypeMap.getSingleton().getMimeTypeFromExtension(it)
+        }
         val root = projectWorkspaceRoot(project).canonicalFile
-        val folder = File(root, "attachments/$chatId").apply { mkdirs() }.canonicalFile
+        val folder = File(root, "$ATTACHMENTS_DIRECTORY/$chatId").apply { mkdirs() }.canonicalFile
         require(folder.toPath().startsWith(root.toPath())) { "Unsafe attachment folder" }
-        val stem = safeName.substringBeforeLast('.', safeName)
-        val safeExtension = safeName.substringAfterLast('.', "").let { if (it.isBlank()) "" else ".$it" }
-        var destination = File(folder, safeName)
+        val storedName = storedAttachmentName(displayName)
+        val (stem, storedExtension) = splitAttachmentName(storedName)
+        var destination = File(folder, storedName)
         var suffix = 2
-        while (destination.exists()) destination = File(folder, "$stem-${suffix++}$safeExtension")
+        while (destination.exists()) destination = File(folder, "$stem-${suffix++}$storedExtension")
         var copied = 0L
         try {
-            resolver.openInputStream(uri)?.buffered()?.use { input ->
+            val input = resolver.openInputStream(uri) ?: error("Could not read $displayName")
+            input.buffered().use { source ->
                 destination.outputStream().buffered().use { output ->
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     while (true) {
-                        val count = input.read(buffer)
+                        val count = source.read(buffer)
                         if (count < 0) break
                         copied += count
-                        require(copied <= MAX_ATTACHMENT_BYTES) { "$displayName is larger than 25 MB" }
+                        require(copied <= MAX_ATTACHMENT_BYTES) { attachmentTooLargeMessage(displayName) }
                         output.write(buffer, 0, count)
                     }
                 }
-            } ?: error("Could not read $displayName")
+            }
+            require(copied > 0) { "$displayName is empty" }
         } catch (error: Throwable) {
             destination.delete()
             throw error
         }
         return ChatAttachment(
-            displayName = displayName.take(120),
+            displayName = displayName,
             relativePath = destination.relativeTo(root).invariantSeparatorsPath,
             mimeType = mimeType,
             sizeBytes = copied,
@@ -4619,12 +4626,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val runtimePrompt = if (attachments.isEmpty()) withSkillsText else buildString {
             appendLine(withSkillsText)
             appendLine()
-            appendLine("<attached_files>")
-            attachments.forEach { attachment ->
-                appendLine("- ${attachment.displayName}: ${projectGuestRoot(project)}/${attachment.relativePath} (${attachment.mimeType})")
-            }
-            appendLine("These files were explicitly attached by the user. Inspect them only as needed for the request.")
-            appendLine("</attached_files>")
+            append(AttachmentPrompt.render(attachments, projectGuestRoot(project)))
         }
         failedApiKeyIds.clear()
         val taskRecord = try {
@@ -5550,7 +5552,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_PROJECT_TERMINAL_HISTORY = 100
         private const val MAX_PROJECT_TERMINAL_OUTPUT = 200_000
         private const val MAX_ATTACHMENTS_PER_MESSAGE = 5
-        private const val MAX_ATTACHMENT_BYTES = 25L * 1024L * 1024L
         private const val MAX_IMPORTED_PROJECT_BYTES = 8L * 1024L * 1024L * 1024L
         private const val MAX_IMPORTED_ZIP_ENTRIES = 100_000
         private const val AUTO_OPEN_DEDUPE_MS = 15_000L
