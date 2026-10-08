@@ -151,6 +151,7 @@ private fun AgentKind.shortName(): String = when (this) {
     AgentKind.ANTIGRAVITY -> "Antigravity"
     AgentKind.DEEPSEEK_HARNESS -> "DeepSeek"
     AgentKind.CLAUDE_CODE -> "Claude Code"
+    AgentKind.CODEX -> "Codex"
 }
 
 private val Efforts = listOf("low", "medium", "high")

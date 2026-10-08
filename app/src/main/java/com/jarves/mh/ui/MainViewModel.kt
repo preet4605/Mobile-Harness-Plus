@@ -57,6 +57,7 @@ import com.jarves.mh.runtime.ClaudeAuthController
 import com.jarves.mh.runtime.ClaudeAuthState
 import com.jarves.mh.runtime.ClaudeAuthStatusState
 import com.jarves.mh.runtime.ClaudeRuntimeBridge
+import com.jarves.mh.runtime.CodexRuntimeBridge
 import com.jarves.mh.model.AntigravityAccount
 import com.jarves.mh.model.AntigravityAccountStatus
 import com.jarves.mh.model.AntigravityLoadBalancingStrategy
@@ -341,6 +342,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val antigravityAccountManager = AntigravityAccountManager(application, preferences)
     private val claudeRuntime = ClaudeRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
     private val dshRuntime = DshRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
+    private val codexRuntime = CodexRuntimeBridge(application) { profile -> vault.get(profile.secretId) }
     private val installer = RuntimeInstaller(application)
     private val antigravityRuntime = AntigravityRuntimeBridge(
         application,
@@ -360,7 +362,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.value.activeChatId?.let { preferences.saveAgentConversationAccount(projectId, it, accountId) }
         },
     )
-    private val agentRegistry = AgentRegistry.builtIns(claudeRuntime, dshRuntime, antigravityRuntime)
+    private val agentRegistry = AgentRegistry.builtIns(claudeRuntime, dshRuntime, antigravityRuntime, codexRuntime)
     private fun activeRuntime(): com.jarves.mh.runtime.RuntimeBridge = agentRegistry.require(_state.value.agentKind).runtime
     private val providerApi = ProviderApiClient()
     private fun appUpdater(): AppUpdater = AppUpdater(
@@ -473,6 +475,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch { dshRuntime.events.collect(::onRuntimeEvent) }
         viewModelScope.launch { antigravityRuntime.events.collect(::onRuntimeEvent) }
+        viewModelScope.launch { codexRuntime.events.collect(::onRuntimeEvent) }
         viewModelScope.launch {
             antigravityAuthController.state.collect { auth ->
                 _state.update { it.copy(antigravityAuth = auth) }
@@ -1230,6 +1233,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         claudeRuntime.configureProjectRoot(projectId, rootPath)
         dshRuntime.configureProjectRoot(projectId, rootPath)
         antigravityRuntime.configureProjectRoot(projectId, rootPath)
+        codexRuntime.configureProjectRoot(projectId, rootPath)
     }
 
     init {

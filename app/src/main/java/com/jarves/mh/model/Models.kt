@@ -118,6 +118,12 @@ enum class AgentKind(
         "Google's official coding agent · Google account",
         "39.9 MB",
     ),
+    CODEX(
+        "codex",
+        "Codex",
+        "OpenAI's coding agent · Responses API providers",
+        "157 MB",
+    ),
     ;
 
     companion object {
@@ -136,6 +142,14 @@ val DEEPSEEK_HARNESS_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.KIMI,
     ProviderKind.OPENCODE_ZEN,
     ProviderKind.NVIDIA_NIM,
+    ProviderKind.CUSTOM,
+)
+
+/**
+ * Provider kinds usable with [AgentKind.CODEX]. Codex 0.161.0 only speaks the OpenAI Responses API,
+ * so CUSTOM is offered with its protocol forced to Responses at launch time (see CodexRouteMapper).
+ */
+val CODEX_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.CUSTOM,
 )
 
@@ -173,6 +187,7 @@ fun agentUsesConfiguredProtocol(agent: AgentKind, kind: ProviderKind): Boolean =
     AgentKind.DEEPSEEK_HARNESS -> kind in DSH_PROTOCOL_PROVIDERS
     AgentKind.CLAUDE_CODE -> kind == ProviderKind.CUSTOM
     AgentKind.ANTIGRAVITY -> false
+    AgentKind.CODEX -> false
 }
 
 /**
@@ -181,6 +196,8 @@ fun agentUsesConfiguredProtocol(agent: AgentKind, kind: ProviderKind): Boolean =
  * only for CUSTOM. Every other provider keeps its fixed [ProviderKind.protocol].
  */
 fun providerProtocolForAgent(profile: ProviderProfile, agent: AgentKind): ProviderProtocol {
+    // Codex 0.161.0 only speaks the Responses API, whatever the stored protocol says.
+    if (agent == AgentKind.CODEX) return ProviderProtocol.OPENAI_RESPONSES
     if (!agentUsesConfiguredProtocol(agent, profile.kind)) {
         return profile.kind.protocol
     }
@@ -197,6 +214,7 @@ fun providersForAgent(agent: AgentKind): List<ProviderKind> = when (agent) {
     AgentKind.DEEPSEEK_HARNESS -> ProviderKind.entries.filter { it in DEEPSEEK_HARNESS_PROVIDERS }
     AgentKind.CLAUDE_CODE -> ProviderKind.entries.filterNot { it == ProviderKind.OPENCODE_ZEN }
     AgentKind.ANTIGRAVITY -> emptyList()
+    AgentKind.CODEX -> ProviderKind.entries.filter { it in CODEX_PROVIDERS }
 }
 
 enum class ClaudeAuthMode {

@@ -443,6 +443,7 @@ private fun agentMonogram(agent: AgentKind): String = when (agent) {
     AgentKind.CLAUDE_CODE -> "CC"
     AgentKind.DEEPSEEK_HARNESS -> "DS"
     AgentKind.ANTIGRAVITY -> "AG"
+    AgentKind.CODEX -> "CX"
 }
 
 @Composable
@@ -452,6 +453,7 @@ private fun agentTint(agent: AgentKind): Color {
         AgentKind.CLAUDE_CODE -> colors.orange
         AgentKind.DEEPSEEK_HARNESS -> colors.indigo
         AgentKind.ANTIGRAVITY -> colors.blue
+        AgentKind.CODEX -> colors.green
     }
 }
 
@@ -1111,6 +1113,7 @@ private const val CORE_RUNTIME_DOWNLOAD_MB = 69
 private const val CLAUDE_RUNTIME_DOWNLOAD_MB = 72
 private const val DSH_RUNTIME_DOWNLOAD_MB = 27
 private const val AGY_RUNTIME_DOWNLOAD_MB = 40
+private const val CODEX_RUNTIME_DOWNLOAD_MB = 157
 private const val PYTHON_RUNTIME_DOWNLOAD_MB = 55
 private const val ANDROID_RUNTIME_DOWNLOAD_MB = 570
 
@@ -1143,6 +1146,7 @@ private fun toolchainDownloadSummary(selected: Set<DevStack>, agent: AgentKind):
             AgentKind.CLAUDE_CODE -> CLAUDE_RUNTIME_DOWNLOAD_MB
             AgentKind.DEEPSEEK_HARNESS -> DSH_RUNTIME_DOWNLOAD_MB
             AgentKind.ANTIGRAVITY -> AGY_RUNTIME_DOWNLOAD_MB
+            AgentKind.CODEX -> CODEX_RUNTIME_DOWNLOAD_MB
         } +
         (if (DevStack.PYTHON in selected) PYTHON_RUNTIME_DOWNLOAD_MB else 0) +
         (if (DevStack.ANDROID in selected) ANDROID_RUNTIME_DOWNLOAD_MB else 0)

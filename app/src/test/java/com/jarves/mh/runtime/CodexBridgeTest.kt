@@ -394,12 +394,11 @@ class CodexLaunchBuilderTest {
 
 class CodexRouteMapperTest {
     @Test
-    fun opencodeZenMapsToApiKeyRoute() {
-        val route = CodexRouteMapper.forProfile(ProviderProfile(ProviderKind.OPENCODE_ZEN, model = " m1 ")) as CodexRoute.ApiKey
-        assertEquals("https://opencode.ai/zen/v1", route.baseUrl)
-        assertEquals("m1", route.model)
-        assertEquals("MH_CODEX_API_KEY", route.keyEnv)
-        assertTrue(route.providerId.startsWith("mh-"))
+    fun opencodeZenIsNotOfferedBecauseResponsesSupportIsUnverified() {
+        val error = assertThrows(CodexUnsupportedProviderException::class.java) {
+            CodexRouteMapper.forProfile(ProviderProfile(ProviderKind.OPENCODE_ZEN))
+        }
+        assertTrue(error.message!!.contains("Codex"))
     }
 
     @Test
@@ -412,34 +411,46 @@ class CodexRouteMapperTest {
         ) as CodexRoute.ApiKey
         assertEquals("https://gw.example.com/v1", route.baseUrl)
         assertEquals("mh-abc123xyz", route.providerId)
+        assertEquals("MH_CODEX_API_KEY", route.keyEnv)
+        assertEquals("m", route.model)
     }
 
     @Test
-    fun chatOnlyProvidersAreRejectedWithAnExplanation() {
-        val custom = assertThrows(CodexUnsupportedProviderException::class.java) {
+    fun storedProtocolIsIgnoredAndDefaultsToResponses() {
+        listOf("openai-completions", "anthropic-messages", "").forEach { api ->
+            val route = CodexRouteMapper.forProfile(
+                ProviderProfile(ProviderKind.CUSTOM, baseUrl = "https://gw.example.com/v1", dshApi = api),
+            )
+            assertTrue(route is CodexRoute.ApiKey)
+        }
+    }
+
+    @Test
+    fun urlSuffixesThatSelectAnotherProtocolAreRejected() {
+        val chat = assertThrows(CodexUnsupportedProviderException::class.java) {
             CodexRouteMapper.forProfile(
-                ProviderProfile(ProviderKind.CUSTOM, baseUrl = "https://gw.example.com/v1", dshApi = "openai-completions"),
+                ProviderProfile(ProviderKind.CUSTOM, baseUrl = "https://gw.example.com/v1/chat/completions"),
             )
         }
-        assertTrue(custom.message!!.contains("Responses"))
+        assertTrue(chat.message!!.contains("Responses"))
+        assertThrows(CodexUnsupportedProviderException::class.java) {
+            CodexRouteMapper.forProfile(
+                ProviderProfile(ProviderKind.CUSTOM, baseUrl = "https://gw.example.com/v1/messages"),
+            )
+        }
+    }
+
+    @Test
+    fun chatOnlyAndUnrelatedProvidersAreRejected() {
         val nim = assertThrows(CodexUnsupportedProviderException::class.java) {
             CodexRouteMapper.forProfile(ProviderProfile(ProviderKind.NVIDIA_NIM))
         }
         assertTrue(nim.message!!.contains("Chat Completions"))
-    }
-
-    @Test
-    fun unrelatedProvidersAreRejected() {
         listOf(ProviderKind.CLAUDE, ProviderKind.ANTHROPIC, ProviderKind.DEEPSEEK).forEach {
             val error = assertThrows(CodexUnsupportedProviderException::class.java) {
                 CodexRouteMapper.forProfile(ProviderProfile(it))
             }
             assertTrue(error.message!!.contains("Codex"))
-        }
-        assertThrows(CodexUnsupportedProviderException::class.java) {
-            CodexRouteMapper.forProfile(
-                ProviderProfile(ProviderKind.CUSTOM, baseUrl = "https://gw.example.com/v1", dshApi = "anthropic-messages"),
-            )
         }
     }
 
