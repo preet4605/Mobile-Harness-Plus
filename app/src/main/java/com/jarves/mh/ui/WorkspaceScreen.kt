@@ -29,8 +29,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -125,6 +127,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInParent
@@ -189,7 +192,6 @@ import com.jarves.mh.ui.kit.PocketIconButton
 import com.jarves.mh.ui.kit.PocketTextField
 import com.jarves.mh.ui.kit.ProgressRing
 import com.jarves.mh.ui.kit.SectionHeader
-import com.jarves.mh.ui.kit.SegmentedControl
 import com.jarves.mh.ui.kit.SheetTextButton
 import com.jarves.mh.ui.kit.SymbolTile
 import com.jarves.mh.ui.kit.largeTitleBarPadding
@@ -220,11 +222,12 @@ import com.jarves.mh.ui.theme.isTransitionTarget
 import com.jarves.mh.ui.theme.medium
 import com.jarves.mh.ui.theme.sharedTitle
 import java.io.ByteArrayInputStream
+import kotlin.math.max
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** The project's four views, switched by the segmented control under the title. */
+/** The project's four views, switched from the menu on the workspace title. */
 internal enum class WorkspaceTab(val label: String) {
     CHAT("Chat"),
     FILES("Files"),
@@ -235,14 +238,13 @@ internal enum class WorkspaceTab(val label: String) {
 /** The composer never gets shorter than this, so it stays an easy target while typing. */
 private val ComposerMinHeight = 52.dp
 
-/** Height of the view switcher row under the workspace title. */
-private val SwitcherHeight = 44.dp
-
 /**
- * The workspace's floating bar: a glass back button, the title with a second line under it,
- * glass actions, and an optional row below it (the view switcher). Content scrolls beneath it
- * and softens into the canvas once anything is underneath; the bar has no fill or hairline.
+ * The workspace's floating bar, one row: a glass back button, the title centred between the edges
+ * with a second line under it, and glass actions on the right. Tapping the title ([onTitleClick])
+ * opens the view menu. Content scrolls beneath the bar and softens into the canvas once anything
+ * is underneath; the bar has no fill or hairline.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun WorkspaceBar(
     title: String,
@@ -251,11 +253,13 @@ private fun WorkspaceBar(
     scrolled: () -> Float,
     modifier: Modifier = Modifier,
     backLabel: String = "Projects",
-    titleModifier: Modifier = Modifier,
+    subtitleLead: String? = null,
+    leadModifier: Modifier = Modifier,
     working: Boolean = false,
+    onTitleClick: (() -> Unit)? = null,
     onTitleLongPress: (() -> Unit)? = null,
+    titleAnchor: OverlayAnchor? = null,
     actions: @Composable RowScope.() -> Unit = {},
-    below: (@Composable () -> Unit)? = null,
 ) {
     CappedTextScale {
         val colors = PocketColors.current
@@ -267,54 +271,116 @@ private fun WorkspaceBar(
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(bottom = PocketSpacing.sm),
             ) {
-                Row(
-                    Modifier
+                BarRow(
+                    modifier = Modifier
                         .fillMaxWidth()
                         .height(BarHeight)
                         .padding(horizontal = ListInset),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(PocketSpacing.md),
-                ) {
-                    GlassToolbarButton(Icons.Outlined.ArrowBackIosNew, backLabel, onBack)
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .then(
-                                if (onTitleLongPress != null) {
-                                    Modifier.pointerInput(onTitleLongPress) { detectTapGestures(onLongPress = { onTitleLongPress() }) }
-                                } else {
-                                    Modifier
-                                },
-                            ),
-                    ) {
-                        Text(
-                            title,
-                            style = PocketType.headline,
-                            color = MaterialTheme.colorScheme.onBackground,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = titleModifier,
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (working) {
-                                ProgressRing(progress = null, size = 11.dp, strokeWidth = 1.5.dp, color = colors.secondaryLabel)
-                                Spacer(Modifier.width(PocketSpacing.xs + 2.dp))
-                            }
+                    leading = { GlassToolbarButton(Icons.Outlined.ArrowBackIosNew, backLabel, onBack) },
+                    center = {
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .then(if (titleAnchor != null) Modifier.overlayAnchor(titleAnchor) else Modifier)
+                                .then(
+                                    if (onTitleClick != null || onTitleLongPress != null) {
+                                        Modifier.combinedClickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null,
+                                            role = Role.Button,
+                                            onClickLabel = "Change view",
+                                            onLongClick = onTitleLongPress,
+                                            onClick = { onTitleClick?.invoke() },
+                                        )
+                                    } else {
+                                        Modifier
+                                    },
+                                ),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
                             Text(
-                                subtitle,
-                                style = PocketType.caption1,
-                                color = colors.secondaryLabel,
+                                title,
+                                style = PocketType.headline,
+                                color = MaterialTheme.colorScheme.onBackground,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
                             )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                if (working) {
+                                    ProgressRing(progress = null, size = 11.dp, strokeWidth = 1.5.dp, color = colors.secondaryLabel)
+                                    Spacer(Modifier.width(PocketSpacing.xs + 2.dp))
+                                }
+                                if (subtitleLead != null) {
+                                    Text(
+                                        subtitleLead,
+                                        style = PocketType.caption1,
+                                        color = colors.secondaryLabel,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false).then(leadModifier),
+                                    )
+                                    Text(" · $subtitle", style = PocketType.caption1, color = colors.secondaryLabel, maxLines = 1)
+                                } else {
+                                    Text(
+                                        subtitle,
+                                        style = PocketType.caption1,
+                                        color = colors.secondaryLabel,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
                         }
-                    }
-                    actions()
-                }
-                if (below != null) {
-                    Box(Modifier.fillMaxWidth().padding(horizontal = ListInset)) { below() }
-                }
+                    },
+                    trailing = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(PocketSpacing.md),
+                            content = actions,
+                        )
+                    },
+                )
             }
+        }
+    }
+}
+
+/**
+ * The bar's single row. Leading and trailing slots sit at the edges; the centre slot is centred
+ * on the row and only shrinks as far as the wider edge needs, so a long title ellipsizes instead of
+ * sliding under the actions.
+ */
+@Composable
+private fun BarRow(
+    modifier: Modifier,
+    leading: @Composable () -> Unit,
+    center: @Composable () -> Unit,
+    trailing: @Composable () -> Unit,
+) {
+    Layout(
+        content = {
+            Box { leading() }
+            Box { center() }
+            Box { trailing() }
+        },
+        modifier = modifier,
+    ) { measurables, constraints ->
+        val loose = constraints.copy(minWidth = 0)
+        val leadingPlaceable = measurables[0].measure(loose)
+        val trailingPlaceable = measurables[2].measure(loose)
+        val side = max(leadingPlaceable.width, trailingPlaceable.width)
+        val centerPlaceable = measurables[1].measure(loose.copy(maxWidth = (constraints.maxWidth - 2 * side).coerceAtLeast(0)))
+        val height = maxOf(leadingPlaceable.height, centerPlaceable.height, trailingPlaceable.height).coerceIn(constraints.minHeight, constraints.maxHeight)
+        val width = constraints.maxWidth
+        layout(width, height) {
+            leadingPlaceable.placeRelative(0, (height - leadingPlaceable.height) / 2)
+            centerPlaceable.placeRelative((width - centerPlaceable.width) / 2, (height - centerPlaceable.height) / 2)
+            trailingPlaceable.placeRelative(width - trailingPlaceable.width, (height - trailingPlaceable.height) / 2)
         }
     }
 }
@@ -405,8 +471,9 @@ internal fun ReadOnlyProjectScreen(
             topClearance = barHeight ?: (largeTitleBarPadding() + PocketSpacing.sm),
         )
         WorkspaceBar(
-            title = project.name,
-            subtitle = "${activeChat?.title ?: "Chat"} · History",
+            title = activeChat?.title ?: "Chat",
+            subtitle = "History",
+            subtitleLead = project.name,
             onBack = onBack,
             scrolled = { if (listState.canScrollBackward) 1f else 0f },
             modifier = Modifier.onSizeChanged(onBarSize),
@@ -552,6 +619,8 @@ internal fun WorkspaceScreen(
 
     var selectedTab by rememberSaveable { mutableStateOf(initialTab) }
     var showChats by rememberSaveable { mutableStateOf(false) }
+    var showViews by rememberSaveable { mutableStateOf(false) }
+    val viewsAnchor = rememberOverlayAnchor()
     var showChanges by rememberSaveable { mutableStateOf(false) }
     val changesAnchor = rememberOverlayAnchor()
     val chatsAnchor = rememberOverlayAnchor()
@@ -715,7 +784,7 @@ internal fun WorkspaceScreen(
                 )
             } else {
                 Box(Modifier.fillMaxSize()) {
-                    val top = barHeight ?: (largeTitleBarPadding() + PocketSpacing.sm + SwitcherHeight)
+                    val top = barHeight ?: (largeTitleBarPadding() + PocketSpacing.sm)
                     val underBar = if (selectedTab == WorkspaceTab.CHAT) chatListState else if (selectedTab == WorkspaceTab.FILES) filesListState else null
                     // Chat and Files scroll under the floating bar; Terminal and Preview start below it.
                     AnimatedContent(
@@ -823,13 +892,16 @@ internal fun WorkspaceScreen(
                         }
                     }
                     WorkspaceBar(
-                        title = state.activeProject?.name.orEmpty(),
-                        subtitle = "${activeChat?.title ?: "Chat"} · $engine",
+                        title = activeChat?.title ?: "Chat",
+                        subtitle = engine,
+                        subtitleLead = state.activeProject?.name.orEmpty(),
+                        leadModifier = Modifier.sharedTitle(projectTitleKey(state.activeProject?.id)),
                         onBack = onBack,
                         scrolled = { if (underBar?.canScrollBackward == true) 1f else 0f },
                         modifier = Modifier.onSizeChanged(onBarSize),
-                        titleModifier = Modifier.sharedTitle(projectTitleKey(state.activeProject?.id)),
                         working = state.isRunning,
+                        titleAnchor = viewsAnchor,
+                        onTitleClick = { showViews = true },
                         onTitleLongPress = { banner(state.activeProject?.name.orEmpty(), BannerKind.Info) },
                         actions = {
                             GlassToolbarGroup {
@@ -866,19 +938,20 @@ internal fun WorkspaceScreen(
                                 )
                             }
                         },
-                        below = {
-                            SegmentedControl(
-                                items = WorkspaceTab.entries,
-                                selected = selectedTab,
-                                onSelect = { tab ->
+                    )
+                    GlassMenu(expanded = showViews, onDismiss = { showViews = false }, anchor = viewsAnchor) {
+                        WorkspaceTab.entries.forEach { tab ->
+                            GlassMenuItem(
+                                tab.label,
+                                {
                                     selectedTab = tab
                                     if (tab == WorkspaceTab.FILES) onRefreshFiles()
                                     if (tab == WorkspaceTab.TERMINAL) onTerminalOpened()
                                 },
-                                label = { it.label },
+                                checked = tab == selectedTab,
                             )
-                        },
-                    )
+                        }
+                    }
                 }
             }
         }

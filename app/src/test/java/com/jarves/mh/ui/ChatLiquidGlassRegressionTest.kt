@@ -67,9 +67,10 @@ class ChatLiquidGlassRegressionTest {
         Regex("""(?<![A-Za-z])${Regex.escape(name)}\(""").findAll(body).map { callAt(body, it.range.first) }.toList()
 
     @Test
-    fun workspace_floatingGlassBarAndSwitcher_noMaterialChrome() {
+    fun workspace_floatingGlassBar_noMaterialChrome() {
         assertTrue("Workspace uses its floating glass bar", workspace.contains("WorkspaceBar("))
-        assertTrue("Views switch with the segmented control", workspace.contains("SegmentedControl("))
+        assertTrue("The bar is one row: no second switcher row under it", !workspace.contains("SegmentedControl("))
+        assertTrue("Views switch from the menu on the chat title", workspace.contains("onTitleClick = { showViews = true }") && workspace.contains("GlassMenu(expanded = showViews"))
         assertTrue("Bar actions are one glass group", workspace.contains("GlassToolbarGroup {"))
         assertTrue("The bar softens content under it", functionBody("WorkspaceBar").contains("ScrollEdgeEffect("))
         listOf("TopAppBar(", "Scaffold(", "NavigationBar(", "AlertDialog(", "ModalBottomSheet(", "Card(").forEach {
