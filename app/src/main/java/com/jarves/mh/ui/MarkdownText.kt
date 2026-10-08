@@ -58,7 +58,9 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.jarves.mh.ui.theme.PocketColors
 import com.jarves.mh.ui.theme.PocketRadius
+import com.jarves.mh.ui.theme.PocketShape
 import com.jarves.mh.ui.theme.PocketType
 import com.jarves.mh.ui.theme.emphasized
 import kotlinx.coroutines.delay
@@ -96,8 +98,8 @@ fun MarkdownText(
                     modifier = Modifier.padding(vertical = 4.dp),
                 )
                 is MarkdownBlock.Paragraph -> {
-                    InlineMarkdownText(
-                        text = formatInlineMarkdown(block.text),
+                    RichInlineText(
+                        text = block.text,
                         style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
                         color = color,
                     )
@@ -122,22 +124,33 @@ private fun HeaderBlock(header: MarkdownBlock.Header) {
     )
 }
 
+/**
+ * Lists share one grid: a marker column of [ListMarkerWidth], then the text. Nested items move in
+ * by one marker column per level, so a child always sits under its parent's text.
+ */
+private val ListMarkerWidth = 20.dp
+
 @Composable
 private fun BulletBlock(item: MarkdownBlock.BulletItem, color: Color) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = (item.depth * 14).dp),
+            .padding(start = ListMarkerWidth * item.depth),
         verticalAlignment = Alignment.Top,
     ) {
         Box(
             modifier = Modifier
-                .padding(top = 8.dp, end = 8.dp)
-                .size(5.dp)
-                .background(MaterialTheme.colorScheme.onSurfaceVariant, CircleShape),
-        )
-        InlineMarkdownText(
-            text = formatInlineMarkdown(item.text),
+                .width(ListMarkerWidth)
+                .padding(top = 8.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(5.dp)
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant, CircleShape),
+            )
+        }
+        RichInlineText(
+            text = item.text,
             style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
             color = color,
             modifier = Modifier.weight(1f),
@@ -154,10 +167,11 @@ private fun NumberedBlock(item: MarkdownBlock.NumberedItem, color: Color) {
         Text(
             text = item.number,
             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant),
-            modifier = Modifier.padding(end = 6.dp),
+            softWrap = false,
+            modifier = Modifier.width(ListMarkerWidth),
         )
-        InlineMarkdownText(
-            text = formatInlineMarkdown(item.text),
+        RichInlineText(
+            text = item.text,
             style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
             color = color,
             modifier = Modifier.weight(1f),
@@ -510,6 +524,74 @@ private fun inlineCodeChips(layout: TextLayoutResult, text: AnnotatedString): Li
         }
     }
     return chips
+}
+
+/** A piece of running text: prose with inline chips, or a long command or hash on its own. */
+private sealed interface InlineSegment {
+    data class Prose(val text: String) : InlineSegment
+    data class Code(val code: String) : InlineSegment
+}
+
+/** Inline code longer than this leaves the sentence and becomes a monospace block of its own. */
+private const val LongCodeLength = 24
+private val InlineCodeSpan = Regex("`([^`\\n]+)`")
+
+private fun splitLongCode(text: String): List<InlineSegment> {
+    val segments = mutableListOf<InlineSegment>()
+    var cursor = 0
+    InlineCodeSpan.findAll(text).forEach { match ->
+        val code = match.groupValues[1]
+        if (code.length > LongCodeLength) {
+            val prose = text.substring(cursor, match.range.first).trim()
+            if (prose.isNotEmpty()) segments += InlineSegment.Prose(prose)
+            segments += InlineSegment.Code(code)
+            cursor = match.range.last + 1
+        }
+    }
+    if (segments.isEmpty()) return listOf(InlineSegment.Prose(text))
+    val rest = text.substring(cursor).trim()
+    if (rest.isNotEmpty()) segments += InlineSegment.Prose(rest)
+    return segments
+}
+
+/**
+ * Running text. Short code stays an inline chip; a long command or hash is lifted out into a
+ * [LongCodeBlock] so it wraps cleanly instead of breaking into fragments mid-sentence.
+ */
+@Composable
+private fun RichInlineText(
+    text: String,
+    style: TextStyle,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    val segments = remember(text) { splitLongCode(text) }
+    if (segments.size == 1) {
+        InlineMarkdownText(text = formatInlineMarkdown(text), style = style, color = color, modifier = modifier)
+        return
+    }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        segments.forEach { segment ->
+            when (segment) {
+                is InlineSegment.Prose -> InlineMarkdownText(text = formatInlineMarkdown(segment.text), style = style, color = color)
+                is InlineSegment.Code -> LongCodeBlock(segment.code)
+            }
+        }
+    }
+}
+
+/** A long command or hash: monospace on the code surface, wrapping rather than scrolling. */
+@Composable
+private fun LongCodeBlock(code: String) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(PocketShape.sm)
+            .background(PocketColors.current.codeSurface)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Text(code, style = PocketType.codeSmall, color = MaterialTheme.colorScheme.onSurface)
+    }
 }
 
 internal fun parseMarkdown(raw: String): List<MarkdownBlock> {

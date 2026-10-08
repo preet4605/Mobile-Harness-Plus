@@ -54,7 +54,7 @@ fun GlassToolbarButton(
                     enabled -> tint
                     else -> tint.copy(alpha = 0.35f)
                 },
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(22.dp),
             )
         }
     }
@@ -105,7 +105,7 @@ fun GlassToolbarItem(
             icon,
             contentDescription = contentDescription,
             tint = if (enabled) tint else tint.copy(alpha = 0.35f),
-            modifier = Modifier.size(20.dp),
+            modifier = Modifier.size(22.dp),
         )
     }
 }

@@ -292,7 +292,6 @@ private fun AppScreen(
             onAddAttachments = viewModel::addChatAttachments,
             onRemoveAttachment = viewModel::removePendingAttachment,
             onOpenAttachment = viewModel::openChatAttachment,
-            onBuildAndRunAndroid = viewModel::buildAndRunAndroidApp,
             onPromptChanged = viewModel::onPromptChanged,
             onOpenInspector = { viewModel.toggleAuxiliaryInspector(true) },
             onCloseInspector = { viewModel.toggleAuxiliaryInspector(false) },

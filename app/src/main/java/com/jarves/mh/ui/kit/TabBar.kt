@@ -9,9 +9,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -33,10 +37,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -60,15 +66,25 @@ import com.jarves.mh.ui.theme.PocketShape
 import com.jarves.mh.ui.theme.PocketSpacing
 import com.jarves.mh.ui.theme.PocketType
 import com.jarves.mh.ui.theme.glass.GlassGroup
+import com.jarves.mh.ui.theme.emphasized
 import com.jarves.mh.ui.theme.glass.LiquidGlassLayers
 import com.jarves.mh.ui.theme.glass.LiquidGlassSurface
+import com.jarves.mh.ui.theme.glass.LiquidGlassTokens
 import com.jarves.mh.ui.theme.medium
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-/** One tab of a [FloatingTabBar]. [selectedIcon] is the filled form shown while selected. */
+/**
+ * One tab of a [FloatingTabBar]. [selectedIcon] is the form shown while selected; [badge] is a
+ * count drawn on the symbol's upper-right corner, shown only above zero.
+ */
 @Immutable
-data class TabItem(val label: String, val icon: ImageVector, val selectedIcon: ImageVector = icon)
+data class TabItem(
+    val label: String,
+    val icon: ImageVector,
+    val selectedIcon: ImageVector = icon,
+    val badge: Int = 0,
+)
 
 /** Height of the floating tab bar and of its minimized circle and accessory button. */
 val TabBarHeight: Dp = 62.dp
@@ -153,11 +169,21 @@ fun FloatingTabBar(
                                     val pillH = size.height * (0.92f + (scale - 1f) * 0.4f).coerceAtMost(1f)
                                     val x = position.value * w + (w - pillW) / 2f
                                     val y = (size.height - pillH) / 2f
+                                    // The selection is glass, like the rest of the bar: a faint fill
+                                    // with a hairline rim, not an opaque grey pill.
+                                    val pillCorner = CornerRadius(pillH / 2f)
                                     drawRoundRect(
-                                        color = if (dragging) colors.secondaryFill else colors.tertiaryFill,
+                                        color = if (colors.isDark) LiquidGlassTokens.SelectionDark else LiquidGlassTokens.SelectionLight,
                                         topLeft = Offset(x, y),
                                         size = Size(pillW, pillH),
-                                        cornerRadius = CornerRadius(pillH / 2f),
+                                        cornerRadius = pillCorner,
+                                    )
+                                    drawRoundRect(
+                                        color = if (colors.isDark) LiquidGlassTokens.GlassBorderDark else LiquidGlassTokens.GlassBorderLight,
+                                        topLeft = Offset(x, y),
+                                        size = Size(pillW, pillH),
+                                        cornerRadius = pillCorner,
+                                        style = Stroke(width = 0.5.dp.toPx()),
                                     )
                                 }
                                 .then(
@@ -217,12 +243,15 @@ fun FloatingTabBar(
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.Center,
                                 ) {
-                                    Icon(
-                                        if (selected) tab.selectedIcon else tab.icon,
-                                        contentDescription = null,
-                                        tint = tint,
-                                        modifier = Modifier.size(24.dp),
-                                    )
+                                    Box(contentAlignment = Alignment.TopEnd) {
+                                        Icon(
+                                            if (selected) tab.selectedIcon else tab.icon,
+                                            contentDescription = null,
+                                            tint = tint,
+                                            modifier = Modifier.size(22.dp),
+                                        )
+                                        if (tab.badge > 0) TabBadge(tab.badge, accent)
+                                    }
                                     Spacer(Modifier.height(2.dp))
                                     Text(
                                         tab.label,
@@ -252,7 +281,7 @@ fun FloatingTabBar(
                                     ),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                if (tab != null) Icon(tab.selectedIcon, contentDescription = null, tint = accent, modifier = Modifier.size(24.dp))
+                                if (tab != null) Icon(tab.selectedIcon, contentDescription = null, tint = accent, modifier = Modifier.size(22.dp))
                             }
                         }
                     }
@@ -260,6 +289,27 @@ fun FloatingTabBar(
                 if (accessory != null) accessory()
             }
         }
+    }
+}
+
+/** A small accent capsule with a count, on the upper-right corner of a tab symbol. */
+@Composable
+private fun TabBadge(count: Int, color: androidx.compose.ui.graphics.Color) {
+    Box(
+        Modifier
+            .offset(x = 8.dp, y = (-6).dp)
+            .defaultMinSize(minWidth = 16.dp, minHeight = 16.dp)
+            .clip(PocketShape.capsule)
+            .background(color)
+            .padding(horizontal = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            if (count > 99) "99+" else "$count",
+            style = PocketType.caption2.emphasized,
+            color = androidx.compose.ui.graphics.Color.White,
+            maxLines = 1,
+        )
     }
 }
 
@@ -281,7 +331,7 @@ fun TabBarAccessory(
         contentDescription = contentDescription,
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp))
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
         }
     }
 }

@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -50,6 +49,7 @@ import com.jarves.mh.ui.kit.EmptyState
 import com.jarves.mh.ui.kit.GlassSheet
 import com.jarves.mh.ui.kit.ListInset
 import com.jarves.mh.ui.kit.ListRow
+import com.jarves.mh.ui.kit.ListRowAccessory
 import com.jarves.mh.ui.kit.SectionHeader
 import com.jarves.mh.ui.kit.OverlayAnchor
 import com.jarves.mh.ui.kit.PocketAlert
@@ -57,14 +57,10 @@ import com.jarves.mh.ui.kit.PocketButton
 import com.jarves.mh.ui.kit.PocketButtonSize
 import com.jarves.mh.ui.kit.PocketButtonStyle
 import com.jarves.mh.ui.kit.SectionCard
-import com.jarves.mh.ui.kit.overlayAnchor
 import com.jarves.mh.ui.theme.PocketColors
 import com.jarves.mh.ui.theme.PocketShape
 import com.jarves.mh.ui.theme.PocketSpacing
 import com.jarves.mh.ui.theme.PocketType
-import com.jarves.mh.ui.theme.emphasized
-import com.jarves.mh.ui.theme.glass.LiquidGlassLayers
-import com.jarves.mh.ui.theme.glass.LiquidGlassSurface
 import com.jarves.mh.ui.theme.medium
 
 /** "+12 −3" for a set of changes. */
@@ -75,46 +71,67 @@ internal fun changesSummary(changes: List<ChangeItem>): String =
     if (changes.size == 1) "1 file changed" else "${changes.size} files changed"
 
 /**
- * The glass capsule above the composer while the last task's file changes wait for review:
- * file count, line totals, and a chevron. Opens [ChangesReviewSheet].
+ * The Files tab's review of the last task's changes: a summary row that opens [ChangesReviewSheet]
+ * for each file's diff, then Keep all and Undo all right here. Undoing everything asks first.
  */
 @Composable
-internal fun ChangesReviewCapsule(
+internal fun ChangesFilesSection(
     changes: List<ChangeItem>,
-    anchor: OverlayAnchor,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
+    onReview: () -> Unit,
+    onUndoAll: () -> Unit,
+    onKeepAll: () -> Unit,
 ) {
+    var confirmUndo by remember { mutableStateOf(false) }
     val colors = PocketColors.current
     val (added, removed) = changeTotals(changes)
-    LiquidGlassSurface(
-        modifier = modifier.overlayAnchor(anchor),
-        shape = PocketShape.capsule,
-        layerSource = LiquidGlassLayers.Background,
-        onClick = onClick,
-        semanticRole = androidx.compose.ui.semantics.Role.Button,
-        contentDescription = "Review changes, ${changesSummary(changes)}, $added lines added, $removed removed",
-    ) {
-        Row(
-            Modifier.heightIn(min = 44.dp).padding(start = PocketSpacing.md, end = PocketSpacing.sm),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Outlined.Description, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(PocketSpacing.sm))
-            Text(changesSummary(changes), style = PocketType.subheadline.medium, color = MaterialTheme.colorScheme.onSurface)
-            Spacer(Modifier.width(PocketSpacing.sm))
-            Text("+$added", style = PocketType.subheadline.medium, color = colors.green)
-            Spacer(Modifier.width(PocketSpacing.xs))
-            Text("−$removed", style = PocketType.subheadline.medium, color = colors.red)
-            Spacer(Modifier.width(PocketSpacing.sm))
-            Text("Review", style = PocketType.subheadline.emphasized, color = MaterialTheme.colorScheme.primary)
-            Icon(
-                Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(18.dp),
+    Column(Modifier.fillMaxWidth().padding(horizontal = ListInset).padding(bottom = PocketSpacing.lg)) {
+        SectionHeader("Changes")
+        SectionCard {
+            ListRow(
+                title = changesSummary(changes),
+                subtitle = "+$added −$removed · Review each diff",
+                icon = Icons.Outlined.Description,
+                iconTile = colors.blue,
+                accessory = ListRowAccessory.Chevron,
+                onClick = onReview,
             )
         }
+        Row(
+            Modifier.fillMaxWidth().padding(top = PocketSpacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
+        ) {
+            PocketButton(
+                text = "Undo all",
+                onClick = { confirmUndo = true },
+                style = PocketButtonStyle.Gray,
+                destructive = true,
+                size = PocketButtonSize.Large,
+                modifier = Modifier.weight(1f),
+                fullWidth = true,
+            )
+            PocketButton(
+                text = "Keep all",
+                onClick = onKeepAll,
+                style = PocketButtonStyle.Filled,
+                size = PocketButtonSize.Large,
+                modifier = Modifier.weight(1f),
+                fullWidth = true,
+            )
+        }
+    }
+    if (confirmUndo) {
+        PocketAlert(
+            onDismiss = { confirmUndo = false },
+            title = "Undo all changes?",
+            message = "Every file the last task changed goes back to how it was before the task.",
+            actions = listOf(
+                AlertAction("Cancel", AlertRole.Cancel) { confirmUndo = false },
+                AlertAction("Undo all", AlertRole.Destructive) {
+                    confirmUndo = false
+                    onUndoAll()
+                },
+            ),
+        )
     }
 }
 

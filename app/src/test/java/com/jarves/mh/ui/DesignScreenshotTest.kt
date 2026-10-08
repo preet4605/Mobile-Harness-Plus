@@ -282,7 +282,6 @@ class DesignScreenshotTest {
                 onTerminalPrepare = {}, onTerminalDraftConsumed = {}, onTerminalOpened = {}, onTerminalStop = {},
                 onTerminalClear = {}, onTerminalConfirm = {}, onTerminalCancel = {}, onUseSuggestedProjectRoot = {},
                 onExportProject = {}, onAddAttachments = {}, onRemoveAttachment = {}, onOpenAttachment = {},
-                onBuildAndRunAndroid = {},
                 initialTab = tab,
             )
         }

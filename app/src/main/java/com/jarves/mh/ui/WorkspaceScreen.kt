@@ -1,9 +1,6 @@
 package com.jarves.mh.ui
 
-import android.content.Intent
 import android.net.Uri
-import android.os.Build
-import android.provider.Settings
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -95,7 +92,6 @@ import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Layers
-import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Preview
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Refresh
@@ -104,10 +100,6 @@ import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material.icons.rounded.Cancel
-import androidx.compose.material.icons.rounded.ChatBubble
-import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.Preview
-import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -140,7 +132,6 @@ import androidx.compose.ui.layout.findRootCoordinates
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
@@ -164,6 +155,7 @@ import com.jarves.mh.data.AppPreferences
 import com.jarves.mh.model.ActivityItem
 import com.jarves.mh.model.AgentKind
 import com.jarves.mh.model.BackgroundTaskStatus
+import com.jarves.mh.model.ChangeItem
 import com.jarves.mh.model.ChatAttachment
 import com.jarves.mh.model.ChatMessage
 import com.jarves.mh.model.ProjectChat
@@ -238,11 +230,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** The project's four views, switched from the tab bar at the bottom or the menu on the title. */
-internal enum class WorkspaceTab(val label: String, val icon: ImageVector, val selectedIcon: ImageVector) {
-    CHAT("Chat", Icons.Outlined.ChatBubbleOutline, Icons.Rounded.ChatBubble),
-    FILES("Files", Icons.Outlined.Folder, Icons.Rounded.Folder),
-    TERMINAL("Terminal", Icons.Outlined.Terminal, Icons.Rounded.Terminal),
-    PREVIEW("Preview", Icons.Outlined.Preview, Icons.Rounded.Preview),
+internal enum class WorkspaceTab(val label: String, val icon: ImageVector) {
+    CHAT("Chat", Icons.Outlined.ChatBubbleOutline),
+    FILES("Files", Icons.Outlined.Folder),
+    TERMINAL("Terminal", Icons.Outlined.Terminal),
+    PREVIEW("Preview", Icons.Outlined.Preview),
 }
 
 /** The composer never gets shorter than this, so it stays an easy target while typing. */
@@ -274,12 +266,12 @@ private fun WorkspaceBar(
     CappedTextScale {
         val colors = PocketColors.current
         Box(modifier.fillMaxWidth()) {
-            ScrollEdgeEffect(Modifier.matchParentSize(), fromTop = true, strength = scrolled)
+            ScrollEdgeEffect(Modifier.matchParentSize(), fromTop = true, scrim = 1.3f, strength = scrolled)
             Column(
                 Modifier
                     .fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.statusBars)
-                    .padding(bottom = PocketSpacing.sm),
+                    .padding(top = PocketSpacing.xs, bottom = PocketSpacing.sm),
             ) {
                 BarRow(
                     modifier = Modifier
@@ -405,10 +397,10 @@ private fun CountBadge(count: Int, modifier: Modifier = Modifier) {
     Box(
         modifier
             .clearAndSetSemantics { }
-            .defaultMinSize(minWidth = 16.dp, minHeight = 16.dp)
+            .defaultMinSize(minWidth = 14.dp, minHeight = 14.dp)
             .clip(PocketShape.capsule)
             .background(MaterialTheme.colorScheme.primary)
-            .padding(horizontal = PocketSpacing.xs),
+            .padding(horizontal = 3.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(if (count > 99) "99+" else "$count", style = PocketType.caption2.emphasized, color = Color.White)
@@ -425,6 +417,7 @@ private fun WorkspaceTabBar(
     selected: WorkspaceTab,
     onSelect: (WorkspaceTab) -> Unit,
     onFootprint: (Dp) -> Unit,
+    changeCount: Int,
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
@@ -441,10 +434,10 @@ private fun WorkspaceTabBar(
             Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = PocketSpacing.xl, vertical = PocketSpacing.sm),
+                .padding(horizontal = PocketSpacing.lg, vertical = PocketSpacing.sm),
         ) {
             FloatingTabBar(
-                tabs = WorkspaceTab.entries.map { TabItem(it.label, it.icon, it.selectedIcon) },
+                tabs = WorkspaceTab.entries.map { TabItem(it.label, it.icon, badge = if (it == WorkspaceTab.FILES) changeCount else 0) },
                 selectedIndex = selected.ordinal,
                 onSelect = { onSelect(WorkspaceTab.entries[it]) },
                 modifier = Modifier.onGloballyPositioned { coordinates ->
@@ -576,7 +569,6 @@ internal fun WorkspaceScreen(
     onAddAttachments: (List<Uri>) -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onOpenAttachment: (ChatAttachment) -> Unit,
-    onBuildAndRunAndroid: () -> Unit,
     onPromptChanged: (String) -> Unit = {},
     onOpenInspector: () -> Unit = {},
     onCloseInspector: () -> Unit = {},
@@ -611,8 +603,6 @@ internal fun WorkspaceScreen(
 ) {
     BackHandler(onBack = onBack)
     val banner = rememberBanner()
-    val context = LocalContext.current
-    val isAndroidProject = state.androidProjectDetected
     val exportProjectLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip"),
         onResult = { uri -> if (uri != null) onExportProject(uri) },
@@ -620,16 +610,6 @@ internal fun WorkspaceScreen(
     val attachmentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
         onResult = onAddAttachments,
-    )
-    val unknownAppsLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult(),
-        onResult = {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()) {
-                onBuildAndRunAndroid()
-            } else {
-                banner("Allow app installs to run Android projects", BannerKind.Info)
-            }
-        },
     )
     val chatListState = rememberLazyListState()
     val filesListState = rememberLazyListState()
@@ -677,7 +657,8 @@ internal fun WorkspaceScreen(
     var showViews by rememberSaveable { mutableStateOf(false) }
     val viewsAnchor = rememberOverlayAnchor()
     var showChanges by rememberSaveable { mutableStateOf(false) }
-    val changesAnchor = rememberOverlayAnchor()
+    // Changes wait for review in Files; a running task keeps them out of reach until it finishes.
+    val reviewable = if (state.isRunning) emptyList() else state.changes
     val chatsAnchor = rememberOverlayAnchor()
     val (barHeight, onBarSize) = rememberBarHeight()
     // Distance from the top of the bottom tab bar to the screen's bottom edge, once measured.
@@ -690,7 +671,7 @@ internal fun WorkspaceScreen(
     ChangesReviewSheet(
         visible = showChanges && state.changes.isNotEmpty(),
         changes = state.changes,
-        anchor = changesAnchor,
+        anchor = null,
         onDismiss = { showChanges = false },
         onUndoAll = onUndoChanges,
         onKeepAll = onKeepChanges,
@@ -811,15 +792,6 @@ internal fun WorkspaceScreen(
         )
     }
 
-    val runAndroid = {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
-            unknownAppsLauncher.launch(
-                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")),
-            )
-        } else {
-            onBuildAndRunAndroid()
-        }
-    }
     val engine = if (state.agentKind == AgentKind.ANTIGRAVITY) state.agentKind.title else state.provider.kind.title
     val memoryCount = state.contextMemory.entries.size
 
@@ -898,9 +870,6 @@ internal fun WorkspaceScreen(
                                     activeChatId = state.activeChatId,
                                     topClearance = top,
                                     bottomBarClearance = bottomBar,
-                                    aboveComposer = if (state.changes.isNotEmpty() && !state.isRunning) {
-                                        { ChangesReviewCapsule(state.changes, changesAnchor, onClick = { showChanges = true }) }
-                                    } else null,
                                 )
                                 WorkspaceTab.FILES -> FilesTab(
                                     files = state.workspaceFiles,
@@ -916,6 +885,10 @@ internal fun WorkspaceScreen(
                                     listState = filesListState,
                                     topClearance = top,
                                     bottomClearance = bottomBar,
+                                    changes = reviewable,
+                                    onReviewChanges = { showChanges = true },
+                                    onUndoChanges = onUndoChanges,
+                                    onKeepChanges = onKeepChanges,
                                 )
                                 WorkspaceTab.TERMINAL -> Box(
                                     Modifier
@@ -972,20 +945,6 @@ internal fun WorkspaceScreen(
                         onTitleLongPress = { banner(state.activeProject?.name.orEmpty(), BannerKind.Info) },
                         actions = {
                             GlassToolbarGroup {
-                                if (isAndroidProject) {
-                                    if (state.androidBuildRunning) {
-                                        Box(Modifier.size(LiquidGlassTokens.MinTouchTarget), contentAlignment = Alignment.Center) {
-                                            ProgressRing(progress = null, size = 18.dp, strokeWidth = 2.dp)
-                                        }
-                                    } else {
-                                        GlassToolbarItem(
-                                            Icons.Outlined.PlayArrow,
-                                            "Build and run Android app",
-                                            runAndroid,
-                                            enabled = !state.isRunning && !state.projectTerminalRunning,
-                                        )
-                                    }
-                                }
                                 Box {
                                     GlassToolbarItem(
                                         Icons.Outlined.Psychology,
@@ -994,7 +953,7 @@ internal fun WorkspaceScreen(
                                         tint = if (memoryCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                                     )
                                     if (memoryCount > 0) {
-                                        CountBadge(memoryCount, Modifier.align(Alignment.TopEnd).padding(top = PocketSpacing.xs, end = PocketSpacing.xxs))
+                                        CountBadge(memoryCount, Modifier.align(Alignment.TopEnd))
                                     }
                                 }
                                 GlassToolbarItem(
@@ -1010,6 +969,7 @@ internal fun WorkspaceScreen(
                         selected = selectedTab,
                         onSelect = selectView,
                         onFootprint = { if (it != tabBarFootprint) tabBarFootprint = it },
+                        changeCount = reviewable.size,
                         modifier = Modifier.align(Alignment.BottomCenter),
                     )
                     GlassMenu(expanded = showViews, onDismiss = { showViews = false }, anchor = viewsAnchor) {
@@ -1183,6 +1143,10 @@ private fun FilesTab(
     listState: LazyListState,
     topClearance: Dp,
     bottomClearance: Dp,
+    changes: List<ChangeItem>,
+    onReviewChanges: () -> Unit,
+    onUndoChanges: () -> Unit,
+    onKeepChanges: () -> Unit,
 ) {
     val colors = PocketColors.current
     val accent = MaterialTheme.colorScheme.primary
@@ -1212,6 +1176,16 @@ private fun FilesTab(
         state = listState,
         contentPadding = PaddingValues(top = topClearance + PocketSpacing.sm, bottom = bottom),
     ) {
+        if (changes.isNotEmpty()) {
+            item(key = "changes") {
+                ChangesFilesSection(
+                    changes = changes,
+                    onReview = onReviewChanges,
+                    onUndoAll = onUndoChanges,
+                    onKeepAll = onKeepChanges,
+                )
+            }
+        }
         if (suggestedProjectRoot != null) {
             item(key = "suggested-project-root") {
                 ListSection(
@@ -1447,7 +1421,6 @@ private fun ChatTab(
     activeChatId: String? = null,
     topClearance: Dp = 0.dp,
     bottomBarClearance: Dp = 0.dp,
-    aboveComposer: (@Composable () -> Unit)? = null,
 ) {
     val view = LocalView.current
     // Keep the screen on while the selected agent is working in this chat. Released automatically
@@ -1608,7 +1581,6 @@ private fun ChatTab(
                 verticalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (aboveComposer != null) aboveComposer()
                 if (activeCount > 0) ActivityCapsule(activeCount, onOpenInspector)
                 if (pendingAttachments.isNotEmpty()) {
                     Row(
@@ -1776,7 +1748,7 @@ private fun Composer(
                     Icons.Outlined.Add,
                     contentDescription = null,
                     tint = if (hasAttachments) accent else MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(24.dp),
+                    modifier = Modifier.size(22.dp),
                 )
             }
         }
@@ -1800,7 +1772,7 @@ private fun Composer(
                     minLines = 1,
                     maxLines = 6,
                     textStyle = PocketType.body.copy(color = MaterialTheme.colorScheme.onSurface),
-                    cursorBrush = SolidColor(accent),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
                     decorationBox = { innerTextField ->
                         Box(contentAlignment = Alignment.CenterStart) {
@@ -1808,7 +1780,7 @@ private fun Composer(
                                 Text(
                                     text = "Message ${agentKind.title}…",
                                     style = PocketType.body,
-                                    color = colors.tertiaryLabel,
+                                    color = colors.secondaryLabel,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
@@ -1834,15 +1806,15 @@ private fun Composer(
                     } else {
                         ComposerActionButton(
                             contentDescription = "Send",
-                            container = if (canSend) accent else colors.tertiaryFill,
+                            container = if (canSend) accent else colors.secondaryFill,
                             enabled = canSend,
                             onClick = onSend,
                         ) {
                             Icon(
                                 Icons.Outlined.ArrowUpward,
                                 contentDescription = null,
-                                tint = if (canSend) Color.White else colors.tertiaryLabel,
-                                modifier = Modifier.size(19.dp),
+                                tint = if (canSend) Color.White else colors.secondaryLabel,
+                                modifier = Modifier.size(20.dp),
                             )
                         }
                     }

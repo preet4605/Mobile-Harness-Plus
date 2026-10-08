@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.toIntSize
 fun ScrollEdgeEffect(
     modifier: Modifier = Modifier,
     fromTop: Boolean = true,
+    scrim: Float = 1f,
     strength: () -> Float,
 ) {
     val config = LocalLiquidGlassConfig.current
@@ -90,8 +91,8 @@ fun ScrollEdgeEffect(
                 }
                 drawRect(
                     Brush.verticalGradient(
-                        0f to canvas.copy(alpha = 0.78f * a),
-                        0.6f to canvas.copy(alpha = 0.45f * a),
+                        0f to canvas.copy(alpha = (0.78f * scrim * a).coerceAtMost(1f)),
+                        0.6f to canvas.copy(alpha = (0.45f * scrim * a).coerceAtMost(1f)),
                         1f to canvas.copy(alpha = 0f),
                         startY = near,
                         endY = far,
