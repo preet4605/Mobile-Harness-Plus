@@ -410,6 +410,17 @@ class CodexLaunchBuilderTest {
         val table = CodexLaunchBuilder.configOverrides(route).last()
         assertTrue(table.contains("base_url=\"https://a\\\"}, evil=\\\"1\""))
     }
+
+    @Test
+    fun phoneEnvironmentNoteLeadsAndLeavesThePromptIntact() {
+        val prompt = "Build the app\nthen run the tests"
+        val full = CodexPromptNotes.withPhoneEnvironment(prompt)
+        assertTrue(full.startsWith("<phone_environment>"))
+        assertTrue(full.endsWith(prompt))
+        // The note must not teach the model anything that could leak or widen access.
+        assertFalse(full.contains("MH_CODEX_API_KEY"))
+        assertEquals(1, Regex("</phone_environment>").findAll(full).count())
+    }
 }
 
 class CodexRouteMapperTest {

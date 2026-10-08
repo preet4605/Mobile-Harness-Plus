@@ -213,6 +213,21 @@ internal object CodexLaunchBuilder {
     }
 }
 
+/** Facts about the phone that the model cannot discover on its own. Added to Codex runs only. */
+internal object CodexPromptNotes {
+    internal const val PHONE_ENVIRONMENT =
+        "<phone_environment>\n" +
+            "You are running on an Android phone inside a PRoot Ubuntu guest. Process tools such as ps, top, " +
+            "free and uptime may not work here, so do not rely on them to tell whether a command is still running.\n" +
+            "The user sees a command's output only after it finishes. For a long build or install, send its " +
+            "output to a log file (for example: gradle assembleDebug --console=plain > build.log 2>&1) and read " +
+            "the log with tail, and say in one line what you are waiting for. A first Gradle build on a phone " +
+            "can take many minutes.\n" +
+            "</phone_environment>\n"
+
+    fun withPhoneEnvironment(prompt: String): String = PHONE_ENVIRONMENT + "\n" + prompt
+}
+
 /** Maps raw Codex failure text to short, actionable messages. Never echoes secrets. */
 internal object CodexFailureMessages {
     fun friendly(raw: String, exitCode: Int? = null): String {

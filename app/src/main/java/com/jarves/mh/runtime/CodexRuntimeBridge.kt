@@ -398,13 +398,15 @@ class CodexRuntimeBridge(
         guestWorkspacePath: String,
         projectKind: ProjectKind,
         memory: ContextMemory = ContextMemory(""),
-    ): String = com.jarves.mh.data.PromptContextSupport.buildPrompt(
-        currentPrompt = currentPrompt,
-        history = history.dropLast(1), // the current prompt was just appended to history
-        guestWorkspacePath = guestWorkspacePath,
-        projectKind = projectKind,
-        memory = memory,
-        androidStackInstalled = installer.isStackInstalled(com.jarves.mh.model.DevStack.ANDROID),
+    ): String = CodexPromptNotes.withPhoneEnvironment(
+        com.jarves.mh.data.PromptContextSupport.buildPrompt(
+            currentPrompt = currentPrompt,
+            history = history.dropLast(1), // the current prompt was just appended to history
+            guestWorkspacePath = guestWorkspacePath,
+            projectKind = projectKind,
+            memory = memory,
+            androidStackInstalled = installer.isStackInstalled(com.jarves.mh.model.DevStack.ANDROID),
+        ),
     )
 
     private fun pushForegroundProgress(detailRaw: String) {
