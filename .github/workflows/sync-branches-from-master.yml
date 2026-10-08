@@ -1,0 +1,78 @@
+# Merges master into harness-dev and test-ui after every push to master.
+# A conflict leaves the branch unchanged and opens a PR from master instead.
+name: Sync branches from master
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Run one sync at a time so two quick master pushes cannot race on the same branch.
+concurrency:
+  group: sync-branches-from-master
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TARGET_BRANCHES: harness-dev test-ui
+      GIT_AUTHOR_NAME: preet4605
+      GIT_AUTHOR_EMAIL: 51086787+preet4605@users.noreply.github.com
+      GIT_COMMITTER_NAME: preet4605
+      GIT_COMMITTER_EMAIL: 51086787+preet4605@users.noreply.github.com
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge master into each target branch
+        run: |
+          git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          failed=0
+          for b in $TARGET_BRANCHES; do
+            if ! git rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null; then
+              echo "::notice::$b does not exist, skipping"
+              continue
+            fi
+            if git merge-base --is-ancestor origin/master "origin/$b"; then
+              echo "$b already contains master"
+              continue
+            fi
+            git checkout -q -B "$b" "origin/$b"
+            if git merge --no-edit -m "Merge master into $b" origin/master; then
+              if git push origin "HEAD:refs/heads/$b"; then
+                echo "$b now at $(git rev-parse --short HEAD)"
+              else
+                echo "::error::push to $b failed (branch moved?); the next master push retries"
+                failed=1
+              fi
+              continue
+            fi
+            # Conflict: discard the partial merge, leave the branch untouched, open a PR instead.
+            git merge --abort
+            echo "::warning::master conflicts with $b; $b left unchanged, opening a PR"
+            if [ -n "$(gh pr list --base "$b" --head master --state open --json number --jq '.[].number')" ]; then
+              echo "a master -> $b sync PR is already open"
+              continue
+            fi
+            cat > "$RUNNER_TEMP/pr-body.md" <<EOF
+          <!-- claude-projects-attribution: {"github_login":"preet4605"} -->
+          _Requested by **Love** · [project thread](https://claude.ai/code/project/chan_01KM5pVBcnxnuAiXnKbbcmZK?thread=cmsg_01KM5pVBcnxnuAiXnKbbcmZK5pZVPMFDXH3u7yY3ck53ML)_
+
+          Automatic sync could not merge master into \`$b\` without conflicts, so \`$b\` was not changed. Resolve the conflicts on this PR and merge it.
+
+          Created by the sync-branches-from-master workflow.
+          EOF
+            gh pr create --base "$b" --head master \
+              --title "Merge master into $b (conflicts)" \
+              --body-file "$RUNNER_TEMP/pr-body.md" || failed=1
+          done
+          exit $failed
