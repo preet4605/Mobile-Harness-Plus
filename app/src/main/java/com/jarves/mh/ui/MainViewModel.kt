@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
 import android.os.SystemClock
 import android.os.Build
 import android.system.Os
@@ -25,11 +26,28 @@ import com.jarves.mh.model.AgentKind
 import com.jarves.mh.model.ChangeItem
 import com.jarves.mh.model.ChatMessage
 import com.jarves.mh.model.ChatAttachment
+import com.jarves.mh.model.ATTACHMENTS_DIRECTORY
+import com.jarves.mh.model.AttachmentPrompt
+import com.jarves.mh.model.MAX_ATTACHMENT_BYTES
+import com.jarves.mh.model.attachmentExtension
+import com.jarves.mh.model.attachmentTooLargeMessage
+import com.jarves.mh.model.cleanAttachmentName
+import com.jarves.mh.model.isAttachmentStoragePath
+import com.jarves.mh.model.resolveAttachmentMimeType
+import com.jarves.mh.model.splitAttachmentName
+import com.jarves.mh.model.storedAttachmentName
 import com.jarves.mh.model.DevStack
 import com.jarves.mh.model.Project
 import com.jarves.mh.model.ProjectKind
 import com.jarves.mh.model.ProjectChat
+import com.jarves.mh.model.ModelSlot
 import com.jarves.mh.model.ProviderKind
+import com.jarves.mh.model.modelSlotFor
+import com.jarves.mh.model.ModelChoiceCheck
+import com.jarves.mh.model.checkModelChoice
+import com.jarves.mh.model.effortLabel
+import com.jarves.mh.model.effortLevelsFor
+import com.jarves.mh.model.normalizeEffortChoice
 import com.jarves.mh.provider.ProviderFailureClass
 import com.jarves.mh.provider.ProviderFailureClassifier
 import com.jarves.mh.provider.ProviderFallbackPlanner
@@ -57,6 +75,11 @@ import com.jarves.mh.runtime.ClaudeAuthController
 import com.jarves.mh.runtime.ClaudeAuthState
 import com.jarves.mh.runtime.ClaudeAuthStatusState
 import com.jarves.mh.runtime.ClaudeRuntimeBridge
+import com.jarves.mh.runtime.CodexAuthController
+import com.jarves.mh.runtime.CodexAuthState
+import com.jarves.mh.runtime.CodexModelCatalog
+import com.jarves.mh.runtime.CodexAuthStatus
+import com.jarves.mh.runtime.CodexRuntimeBridge
 import com.jarves.mh.model.AntigravityAccount
 import com.jarves.mh.model.AntigravityAccountStatus
 import com.jarves.mh.model.AntigravityLoadBalancingStrategy
@@ -283,6 +306,7 @@ data class AppUiState(
     val antigravityAuth: AntigravityAuthState = AntigravityAuthState(),
     val antigravityAccounts: List<AntigravityAccount> = emptyList(),
     val claudeAuth: ClaudeAuthState = ClaudeAuthState(),
+    val codexAuth: CodexAuthState = CodexAuthState(),
     val claudeAuthMode: ClaudeAuthMode = ClaudeAuthMode.NATIVE_SUBSCRIPTION,
     val antigravityLoadBalancingStrategy: AntigravityLoadBalancingStrategy = AntigravityLoadBalancingStrategy.LEAST_RECENTLY_USED,
     val antigravityFailoverEnabled: Boolean = true,
@@ -292,6 +316,7 @@ data class AppUiState(
     val antigravityModelsLoading: Boolean = false,
     val claudeModel: String = "default",
     val claudeThinkingLevel: String = "default",
+    val codexReasoningEffort: String = "",
     val claudeThinkingPickerVisible: Boolean = false,
     val androidBuildRunning: Boolean = false,
     val androidBuildMessage: String? = null,
@@ -320,6 +345,12 @@ data class AppUiState(
     val auxiliaryInspectorVisible: Boolean = false,
     val skillsManagerVisible: Boolean = false,
     val modelPickerVisible: Boolean = false,
+    /** Saved model list for the active provider; refreshed when the picker opens. */
+    val providerModels: List<com.jarves.mh.network.DiscoveredModel> = emptyList(),
+    val effortPickerVisible: Boolean = false,
+    /** Plan usage the active agent last reported; refreshed only on request. */
+    val usage: com.jarves.mh.model.AgentUsage = com.jarves.mh.model.AgentUsage(),
+    val usageRefreshing: Boolean = false,
     val mentionMenuVisible: Boolean = false,
     val filteredMentionEntries: List<WorkspaceEntry> = emptyList(),
     /** True while the two-stage graceful→force interrupt sequence is in progress. */
@@ -341,6 +372,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val antigravityAccountManager = AntigravityAccountManager(application, preferences)
     private val claudeRuntime = ClaudeRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
     private val dshRuntime = DshRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
+    private val codexRuntime = CodexRuntimeBridge(application) { profile -> vault.get(profile.secretId) }
+    private val codexModelCatalog = CodexModelCatalog(application)
     private val installer = RuntimeInstaller(application)
     private val antigravityRuntime = AntigravityRuntimeBridge(
         application,
@@ -360,7 +393,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.value.activeChatId?.let { preferences.saveAgentConversationAccount(projectId, it, accountId) }
         },
     )
-    private val agentRegistry = AgentRegistry.builtIns(claudeRuntime, dshRuntime, antigravityRuntime)
+    private val agentRegistry = AgentRegistry.builtIns(claudeRuntime, dshRuntime, antigravityRuntime, codexRuntime)
     private fun activeRuntime(): com.jarves.mh.runtime.RuntimeBridge = agentRegistry.require(_state.value.agentKind).runtime
     private val providerApi = ProviderApiClient()
     private fun appUpdater(): AppUpdater = AppUpdater(
@@ -414,9 +447,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         },
         onLoginCompleted = { adoptClaudeAccountLogin() },
     )
+    val codexAuthController = CodexAuthController(
+        context = application,
+        onSignedInChanged = { signedIn ->
+            preferences.codexSignedIn = signedIn
+            _state.update { current ->
+                if (current.provider.kind == ProviderKind.CHATGPT) {
+                    current.copy(provider = current.provider.copy(hasSecret = signedIn))
+                } else current
+            }
+        },
+        onLoginCompleted = { adoptCodexAccountLogin() },
+    )
     private var lastAutoOpenedUrl: String? = null
     private var lastAutoOpenedAtMillis = 0L
     @Volatile private var signInAfterClaudeInstall = false
+    @Volatile private var signInAfterCodexInstall = false
     private var lastClaudeStatusCheckAtMillis = 0L
     private val _state = MutableStateFlow(
         AppUiState(
@@ -440,6 +486,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             antigravityEffort = preferences.antigravityEffort,
             claudeModel = preferences.claudeModel,
             claudeThinkingLevel = preferences.claudeThinkingLevel,
+            codexReasoningEffort = preferences.codexReasoningEffort,
             themeMode = runCatching { com.jarves.mh.ui.theme.AppThemeMode.valueOf(preferences.themeMode.uppercase()) }
                 .getOrDefault(com.jarves.mh.ui.theme.AppThemeMode.DARK),
             projects = preferences.loadProjects(),
@@ -473,6 +520,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch { dshRuntime.events.collect(::onRuntimeEvent) }
         viewModelScope.launch { antigravityRuntime.events.collect(::onRuntimeEvent) }
+        viewModelScope.launch { codexRuntime.events.collect(::onRuntimeEvent) }
         viewModelScope.launch {
             antigravityAuthController.state.collect { auth ->
                 _state.update { it.copy(antigravityAuth = auth) }
@@ -519,6 +567,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { claudeAuthController.queryAuthStatus() }
+        }
+        viewModelScope.launch {
+            codexAuthController.state.collect { auth ->
+                _state.update { it.copy(codexAuth = auth) }
+                syncCodexPingFromAuth()
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { codexAuthController.refreshStatus() }
         }
         if (antigravityAuthController.hasOfficialCredential() &&
             (!preferences.antigravitySignedIn || preferences.antigravityAccountEmail.isBlank())
@@ -1230,6 +1287,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         claudeRuntime.configureProjectRoot(projectId, rootPath)
         dshRuntime.configureProjectRoot(projectId, rootPath)
         antigravityRuntime.configureProjectRoot(projectId, rootPath)
+        codexRuntime.configureProjectRoot(projectId, rootPath)
     }
 
     init {
@@ -1528,7 +1586,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val hasSecret = secret.isNotBlank() || vault.contains(profile.secretId) ||
             (profile.kind == ProviderKind.ANTIGRAVITY_SERVER && (antigravityAccountManager.accountsList().isNotEmpty() || antigravityAuthController.hasOfficialCredential())) ||
-            (isClaudeNative && (claudeAuthController.hasNativeCredentials() || _state.value.claudeAuth.status == ClaudeAuthStatusState.SIGNED_IN))
+            (isClaudeNative && (claudeAuthController.hasNativeCredentials() || _state.value.claudeAuth.status == ClaudeAuthStatusState.SIGNED_IN)) ||
+            (profile.kind == ProviderKind.CHATGPT && codexAuthController.hasCredentials())
         val saved = profile.copy(
             hasSecret = hasSecret,
         )
@@ -1543,6 +1602,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Persists a clean Claude subscription profile (account mode) for Claude Code.
         adoptClaudeAccountLogin()
         val profile = preferences.loadProvider(vault, AgentKind.CLAUDE_CODE)
+        preferences.onboardingComplete = true
+        _state.update { it.copy(onboardingComplete = true, provider = profile, startupStage = StartupStage.READY) }
+    }
+
+    fun finishCodexOnboarding() {
+        // Persists a clean ChatGPT-account profile for Codex.
+        adoptCodexAccountLogin()
+        val profile = preferences.loadProvider(vault, AgentKind.CODEX)
         preferences.onboardingComplete = true
         _state.update { it.copy(onboardingComplete = true, provider = profile, startupStage = StartupStage.READY) }
     }
@@ -1598,6 +1665,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 activeApiKeyName = vault.list(provider.secretId).firstOrNull(ApiKeyInfo::isActive)?.name,
                 // Ping results belong to the previous agent; never leak them across.
                 apiPingStatus = ApiPingStatus.IDLE,
+                usage = com.jarves.mh.model.AgentUsage(),
                 apiPingMessage = null,
             )
         }
@@ -1658,8 +1726,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     signInAfterClaudeInstall = false
                     viewModelScope.launch { claudeAuthController.beginLogin() }
                 }
+                if (kind == AgentKind.CODEX && signInAfterCodexInstall) {
+                    signInAfterCodexInstall = false
+                    viewModelScope.launch { codexAuthController.beginLogin() }
+                }
             }
-            if (result.isFailure) signInAfterClaudeInstall = false
+            if (result.isFailure) {
+                signInAfterClaudeInstall = false
+                signInAfterCodexInstall = false
+            }
             _state.update { current ->
                 current.copy(
                     installedAgentVersions = installer.installedAgentVersions(),
@@ -1822,8 +1897,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         syncClaudePingFromAuth()
     }
 
+    fun startCodexLogin() {
+        if (codexAuthController.isLoginInFlight) return
+        if (_state.value.agentInstalling != null) {
+            _state.update { it.copy(toastMessage = "Wait for the current install to finish, then sign in.") }
+            return
+        }
+        if (_state.value.isRunning) {
+            _state.update { it.copy(toastMessage = "Stop the current task before signing in.") }
+            return
+        }
+        if (!installer.isAgentInstalled(AgentKind.CODEX)) {
+            // Install first; installAgent continues into the sign-in once Codex is ready.
+            signInAfterCodexInstall = true
+            installAgent(AgentKind.CODEX)
+            return
+        }
+        viewModelScope.launch { codexAuthController.beginLogin() }
+    }
+
+    fun cancelCodexLogin() {
+        codexAuthController.cancelLogin()
+    }
+
+    fun logoutCodex() {
+        viewModelScope.launch {
+            runCatching { codexAuthController.logout() }
+                .onFailure { error -> _state.update { it.copy(toastMessage = error.message ?: "Could not sign out") } }
+        }
+    }
+
+    fun refreshCodexAuthStatus() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { codexAuthController.refreshStatus() }
+        }
+    }
+
+    /**
+     * After a successful ChatGPT sign-in, make the account the way Codex authenticates: the ChatGPT
+     * provider, saved for the Codex agent only. A model the user already picked is kept.
+     */
+    private fun adoptCodexAccountLogin() {
+        val existing = preferences.loadProvider(vault, AgentKind.CODEX)
+        val profile = if (existing.kind == ProviderKind.CHATGPT) {
+            existing.copy(hasSecret = true)
+        } else {
+            ProviderProfile(kind = ProviderKind.CHATGPT, hasSecret = true)
+        }
+        val codexIsActive = _state.value.agentKind == AgentKind.CODEX
+        if (codexIsActive) {
+            preferences.saveProvider(profile, AgentKind.CODEX)
+        } else {
+            preferences.saveProviderForAgentOnly(profile, AgentKind.CODEX)
+        }
+        _state.update { current ->
+            current.copy(provider = if (codexIsActive) profile else current.provider)
+        }
+        syncCodexPingFromAuth()
+    }
+
+    private fun syncCodexPingFromAuth() {
+        val current = _state.value
+        if (current.agentKind != AgentKind.CODEX || current.provider.kind != ProviderKind.CHATGPT) return
+        val auth = current.codexAuth
+        val (status, message) = when (auth.status) {
+            CodexAuthStatus.SIGNED_IN -> ApiPingStatus.OK to auth.displayStatus
+            CodexAuthStatus.STARTING, CodexAuthStatus.AWAITING_AUTH -> ApiPingStatus.PINGING to auth.displayStatus
+            else -> ApiPingStatus.FAILED to "Not signed in to ChatGPT"
+        }
+        _state.update { it.copy(apiPingStatus = status, apiPingMessage = message) }
+    }
+
     /** Re-checks the Claude session when the app returns to the foreground (e.g. back from the browser). */
     fun onAppResumed() {
+        if (_state.value.provider.kind == ProviderKind.CHATGPT) refreshCodexAuthStatus()
         val provider = _state.value.provider
         if (provider.kind != ProviderKind.CLAUDE || provider.claudeAuthMode != ClaudeAuthMode.NATIVE_SUBSCRIPTION) return
         // Each check starts a short runtime process; do not repeat it on every quick app switch.
@@ -1908,6 +2055,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(antigravityFailoverEnabled = enabled) }
     }
 
+    /** Stores [model] in the slot the active agent runs. Returns false when the active agent does not accept it. */
+    /** Applies a model picked or typed in chat. A blank ID is only valid for Codex, where it means Codex's default. */
+    fun applyModelChoice(model: String): ModelChoiceCheck {
+        val trimmed = model.trim()
+        val current = _state.value
+        return when (modelSlotFor(current.agentKind, current.provider.kind)) {
+            ModelSlot.ANTIGRAVITY -> {
+                val check = checkModelChoice(trimmed, current.antigravityModels)
+                if (check != ModelChoiceCheck.REJECTED) setAntigravityModel(trimmed)
+                check
+            }
+            ModelSlot.CLAUDE_SUBSCRIPTION -> {
+                val check = checkModelChoice(trimmed, com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS.map { it.id })
+                if (check == ModelChoiceCheck.APPLIED) setClaudeModel(trimmed)
+                check
+            }
+            ModelSlot.PROVIDER -> {
+                val isCodexDefault = trimmed.isEmpty() && current.provider.kind == ProviderKind.CHATGPT
+                val check = if (isCodexDefault) {
+                    ModelChoiceCheck.APPLIED
+                } else {
+                    checkModelChoice(trimmed, savedModelsFor(current.agentKind, current.provider).map { it.id })
+                }
+                if (check != ModelChoiceCheck.REJECTED) {
+                    val updated = current.provider.copy(model = trimmed)
+                    preferences.saveProvider(updated, current.agentKind)
+                    _state.update { it.copy(provider = updated) }
+                }
+                check
+            }
+        }
+    }
+
     fun setClaudeModel(model: String) {
         val validated = com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS.firstOrNull { it.id.equals(model, ignoreCase = true) }?.id ?: return
         preferences.claudeModel = validated
@@ -1944,6 +2124,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Blank keeps Codex on its own default effort; unknown levels are ignored and stored as default. */
+    fun setCodexReasoningEffort(level: String) {
+        val validated = com.jarves.mh.model.codexReasoningEffortOrNull(level).orEmpty()
+        preferences.codexReasoningEffort = validated
+        _state.update { it.copy(codexReasoningEffort = validated) }
+    }
+
     fun toggleClaudeThinkingPicker(visible: Boolean? = null) {
         _state.update { it.copy(claudeThinkingPickerVisible = visible ?: !it.claudeThinkingPickerVisible) }
     }
@@ -1960,8 +2147,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setAntigravityEffort(effort: String) {
-        if (effort !in setOf("low", "medium", "high")) return
+    /** Returns false when the effort is unknown or the selected model does not offer it. */
+    fun setAntigravityEffort(effort: String): Boolean {
+        if (effort !in setOf("low", "medium", "high")) return false
         val current = _state.value
         val matchingModel = antigravityModelWithEffort(current.antigravityModel, effort)
             ?.takeIf { candidate -> current.antigravityModels.isEmpty() || candidate in current.antigravityModels }
@@ -1970,7 +2158,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             matchingModel == null
         ) {
             _state.update { it.copy(toastMessage = "This model does not offer ${effort.replaceFirstChar(Char::uppercase)} reasoning") }
-            return
+            return false
         }
         preferences.antigravityEffort = effort
         matchingModel?.let { preferences.antigravityModel = it }
@@ -1980,6 +2168,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 antigravityModel = matchingModel ?: it.antigravityModel,
             )
         }
+        return true
     }
 
     private var antigravityModelRefreshJob: Job? = null
@@ -2170,7 +2359,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Discover from the provider, then keep the list so Settings and chat show the same models. */
     suspend fun discoverModels(profile: ProviderProfile, secret: String): ModelDiscoveryResult {
+        val result = fetchModelList(profile, secret)
+        // Antigravity lists carry live quota labels, so they are never saved.
+        if (result is ModelDiscoveryResult.Success && profile.kind != ProviderKind.ANTIGRAVITY_SERVER) {
+            preferences.saveModelList(_state.value.agentKind, profile.kind, profile.baseUrl, result.models)
+        }
+        return result
+    }
+
+    private suspend fun fetchModelList(profile: ProviderProfile, secret: String): ModelDiscoveryResult {
+        if (profile.kind == ProviderKind.CHATGPT) {
+            return withContext(Dispatchers.IO) { codexModelCatalog.fetch() }
+        }
         if (profile.kind == ProviderKind.CLAUDE) {
             return ModelDiscoveryResult.Success(com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS, "Claude Code")
         }
@@ -2204,6 +2406,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         secret: String,
         models: List<com.jarves.mh.network.DiscoveredModel>,
     ): ConnectionValidation {
+        if (profile.kind == ProviderKind.CHATGPT) {
+            return if (codexAuthController.hasCredentials()) {
+                ConnectionValidation.Success("Signed in with ChatGPT.")
+            } else {
+                ConnectionValidation.Failure("Not signed in to ChatGPT. Sign in first.", label = "Sign in needed")
+            }
+        }
         if (profile.kind == ProviderKind.ANTIGRAVITY_SERVER) {
             val hasAccount = antigravityAccountManager.accountsList().any { it.isAvailableForRouting } ||
                 antigravityAuthController.hasOfficialCredential()
@@ -2247,6 +2456,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // Account login has no API endpoint to ping; report the sign-in state instead.
             syncClaudePingFromAuth()
             refreshClaudeAuthStatus()
+            return
+        }
+        if (profile.kind == ProviderKind.CHATGPT) {
+            syncCodexPingFromAuth()
+            refreshCodexAuthStatus()
             return
         }
         if (profile.baseUrl.isBlank() || profile.model.isBlank()) return
@@ -3445,7 +3659,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ".git", ".claude", ".gradle", ".idea", ".next", ".cache",
             "node_modules", ".venv", "venv", "__pycache__", "build",
         )
-        return relativePath.split('/').any { it in excludedNames } || isClaudeRuntimeMetadata(relativePath)
+        return relativePath.split('/').any { it in excludedNames } ||
+            isClaudeRuntimeMetadata(relativePath) ||
+            isAttachmentStoragePath(relativePath)
     }
 
     fun addChatAttachments(uris: List<Uri>) {
@@ -3512,56 +3728,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun copyChatAttachment(project: Project, chatId: String, uri: Uri): ChatAttachment {
         val resolver = getApplication<Application>().contentResolver
-        var displayName = "attachment"
+        var reportedName: String? = null
         var declaredSize = -1L
         resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
             if (cursor.moveToFirst()) {
-                cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { displayName = cursor.getString(it) ?: displayName }
-                cursor.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 }?.let { declaredSize = cursor.getLong(it) }
+                cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { reportedName = cursor.getString(it) }
+                cursor.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 && !cursor.isNull(it) }?.let { declaredSize = cursor.getLong(it) }
             }
         }
-        val mimeType = resolver.getType(uri).orEmpty().ifBlank { "application/octet-stream" }
-        val extension = displayName.substringAfterLast('.', "").lowercase()
-        val supportedTextExtensions = setOf(
-            "txt", "md", "markdown", "json", "jsonl", "csv", "tsv", "xml", "yaml", "yml", "log",
-            "kt", "kts", "java", "py", "js", "mjs", "cjs", "ts", "tsx", "jsx", "html", "htm",
-            "css", "scss", "sass", "less", "c", "cc", "cpp", "h", "hpp", "sh", "bash", "zsh",
-            "gradle", "properties", "toml", "ini", "conf", "sql",
-        )
-        val supported = mimeType.startsWith("image/") ||
-            mimeType.startsWith("text/") || mimeType == "application/json" || mimeType == "application/xml" ||
-            mimeType.endsWith("+json") || mimeType.endsWith("+xml") || extension in supportedTextExtensions
-        require(supported) { "Only images and text files are supported" }
-        require(declaredSize <= MAX_ATTACHMENT_BYTES || declaredSize < 0) { "$displayName is larger than 25 MB" }
-        val safeName = sanitizeAttachmentName(displayName)
+        val displayName = cleanAttachmentName(reportedName ?: uri.lastPathSegment)
+            .ifBlank { "attachment-${UUID.randomUUID().toString().take(8)}" }
+        require(declaredSize <= MAX_ATTACHMENT_BYTES) { attachmentTooLargeMessage(displayName) }
+        val mimeType = resolveAttachmentMimeType(resolver.getType(uri), attachmentExtension(displayName)) {
+            MimeTypeMap.getSingleton().getMimeTypeFromExtension(it)
+        }
         val root = projectWorkspaceRoot(project).canonicalFile
-        val folder = File(root, "attachments/$chatId").apply { mkdirs() }.canonicalFile
+        val folder = File(root, "$ATTACHMENTS_DIRECTORY/$chatId").apply { mkdirs() }.canonicalFile
         require(folder.toPath().startsWith(root.toPath())) { "Unsafe attachment folder" }
-        val stem = safeName.substringBeforeLast('.', safeName)
-        val safeExtension = safeName.substringAfterLast('.', "").let { if (it.isBlank()) "" else ".$it" }
-        var destination = File(folder, safeName)
+        val storedName = storedAttachmentName(displayName)
+        val (stem, storedExtension) = splitAttachmentName(storedName)
+        var destination = File(folder, storedName)
         var suffix = 2
-        while (destination.exists()) destination = File(folder, "$stem-${suffix++}$safeExtension")
+        while (destination.exists()) destination = File(folder, "$stem-${suffix++}$storedExtension")
         var copied = 0L
         try {
-            resolver.openInputStream(uri)?.buffered()?.use { input ->
+            val input = resolver.openInputStream(uri) ?: error("Could not read $displayName")
+            input.buffered().use { source ->
                 destination.outputStream().buffered().use { output ->
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     while (true) {
-                        val count = input.read(buffer)
+                        val count = source.read(buffer)
                         if (count < 0) break
                         copied += count
-                        require(copied <= MAX_ATTACHMENT_BYTES) { "$displayName is larger than 25 MB" }
+                        require(copied <= MAX_ATTACHMENT_BYTES) { attachmentTooLargeMessage(displayName) }
                         output.write(buffer, 0, count)
                     }
                 }
-            } ?: error("Could not read $displayName")
+            }
+            require(copied > 0) { "$displayName is empty" }
         } catch (error: Throwable) {
             destination.delete()
             throw error
         }
         return ChatAttachment(
-            displayName = displayName.take(120),
+            displayName = displayName,
             relativePath = destination.relativeTo(root).invariantSeparatorsPath,
             mimeType = mimeType,
             sizeBytes = copied,
@@ -3667,8 +3877,105 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleModelPicker(visible: Boolean? = null) {
-        _state.update { it.copy(modelPickerVisible = visible ?: !it.modelPickerVisible) }
+        _state.update { current ->
+            val open = visible ?: !current.modelPickerVisible
+            current.copy(
+                modelPickerVisible = open,
+                providerModels = if (open) savedModelsFor(current.agentKind, current.provider) else current.providerModels,
+            )
+        }
     }
+
+    fun toggleEffortPicker(visible: Boolean? = null) {
+        _state.update { current ->
+            val open = visible ?: !current.effortPickerVisible
+            current.copy(
+                effortPickerVisible = open,
+                providerModels = if (open) savedModelsFor(current.agentKind, current.provider) else current.providerModels,
+            )
+        }
+    }
+
+    /** Picker choice: applies it and closes the picker. A refusal shows as a toast. */
+    fun chooseEffortFromPicker(value: String) {
+        toggleEffortPicker(false)
+        val change = applyEffortChoice(value)
+        if (change is EffortChange.Refused) _state.update { it.copy(toastMessage = change.reason) }
+    }
+
+    /** Applies an /effort argument to the active agent. Codex levels come from the selected model's saved list. */
+    fun applyEffortChoice(choice: String): EffortChange {
+        val current = _state.value
+        val agent = current.agentKind
+        val codexLevels = codexModelLevelsNow()
+        val levels = effortLevelsFor(agent, codexLevels)
+            ?: return EffortChange.Refused("${agent.title} doesn't have an effort setting yet.")
+        val value = normalizeEffortChoice(agent, choice, codexLevels)
+            ?: return EffortChange.Refused(
+                buildString {
+                    append("`${choice.trim()}` isn't an effort level here. Choose one of: ${levels.joinToString(", ")}.")
+                    if (agent == AgentKind.CODEX && codexLevels.isEmpty()) {
+                        append(" Discover models in Settings to see the levels this model supports.")
+                    }
+                },
+            )
+        when (agent) {
+            AgentKind.CLAUDE_CODE -> setClaudeThinkingLevel(value)
+            AgentKind.ANTIGRAVITY -> if (!setAntigravityEffort(value)) {
+                return EffortChange.Refused("This model does not offer ${effortLabel(agent, value)} reasoning.")
+            }
+            AgentKind.CODEX -> setCodexReasoningEffort(value)
+            AgentKind.DEEPSEEK_HARNESS -> Unit
+        }
+        return EffortChange.Applied(effortLabel(agent, value))
+    }
+
+    /** Refreshes the Usage section. Manual only: nothing polls. */
+    fun refreshUsage() {
+        if (_state.value.usageRefreshing) return
+        _state.update { it.copy(usageRefreshing = true) }
+        viewModelScope.launch {
+            val usage = loadUsage()
+            _state.update { it.copy(usage = usage, usageRefreshing = false) }
+        }
+    }
+
+    /** Reads the active agent's plan usage. Network work runs on IO; failures come back as a note, never a throw. */
+    private suspend fun loadUsage(): com.jarves.mh.model.AgentUsage {
+        val current = _state.value
+        val usage = when (current.agentKind) {
+            AgentKind.CODEX -> withContext(Dispatchers.IO) { codexModelCatalog.fetchUsage() }
+            AgentKind.CLAUDE_CODE -> com.jarves.mh.runtime.ClaudeUsageReport.parse(preferences.claudeRateLimitEvent)
+            AgentKind.ANTIGRAVITY -> com.jarves.mh.runtime.AntigravityUsageReport.from(
+                current.antigravityAccounts.firstOrNull { it.isPrimary } ?: current.antigravityAccounts.firstOrNull(),
+            )
+            AgentKind.DEEPSEEK_HARNESS -> if (current.provider.kind == ProviderKind.DEEPSEEK) {
+                val key = vault.get(current.provider.secretId).orEmpty()
+                if (key.isBlank()) {
+                    com.jarves.mh.model.AgentUsage(note = "Save a DeepSeek API key to see your balance.")
+                } else {
+                    withContext(Dispatchers.IO) { com.jarves.mh.runtime.DeepSeekBalanceReport.fetch(key) }
+                }
+            } else {
+                com.jarves.mh.model.AgentUsage(note = "Balance is shown for the DeepSeek provider only.")
+            }
+        }
+        return usage.copy(checkedAtMillis = System.currentTimeMillis())
+    }
+
+    /** Codex levels the selected model lists in the saved catalog. Empty for other agents or when unknown. */
+    private fun codexModelLevelsNow(): List<String> {
+        val current = _state.value
+        if (current.agentKind != AgentKind.CODEX) return emptyList()
+        return com.jarves.mh.model.codexEffortChoices(savedModelsFor(current.agentKind, current.provider), current.provider.model)
+    }
+
+    /** Model lists saved by Discover in Settings, for this agent's provider and endpoint. */
+    fun savedModelsFor(agent: AgentKind, provider: ProviderProfile): List<com.jarves.mh.network.DiscoveredModel> =
+        preferences.loadModelList(agent, provider.kind, provider.baseUrl)
+
+    fun savedModelList(kind: ProviderKind, baseUrl: String): List<com.jarves.mh.network.DiscoveredModel> =
+        preferences.loadModelList(_state.value.agentKind, kind, baseUrl)
 
     fun setCustomizationScopeMode(mode: CustomizationScopeMode) {
         val project = _state.value.activeProject ?: return
@@ -3875,27 +4182,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "model" -> {
                 val trimmed = args.trim()
                 if (trimmed.isNotBlank()) {
-                    val isClaude = _state.value.agentKind == AgentKind.CLAUDE_CODE || _state.value.provider.kind == ProviderKind.CLAUDE
-                    if (isClaude) {
-                        setClaudeModel(trimmed)
-                        _state.update {
-                            it.copy(
-                                messages = it.messages + ChatMessage(fromUser = true, text = "/model $trimmed") +
-                                    ChatMessage(fromUser = false, text = "Switched Claude model to `$trimmed`."),
-                            )
-                        }
-                    } else {
-                        setAntigravityModel(trimmed)
-                        _state.update {
-                            it.copy(
-                                messages = it.messages + ChatMessage(fromUser = true, text = "/model $trimmed") +
-                                    ChatMessage(fromUser = false, text = "Switched model to `$trimmed`."),
-                            )
-                        }
+                    val reply = when (applyModelChoice(trimmed)) {
+                        ModelChoiceCheck.APPLIED -> "Switched model to `$trimmed`."
+                        ModelChoiceCheck.UNCHECKED ->
+                            "Switched model to `$trimmed`. ${_state.value.agentKind.title} has no model list to check it against."
+                        ModelChoiceCheck.REJECTED ->
+                            "`$trimmed` is not in the ${_state.value.agentKind.title} model list. Choose one from /model, or run Discover in Settings to refresh it."
+                    }
+                    _state.update {
+                        it.copy(
+                            messages = it.messages + ChatMessage(fromUser = true, text = "/model $trimmed") +
+                                ChatMessage(fromUser = false, text = reply),
+                        )
                     }
                     persistMessages()
                 } else {
-                    _state.update { it.copy(modelPickerVisible = true) }
+                    toggleModelPicker(true)
+                }
+            }
+            "usage" -> {
+                val pending = ChatMessage(fromUser = false, text = "Checking usage…")
+                _state.update { it.copy(messages = it.messages + ChatMessage(fromUser = true, text = "/usage") + pending) }
+                viewModelScope.launch {
+                    val usage = loadUsage()
+                    _state.update { current ->
+                        val summary = com.jarves.mh.model.usageSummary(current.agentKind, current.tokenMetrics, usage)
+                        current.copy(
+                            usage = usage,
+                            messages = current.messages.dropLast(1) + ChatMessage(fromUser = false, text = summary),
+                        )
+                    }
+                    persistMessages()
+                }
+            }
+            "effort" -> {
+                val trimmed = args.trim()
+                val agent = _state.value.agentKind
+                if (trimmed.isBlank()) {
+                    if (effortLevelsFor(agent, codexModelLevelsNow()) == null) {
+                        _state.update {
+                            it.copy(
+                                messages = it.messages + ChatMessage(fromUser = true, text = "/effort") +
+                                    ChatMessage(fromUser = false, text = "${agent.title} doesn't have an effort setting yet."),
+                            )
+                        }
+                        persistMessages()
+                    } else {
+                        toggleEffortPicker(true)
+                    }
+                } else {
+                    val reply = when (val change = applyEffortChoice(trimmed)) {
+                        is EffortChange.Applied -> "Set effort to **${change.label}** for ${agent.title}."
+                        is EffortChange.Refused -> change.reason
+                    }
+                    _state.update {
+                        it.copy(
+                            messages = it.messages + ChatMessage(fromUser = true, text = "/effort $trimmed") +
+                                ChatMessage(fromUser = false, text = reply),
+                        )
+                    }
+                    persistMessages()
                 }
             }
             "thinking" -> {
@@ -4280,12 +4626,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val runtimePrompt = if (attachments.isEmpty()) withSkillsText else buildString {
             appendLine(withSkillsText)
             appendLine()
-            appendLine("<attached_files>")
-            attachments.forEach { attachment ->
-                appendLine("- ${attachment.displayName}: ${projectGuestRoot(project)}/${attachment.relativePath} (${attachment.mimeType})")
-            }
-            appendLine("These files were explicitly attached by the user. Inspect them only as needed for the request.")
-            appendLine("</attached_files>")
+            append(AttachmentPrompt.render(attachments, projectGuestRoot(project)))
         }
         failedApiKeyIds.clear()
         val taskRecord = try {
@@ -4641,6 +4982,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             event.reason.contains("not signed in", ignoreCase = true)
         ) {
             claudeAuthController.markExpired()
+        }
+        if (event is RuntimeEvent.SessionFailed && _state.value.agentKind == AgentKind.CODEX &&
+            _state.value.provider.kind == ProviderKind.CHATGPT &&
+            event.reason.contains("not signed in", ignoreCase = true)
+        ) {
+            codexAuthController.markExpired()
         }
         if (event is RuntimeEvent.SessionFailed && retryWithNextApiKey(event)) return
         _state.update { current ->
@@ -5205,7 +5552,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_PROJECT_TERMINAL_HISTORY = 100
         private const val MAX_PROJECT_TERMINAL_OUTPUT = 200_000
         private const val MAX_ATTACHMENTS_PER_MESSAGE = 5
-        private const val MAX_ATTACHMENT_BYTES = 25L * 1024L * 1024L
         private const val MAX_IMPORTED_PROJECT_BYTES = 8L * 1024L * 1024L * 1024L
         private const val MAX_IMPORTED_ZIP_ENTRIES = 100_000
         private const val AUTO_OPEN_DEDUPE_MS = 15_000L
@@ -5234,4 +5580,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
     }
+}
+
+/** Outcome of an /effort choice: the label of the level now in use, or why it was refused. */
+sealed interface EffortChange {
+    data class Applied(val label: String) : EffortChange
+    data class Refused(val reason: String) : EffortChange
 }

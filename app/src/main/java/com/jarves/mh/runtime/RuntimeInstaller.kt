@@ -71,6 +71,7 @@ class RuntimeInstaller(private val context: Context) {
     private val devStacksFile = File(rootfs, ".pocket-dev-stacks.json")
     private val dshMarker = File(rootfs, ".pocket-dsh-version")
     private val agyMarker = File(rootfs, ".pocket-agy-version")
+    private val codexMarker = File(rootfs, ".pocket-codex-version")
     private val githubCliMarker = File(rootfs, ".pocket-github-cli-version")
     private val dshAndroidCompatibilityMarker = File(rootfs, ".pocket-dsh-android-compat-version")
     private val macosMetadataRepairMarker = File(rootfs, ".pocket-macos-metadata-repair")
@@ -220,6 +221,7 @@ class RuntimeInstaller(private val context: Context) {
             com.jarves.mh.model.AgentKind.CLAUDE_CODE -> ensureClaudeInstalled(proot, 0.985f, onProgress)
             com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS -> ensureDshInstalled(proot, 0.985f, onProgress)
             com.jarves.mh.model.AgentKind.ANTIGRAVITY -> ensureAgyInstalled(proot, 0.985f, onProgress)
+            com.jarves.mh.model.AgentKind.CODEX -> ensureCodexInstalled(proot, 0.985f, onProgress)
         }
         onProgress(RuntimeInstallProgress("Setup complete", 1f))
         return InstalledRuntime(proot, rootfs)
@@ -239,6 +241,7 @@ class RuntimeInstaller(private val context: Context) {
             com.jarves.mh.model.AgentKind.CLAUDE_CODE -> ensureClaudeInstalled(runtime.proot, 0.05f, onProgress)
             com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS -> ensureDshInstalled(runtime.proot, 0.05f, onProgress)
             com.jarves.mh.model.AgentKind.ANTIGRAVITY -> ensureAgyInstalled(runtime.proot, 0.05f, onProgress)
+            com.jarves.mh.model.AgentKind.CODEX -> ensureCodexInstalled(runtime.proot, 0.05f, onProgress)
         }
         onProgress(RuntimeInstallProgress("${agent.title} is ready", 1f))
     }
@@ -258,6 +261,7 @@ class RuntimeInstaller(private val context: Context) {
             com.jarves.mh.model.AgentKind.ANTIGRAVITY -> isInstalled() &&
                 File(rootfs, AGY_GUEST_PATH.removePrefix("/")).canExecute() &&
                 !agyMarker.readTextOrNull().isNullOrBlank()
+            com.jarves.mh.model.AgentKind.CODEX -> isCodexInstalled()
         }
     }
 
@@ -269,6 +273,12 @@ class RuntimeInstaller(private val context: Context) {
     }
 
     val agyVersion: String get() = agyMarker.readTextOrNull().orEmpty()
+
+    val codexVersion: String get() = codexMarker.readTextOrNull().orEmpty()
+
+    /** The marker is written only after the binary passed verification, so it implies a usable install. */
+    fun isCodexInstalled(): Boolean = isInstalled() &&
+        CodexInstallLayout.isComplete(rootfs, codexMarker.readTextOrNull())
 
     val githubCliVersion: String get() = githubCliMarker.readTextOrNull().orEmpty()
 
@@ -345,6 +355,11 @@ class RuntimeInstaller(private val context: Context) {
             ?.trim()
             ?.takeIf { it.isNotEmpty() && File(rootfs, AGY_GUEST_PATH.removePrefix("/")).canExecute() }
             ?.let { put(com.jarves.mh.model.AgentKind.ANTIGRAVITY, it) }
+
+        codexMarker.readTextOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && isCodexInstalled() }
+            ?.let { put(com.jarves.mh.model.AgentKind.CODEX, it) }
     }
 
     /** Checks each installed agent against its own authoritative release source. */
@@ -384,6 +399,8 @@ class RuntimeInstaller(private val context: Context) {
             com.jarves.mh.model.AgentKind.CLAUDE_CODE -> updateClaude(runtime, expectedVersion, onProgress)
             com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS -> updateDsh(runtime, expectedVersion, onProgress)
             com.jarves.mh.model.AgentKind.ANTIGRAVITY -> updateAgy(runtime, expectedVersion, onProgress)
+            // Pinned to the version the protocol parser was verified against; never offered as an update.
+            com.jarves.mh.model.AgentKind.CODEX -> error("Codex is updated together with the app.")
         }
         onProgress(RuntimeInstallProgress("${agent.title} $expectedVersion is ready", 1f, event = RuntimeInstallEvent.COMPLETED))
     }
@@ -561,6 +578,88 @@ class RuntimeInstaller(private val context: Context) {
         require(isAgentInstalled(com.jarves.mh.model.AgentKind.ANTIGRAVITY)) {
             "Antigravity CLI installation is incomplete"
         }
+    }
+
+    /**
+     * Downloads the pinned official Codex arm64 build from the npm registry, checks the archive
+     * SHA-512, extracts only the `codex` binary and its `codex-code-mode-host` helper, and proves
+     * both start under PRoot before the version marker is written. A device that already has the
+     * main binary (installed before the helper was shipped) keeps it and only gains the helper. A
+     * failure at any step leaves no half-written executable and no new marker behind.
+     */
+    private suspend fun ensureCodexInstalled(
+        proot: File,
+        fraction: Float,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        if (isCodexInstalled()) return
+        check(!BuildConfig.OFFLINE_RUNTIME_BUNDLES) {
+            "Codex is too large to bundle. Install it from the online APK."
+        }
+        val destination = CodexInstallLayout.binary(rootfs)
+        val helper = CodexInstallLayout.helper(rootfs)
+        val keepBinary = CodexInstallLayout.binaryUsable(rootfs, codexMarker.readTextOrNull())
+        val requiredBytes = CodexInstallSpec.requiredFreeBytes(includeBinary = !keepBinary)
+        check(CodexArchive.hasFreeSpace(context.filesDir, requiredBytes)) {
+            "Not enough free storage for Codex. It needs about ${requiredBytes / (1024L * 1024L)} MB."
+        }
+        downloads.mkdirs()
+        val archive = File(downloads, "codex-${CodexInstallSpec.VERSION}-linux-arm64.tgz")
+        val stagedBinary = File(destination.parentFile, ".codex-${CodexInstallSpec.VERSION}.installing")
+        val stagedHelper = File(helper.parentFile, ".codex-code-mode-host-${CodexInstallSpec.VERSION}.installing")
+        val end = 0.995f
+        var replacedBinary = false
+        try {
+            onProgress(RuntimeInstallProgress("Downloading Codex ${CodexInstallSpec.VERSION}", fraction))
+            val downloadSpan = (end - fraction) * 0.8f
+            downloadVerified(
+                CodexInstallSpec.ARCHIVE_URL,
+                archive,
+                CodexInstallSpec.ARCHIVE_SHA512,
+                algorithm = "SHA-512",
+            ) { bytes, total ->
+                val ratio = if (total > 0L) bytes.toFloat() / total else 0f
+                onProgress(
+                    RuntimeInstallProgress(
+                        message = "Downloading Codex ${CodexInstallSpec.VERSION}",
+                        fraction = fraction + ratio * downloadSpan,
+                        downloadedBytes = bytes,
+                        totalBytes = total.takeIf { it > 0L },
+                        event = RuntimeInstallEvent.DOWNLOAD,
+                    ),
+                )
+            }
+            onProgress(RuntimeInstallProgress("Installing Codex ${CodexInstallSpec.VERSION}", fraction + (end - fraction) * 0.85f, indeterminate = true))
+            val targets = buildList {
+                if (!keepBinary) add(CodexArchiveTarget(CodexInstallSpec.BINARY_ENTRY, stagedBinary, CodexInstallSpec.BINARY_BYTES))
+                add(CodexArchiveTarget(CodexInstallSpec.HOST_ENTRY, stagedHelper, CodexInstallSpec.HOST_BYTES))
+            }
+            CodexArchive.extractEntries(archive, targets)
+            if (!keepBinary) {
+                Os.chmod(stagedBinary.absolutePath, 0b111101101)
+                destination.delete()
+                Os.rename(stagedBinary.absolutePath, destination.absolutePath)
+                replacedBinary = true
+            }
+            Os.chmod(stagedHelper.absolutePath, 0b111101101)
+            helper.delete()
+            Os.rename(stagedHelper.absolutePath, helper.absolutePath)
+        } finally {
+            runCatching { stagedBinary.delete() }
+            runCatching { stagedHelper.delete() }
+            runCatching { archive.delete() }
+        }
+        try {
+            onProgress(RuntimeInstallProgress("Checking Codex", fraction + (end - fraction) * 0.95f, indeterminate = true))
+            verifyGuest(proot, "${CodexLaunchBuilder.CODEX_GUEST_PATH} --version", "Codex verification failed")
+            verifyGuest(proot, "${CodexLaunchBuilder.CODEX_CODE_MODE_HOST_GUEST_PATH} --help", "Codex helper verification failed")
+        } catch (e: Exception) {
+            runCatching { helper.delete() }
+            if (replacedBinary) runCatching { destination.delete() }
+            throw e
+        }
+        codexMarker.writeText(CodexInstallSpec.VERSION)
+        check(isCodexInstalled()) { "Codex installation is incomplete" }
     }
 
     private suspend fun ensureDshInstalled(

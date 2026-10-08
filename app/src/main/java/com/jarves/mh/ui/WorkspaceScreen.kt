@@ -155,15 +155,23 @@ import com.jarves.mh.data.AppPreferences
 import com.jarves.mh.model.ActivityItem
 import com.jarves.mh.model.AgentKind
 import com.jarves.mh.model.BackgroundTaskStatus
+import com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS
 import com.jarves.mh.model.ChangeItem
 import com.jarves.mh.model.ChatAttachment
 import com.jarves.mh.model.ChatMessage
+import com.jarves.mh.model.CODEX_DEFAULT_EFFORT_ARG
+import com.jarves.mh.model.ModelSlot
 import com.jarves.mh.model.ProjectChat
+import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.SkillInfo
 import com.jarves.mh.model.SlashCommand
 import com.jarves.mh.model.SubagentState
 import com.jarves.mh.model.ToolRequest
 import com.jarves.mh.model.WorkspaceEntry
+import com.jarves.mh.model.codexEffortChoices
+import com.jarves.mh.model.effortLabel
+import com.jarves.mh.model.effortLevelsFor
+import com.jarves.mh.model.modelSlotFor
 import com.jarves.mh.ui.kit.AlertAction
 import com.jarves.mh.ui.kit.AlertRole
 import com.jarves.mh.ui.kit.BannerKind
@@ -592,6 +600,8 @@ internal fun WorkspaceScreen(
     onOpenModelPicker: () -> Unit = {},
     onCloseModelPicker: () -> Unit = {},
     onSelectModel: (String) -> Unit = {},
+    onCloseEffortPicker: () -> Unit = {},
+    onSelectEffort: (String) -> Unit = {},
     onOpenMemoryViewer: () -> Unit = {},
     onCloseMemoryViewer: () -> Unit = {},
     onAddMemoryEntry: (String, String) -> Unit = { _, _ -> },
@@ -773,11 +783,44 @@ internal fun WorkspaceScreen(
         )
     }
     if (state.modelPickerVisible) {
+        val slot = modelSlotFor(state.agentKind, state.provider.kind)
         ModelPickerDialog(
-            currentModel = state.antigravityModel.ifBlank { state.provider.model },
-            availableModels = state.antigravityModels,
+            currentModel = when (slot) {
+                ModelSlot.ANTIGRAVITY -> state.antigravityModel.ifBlank { state.provider.model }
+                ModelSlot.CLAUDE_SUBSCRIPTION -> state.claudeModel
+                ModelSlot.PROVIDER -> state.provider.model
+            },
+            availableModels = when (slot) {
+                ModelSlot.ANTIGRAVITY -> state.antigravityModels.ifEmpty { ANTIGRAVITY_FALLBACK_MODELS }
+                ModelSlot.CLAUDE_SUBSCRIPTION -> CLAUDE_SUBSCRIPTION_MODELS.map { it.id }
+                ModelSlot.PROVIDER -> state.providerModels
+                    .ifEmpty { defaultModelsForProvider(state.provider.kind) }
+                    .map { it.id }
+            },
+            provider = if (slot == ModelSlot.CLAUDE_SUBSCRIPTION) ProviderKind.CLAUDE else null,
             onSelectModel = onSelectModel,
             onDismiss = onCloseModelPicker,
+            defaultTitle = if (slot == ModelSlot.PROVIDER && state.provider.kind == ProviderKind.CHATGPT) "Codex default" else null,
+            defaultSubtitle = "Let Codex choose the model for your plan. Discover models in Settings to list more.",
+        )
+    }
+    if (state.effortPickerVisible) {
+        val codexLevels = codexEffortChoices(state.providerModels, state.provider.model)
+        EffortPickerDialog(
+            options = effortLevelsFor(state.agentKind, codexLevels).orEmpty().map { EffortOption(it, effortLabel(state.agentKind, it)) },
+            current = when (state.agentKind) {
+                AgentKind.CLAUDE_CODE -> state.claudeThinkingLevel
+                AgentKind.ANTIGRAVITY -> state.antigravityEffort
+                AgentKind.CODEX -> state.codexReasoningEffort.ifBlank { CODEX_DEFAULT_EFFORT_ARG }
+                AgentKind.DEEPSEEK_HARNESS -> ""
+            },
+            notice = if (state.agentKind == AgentKind.CODEX && codexLevels.isEmpty()) {
+                "Discover models in Settings to see the levels this model supports."
+            } else {
+                null
+            },
+            onSelect = onSelectEffort,
+            onDismiss = onCloseEffortPicker,
         )
     }
     if (state.memoryViewerVisible) {
@@ -846,7 +889,7 @@ internal fun WorkspaceScreen(
                                     agentKind = state.agentKind,
                                     pendingAttachments = state.pendingAttachments,
                                     onAttach = {
-                                        attachmentLauncher.launch(arrayOf("image/*", "text/*", "application/json", "application/xml"))
+                                        attachmentLauncher.launch(arrayOf("*/*"))
                                     },
                                     onRemoveAttachment = onRemoveAttachment,
                                     onOpenAttachment = onOpenAttachment,

@@ -166,6 +166,29 @@ class AppPreferences(
         }
         set(value) { preferences.edit().putBoolean("agent_antigravity_signed_in", value).apply() }
 
+    /** Mirror of whether Codex holds ChatGPT credentials; the credentials themselves stay in the runtime. */
+    var codexSignedIn: Boolean
+        get() = preferences.getBoolean("agent_codex_signed_in", false)
+        set(value) { preferences.edit().putBoolean("agent_codex_signed_in", value).apply() }
+
+    /** Codex's `model_reasoning_effort`; blank leaves Codex on its own default. */
+    var codexReasoningEffort: String
+        get() = preferences.getString("codex_reasoning_effort", "") ?: ""
+        set(value) { preferences.edit().putString("codex_reasoning_effort", value).apply() }
+
+    /** Last model list discovered for this agent, provider and endpoint. Settings and chat both read it. */
+    fun saveModelList(agent: AgentKind, kind: ProviderKind, baseUrl: String, models: List<com.jarves.mh.network.DiscoveredModel>) {
+        preferences.edit().putString(ModelListCache.key(agent, kind, baseUrl), ModelListCache.encode(models)).apply()
+    }
+
+    fun loadModelList(agent: AgentKind, kind: ProviderKind, baseUrl: String): List<com.jarves.mh.network.DiscoveredModel> =
+        ModelListCache.decode(preferences.getString(ModelListCache.key(agent, kind, baseUrl), null))
+
+    /** The last `rate_limit_event` line Claude printed, kept for the Usage section. */
+    var claudeRateLimitEvent: String?
+        get() = preferences.getString("claude_rate_limit_event", null)
+        set(value) { preferences.edit().putString("claude_rate_limit_event", value).apply() }
+
     var antigravityAccountEmail: String
         get() {
             val accounts = loadAntigravityAccounts()
@@ -358,6 +381,7 @@ class AppPreferences(
             agent == AgentKind.DEEPSEEK_HARNESS && (!hasAgentProfile || legacyClaudeDefaultInDeepSeek) -> ProviderKind.DEEPSEEK
             storedKind != null && storedKind in providersForAgent(agent) -> storedKind
             agent == AgentKind.DEEPSEEK_HARNESS -> ProviderKind.DEEPSEEK
+            agent == AgentKind.CODEX -> ProviderKind.CHATGPT
             else -> ProviderKind.ANTHROPIC
         }
         val useStoredValues = storedKind == kind
@@ -450,7 +474,7 @@ class AppPreferences(
             kind = kind,
             baseUrl = effectiveBaseUrl,
             model = effectiveModel,
-            hasSecret = (!tokenHarborKeyDeleted && !revokedKeyDeleted && !isStoredRevoked) && (vault.contains(kind.name) || (kind == ProviderKind.ANTIGRAVITY_SERVER) || isNativeClaude),
+            hasSecret = (!tokenHarborKeyDeleted && !revokedKeyDeleted && !isStoredRevoked) && (vault.contains(kind.name) || (kind == ProviderKind.ANTIGRAVITY_SERVER) || isNativeClaude || (kind == ProviderKind.CHATGPT && codexSignedIn)),
             dshApi = effectiveDshApi,
             claudeAuthMode = storedAuthMode,
             claudeThinkingLevel = claudeThinking,

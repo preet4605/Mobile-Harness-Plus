@@ -2,6 +2,9 @@ package com.jarves.mh.model
 
 import com.jarves.mh.network.DiscoveredModel
 import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import java.text.Normalizer
 import java.util.Locale
 import java.util.UUID
@@ -56,6 +59,15 @@ enum class ProviderKind(
     val fixedProtocol: Boolean = false,
 ) {
     CLAUDE("Claude subscription", "Pro, Max, Team or Enterprise", ProviderProtocol.CLAUDE_LOGIN, "", "default"),
+    CHATGPT(
+        "ChatGPT account",
+        "Plus, Pro, Business or Enterprise sign-in",
+        ProviderProtocol.OPENAI_RESPONSES,
+        "",
+        "",
+        fixedBaseUrl = true,
+        fixedProtocol = true,
+    ),
     ANTHROPIC("Anthropic API", "Usage billed through Console", ProviderProtocol.ANTHROPIC, "https://api.anthropic.com", "claude-sonnet-4-6"),
     LLM_ROUTER("OpenRouter", "Use your OpenRouter API key", ProviderProtocol.OPENROUTER, "https://openrouter.ai/api", "~anthropic/claude-sonnet-latest"),
     DEEPSEEK("DeepSeek", "Use your DeepSeek API key", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.deepseek.com/anthropic", "deepseek-v4-flash"),
@@ -118,6 +130,12 @@ enum class AgentKind(
         "Google's official coding agent · Google account",
         "39.9 MB",
     ),
+    CODEX(
+        "codex",
+        "Codex",
+        "OpenAI's coding agent · Responses API providers",
+        "157 MB",
+    ),
     ;
 
     companion object {
@@ -138,6 +156,80 @@ val DEEPSEEK_HARNESS_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.NVIDIA_NIM,
     ProviderKind.CUSTOM,
 )
+
+/**
+ * Provider kinds usable with [AgentKind.CODEX]. CHATGPT is Codex's own account sign-in (blank model
+ * means "Codex default"). Codex 0.161.0 only speaks the OpenAI Responses API, so CUSTOM is offered
+ * with its protocol forced to Responses at launch time (see CodexRouteMapper).
+ */
+val CODEX_PROVIDERS: Set<ProviderKind> = setOf(
+    ProviderKind.CHATGPT,
+    ProviderKind.CUSTOM,
+)
+
+private val CODEX_EFFORT_PATTERN = Regex("[a-z]{2,16}")
+
+/**
+ * The stored Codex effort when it looks like a level name (`low`, `xhigh`, `max`), otherwise null.
+ * Which levels a model accepts comes from its catalog entry, see [codexEffortToLaunch].
+ */
+fun codexReasoningEffortOrNull(stored: String?): String? =
+    stored?.trim()?.lowercase()?.takeIf { it.matches(CODEX_EFFORT_PATTERN) }
+
+/** Effort levels the selected model reports in the saved catalog. Empty when the catalog does not know the model. */
+fun codexEffortChoices(models: List<DiscoveredModel>, modelId: String): List<String> =
+    models.firstOrNull { it.id == modelId }?.reasoningEfforts.orEmpty()
+
+/**
+ * The level to pass to Codex, or null to leave Codex on its default. A level the catalog does not list for
+ * the model is dropped rather than sent. Without catalog data for the model (custom endpoints) the level is sent as stored.
+ */
+fun codexEffortToLaunch(stored: String?, modelId: String, models: List<DiscoveredModel>): String? {
+    val level = codexReasoningEffortOrNull(stored) ?: return null
+    val choices = codexEffortChoices(models, modelId)
+    return level.takeIf { choices.isEmpty() || level in choices }
+}
+
+/** The /effort argument that means Codex's own default. It is stored as a blank value. */
+const val CODEX_DEFAULT_EFFORT_ARG = "default"
+
+/**
+ * Effort levels the active agent takes through /effort, in display order. Codex lists its default first and then
+ * the levels its selected model reports. Null means the agent has no effort setting.
+ */
+fun effortLevelsFor(agent: AgentKind, codexModelLevels: List<String>): List<String>? = when (agent) {
+    AgentKind.CLAUDE_CODE -> ClaudeThinkingLevel.entries.map { it.id }
+    AgentKind.ANTIGRAVITY -> listOf("low", "medium", "high")
+    AgentKind.CODEX -> listOf(CODEX_DEFAULT_EFFORT_ARG) + codexModelLevels
+    AgentKind.DEEPSEEK_HARNESS -> null
+}
+
+/** Canonical stored value for an /effort argument, or null when the agent has no such level. Codex default is blank. */
+fun normalizeEffortChoice(agent: AgentKind, choice: String, codexModelLevels: List<String>): String? {
+    val levels = effortLevelsFor(agent, codexModelLevels) ?: return null
+    val value = choice.trim().lowercase(Locale.ROOT)
+    if (value !in levels) return null
+    return if (agent == AgentKind.CODEX && value == CODEX_DEFAULT_EFFORT_ARG) "" else value
+}
+
+/** Short label for an effort value shown to the user. */
+fun effortLabel(agent: AgentKind, value: String): String = when {
+    agent == AgentKind.CLAUDE_CODE -> ClaudeThinkingLevel.fromStored(value).displayName
+    agent == AgentKind.CODEX && (value.isBlank() || value == CODEX_DEFAULT_EFFORT_ARG) -> "Default"
+    agent == AgentKind.CODEX && value == "xhigh" -> "XHigh"
+    else -> value.replaceFirstChar { it.titlecase(Locale.ROOT) }
+}
+
+/** Result of checking a model ID against the list the provider or agent offers. */
+enum class ModelChoiceCheck { APPLIED, UNCHECKED, REJECTED }
+
+/** An empty [known] list means nothing to check against, so the ID is taken as typed and marked unchecked. */
+fun checkModelChoice(model: String, known: List<String>): ModelChoiceCheck = when {
+    model.isBlank() -> ModelChoiceCheck.REJECTED
+    known.isEmpty() -> ModelChoiceCheck.UNCHECKED
+    known.any { it.equals(model, ignoreCase = true) } -> ModelChoiceCheck.APPLIED
+    else -> ModelChoiceCheck.REJECTED
+}
 
 val DSH_PROTOCOL_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.KIMI,
@@ -173,6 +265,7 @@ fun agentUsesConfiguredProtocol(agent: AgentKind, kind: ProviderKind): Boolean =
     AgentKind.DEEPSEEK_HARNESS -> kind in DSH_PROTOCOL_PROVIDERS
     AgentKind.CLAUDE_CODE -> kind == ProviderKind.CUSTOM
     AgentKind.ANTIGRAVITY -> false
+    AgentKind.CODEX -> false
 }
 
 /**
@@ -181,6 +274,8 @@ fun agentUsesConfiguredProtocol(agent: AgentKind, kind: ProviderKind): Boolean =
  * only for CUSTOM. Every other provider keeps its fixed [ProviderKind.protocol].
  */
 fun providerProtocolForAgent(profile: ProviderProfile, agent: AgentKind): ProviderProtocol {
+    // Codex 0.161.0 only speaks the Responses API, whatever the stored protocol says.
+    if (agent == AgentKind.CODEX) return ProviderProtocol.OPENAI_RESPONSES
     if (!agentUsesConfiguredProtocol(agent, profile.kind)) {
         return profile.kind.protocol
     }
@@ -195,8 +290,24 @@ fun providerProtocolForAgent(profile: ProviderProfile, agent: AgentKind): Provid
 /** Provider choices shown for the selected coding agent. */
 fun providersForAgent(agent: AgentKind): List<ProviderKind> = when (agent) {
     AgentKind.DEEPSEEK_HARNESS -> ProviderKind.entries.filter { it in DEEPSEEK_HARNESS_PROVIDERS }
-    AgentKind.CLAUDE_CODE -> ProviderKind.entries.filterNot { it == ProviderKind.OPENCODE_ZEN }
+    AgentKind.CLAUDE_CODE -> ProviderKind.entries.filterNot {
+        it == ProviderKind.OPENCODE_ZEN || it == ProviderKind.CHATGPT
+    }
     AgentKind.ANTIGRAVITY -> emptyList()
+    AgentKind.CODEX -> ProviderKind.entries.filter { it in CODEX_PROVIDERS }
+}
+
+/** The stored model that a `/model` choice or the model picker changes for the active agent. */
+enum class ModelSlot { ANTIGRAVITY, CLAUDE_SUBSCRIPTION, PROVIDER }
+
+/**
+ * Antigravity keeps its own model list and Claude's account login has a fixed model set. Every
+ * other agent runs the model stored on its provider profile.
+ */
+fun modelSlotFor(agent: AgentKind, kind: ProviderKind): ModelSlot = when {
+    agent == AgentKind.ANTIGRAVITY -> ModelSlot.ANTIGRAVITY
+    agent == AgentKind.CLAUDE_CODE && kind == ProviderKind.CLAUDE -> ModelSlot.CLAUDE_SUBSCRIPTION
+    else -> ModelSlot.PROVIDER
 }
 
 enum class ClaudeAuthMode {
@@ -730,4 +841,44 @@ data class SessionTokenMetrics(
     val estimatedCostUsd: Double = 0.0,
 )
 
+/** One limit an agent reports, as the Usage section shows it: [detail] is a short line such as "42% used · resets Thu 18:30". */
+data class UsageLimit(val label: String, val detail: String)
+
+/** Plan usage the active agent last reported. Empty lists and nulls mean the agent did not report that part. */
+data class AgentUsage(
+    val limits: List<UsageLimit> = emptyList(),
+    val balance: String? = null,
+    val note: String? = null,
+    val checkedAtMillis: Long? = null,
+)
+
+/** Label for a rate-limit window length in minutes, for example 300 is "5-hour limit" and 10080 is "Weekly limit". */
+fun usageWindowLabel(minutes: Long?): String = when {
+    minutes == null || minutes <= 0L -> "Limit"
+    minutes == 300L -> "5-hour limit"
+    minutes == 10080L -> "Weekly limit"
+    minutes % 1440L == 0L -> "${minutes / 1440L}-day limit"
+    minutes % 60L == 0L -> "${minutes / 60L}-hour limit"
+    else -> "$minutes-minute limit"
+}
+
+/** " · resets Thu 18:30" for a Unix time in seconds, or an empty string when the reset is unknown. */
+fun usageResetText(epochSeconds: Long?): String {
+    if (epochSeconds == null || epochSeconds <= 0L) return ""
+    val local = ZonedDateTime.ofInstant(Instant.ofEpochSecond(epochSeconds), ZoneId.systemDefault())
+    return " · resets " + DateTimeFormatter.ofPattern("EEE HH:mm", Locale.ENGLISH).format(local)
+}
+
+/** The /usage reply: this chat's token totals, then whatever limits the agent reported. */
+fun usageSummary(agent: AgentKind, session: SessionTokenMetrics, usage: AgentUsage): String = buildString {
+    appendLine("### Usage · ${agent.title}")
+    appendLine("- Session: ${session.promptTokens} in · ${session.completionTokens} out · ${session.cachedTokens} cached tokens")
+    if (session.estimatedCostUsd > 0.0) appendLine("- Estimated cost: $${"%.4f".format(Locale.ROOT, session.estimatedCostUsd)}")
+    usage.limits.forEach { appendLine("- ${it.label}: ${it.detail}") }
+    usage.balance?.let { appendLine("- Balance: $it") }
+    usage.note?.let { appendLine(it) }
+    if (usage.limits.isEmpty() && usage.balance == null && usage.note == null) {
+        appendLine("No limits reported yet. Use Refresh usage in Settings.")
+    }
+}.trimEnd()
 

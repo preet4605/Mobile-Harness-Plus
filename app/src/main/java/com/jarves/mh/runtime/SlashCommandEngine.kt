@@ -46,6 +46,12 @@ object SlashCommandEngine {
             isLocalOnly = true,
         ),
         SlashCommand(
+            name = "usage",
+            description = "Show plan usage, limits, and this chat's token totals",
+            category = SlashCommandCategory.DIAGNOSTICS,
+            isLocalOnly = true,
+        ),
+        SlashCommand(
             name = "model",
             description = "Display active model, quota, and switch reasoning effort",
             category = SlashCommandCategory.CONFIG,
@@ -57,6 +63,13 @@ object SlashCommandEngine {
             category = SlashCommandCategory.CONFIG,
             isLocalOnly = true,
             supportedAgents = setOf(AgentKind.CLAUDE_CODE),
+        ),
+        SlashCommand(
+            name = "effort",
+            description = "Show or set this agent's reasoning effort",
+            category = SlashCommandCategory.CONFIG,
+            isLocalOnly = true,
+            parameterHint = "[level]",
         ),
         SlashCommand(
             name = "skills",
@@ -103,7 +116,6 @@ object SlashCommandEngine {
             description = "Autonomous execution mode running tasks to verified completion",
             category = SlashCommandCategory.AGENT_WORKFLOW,
             parameterHint = "<goal description>",
-            supportedAgents = setOf(AgentKind.ANTIGRAVITY, AgentKind.CLAUDE_CODE),
         ),
         SlashCommand(
             name = "review",

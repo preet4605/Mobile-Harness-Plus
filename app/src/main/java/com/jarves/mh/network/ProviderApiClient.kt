@@ -10,7 +10,13 @@ import com.jarves.mh.provider.ProviderFailureClassifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-data class DiscoveredModel(val id: String, val displayName: String = id, val isFree: Boolean = false)
+/** [reasoningEfforts] is filled only by catalogs that report per-model effort levels (Codex). */
+data class DiscoveredModel(
+    val id: String,
+    val displayName: String = id,
+    val isFree: Boolean = false,
+    val reasoningEfforts: List<String> = emptyList(),
+)
 
 sealed interface ModelDiscoveryResult {
     data class Success(val models: List<DiscoveredModel>, val endpoint: String) : ModelDiscoveryResult

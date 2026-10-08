@@ -850,6 +850,7 @@ internal object DshRouteMapper {
                 )
             }
             ProviderKind.CLAUDE -> throw IllegalArgumentException("Claude subscription login is not supported by DeepSeek Harness")
+            ProviderKind.CHATGPT -> throw IllegalArgumentException("ChatGPT sign-in is not supported by DeepSeek Harness")
         }
     }
 }

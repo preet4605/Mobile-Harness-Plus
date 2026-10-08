@@ -254,6 +254,16 @@ private fun AppScreen(
                 onRefresh = viewModel::refreshClaudeAuthStatus,
                 onFinish = viewModel::finishClaudeOnboarding,
             ),
+            codexSignIn = CodexSignInActions(
+                auth = state.codexAuth,
+                codexInstalled = state.installedAgentVersions.containsKey(AgentKind.CODEX),
+                busy = state.agentInstalling != null,
+                onSignIn = viewModel::startCodexLogin,
+                onCancel = viewModel::cancelCodexLogin,
+                onSignOut = viewModel::logoutCodex,
+                onRefresh = viewModel::refreshCodexAuthStatus,
+                onFinish = viewModel::finishCodexOnboarding,
+            ),
         )
         AppDestination.ReadOnlyProject -> ReadOnlyProjectScreen(
             state = state,
@@ -315,7 +325,9 @@ private fun AppScreen(
             onCreateSkill = viewModel::createGlobalSkill,
             onOpenModelPicker = { viewModel.toggleModelPicker(true) },
             onCloseModelPicker = { viewModel.toggleModelPicker(false) },
-            onSelectModel = viewModel::setAntigravityModel,
+            onSelectModel = { viewModel.applyModelChoice(it) },
+            onCloseEffortPicker = { viewModel.toggleEffortPicker(false) },
+            onSelectEffort = viewModel::chooseEffortFromPicker,
             onOpenMemoryViewer = { viewModel.setMemoryViewerVisible(true) },
             onCloseMemoryViewer = { viewModel.setMemoryViewerVisible(false) },
             onAddMemoryEntry = { k, v -> viewModel.upsertMemory(k, v) },
@@ -435,6 +447,8 @@ private fun RootScreenHost(
                         viewModel.updateProvider(profile, key)
                     },
                     onDiscoverModels = viewModel::discoverModels,
+                    loadSavedModels = viewModel::savedModelList,
+                    onRefreshUsage = viewModel::refreshUsage,
                     onValidateProvider = viewModel::validateProvider,
                     onPing = viewModel::pingApi,
                     getSavedApiKey = viewModel::getSavedApiKey,
@@ -457,11 +471,16 @@ private fun RootScreenHost(
                     onRefreshAntigravityModels = viewModel::refreshAntigravityModels,
                     onSetAntigravityModel = viewModel::setAntigravityModel,
                     onSetAntigravityEffort = viewModel::setAntigravityEffort,
+                    onSetCodexReasoningEffort = viewModel::setCodexReasoningEffort,
                     onStartClaudeLogin = viewModel::startClaudeLogin,
                     onCancelClaudeLogin = viewModel::cancelClaudeLogin,
                     onSubmitClaudeCode = viewModel::submitClaudeCode,
                     onLogoutClaude = viewModel::logoutClaude,
                     onRefreshClaudeAuth = viewModel::refreshClaudeAuthStatus,
+                    onStartCodexLogin = viewModel::startCodexLogin,
+                    onCancelCodexLogin = viewModel::cancelCodexLogin,
+                    onLogoutCodex = viewModel::logoutCodex,
+                    onRefreshCodexAuth = viewModel::refreshCodexAuthStatus,
                 )
                 RootScreen.SETTINGS -> Box(
                     modifier = Modifier.fillMaxSize(),

@@ -1564,7 +1564,19 @@ private fun FormColumn(content: @Composable ColumnScope.() -> Unit) {
 // Model picker
 // =============================================================================================
 
-/** Quick model switch. Choosing a model applies it and closes the sheet. */
+/** Antigravity models offered until the account's live model list has loaded. */
+internal val ANTIGRAVITY_FALLBACK_MODELS = listOf(
+    "gemini-3.8-flash-high",
+    "gemini-3.8-pro",
+    "gemini-3.6-flash-high",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+)
+
+/**
+ * Quick model switch. Choosing a model applies it and closes the sheet. The caller supplies the
+ * list for the active agent; an empty list means the provider has no model list to offer.
+ */
 @Composable
 fun ModelPickerDialog(
     currentModel: String,
@@ -1573,21 +1585,12 @@ fun ModelPickerDialog(
     onDismiss: () -> Unit,
     provider: ProviderKind? = null,
     visible: Boolean = true,
+    /** Adds a first row that selects the provider's own default (an empty model ID), such as Codex's default. */
+    defaultTitle: String? = null,
+    defaultSubtitle: String? = null,
 ) {
     val isClaude = provider == ProviderKind.CLAUDE
-    val models = if (availableModels.isNotEmpty()) {
-        availableModels
-    } else if (isClaude) {
-        CLAUDE_SUBSCRIPTION_MODELS.map { it.id }
-    } else {
-        listOf(
-            "gemini-3.8-flash-high",
-            "gemini-3.8-pro",
-            "gemini-3.6-flash-high",
-            "claude-sonnet-4-6",
-            "claude-opus-4-6-thinking",
-        )
-    }
+    val models = availableModels
     // Short lists fit their content; long ones scroll in a resizable sheet.
     val fits = models.size <= 8
 
@@ -1602,6 +1605,33 @@ fun ModelPickerDialog(
             if (fits) Modifier.fillMaxWidth() else Modifier.fillMaxSize(),
             contentPadding = PaddingValues(top = PocketSpacing.xs, bottom = PocketSpacing.xxl),
         ) {
+            if (defaultTitle != null) {
+                item(key = "providerDefault") {
+                    LazyGroupRow(isFirst = true, isLast = models.isEmpty()) {
+                        ListRow(
+                            title = defaultTitle,
+                            subtitle = defaultSubtitle,
+                            subtitleMaxLines = 2,
+                            accessory = if (currentModel.isBlank()) ListRowAccessory.Check else ListRowAccessory.None,
+                            onClick = {
+                                onSelectModel("")
+                                onDismiss()
+                            },
+                        )
+                    }
+                }
+            }
+            if (models.isEmpty() && defaultTitle == null) {
+                item {
+                    LazyGroupRow(isFirst = true, isLast = true) {
+                        ListRow(
+                            title = "No model list for this provider",
+                            subtitle = "Type /model followed by a model ID to choose one.",
+                            subtitleMaxLines = 2,
+                        )
+                    }
+                }
+            }
             itemsIndexed(models) { index, modelId ->
                 val isSelected = modelId.equals(currentModel, ignoreCase = true)
                 val descriptor = if (isClaude) {
@@ -1617,7 +1647,7 @@ fun ModelPickerDialog(
                         else -> null
                     }
                 } else null
-                LazyGroupRow(isFirst = index == 0, isLast = index == models.lastIndex) {
+                LazyGroupRow(isFirst = index == 0 && defaultTitle == null, isLast = index == models.lastIndex) {
                     ListRow(
                         title = descriptor?.displayName ?: modelId,
                         subtitle = description,
@@ -1628,6 +1658,51 @@ fun ModelPickerDialog(
                             onDismiss()
                         },
                     )
+                }
+            }
+        }
+    }
+}
+
+/** One row in the /effort picker. [value] is the /effort argument; [label] is what the user reads. */
+data class EffortOption(val value: String, val label: String)
+
+/** /effort without an argument: the active agent's levels. Choosing one applies it and closes the sheet. */
+@Composable
+fun EffortPickerDialog(
+    options: List<EffortOption>,
+    current: String,
+    notice: String?,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    GlassSheet(
+        onDismiss = onDismiss,
+        title = "Effort",
+        detents = listOf(SheetDetent.Fit),
+        trailing = { SheetTextButton("Done", onDismiss, emphasized = true) },
+    ) {
+        LazyColumn(
+            Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(top = PocketSpacing.xs, bottom = PocketSpacing.xxl),
+        ) {
+            itemsIndexed(options) { index, option ->
+                LazyGroupRow(isFirst = index == 0, isLast = index == options.lastIndex && notice == null) {
+                    ListRow(
+                        title = option.label,
+                        accessory = if (option.value == current) ListRowAccessory.Check else ListRowAccessory.None,
+                        onClick = { onSelect(option.value) },
+                    )
+                }
+            }
+            if (notice != null) {
+                item(key = "effortNotice") {
+                    LazyGroupRow(isFirst = options.isEmpty(), isLast = true) {
+                        ListRow(
+                            title = notice,
+                            subtitleMaxLines = 2,
+                        )
+                    }
                 }
             }
         }
