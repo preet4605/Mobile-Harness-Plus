@@ -51,12 +51,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -95,6 +96,7 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Preview
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
@@ -102,6 +104,10 @@ import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material.icons.rounded.Cancel
+import androidx.compose.material.icons.rounded.ChatBubble
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Preview
+import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -130,7 +136,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.findRootCoordinates
 import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -170,6 +178,7 @@ import com.jarves.mh.ui.kit.BannerKind
 import com.jarves.mh.ui.kit.BarHeight
 import com.jarves.mh.ui.kit.CappedTextScale
 import com.jarves.mh.ui.kit.EmptyState
+import com.jarves.mh.ui.kit.FloatingTabBar
 import com.jarves.mh.ui.kit.GlassMenu
 import com.jarves.mh.ui.kit.GlassMenuDivider
 import com.jarves.mh.ui.kit.GlassMenuItem
@@ -192,9 +201,10 @@ import com.jarves.mh.ui.kit.PocketIconButton
 import com.jarves.mh.ui.kit.PocketTextField
 import com.jarves.mh.ui.kit.ProgressRing
 import com.jarves.mh.ui.kit.SectionHeader
-import com.jarves.mh.ui.kit.SegmentedControl
 import com.jarves.mh.ui.kit.SheetTextButton
 import com.jarves.mh.ui.kit.SymbolTile
+import com.jarves.mh.ui.kit.TabBarHeight
+import com.jarves.mh.ui.kit.TabItem
 import com.jarves.mh.ui.kit.largeTitleBarPadding
 import com.jarves.mh.ui.kit.overlayAnchor
 import com.jarves.mh.ui.kit.rememberBanner
@@ -223,31 +233,26 @@ import com.jarves.mh.ui.theme.isTransitionTarget
 import com.jarves.mh.ui.theme.medium
 import com.jarves.mh.ui.theme.sharedTitle
 import java.io.ByteArrayInputStream
-import kotlin.math.max
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** The project's four views, switched from the menu on the workspace title. */
-internal enum class WorkspaceTab(val label: String) {
-    CHAT("Chat"),
-    FILES("Files"),
-    TERMINAL("Terminal"),
-    PREVIEW("Preview"),
+/** The project's four views, switched from the tab bar at the bottom or the menu on the title. */
+internal enum class WorkspaceTab(val label: String, val icon: ImageVector, val selectedIcon: ImageVector) {
+    CHAT("Chat", Icons.Outlined.ChatBubbleOutline, Icons.Rounded.ChatBubble),
+    FILES("Files", Icons.Outlined.Folder, Icons.Rounded.Folder),
+    TERMINAL("Terminal", Icons.Outlined.Terminal, Icons.Rounded.Terminal),
+    PREVIEW("Preview", Icons.Outlined.Preview, Icons.Rounded.Preview),
 }
 
 /** The composer never gets shorter than this, so it stays an easy target while typing. */
 private val ComposerMinHeight = 52.dp
 
-/** Height of the view switcher row under the workspace title. */
-private val SwitcherHeight = 44.dp
-
 /**
  * The workspace's floating bar, one row: a glass back button, the title centred between the edges
  * with a second line under it, and glass actions on the right. Tapping the title ([onTitleClick])
- * opens the view menu. An optional row under the bar holds the view switcher ([below]). Content
- * scrolls beneath the bar and softens into the canvas once anything is underneath; the bar has no
- * fill or hairline.
+ * opens the view menu. Content scrolls beneath the bar and softens into the canvas once anything
+ * is underneath; the bar has no fill or hairline.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -265,7 +270,6 @@ private fun WorkspaceBar(
     onTitleLongPress: (() -> Unit)? = null,
     titleAnchor: OverlayAnchor? = null,
     actions: @Composable RowScope.() -> Unit = {},
-    below: (@Composable () -> Unit)? = null,
 ) {
     CappedTextScale {
         val colors = PocketColors.current
@@ -284,9 +288,9 @@ private fun WorkspaceBar(
                         .padding(horizontal = ListInset),
                     leading = { GlassToolbarButton(Icons.Outlined.ArrowBackIosNew, backLabel, onBack) },
                     center = {
+                        // Wraps the title, so BarRow can centre it on the row.
                         Column(
                             Modifier
-                                .fillMaxWidth()
                                 .then(if (titleAnchor != null) Modifier.overlayAnchor(titleAnchor) else Modifier)
                                 .then(
                                     if (onTitleClick != null || onTitleLongPress != null) {
@@ -315,7 +319,6 @@ private fun WorkspaceBar(
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.Center,
-                                modifier = Modifier.fillMaxWidth(),
                             ) {
                                 if (working) {
                                     ProgressRing(progress = null, size = 11.dp, strokeWidth = 1.5.dp, color = colors.secondaryLabel)
@@ -351,18 +354,16 @@ private fun WorkspaceBar(
                         )
                     },
                 )
-                if (below != null) {
-                    Box(Modifier.fillMaxWidth().padding(horizontal = ListInset)) { below() }
-                }
             }
         }
     }
 }
 
 /**
- * The bar's single row. Leading and trailing slots sit at the edges; the centre slot is centred
- * on the row and only shrinks as far as the wider edge needs, so a long title ellipsizes instead of
- * sliding under the actions.
+ * The bar's single row. Leading and trailing slots sit at the edges. The centre slot gets all the
+ * room between them and is centred on the row when it fits; a longer title slides toward the
+ * narrower edge instead of being cut to the width of the wider one, and only ellipsizes once it
+ * fills the gap.
  */
 @Composable
 private fun BarRow(
@@ -382,13 +383,17 @@ private fun BarRow(
         val loose = constraints.copy(minWidth = 0)
         val leadingPlaceable = measurables[0].measure(loose)
         val trailingPlaceable = measurables[2].measure(loose)
-        val side = max(leadingPlaceable.width, trailingPlaceable.width)
-        val centerPlaceable = measurables[1].measure(loose.copy(maxWidth = (constraints.maxWidth - 2 * side).coerceAtLeast(0)))
-        val height = maxOf(leadingPlaceable.height, centerPlaceable.height, trailingPlaceable.height).coerceIn(constraints.minHeight, constraints.maxHeight)
+        val gap = PocketSpacing.sm.roundToPx()
         val width = constraints.maxWidth
+        val start = leadingPlaceable.width + gap
+        val end = width - trailingPlaceable.width - gap
+        val centerPlaceable = measurables[1].measure(loose.copy(maxWidth = (end - start).coerceAtLeast(0)))
+        val height = maxOf(leadingPlaceable.height, centerPlaceable.height, trailingPlaceable.height).coerceIn(constraints.minHeight, constraints.maxHeight)
+        val centered = (width - centerPlaceable.width) / 2
+        val x = if (end - start >= centerPlaceable.width) centered.coerceIn(start, end - centerPlaceable.width) else start
         layout(width, height) {
             leadingPlaceable.placeRelative(0, (height - leadingPlaceable.height) / 2)
-            centerPlaceable.placeRelative((width - centerPlaceable.width) / 2, (height - centerPlaceable.height) / 2)
+            centerPlaceable.placeRelative(x, (height - centerPlaceable.height) / 2)
             trailingPlaceable.placeRelative(width - trailingPlaceable.width, (height - trailingPlaceable.height) / 2)
         }
     }
@@ -407,6 +412,47 @@ private fun CountBadge(count: Int, modifier: Modifier = Modifier) {
         contentAlignment = Alignment.Center,
     ) {
         Text(if (count > 99) "99+" else "$count", style = PocketType.caption2.emphasized, color = Color.White)
+    }
+}
+
+/**
+ * The workspace's views as the same floating glass tab bar the main screens use, in the same place
+ * at the bottom. It steps aside while the keyboard is up. [onFootprint] reports the distance from
+ * the bar's top to the bottom of the screen, so the composer and the views clear it.
+ */
+@Composable
+private fun WorkspaceTabBar(
+    selected: WorkspaceTab,
+    onSelect: (WorkspaceTab) -> Unit,
+    onFootprint: (Dp) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    val ime = WindowInsets.ime
+    // Only the visibility flip recomposes, not every frame of the keyboard animation.
+    val keyboardVisible by remember(ime, density) { derivedStateOf { ime.getBottom(density) > 0 } }
+    AnimatedVisibility(
+        visible = !keyboardVisible,
+        modifier = modifier,
+        enter = fadeIn(PocketMotion.spec(Token.Quick)),
+        exit = fadeOut(PocketMotion.spec(Token.Quick)),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = PocketSpacing.xl, vertical = PocketSpacing.sm),
+        ) {
+            FloatingTabBar(
+                tabs = WorkspaceTab.entries.map { TabItem(it.label, it.icon, it.selectedIcon) },
+                selectedIndex = selected.ordinal,
+                onSelect = { onSelect(WorkspaceTab.entries[it]) },
+                modifier = Modifier.onGloballyPositioned { coordinates ->
+                    val screen = coordinates.findRootCoordinates().size.height
+                    onFootprint(with(density) { (screen - coordinates.positionInRoot().y).toDp() })
+                },
+            )
+        }
     }
 }
 
@@ -634,6 +680,13 @@ internal fun WorkspaceScreen(
     val changesAnchor = rememberOverlayAnchor()
     val chatsAnchor = rememberOverlayAnchor()
     val (barHeight, onBarSize) = rememberBarHeight()
+    // Distance from the top of the bottom tab bar to the screen's bottom edge, once measured.
+    var tabBarFootprint by remember { mutableStateOf<Dp?>(null) }
+    val selectView = { tab: WorkspaceTab ->
+        selectedTab = tab
+        if (tab == WorkspaceTab.FILES) onRefreshFiles()
+        if (tab == WorkspaceTab.TERMINAL) onTerminalOpened()
+    }
     ChangesReviewSheet(
         visible = showChanges && state.changes.isNotEmpty(),
         changes = state.changes,
@@ -793,7 +846,11 @@ internal fun WorkspaceScreen(
                 )
             } else {
                 Box(Modifier.fillMaxSize()) {
-                    val top = barHeight ?: (largeTitleBarPadding() + PocketSpacing.sm + SwitcherHeight)
+                    val top = barHeight ?: (largeTitleBarPadding() + PocketSpacing.sm)
+                    val bottomBar = tabBarFootprint
+                        ?: (WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + TabBarHeight + PocketSpacing.sm)
+                    // Views end above the tab bar, or above the keyboard while it is up (the bar hides).
+                    val bottomInsets = WindowInsets.ime.union(WindowInsets.navigationBars).union(WindowInsets(bottom = bottomBar))
                     val underBar = if (selectedTab == WorkspaceTab.CHAT) chatListState else if (selectedTab == WorkspaceTab.FILES) filesListState else null
                     // Chat and Files scroll under the floating bar; Terminal and Preview start below it.
                     AnimatedContent(
@@ -840,6 +897,7 @@ internal fun WorkspaceScreen(
                                     isStopping = state.isStopping,
                                     activeChatId = state.activeChatId,
                                     topClearance = top,
+                                    bottomBarClearance = bottomBar,
                                     aboveComposer = if (state.changes.isNotEmpty() && !state.isRunning) {
                                         { ChangesReviewCapsule(state.changes, changesAnchor, onClick = { showChanges = true }) }
                                     } else null,
@@ -857,13 +915,13 @@ internal fun WorkspaceScreen(
                                     },
                                     listState = filesListState,
                                     topClearance = top,
+                                    bottomClearance = bottomBar,
                                 )
                                 WorkspaceTab.TERMINAL -> Box(
                                     Modifier
                                         .fillMaxSize()
                                         .padding(top = top)
-                                        .navigationBarsPadding()
-                                        .imePadding()
+                                        .windowInsetsPadding(bottomInsets)
                                         .clipToBounds(),
                                 ) {
                                     TerminalScreen(
@@ -892,7 +950,7 @@ internal fun WorkspaceScreen(
                                     Modifier
                                         .fillMaxSize()
                                         .padding(top = top)
-                                        .navigationBarsPadding()
+                                        .windowInsetsPadding(bottomInsets)
                                         .clipToBounds(),
                                 ) {
                                     PreviewTab(state.previewReady, state.previewUrl)
@@ -947,30 +1005,16 @@ internal fun WorkspaceScreen(
                                 )
                             }
                         },
-                        below = {
-                            SegmentedControl(
-                                items = WorkspaceTab.entries,
-                                selected = selectedTab,
-                                onSelect = { tab ->
-                                    selectedTab = tab
-                                    if (tab == WorkspaceTab.FILES) onRefreshFiles()
-                                    if (tab == WorkspaceTab.TERMINAL) onTerminalOpened()
-                                },
-                                label = { it.label },
-                            )
-                        },
+                    )
+                    WorkspaceTabBar(
+                        selected = selectedTab,
+                        onSelect = selectView,
+                        onFootprint = { if (it != tabBarFootprint) tabBarFootprint = it },
+                        modifier = Modifier.align(Alignment.BottomCenter),
                     )
                     GlassMenu(expanded = showViews, onDismiss = { showViews = false }, anchor = viewsAnchor) {
                         WorkspaceTab.entries.forEach { tab ->
-                            GlassMenuItem(
-                                tab.label,
-                                {
-                                    selectedTab = tab
-                                    if (tab == WorkspaceTab.FILES) onRefreshFiles()
-                                    if (tab == WorkspaceTab.TERMINAL) onTerminalOpened()
-                                },
-                                checked = tab == selectedTab,
-                            )
+                            GlassMenuItem(tab.label, { selectView(tab) }, checked = tab == selectedTab)
                         }
                     }
                 }
@@ -1138,6 +1182,7 @@ private fun FilesTab(
     onExport: () -> Unit,
     listState: LazyListState,
     topClearance: Dp,
+    bottomClearance: Dp,
 ) {
     val colors = PocketColors.current
     val accent = MaterialTheme.colorScheme.primary
@@ -1160,7 +1205,7 @@ private fun FilesTab(
     val directChildCounts = files.filter { candidate ->
         candidate.path.contains('/')
     }.groupingBy { candidate -> candidate.path.substringBeforeLast('/') }.eachCount()
-    val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + PocketSpacing.xxl
+    val bottom = bottomClearance + PocketSpacing.lg
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().hostBackdropSource(),
@@ -1401,6 +1446,7 @@ private fun ChatTab(
     isStopping: Boolean = false,
     activeChatId: String? = null,
     topClearance: Dp = 0.dp,
+    bottomBarClearance: Dp = 0.dp,
     aboveComposer: (@Composable () -> Unit)? = null,
 ) {
     val view = LocalView.current
@@ -1435,13 +1481,15 @@ private fun ChatTab(
         snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
             .collect { backdrop.requestCapture() }
     }
-    // Height of everything floating at the bottom: the composer stack plus the keyboard or
+    // Height of everything floating at the bottom: the composer stack plus the keyboard, tab bar or
     // navigation bar below it. Measured, so the last message always scrolls clear of the chrome.
     var bottomChromeClearance by remember { mutableStateOf(0.dp) }
+    // The larger of the keyboard, the navigation bar and the workspace tab bar ([bottomBarClearance]),
+    // so the composer rides the keyboard up from above the tab bar without a jump.
+    val bottomInsets = WindowInsets.ime.union(WindowInsets.navigationBars).union(WindowInsets(bottom = bottomBarClearance))
     val bottomChromeModifier = Modifier
         .fillMaxWidth()
-        .navigationBarsPadding()
-        .imePadding()
+        .windowInsetsPadding(bottomInsets)
         .onGloballyPositioned { coordinates ->
             val parentHeight = coordinates.parentLayoutCoordinates?.size?.height ?: return@onGloballyPositioned
             val clearance = with(density) { (parentHeight - coordinates.positionInParent().y).toDp() }

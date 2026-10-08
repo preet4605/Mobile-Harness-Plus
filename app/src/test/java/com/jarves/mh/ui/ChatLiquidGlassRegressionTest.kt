@@ -69,7 +69,8 @@ class ChatLiquidGlassRegressionTest {
     @Test
     fun workspace_floatingGlassBar_noMaterialChrome() {
         assertTrue("Workspace uses its floating glass bar", workspace.contains("WorkspaceBar("))
-        assertTrue("The view switcher sits in a row under the bar", workspace.contains("below = {") && workspace.contains("SegmentedControl(") && workspace.contains("items = WorkspaceTab.entries"))
+        assertTrue("The views are the floating glass tab bar at the bottom", workspace.contains("WorkspaceTabBar(") && functionBody("WorkspaceTabBar").contains("FloatingTabBar("))
+        assertTrue("The tab bar steps aside for the keyboard", functionBody("WorkspaceTabBar").contains("visible = !keyboardVisible"))
         assertTrue("Views switch from the menu on the chat title", workspace.contains("onTitleClick = { showViews = true }") && workspace.contains("GlassMenu(expanded = showViews"))
         assertTrue("Bar actions are one glass group", workspace.contains("GlassToolbarGroup {"))
         assertTrue("The bar softens content under it", functionBody("WorkspaceBar").contains("ScrollEdgeEffect("))
@@ -109,6 +110,8 @@ class ChatLiquidGlassRegressionTest {
         assertEquals("Files list is its view's one source", 1, Regex("""hostBackdropSource\(\)""").findAll(functionBody("FilesTab")).count())
         assertEquals("Terminal and Preview start below the bar", 2, Regex("""\.padding\(top = top\)""").findAll(workspace).count())
         assertTrue(workspace.contains("topClearance = top"))
+        assertEquals("Terminal and Preview end above the tab bar", 2, Regex("""\.windowInsetsPadding\(bottomInsets\)""").findAll(workspace).count())
+        assertEquals("Chat and Files clear the tab bar", 2, Regex("""(bottomBarClearance|bottomClearance) = bottomBar""").findAll(workspace).count())
         assertTrue("The bar is measured, not guessed", workspace.contains("Modifier.onSizeChanged(onBarSize)"))
     }
 
@@ -118,8 +121,11 @@ class ChatLiquidGlassRegressionTest {
         assertTrue(chat.contains("top = topClearance + PocketSpacing.md"))
         assertTrue(chat.contains("bottom = bottomChromeClearance + PocketSpacing.lg"))
         assertTrue(chat.contains(".padding(bottom = bottomChromeClearance + PocketSpacing.md)"))
-        assertTrue("Composer stack clears the navigation bar", chat.contains(".navigationBarsPadding()"))
-        assertTrue("Composer stack must follow the keyboard", chat.contains(".imePadding()"))
+        assertTrue(
+            "Composer stack clears the navigation bar and the tab bar, and follows the keyboard",
+            chat.contains("WindowInsets.ime.union(WindowInsets.navigationBars).union(WindowInsets(bottom = bottomBarClearance))") &&
+                chat.contains(".windowInsetsPadding(bottomInsets)"),
+        )
         assertTrue(chat.contains("bottomChromeClearance = clearance"))
         assertTrue("Messages soften under the composer", chat.contains("ScrollEdgeEffect("))
     }
