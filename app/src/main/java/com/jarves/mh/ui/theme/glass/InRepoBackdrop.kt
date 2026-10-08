@@ -480,9 +480,10 @@ internal const val NO_CAPTURE = Long.MIN_VALUE
 /**
  * Redraws not caused by an explicit invalidation (scroll, requestCapture) come from content
  * animating inside the source, e.g. a streaming reply or the thinking indicator. Glass only
- * needs a blurred impression of that content, so it is refreshed at ~10 Hz instead of every frame.
+ * needs a blurred impression of that content, so it is refreshed at ~4 Hz instead of every frame.
+ * Each refresh re-renders the source and re-blurs every glass surface, so this stays low.
  */
-internal const val CONTENT_RECAPTURE_INTERVAL_MS = 100L
+internal const val CONTENT_RECAPTURE_INTERVAL_MS = 250L
 
 /**
  * How long a source must wait before its next capture; 0 means capture now.
