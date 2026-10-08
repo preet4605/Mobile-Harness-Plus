@@ -29,7 +29,9 @@ import com.jarves.mh.model.DevStack
 import com.jarves.mh.model.Project
 import com.jarves.mh.model.ProjectKind
 import com.jarves.mh.model.ProjectChat
+import com.jarves.mh.model.ModelSlot
 import com.jarves.mh.model.ProviderKind
+import com.jarves.mh.model.modelSlotFor
 import com.jarves.mh.provider.ProviderFailureClass
 import com.jarves.mh.provider.ProviderFailureClassifier
 import com.jarves.mh.provider.ProviderFallbackPlanner
@@ -2026,6 +2028,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(antigravityFailoverEnabled = enabled) }
     }
 
+    /** Stores [model] in the slot the active agent runs. Returns false when the active agent does not accept it. */
+    fun applyModelChoice(model: String): Boolean {
+        val trimmed = model.trim()
+        if (trimmed.isBlank()) return false
+        val current = _state.value
+        return when (modelSlotFor(current.agentKind, current.provider.kind)) {
+            ModelSlot.ANTIGRAVITY -> {
+                setAntigravityModel(trimmed)
+                true
+            }
+            ModelSlot.CLAUDE_SUBSCRIPTION -> {
+                val known = com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS.any { it.id.equals(trimmed, ignoreCase = true) }
+                if (known) setClaudeModel(trimmed)
+                known
+            }
+            ModelSlot.PROVIDER -> {
+                val updated = current.provider.copy(model = trimmed)
+                preferences.saveProvider(updated, current.agentKind)
+                _state.update { it.copy(provider = updated) }
+                true
+            }
+        }
+    }
+
     fun setClaudeModel(model: String) {
         val validated = com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS.firstOrNull { it.id.equals(model, ignoreCase = true) }?.id ?: return
         preferences.claudeModel = validated
@@ -4008,23 +4034,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "model" -> {
                 val trimmed = args.trim()
                 if (trimmed.isNotBlank()) {
-                    val isClaude = _state.value.agentKind == AgentKind.CLAUDE_CODE || _state.value.provider.kind == ProviderKind.CLAUDE
-                    if (isClaude) {
-                        setClaudeModel(trimmed)
-                        _state.update {
-                            it.copy(
-                                messages = it.messages + ChatMessage(fromUser = true, text = "/model $trimmed") +
-                                    ChatMessage(fromUser = false, text = "Switched Claude model to `$trimmed`."),
-                            )
-                        }
+                    val applied = applyModelChoice(trimmed)
+                    val reply = if (applied) {
+                        "Switched model to `$trimmed`."
                     } else {
-                        setAntigravityModel(trimmed)
-                        _state.update {
-                            it.copy(
-                                messages = it.messages + ChatMessage(fromUser = true, text = "/model $trimmed") +
-                                    ChatMessage(fromUser = false, text = "Switched model to `$trimmed`."),
-                            )
-                        }
+                        "`$trimmed` is not a Claude model. Choose one from /model."
+                    }
+                    _state.update {
+                        it.copy(
+                            messages = it.messages + ChatMessage(fromUser = true, text = "/model $trimmed") +
+                                ChatMessage(fromUser = false, text = reply),
+                        )
                     }
                     persistMessages()
                 } else {

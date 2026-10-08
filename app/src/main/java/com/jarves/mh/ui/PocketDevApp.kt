@@ -325,7 +325,7 @@ private fun AppScreen(
             onCreateSkill = viewModel::createGlobalSkill,
             onOpenModelPicker = { viewModel.toggleModelPicker(true) },
             onCloseModelPicker = { viewModel.toggleModelPicker(false) },
-            onSelectModel = viewModel::setAntigravityModel,
+            onSelectModel = { viewModel.applyModelChoice(it) },
             onOpenMemoryViewer = { viewModel.setMemoryViewerVisible(true) },
             onCloseMemoryViewer = { viewModel.setMemoryViewerVisible(false) },
             onAddMemoryEntry = { k, v -> viewModel.upsertMemory(k, v) },

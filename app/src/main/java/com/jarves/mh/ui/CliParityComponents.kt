@@ -1564,7 +1564,19 @@ private fun FormColumn(content: @Composable ColumnScope.() -> Unit) {
 // Model picker
 // =============================================================================================
 
-/** Quick model switch. Choosing a model applies it and closes the sheet. */
+/** Antigravity models offered until the account's live model list has loaded. */
+internal val ANTIGRAVITY_FALLBACK_MODELS = listOf(
+    "gemini-3.8-flash-high",
+    "gemini-3.8-pro",
+    "gemini-3.6-flash-high",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+)
+
+/**
+ * Quick model switch. Choosing a model applies it and closes the sheet. The caller supplies the
+ * list for the active agent; an empty list means the provider has no model list to offer.
+ */
 @Composable
 fun ModelPickerDialog(
     currentModel: String,
@@ -1575,19 +1587,7 @@ fun ModelPickerDialog(
     visible: Boolean = true,
 ) {
     val isClaude = provider == ProviderKind.CLAUDE
-    val models = if (availableModels.isNotEmpty()) {
-        availableModels
-    } else if (isClaude) {
-        CLAUDE_SUBSCRIPTION_MODELS.map { it.id }
-    } else {
-        listOf(
-            "gemini-3.8-flash-high",
-            "gemini-3.8-pro",
-            "gemini-3.6-flash-high",
-            "claude-sonnet-4-6",
-            "claude-opus-4-6-thinking",
-        )
-    }
+    val models = availableModels
     // Short lists fit their content; long ones scroll in a resizable sheet.
     val fits = models.size <= 8
 
@@ -1602,6 +1602,17 @@ fun ModelPickerDialog(
             if (fits) Modifier.fillMaxWidth() else Modifier.fillMaxSize(),
             contentPadding = PaddingValues(top = PocketSpacing.xs, bottom = PocketSpacing.xxl),
         ) {
+            if (models.isEmpty()) {
+                item {
+                    LazyGroupRow(isFirst = true, isLast = true) {
+                        ListRow(
+                            title = "No model list for this provider",
+                            subtitle = "Type /model followed by a model ID to choose one.",
+                            subtitleMaxLines = 2,
+                        )
+                    }
+                }
+            }
             itemsIndexed(models) { index, modelId ->
                 val isSelected = modelId.equals(currentModel, ignoreCase = true)
                 val descriptor = if (isClaude) {

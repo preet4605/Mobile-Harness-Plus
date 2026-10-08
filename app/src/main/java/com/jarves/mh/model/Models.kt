@@ -230,6 +230,19 @@ fun providersForAgent(agent: AgentKind): List<ProviderKind> = when (agent) {
     AgentKind.CODEX -> ProviderKind.entries.filter { it in CODEX_PROVIDERS }
 }
 
+/** The stored model that a `/model` choice or the model picker changes for the active agent. */
+enum class ModelSlot { ANTIGRAVITY, CLAUDE_SUBSCRIPTION, PROVIDER }
+
+/**
+ * Antigravity keeps its own model list and Claude's account login has a fixed model set. Every
+ * other agent runs the model stored on its provider profile.
+ */
+fun modelSlotFor(agent: AgentKind, kind: ProviderKind): ModelSlot = when {
+    agent == AgentKind.ANTIGRAVITY -> ModelSlot.ANTIGRAVITY
+    agent == AgentKind.CLAUDE_CODE && kind == ProviderKind.CLAUDE -> ModelSlot.CLAUDE_SUBSCRIPTION
+    else -> ModelSlot.PROVIDER
+}
+
 enum class ClaudeAuthMode {
     NATIVE_SUBSCRIPTION,
     SETUP_TOKEN_LEGACY,

@@ -155,15 +155,19 @@ import com.jarves.mh.data.AppPreferences
 import com.jarves.mh.model.ActivityItem
 import com.jarves.mh.model.AgentKind
 import com.jarves.mh.model.BackgroundTaskStatus
+import com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS
 import com.jarves.mh.model.ChangeItem
 import com.jarves.mh.model.ChatAttachment
 import com.jarves.mh.model.ChatMessage
+import com.jarves.mh.model.ModelSlot
 import com.jarves.mh.model.ProjectChat
+import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.SkillInfo
 import com.jarves.mh.model.SlashCommand
 import com.jarves.mh.model.SubagentState
 import com.jarves.mh.model.ToolRequest
 import com.jarves.mh.model.WorkspaceEntry
+import com.jarves.mh.model.modelSlotFor
 import com.jarves.mh.ui.kit.AlertAction
 import com.jarves.mh.ui.kit.AlertRole
 import com.jarves.mh.ui.kit.BannerKind
@@ -773,9 +777,19 @@ internal fun WorkspaceScreen(
         )
     }
     if (state.modelPickerVisible) {
+        val slot = modelSlotFor(state.agentKind, state.provider.kind)
         ModelPickerDialog(
-            currentModel = state.antigravityModel.ifBlank { state.provider.model },
-            availableModels = state.antigravityModels,
+            currentModel = when (slot) {
+                ModelSlot.ANTIGRAVITY -> state.antigravityModel.ifBlank { state.provider.model }
+                ModelSlot.CLAUDE_SUBSCRIPTION -> state.claudeModel
+                ModelSlot.PROVIDER -> state.provider.model
+            },
+            availableModels = when (slot) {
+                ModelSlot.ANTIGRAVITY -> state.antigravityModels.ifEmpty { ANTIGRAVITY_FALLBACK_MODELS }
+                ModelSlot.CLAUDE_SUBSCRIPTION -> CLAUDE_SUBSCRIPTION_MODELS.map { it.id }
+                ModelSlot.PROVIDER -> defaultModelsForProvider(state.provider.kind).map { it.id }
+            },
+            provider = if (slot == ModelSlot.CLAUDE_SUBSCRIPTION) ProviderKind.CLAUDE else null,
             onSelectModel = onSelectModel,
             onDismiss = onCloseModelPicker,
         )
