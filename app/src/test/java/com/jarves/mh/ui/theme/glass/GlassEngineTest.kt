@@ -77,4 +77,11 @@ class GlassEngineTest {
         assertEquals("every uniform is set, and only declared ones", declared - "content", set)
         assertTrue("the lens samples the blurred content", GlassShaderSource.contains("content.eval("))
     }
+
+    @Test
+    fun lensGradient_isOnlySampledInsideTheEdgeReach() {
+        // Interior pixels skip the four gradient samples; the normal is unused beyond the edge band.
+        assertTrue(GlassShaderSource.contains("if (inside < reach) {"))
+        assertTrue(GlassShaderSource.contains("reach = max(reach, rimWidth);"))
+    }
 }

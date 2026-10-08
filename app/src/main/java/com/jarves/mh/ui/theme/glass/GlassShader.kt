@@ -70,11 +70,18 @@ float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
 
 half4 main(float2 p) {
     float d = sdf(p);
-    float e = 1.0;
-    float2 g = float2(sdf(p + float2(e, 0.0)) - sdf(p - float2(e, 0.0)), sdf(p + float2(0.0, e)) - sdf(p - float2(0.0, e)));
-    float gl = length(g);
-    float2 n = gl > 0.0001 ? g / gl : float2(0.0, 0.0);
     float inside = -d;
+    // The normal only feeds the lens bend, the edge band and the rim. Pixels beyond all of them
+    // use none of it, so they skip the four gradient samples.
+    float reach = max(lensHeight, max(lensHeight, 1.0) * 0.7);
+    if (maskShape > 0.5) { reach = max(reach, rimWidth); }
+    float2 n = float2(0.0, 0.0);
+    if (inside < reach) {
+        float e = 1.0;
+        float2 g = float2(sdf(p + float2(e, 0.0)) - sdf(p - float2(e, 0.0)), sdf(p + float2(0.0, e)) - sdf(p - float2(0.0, e)));
+        float gl = length(g);
+        n = gl > 0.0001 ? g / gl : float2(0.0, 0.0);
+    }
 
     float t = lensHeight > 0.0 ? clamp(1.0 - inside / lensHeight, 0.0, 1.0) : 0.0;
     float bend = 1.0 - sqrt(max(1.0 - t * t, 0.0));
