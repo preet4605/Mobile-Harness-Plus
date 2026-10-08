@@ -152,6 +152,12 @@ internal fun Modifier.glassLift(amount: () -> Float, press: GlassPressState, ena
 
 private fun Offset.isSpecified() = x.isFinite() && y.isFinite()
 
+/**
+ * The blurred sample is recorded at this fraction of the glass size and drawn back up to full
+ * size. The blur hides the lost detail, and the blur pass touches a quarter of the pixels.
+ */
+internal const val GlassBlurScale = 0.5f
+
 /** Saturation lift of the sample: enough to keep colour alive under the wash, not candy. */
 private const val GlassSaturation = 1.3f
 
@@ -259,14 +265,15 @@ private fun DrawScope.drawBackdrop(
     blurLayer.renderEffect = null
     blurLayer.compositingStrategy = CompositingStrategy.Offscreen
     blurLayer.colorFilter = if (shader == null) Vibrancy else null
-    blurLayer.record(size.toIntSize()) {
-        translate(offset.x, offset.y) {
-            scale(inverseScale, inverseScale, pivot = Offset.Zero) {
+    val blurScale = GlassBlurScale
+    blurLayer.record(Size(size.width * blurScale, size.height * blurScale).toIntSize()) {
+        translate(offset.x * blurScale, offset.y * blurScale) {
+            scale(inverseScale * blurScale, inverseScale * blurScale, pivot = Offset.Zero) {
                 drawLayer(capture.layer)
             }
         }
     }
-    val blurPx = look.blurDp.dp.toPx()
+    val blurPx = look.blurDp.dp.toPx() * blurScale
     blurLayer.renderEffect = if (shader != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         lensEffect(shader, blurPx, shape, look, config, press, amount)
     } else {
@@ -277,7 +284,9 @@ private fun DrawScope.drawBackdrop(
     // Opaque canvas under the sample: the glass replaces what is behind it, so sharp content
     // never shows through transparent gaps in the capture.
     drawOutline(outline, look.canvas)
-    clipPath(clip) { drawLayer(blurLayer) }
+    clipPath(clip) {
+        scale(1f / blurScale, 1f / blurScale, pivot = Offset.Zero) { drawLayer(blurLayer) }
+    }
     if (shader == null) {
         drawOutline(outline, look.wash)
         drawSheen(outline, look.isDark)
@@ -295,11 +304,13 @@ private fun DrawScope.lensEffect(
     press: GlassPressState,
     amount: Float,
 ): androidx.compose.ui.graphics.RenderEffect {
+    // Shader positions are in the blur layer's pixels, which are GlassBlurScale of the glass size.
+    val blurScale = GlassBlurScale
     val sizeClass = GlassSizeClass.of(size, this)
-    val radius = shape.cornerRadiusPx(size, this) ?: min(size.minDimension / 2f, 16.dp.toPx())
-    val lens = min(sizeClass.lensDp.dp.toPx(), size.minDimension * 0.4f)
+    val radius = (shape.cornerRadiusPx(size, this) ?: min(size.minDimension / 2f, 16.dp.toPx())) * blurScale
+    val lens = min(sizeClass.lensDp.dp.toPx(), size.minDimension * 0.4f) * blurScale
     shader.setGlassUniforms(
-        rects = floatArrayOf(0f, 0f, size.width, size.height),
+        rects = floatArrayOf(0f, 0f, size.width * blurScale, size.height * blurScale),
         radii = floatArrayOf(radius),
         smoothK = 0f,
         lensHeight = lens,
@@ -307,9 +318,9 @@ private fun DrawScope.lensEffect(
         look = look,
         config = config,
         light = glassLightDirection(size, press.point, amount),
-        glowPoint = press.point,
+        glowPoint = if (press.point.isSpecified()) press.point * blurScale else press.point,
         glowStrength = if (config.pressGlow) amount * (if (look.isDark) 0.16f else 0.22f) else 0f,
-        glowRadius = max(size.minDimension * 0.6f, 24.dp.toPx()),
+        glowRadius = max(size.minDimension * 0.6f, 24.dp.toPx()) * blurScale,
         maskShape = false,
         rimWidth = 0f,
         rimStrength = 0f,
