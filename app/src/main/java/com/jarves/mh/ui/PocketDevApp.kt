@@ -467,6 +467,7 @@ private fun RootScreenHost(
                     onRefreshAntigravityModels = viewModel::refreshAntigravityModels,
                     onSetAntigravityModel = viewModel::setAntigravityModel,
                     onSetAntigravityEffort = viewModel::setAntigravityEffort,
+                    onSetCodexReasoningEffort = viewModel::setCodexReasoningEffort,
                     onStartClaudeLogin = viewModel::startClaudeLogin,
                     onCancelClaudeLogin = viewModel::cancelClaudeLogin,
                     onSubmitClaudeCode = viewModel::submitClaudeCode,

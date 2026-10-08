@@ -171,6 +171,11 @@ class AppPreferences(
         get() = preferences.getBoolean("agent_codex_signed_in", false)
         set(value) { preferences.edit().putBoolean("agent_codex_signed_in", value).apply() }
 
+    /** Codex's `model_reasoning_effort`; blank leaves Codex on its own default. */
+    var codexReasoningEffort: String
+        get() = preferences.getString("codex_reasoning_effort", "") ?: ""
+        set(value) { preferences.edit().putString("codex_reasoning_effort", value).apply() }
+
     var antigravityAccountEmail: String
         get() {
             val accounts = loadAntigravityAccounts()

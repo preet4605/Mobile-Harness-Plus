@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.jarves.mh.data.ApiKeyInfo
 import com.jarves.mh.model.AgentKind
+import com.jarves.mh.model.CODEX_REASONING_EFFORTS
 import com.jarves.mh.model.AntigravityAccount
 import com.jarves.mh.model.AntigravityAccountStatus
 import com.jarves.mh.model.AntigravityLoadBalancingStrategy
@@ -165,8 +166,17 @@ private fun effortCaption(effort: String): String = when (effort) {
     else -> "Balanced speed and reasoning."
 }
 
+/** Blank means Codex's own default; the rest are the levels Codex accepts. */
+private val CodexEffortChoices = listOf("") + CODEX_REASONING_EFFORTS
+
+private fun codexEffortTitle(effort: String): String = when (effort) {
+    "" -> "Default"
+    "xhigh" -> "XHigh"
+    else -> effortTitle(effort)
+}
+
 /** Which sheet the Agent screen shows. */
-private enum class AgentSheet { None, Model, Provider, AddKey }
+private enum class AgentSheet { None, Model, Reasoning, Provider, AddKey }
 
 /**
  * Agent: the engine switcher (Claude Code, DeepSeek, Antigravity) over grouped sections for the
@@ -201,6 +211,7 @@ fun AgentScreen(
     onRefreshAntigravityModels: () -> Unit = {},
     onSetAntigravityModel: (String) -> Unit = {},
     onSetAntigravityEffort: (String) -> Unit = {},
+    onSetCodexReasoningEffort: (String) -> Unit = {},
     onStartClaudeLogin: () -> Unit = {},
     onCancelClaudeLogin: () -> Unit = {},
     onSubmitClaudeCode: (String) -> Unit = {},
@@ -642,6 +653,14 @@ fun AgentScreen(
                                     accessory = ListRowAccessory.Chevron,
                                     onClick = { sheet = AgentSheet.Model },
                                 )
+                                ListRow(
+                                    "Reasoning",
+                                    icon = Icons.Outlined.Psychology,
+                                    iconTile = colors.indigo,
+                                    value = codexEffortTitle(state.codexReasoningEffort),
+                                    accessory = ListRowAccessory.Chevron,
+                                    onClick = { sheet = AgentSheet.Reasoning },
+                                )
                             }
                         }
                     } else if (selectedKind != ProviderKind.CLAUDE) {
@@ -817,6 +836,32 @@ fun AgentScreen(
                     if (selectedKind == ProviderKind.CHATGPT) onSaveProvider(ProviderProfile(selectedKind, "", it.trim()), "")
                 },
             )
+        }
+    }
+
+    GlassSheet(
+        onDismiss = { sheet = AgentSheet.None },
+        visible = sheet == AgentSheet.Reasoning,
+        title = "Reasoning",
+        detents = listOf(SheetDetent.Fit),
+        trailing = { SheetTextButton("Done", { sheet = AgentSheet.None }, emphasized = true) },
+    ) {
+        LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = PocketSpacing.xxl)) {
+            item(key = "effort") {
+                ListSection(
+                    header = "Reasoning effort",
+                    footer = "Default leaves the effort to Codex. Higher levels think longer before answering.",
+                ) {
+                    Box(Modifier.fillMaxWidth().padding(horizontal = ListInset, vertical = PocketSpacing.sm)) {
+                        SegmentedControl(
+                            CodexEffortChoices,
+                            state.codexReasoningEffort,
+                            { onSetCodexReasoningEffort(it) },
+                            label = ::codexEffortTitle,
+                        )
+                    }
+                }
+            }
         }
     }
 

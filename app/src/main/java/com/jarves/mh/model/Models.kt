@@ -164,6 +164,13 @@ val CODEX_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.CUSTOM,
 )
 
+/** Values Codex accepts for `model_reasoning_effort`. A blank choice leaves Codex on its own default. */
+val CODEX_REASONING_EFFORTS: List<String> = listOf("low", "medium", "high", "xhigh")
+
+/** The stored Codex effort when it is a level Codex accepts, otherwise null. */
+fun codexReasoningEffortOrNull(stored: String?): String? =
+    stored?.trim()?.lowercase()?.takeIf { it in CODEX_REASONING_EFFORTS }
+
 val DSH_PROTOCOL_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.KIMI,
     ProviderKind.OPENCODE_ZEN,

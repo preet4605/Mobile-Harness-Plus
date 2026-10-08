@@ -3,6 +3,7 @@ package com.jarves.mh.runtime
 import android.content.Context
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.jarves.mh.data.AppPreferences
 import com.jarves.mh.data.ContextMemory
 import com.jarves.mh.model.ChangeItem
 import com.jarves.mh.model.ChatMessage
@@ -147,7 +148,10 @@ class CodexRuntimeBridge(
                     lastMessageFile = it
                 }
                 val capture = File(context.cacheDir, "codex-output-$sessionId.log").also { outputFile = it }
-                val command = CodexLaunchBuilder.command(route, guestWorkspacePath, "/tmp/${lastFile.name}")
+                val reasoningEffort = com.jarves.mh.model.codexReasoningEffortOrNull(
+                    AppPreferences(context).codexReasoningEffort,
+                )
+                val command = CodexLaunchBuilder.command(route, guestWorkspacePath, "/tmp/${lastFile.name}", reasoningEffort)
                 val environment = CodexLaunchBuilder.environment(route, secret)
                 Log.d(TAG, "Route: ${route::class.simpleName}, Model: ${route.model.ifBlank { "default" }}")
                 val process = installer.process(

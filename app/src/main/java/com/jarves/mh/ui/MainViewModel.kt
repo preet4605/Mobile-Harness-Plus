@@ -299,6 +299,7 @@ data class AppUiState(
     val antigravityModelsLoading: Boolean = false,
     val claudeModel: String = "default",
     val claudeThinkingLevel: String = "default",
+    val codexReasoningEffort: String = "",
     val claudeThinkingPickerVisible: Boolean = false,
     val androidBuildRunning: Boolean = false,
     val androidBuildMessage: String? = null,
@@ -461,6 +462,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             antigravityEffort = preferences.antigravityEffort,
             claudeModel = preferences.claudeModel,
             claudeThinkingLevel = preferences.claudeThinkingLevel,
+            codexReasoningEffort = preferences.codexReasoningEffort,
             themeMode = runCatching { com.jarves.mh.ui.theme.AppThemeMode.valueOf(preferences.themeMode.uppercase()) }
                 .getOrDefault(com.jarves.mh.ui.theme.AppThemeMode.DARK),
             projects = preferences.loadProjects(),
@@ -2086,6 +2088,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 provider = updatedProvider,
             )
         }
+    }
+
+    /** Blank keeps Codex on its own default effort; unknown levels are ignored and stored as default. */
+    fun setCodexReasoningEffort(level: String) {
+        val validated = com.jarves.mh.model.codexReasoningEffortOrNull(level).orEmpty()
+        preferences.codexReasoningEffort = validated
+        _state.update { it.copy(codexReasoningEffort = validated) }
     }
 
     fun toggleClaudeThinkingPicker(visible: Boolean? = null) {

@@ -109,7 +109,12 @@ internal object CodexLaunchBuilder {
      * travels in argv. The sandbox is off because the whole guest is already confined by PRoot;
      * approvals are `never` because exec mode has no interactive channel.
      */
-    fun command(route: CodexRoute, guestWorkspacePath: String, lastMessageGuestPath: String): List<String> =
+    fun command(
+        route: CodexRoute,
+        guestWorkspacePath: String,
+        lastMessageGuestPath: String,
+        reasoningEffort: String? = null,
+    ): List<String> =
         buildList {
             add(CODEX_GUEST_PATH)
             add("exec")
@@ -131,6 +136,10 @@ internal object CodexLaunchBuilder {
             configOverrides(route).forEach {
                 add("-c")
                 add(it)
+            }
+            reasoningEffort?.let {
+                add("-c")
+                add("model_reasoning_effort=${tomlString(it)}")
             }
             add("-")
         }
