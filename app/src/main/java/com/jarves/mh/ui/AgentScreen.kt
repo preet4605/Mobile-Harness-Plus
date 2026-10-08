@@ -56,7 +56,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.jarves.mh.data.ApiKeyInfo
 import com.jarves.mh.model.AgentKind
-import com.jarves.mh.model.CODEX_REASONING_EFFORTS
+import com.jarves.mh.model.codexEffortChoices
 import com.jarves.mh.model.AntigravityAccount
 import com.jarves.mh.model.AntigravityAccountStatus
 import com.jarves.mh.model.AntigravityLoadBalancingStrategy
@@ -166,14 +166,18 @@ private fun effortCaption(effort: String): String = when (effort) {
     else -> "Balanced speed and reasoning."
 }
 
-/** Blank means Codex's own default; the rest are the levels Codex accepts. */
-private val CodexEffortChoices = listOf("") + CODEX_REASONING_EFFORTS
-
 private fun codexEffortTitle(effort: String): String = when (effort) {
     "" -> "Default"
     "xhigh" -> "XHigh"
     else -> effortTitle(effort)
 }
+
+/** Starting list for a provider and endpoint: the saved Discover result, else the built-in suggestions. */
+private fun startingModels(
+    kind: ProviderKind,
+    baseUrl: String,
+    loadSavedModels: (ProviderKind, String) -> List<DiscoveredModel>,
+): List<DiscoveredModel> = loadSavedModels(kind, baseUrl).ifEmpty { defaultModelsForProvider(kind) }
 
 /** Which sheet the Agent screen shows. */
 private enum class AgentSheet { None, Model, Reasoning, Provider, AddKey }
@@ -189,6 +193,8 @@ fun AgentScreen(
     bottomBarPadding: Dp = 0.dp,
     onSaveProvider: (ProviderProfile, String) -> Unit,
     onDiscoverModels: suspend (ProviderProfile, String) -> ModelDiscoveryResult,
+    /** Model list saved by an earlier Discover for this provider and endpoint; empty when none. */
+    loadSavedModels: (ProviderKind, String) -> List<DiscoveredModel> = { _, _ -> emptyList() },
     onValidateProvider: suspend (ProviderProfile, String, List<DiscoveredModel>) -> ConnectionValidation,
     onPing: () -> Unit,
     getSavedApiKey: (ProviderKind) -> String,
@@ -236,7 +242,7 @@ fun AgentScreen(
     var newKeyName by rememberSaveable(selectedKind) { mutableStateOf("") }
     var newApiKey by rememberSaveable(selectedKind) { mutableStateOf("") }
     var models by remember(selectedKind, baseUrl) {
-        mutableStateOf(if (selectedKind == ProviderKind.ANTIGRAVITY_SERVER) defaultModelsForProvider(selectedKind) else emptyList())
+        mutableStateOf(startingModels(selectedKind, baseUrl, loadSavedModels))
     }
     var modelSearch by rememberSaveable(selectedKind) { mutableStateOf("") }
     var sheet by rememberSaveable { mutableStateOf(AgentSheet.None) }
@@ -294,16 +300,12 @@ fun AgentScreen(
     }
 
     fun discoverModels() {
-        if (selectedKind == ProviderKind.CHATGPT) {
-            status = "Model lists aren't available with ChatGPT sign-in. Enter a model ID, or leave it blank for Codex's default."
-            statusOk = false
-            statusProviderMessage = null
-            return
-        }
         val isAntigravityServer = selectedKind == ProviderKind.ANTIGRAVITY_SERVER
         val effectiveKey = apiKey.trim().ifBlank { newApiKey.trim() }
+        // Codex reads its catalog from its own runtime, so it needs no API key.
         val supportsPublicDiscovery = selectedKind == ProviderKind.LLM_ROUTER ||
             selectedKind == ProviderKind.OPENCODE_ZEN ||
+            selectedKind == ProviderKind.CHATGPT ||
             isAntigravityServer
         if (effectiveKey.isBlank() && !supportsPublicDiscovery) {
             status = "Add an API key first to discover models."
@@ -345,6 +347,11 @@ fun AgentScreen(
         }
     }
 
+    val codexLevels = codexEffortChoices(models, model)
+    val codexChoices = listOf("") + codexLevels
+    // Shown only if the selected model accepts it; with no catalog data the stored level is what gets sent.
+    val shownCodexEffort = state.codexReasoningEffort.takeIf { codexLevels.isEmpty() || it in codexLevels }.orEmpty()
+
     LaunchedEffect(selectedKind) {
         if (selectedKind == ProviderKind.ANTIGRAVITY_SERVER) {
             val url = selectedKind.defaultBaseUrl
@@ -361,7 +368,7 @@ fun AgentScreen(
         baseUrl = kind.defaultBaseUrl
         model = kind.defaultModel
         dshApi = defaultDshApiForProvider(kind)
-        models = defaultModelsForProvider(kind)
+        models = startingModels(kind, kind.defaultBaseUrl, loadSavedModels)
         modelSearch = ""
         newKeyName = ""
         newApiKey = ""
@@ -384,7 +391,7 @@ fun AgentScreen(
         if (state.agentKind == AgentKind.DEEPSEEK_HARNESS && selectedKind == ProviderKind.CUSTOM) {
             dshApi = inferredDshApiForUrl(it)
         }
-        models = emptyList()
+        models = startingModels(selectedKind, it, loadSavedModels)
         status = null
         statusProviderMessage = null
         keyConnectionStatuses = emptyMap()
@@ -657,7 +664,7 @@ fun AgentScreen(
                                     "Reasoning",
                                     icon = Icons.Outlined.Psychology,
                                     iconTile = colors.indigo,
-                                    value = codexEffortTitle(state.codexReasoningEffort),
+                                    value = codexEffortTitle(shownCodexEffort),
                                     accessory = ListRowAccessory.Chevron,
                                     onClick = { sheet = AgentSheet.Reasoning },
                                 )
@@ -795,7 +802,7 @@ fun AgentScreen(
             val loading = if (isAntigravity) state.antigravityModelsLoading else isDiscovering
             if (loading) {
                 Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) { ProgressRing(progress = null, size = 20.dp, strokeWidth = 2.dp) }
-            } else if (selectedKind != ProviderKind.CHATGPT || isAntigravity) {
+            } else {
                 PocketIconButton(
                     Icons.Outlined.Refresh,
                     if (isAntigravity) "Refresh models" else "Discover models",
@@ -850,12 +857,16 @@ fun AgentScreen(
             item(key = "effort") {
                 ListSection(
                     header = "Reasoning effort",
-                    footer = "Default leaves the effort to Codex. Higher levels think longer before answering.",
+                    footer = if (codexLevels.isEmpty()) {
+                        "Discover models in the Model section to see the reasoning levels this model supports."
+                    } else {
+                        "Default leaves the effort to Codex. Higher levels think longer before answering."
+                    },
                 ) {
                     Box(Modifier.fillMaxWidth().padding(horizontal = ListInset, vertical = PocketSpacing.sm)) {
                         SegmentedControl(
-                            CodexEffortChoices,
-                            state.codexReasoningEffort,
+                            codexChoices,
+                            shownCodexEffort,
                             { onSetCodexReasoningEffort(it) },
                             label = ::codexEffortTitle,
                         )
@@ -1379,7 +1390,7 @@ private fun ProviderModelList(
                     }
                 }
             }
-            if (kind != ProviderKind.CHATGPT) item(key = "discover") {
+            item(key = "discover") {
                 ListSection(Modifier.padding(top = PocketSpacing.md)) {
                     ListRow(
                         "Discover models from ${kind.title}",

@@ -1585,6 +1585,9 @@ fun ModelPickerDialog(
     onDismiss: () -> Unit,
     provider: ProviderKind? = null,
     visible: Boolean = true,
+    /** Adds a first row that selects the provider's own default (an empty model ID), such as Codex's default. */
+    defaultTitle: String? = null,
+    defaultSubtitle: String? = null,
 ) {
     val isClaude = provider == ProviderKind.CLAUDE
     val models = availableModels
@@ -1602,7 +1605,23 @@ fun ModelPickerDialog(
             if (fits) Modifier.fillMaxWidth() else Modifier.fillMaxSize(),
             contentPadding = PaddingValues(top = PocketSpacing.xs, bottom = PocketSpacing.xxl),
         ) {
-            if (models.isEmpty()) {
+            if (defaultTitle != null) {
+                item(key = "providerDefault") {
+                    LazyGroupRow(isFirst = true, isLast = models.isEmpty()) {
+                        ListRow(
+                            title = defaultTitle,
+                            subtitle = defaultSubtitle,
+                            subtitleMaxLines = 2,
+                            accessory = if (currentModel.isBlank()) ListRowAccessory.Check else ListRowAccessory.None,
+                            onClick = {
+                                onSelectModel("")
+                                onDismiss()
+                            },
+                        )
+                    }
+                }
+            }
+            if (models.isEmpty() && defaultTitle == null) {
                 item {
                     LazyGroupRow(isFirst = true, isLast = true) {
                         ListRow(
@@ -1628,7 +1647,7 @@ fun ModelPickerDialog(
                         else -> null
                     }
                 } else null
-                LazyGroupRow(isFirst = index == 0, isLast = index == models.lastIndex) {
+                LazyGroupRow(isFirst = index == 0 && defaultTitle == null, isLast = index == models.lastIndex) {
                     ListRow(
                         title = descriptor?.displayName ?: modelId,
                         subtitle = description,

@@ -164,12 +164,28 @@ val CODEX_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.CUSTOM,
 )
 
-/** Values Codex accepts for `model_reasoning_effort`. A blank choice leaves Codex on its own default. */
-val CODEX_REASONING_EFFORTS: List<String> = listOf("low", "medium", "high", "xhigh")
+private val CODEX_EFFORT_PATTERN = Regex("[a-z]{2,16}")
 
-/** The stored Codex effort when it is a level Codex accepts, otherwise null. */
+/**
+ * The stored Codex effort when it looks like a level name (`low`, `xhigh`, `max`), otherwise null.
+ * Which levels a model accepts comes from its catalog entry, see [codexEffortToLaunch].
+ */
 fun codexReasoningEffortOrNull(stored: String?): String? =
-    stored?.trim()?.lowercase()?.takeIf { it in CODEX_REASONING_EFFORTS }
+    stored?.trim()?.lowercase()?.takeIf { it.matches(CODEX_EFFORT_PATTERN) }
+
+/** Effort levels the selected model reports in the saved catalog. Empty when the catalog does not know the model. */
+fun codexEffortChoices(models: List<DiscoveredModel>, modelId: String): List<String> =
+    models.firstOrNull { it.id == modelId }?.reasoningEfforts.orEmpty()
+
+/**
+ * The level to pass to Codex, or null to leave Codex on its default. A level the catalog does not list for
+ * the model is dropped rather than sent. Without catalog data for the model (custom endpoints) the level is sent as stored.
+ */
+fun codexEffortToLaunch(stored: String?, modelId: String, models: List<DiscoveredModel>): String? {
+    val level = codexReasoningEffortOrNull(stored) ?: return null
+    val choices = codexEffortChoices(models, modelId)
+    return level.takeIf { choices.isEmpty() || level in choices }
+}
 
 val DSH_PROTOCOL_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.KIMI,

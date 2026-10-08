@@ -176,6 +176,14 @@ class AppPreferences(
         get() = preferences.getString("codex_reasoning_effort", "") ?: ""
         set(value) { preferences.edit().putString("codex_reasoning_effort", value).apply() }
 
+    /** Last model list discovered for this agent, provider and endpoint. Settings and chat both read it. */
+    fun saveModelList(agent: AgentKind, kind: ProviderKind, baseUrl: String, models: List<com.jarves.mh.network.DiscoveredModel>) {
+        preferences.edit().putString(ModelListCache.key(agent, kind, baseUrl), ModelListCache.encode(models)).apply()
+    }
+
+    fun loadModelList(agent: AgentKind, kind: ProviderKind, baseUrl: String): List<com.jarves.mh.network.DiscoveredModel> =
+        ModelListCache.decode(preferences.getString(ModelListCache.key(agent, kind, baseUrl), null))
+
     var antigravityAccountEmail: String
         get() {
             val accounts = loadAntigravityAccounts()

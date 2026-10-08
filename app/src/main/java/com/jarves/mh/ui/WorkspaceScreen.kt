@@ -787,11 +787,15 @@ internal fun WorkspaceScreen(
             availableModels = when (slot) {
                 ModelSlot.ANTIGRAVITY -> state.antigravityModels.ifEmpty { ANTIGRAVITY_FALLBACK_MODELS }
                 ModelSlot.CLAUDE_SUBSCRIPTION -> CLAUDE_SUBSCRIPTION_MODELS.map { it.id }
-                ModelSlot.PROVIDER -> defaultModelsForProvider(state.provider.kind).map { it.id }
+                ModelSlot.PROVIDER -> state.providerModels
+                    .ifEmpty { defaultModelsForProvider(state.provider.kind) }
+                    .map { it.id }
             },
             provider = if (slot == ModelSlot.CLAUDE_SUBSCRIPTION) ProviderKind.CLAUDE else null,
             onSelectModel = onSelectModel,
             onDismiss = onCloseModelPicker,
+            defaultTitle = if (slot == ModelSlot.PROVIDER && state.provider.kind == ProviderKind.CHATGPT) "Codex default" else null,
+            defaultSubtitle = "Let Codex choose the model for your plan. Discover models in Settings to list more.",
         )
     }
     if (state.memoryViewerVisible) {

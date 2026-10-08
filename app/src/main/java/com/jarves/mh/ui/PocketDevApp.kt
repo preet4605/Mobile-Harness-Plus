@@ -445,6 +445,7 @@ private fun RootScreenHost(
                         viewModel.updateProvider(profile, key)
                     },
                     onDiscoverModels = viewModel::discoverModels,
+                    loadSavedModels = viewModel::savedModelList,
                     onValidateProvider = viewModel::validateProvider,
                     onPing = viewModel::pingApi,
                     getSavedApiKey = viewModel::getSavedApiKey,

@@ -61,6 +61,7 @@ import com.jarves.mh.runtime.ClaudeAuthStatusState
 import com.jarves.mh.runtime.ClaudeRuntimeBridge
 import com.jarves.mh.runtime.CodexAuthController
 import com.jarves.mh.runtime.CodexAuthState
+import com.jarves.mh.runtime.CodexModelCatalog
 import com.jarves.mh.runtime.CodexAuthStatus
 import com.jarves.mh.runtime.CodexRuntimeBridge
 import com.jarves.mh.model.AntigravityAccount
@@ -328,6 +329,8 @@ data class AppUiState(
     val auxiliaryInspectorVisible: Boolean = false,
     val skillsManagerVisible: Boolean = false,
     val modelPickerVisible: Boolean = false,
+    /** Saved model list for the active provider; refreshed when the picker opens. */
+    val providerModels: List<com.jarves.mh.network.DiscoveredModel> = emptyList(),
     val mentionMenuVisible: Boolean = false,
     val filteredMentionEntries: List<WorkspaceEntry> = emptyList(),
     /** True while the two-stage graceful→force interrupt sequence is in progress. */
@@ -350,6 +353,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val claudeRuntime = ClaudeRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
     private val dshRuntime = DshRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
     private val codexRuntime = CodexRuntimeBridge(application) { profile -> vault.get(profile.secretId) }
+    private val codexModelCatalog = CodexModelCatalog(application)
     private val installer = RuntimeInstaller(application)
     private val antigravityRuntime = AntigravityRuntimeBridge(
         application,
@@ -2323,9 +2327,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Discover from the provider, then keep the list so Settings and chat show the same models. */
     suspend fun discoverModels(profile: ProviderProfile, secret: String): ModelDiscoveryResult {
+        val result = fetchModelList(profile, secret)
+        // Antigravity lists carry live quota labels, so they are never saved.
+        if (result is ModelDiscoveryResult.Success && profile.kind != ProviderKind.ANTIGRAVITY_SERVER) {
+            preferences.saveModelList(_state.value.agentKind, profile.kind, profile.baseUrl, result.models)
+        }
+        return result
+    }
+
+    private suspend fun fetchModelList(profile: ProviderProfile, secret: String): ModelDiscoveryResult {
         if (profile.kind == ProviderKind.CHATGPT) {
-            return ModelDiscoveryResult.Failure("Model lists aren't available with ChatGPT sign-in. Enter a model ID, or leave it blank for Codex's default.")
+            return withContext(Dispatchers.IO) { codexModelCatalog.fetch() }
         }
         if (profile.kind == ProviderKind.CLAUDE) {
             return ModelDiscoveryResult.Success(com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS, "Claude Code")
@@ -3835,8 +3849,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleModelPicker(visible: Boolean? = null) {
-        _state.update { it.copy(modelPickerVisible = visible ?: !it.modelPickerVisible) }
+        _state.update { current ->
+            val open = visible ?: !current.modelPickerVisible
+            current.copy(
+                modelPickerVisible = open,
+                providerModels = if (open) savedModelsFor(current.agentKind, current.provider) else current.providerModels,
+            )
+        }
     }
+
+    /** Model lists saved by Discover in Settings, for this agent's provider and endpoint. */
+    fun savedModelsFor(agent: AgentKind, provider: ProviderProfile): List<com.jarves.mh.network.DiscoveredModel> =
+        preferences.loadModelList(agent, provider.kind, provider.baseUrl)
+
+    fun savedModelList(kind: ProviderKind, baseUrl: String): List<com.jarves.mh.network.DiscoveredModel> =
+        preferences.loadModelList(_state.value.agentKind, kind, baseUrl)
 
     fun setCustomizationScopeMode(mode: CustomizationScopeMode) {
         val project = _state.value.activeProject ?: return
@@ -4057,7 +4084,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     persistMessages()
                 } else {
-                    _state.update { it.copy(modelPickerVisible = true) }
+                    toggleModelPicker(true)
                 }
             }
             "thinking" -> {
