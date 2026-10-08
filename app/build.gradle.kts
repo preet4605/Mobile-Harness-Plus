@@ -160,6 +160,8 @@ android {
             isMinifyEnabled = false
             if (hasUploadSigning) {
                 signingConfig = signingConfigs.getByName("upload")
+            } else if (rootProject.file("debug.keystore").isFile) {
+                signingConfig = signingConfigs.getByName("debug")
             }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

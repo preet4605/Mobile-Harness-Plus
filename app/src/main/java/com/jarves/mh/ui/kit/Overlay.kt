@@ -602,7 +602,8 @@ private fun PopoverFrame(
     val presence = remember { Animatable(0f) }
     val host = LocalOverlayHost.current
     val origin = host?.origin ?: Offset.Zero
-    val anchorBounds = remember { anchor.bounds } ?: Rect(Offset.Zero, androidx.compose.ui.geometry.Size.Zero)
+    // The composer moves with the IME; keep following its live window bounds.
+    val anchorBounds = anchor.bounds ?: Rect(Offset.Zero, androidx.compose.ui.geometry.Size.Zero)
     LaunchedEffect(phase.exiting) {
         if (!phase.exiting) {
             presence.animateTo(1f, PocketMotion.spec(Token.Snappy))
@@ -645,7 +646,9 @@ private fun PopoverFrame(
                     }
                 }
             },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars).only(WindowInsetsSides.Bottom)),
         ) { measurables, constraints ->
             val loose = Constraints(maxWidth = constraints.maxWidth - margin * 2, maxHeight = constraints.maxHeight - margin * 2)
             val placeable = measurables.first().measure(loose)

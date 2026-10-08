@@ -3,6 +3,7 @@ package com.jarves.mh.ui
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Settings
@@ -13,7 +14,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.semantics.SemanticsActions
@@ -132,6 +135,30 @@ class OverlayKitTest {
         compose.onNodeWithText("Rename").performClick()
         assertEquals(1, renamed)
         assertFalse(expanded)
+    }
+
+    @Test
+    fun menu_followsItsAnchorWhileOpen() {
+        var anchorY by mutableStateOf((-24).dp)
+        host {
+            val anchor = rememberOverlayAnchor()
+            Box(Modifier.fillMaxSize()) {
+                Text("Options", Modifier.align(Alignment.BottomStart).offset(x = 24.dp, y = anchorY).overlayAnchor(anchor))
+                GlassMenu(expanded = true, onDismiss = {}, anchor = anchor) {
+                    GlassMenuItem("Attach files", onClick = {})
+                }
+            }
+        }
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.waitForIdle()
+        val before = compose.onNodeWithText("Attach files").fetchSemanticsNode().boundsInRoot
+        val anchorBefore = compose.onNodeWithText("Options").fetchSemanticsNode().boundsInRoot
+
+        compose.runOnIdle { anchorY = (-40).dp }
+        compose.waitForIdle()
+        val after = compose.onNodeWithText("Attach files").fetchSemanticsNode().boundsInRoot
+        val anchorAfter = compose.onNodeWithText("Options").fetchSemanticsNode().boundsInRoot
+        assertEquals("The open menu follows the moving composer", anchorAfter.top - anchorBefore.top, after.top - before.top, 1f)
     }
 
     @Test
