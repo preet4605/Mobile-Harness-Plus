@@ -352,10 +352,9 @@ private fun WorkspaceBar(
 }
 
 /**
- * The bar's single row. Leading and trailing slots sit at the edges. The centre slot gets all the
- * room between them and is centred on the row when it fits; a longer title slides toward the
- * narrower edge instead of being cut to the width of the wider one, and only ellipsizes once it
- * fills the gap.
+ * The bar's single row. Leading and trailing slots sit at the edges. The centre slot is always
+ * centred on the row: both sides reserve the width of the wider edge slot, so the title never
+ * drifts toward the narrower one, and it ellipsizes once it fills that balanced gap.
  */
 @Composable
 private fun BarRow(
@@ -377,12 +376,12 @@ private fun BarRow(
         val trailingPlaceable = measurables[2].measure(loose)
         val gap = PocketSpacing.sm.roundToPx()
         val width = constraints.maxWidth
-        val start = leadingPlaceable.width + gap
-        val end = width - trailingPlaceable.width - gap
+        val reserve = maxOf(leadingPlaceable.width, trailingPlaceable.width) + gap
+        val start = reserve
+        val end = width - reserve
         val centerPlaceable = measurables[1].measure(loose.copy(maxWidth = (end - start).coerceAtLeast(0)))
         val height = maxOf(leadingPlaceable.height, centerPlaceable.height, trailingPlaceable.height).coerceIn(constraints.minHeight, constraints.maxHeight)
-        val centered = (width - centerPlaceable.width) / 2
-        val x = if (end - start >= centerPlaceable.width) centered.coerceIn(start, end - centerPlaceable.width) else start
+        val x = (width - centerPlaceable.width) / 2
         layout(width, height) {
             leadingPlaceable.placeRelative(0, (height - leadingPlaceable.height) / 2)
             centerPlaceable.placeRelative(x, (height - centerPlaceable.height) / 2)
@@ -1483,7 +1482,7 @@ private fun ChatTab(
                 start = PocketSpacing.lg,
                 top = topClearance + PocketSpacing.md,
                 end = PocketSpacing.lg,
-                bottom = bottomChromeClearance + PocketSpacing.lg,
+                bottom = bottomChromeClearance + PocketSpacing.xxl,
             ),
             verticalArrangement = Arrangement.spacedBy(PocketSpacing.md),
         ) {
@@ -1532,7 +1531,7 @@ private fun ChatTab(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .height(bottomChromeClearance + PocketSpacing.lg),
+                .height(bottomChromeClearance + PocketSpacing.xxl),
             fromTop = false,
         ) { if (listState.canScrollForward) 1f else 0f }
         AnimatedVisibility(

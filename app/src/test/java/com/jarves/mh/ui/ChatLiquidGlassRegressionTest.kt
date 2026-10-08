@@ -74,6 +74,7 @@ class ChatLiquidGlassRegressionTest {
         assertTrue("Views switch from the menu on the chat title", workspace.contains("onTitleClick = { showViews = true }") && workspace.contains("GlassMenu(expanded = showViews"))
         assertTrue("Bar actions are one glass group", workspace.contains("GlassToolbarGroup {"))
         assertTrue("The bar softens content under it", functionBody("WorkspaceBar").contains("ScrollEdgeEffect("))
+        assertTrue("The title is centred on the row, with the wider edge reserved on both sides", functionBody("BarRow").contains("val x = (width - centerPlaceable.width) / 2"))
         listOf("TopAppBar(", "Scaffold(", "NavigationBar(", "AlertDialog(", "ModalBottomSheet(", "Card(").forEach {
             assertFalse("Workspace must not fall back to Material $it", Regex("""(?<![A-Za-z])${Regex.escape(it)}""").containsMatchIn(source))
         }
@@ -119,7 +120,7 @@ class ChatLiquidGlassRegressionTest {
     fun chatChrome_floatsWithMeasuredClearance() {
         assertEquals("No opaque Material surfaces in Chat", 0, calls(chat, "Surface").size)
         assertTrue(chat.contains("top = topClearance + PocketSpacing.md"))
-        assertTrue(chat.contains("bottom = bottomChromeClearance + PocketSpacing.lg"))
+        assertTrue("The last message clears the composer by a full xxl", chat.contains("bottom = bottomChromeClearance + PocketSpacing.xxl"))
         assertTrue(chat.contains(".padding(bottom = bottomChromeClearance + PocketSpacing.md)"))
         assertTrue(
             "Composer stack clears the navigation bar and the tab bar, and follows the keyboard",
