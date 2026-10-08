@@ -48,15 +48,19 @@ class GlassEngineTest {
     }
 
     @Test
-    fun scrolling_recapturesEveryFrameAtReducedResolution() {
+    fun scrolling_recapturesAboutThirtyTimesAPastSecondAtReducedResolution() {
         val config = LiquidGlassConfig()
-        assertEquals(0L, config.debounceMs)
+        assertEquals(SCROLL_RECAPTURE_INTERVAL_MS, config.debounceMs)
         assertEquals(0.5f, config.scaleFactor)
-        // An explicit invalidation (scroll) with no minimum interval captures immediately,
-        // even 4 ms after the last capture (faster than a 120 Hz frame).
+        // A scroll invalidation 4 ms after the last capture waits for the rest of the interval.
+        assertEquals(
+            SCROLL_RECAPTURE_INTERVAL_MS - 4L,
+            backdropRecaptureDelayMs(1_004L, 1_000L, invalidated = true, resized = false, minIntervalMs = config.debounceMs, contentIntervalMs = CONTENT_RECAPTURE_INTERVAL_MS),
+        )
+        // Once the interval has passed, the next scroll capture is immediate.
         assertEquals(
             0L,
-            backdropRecaptureDelayMs(1_004L, 1_000L, invalidated = true, resized = false, minIntervalMs = config.debounceMs, contentIntervalMs = CONTENT_RECAPTURE_INTERVAL_MS),
+            backdropRecaptureDelayMs(1_000L + SCROLL_RECAPTURE_INTERVAL_MS, 1_000L, invalidated = true, resized = false, minIntervalMs = config.debounceMs, contentIntervalMs = CONTENT_RECAPTURE_INTERVAL_MS),
         )
         // Content animating inside the source stays throttled.
         assertTrue(

@@ -8,14 +8,22 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.compositionLocalOf
 
 /**
+ * Shortest gap between backdrop captures while a list scrolls (about 30 a second). Each capture
+ * re-renders the visible content and re-blurs every glass surface, so capturing on every frame
+ * cost the whole frame budget. The list itself still draws at the display rate; glass shows a
+ * blurred sample at most this far behind it.
+ */
+internal const val SCROLL_RECAPTURE_INTERVAL_MS = 33L
+
+/**
  * Runtime configuration for Liquid Glass rendering, performance budgets, and accessibility.
  *
  * @param enabled Master toggle to enable or disable glass effects globally.
  * @param enableRefraction Whether the AGSL lens tier may run (Android 13+ only). Kill switch.
  * @param reduceTransparency Accessibility override. When true, switches to opaque, high-contrast surfaces.
  * @param scaleFactor Backdrop capture resolution (0.5 = half: a quarter of the pixels; the blur hides the loss).
- * @param debounceMs Minimum interval between captures caused by scrolling. 0 = every frame, so glass
- *   keeps up with the list at any refresh rate.
+ * @param debounceMs Minimum interval between captures caused by scrolling. Defaults to
+ *   [SCROLL_RECAPTURE_INTERVAL_MS]; 0 captures every frame and costs the frame budget.
  * @param dispersion Colour split at the lens edge (0 turns it off). Kill switch.
  * @param adaptiveWash Lens tier: denser wash over bright (dark mode) or dark (light mode) content.
  * @param edgeLight Lens tier: soft inner highlight facing the light.
@@ -31,7 +39,7 @@ data class LiquidGlassConfig(
     val enableRefraction: Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU,
     val reduceTransparency: Boolean = false,
     val scaleFactor: Float = 0.5f,
-    val debounceMs: Long = 0L,
+    val debounceMs: Long = SCROLL_RECAPTURE_INTERVAL_MS,
     val dispersion: Float = 0.12f,
     val adaptiveWash: Boolean = true,
     val edgeLight: Boolean = true,
@@ -56,7 +64,7 @@ data class LiquidGlassConfig(
             userPreference: Boolean = false,
             enabled: Boolean = true,
             scaleFactor: Float = 0.5f,
-            debounceMs: Long = 0L,
+            debounceMs: Long = SCROLL_RECAPTURE_INTERVAL_MS,
         ): LiquidGlassConfig {
             val systemReduced = if (context != null && Build.VERSION.SDK_INT >= 34) {
                 runCatching {
@@ -85,7 +93,7 @@ data class LiquidGlassConfig(
             context: Context? = null,
             enabled: Boolean = true,
             scaleFactor: Float = 0.5f,
-            debounceMs: Long = 0L,
+            debounceMs: Long = SCROLL_RECAPTURE_INTERVAL_MS,
         ): LiquidGlassConfig {
             return resolve(
                 context = context,
