@@ -892,6 +892,8 @@ internal fun WorkspaceScreen(
                                 WorkspaceTab.TERMINAL -> Box(
                                     Modifier
                                         .fillMaxSize()
+                                        .hostBackdropSource()
+                                        .background(MaterialTheme.colorScheme.background)
                                         .padding(top = top)
                                         .windowInsetsPadding(bottomInsets)
                                         .clipToBounds(),
@@ -921,6 +923,8 @@ internal fun WorkspaceScreen(
                                 WorkspaceTab.PREVIEW -> Box(
                                     Modifier
                                         .fillMaxSize()
+                                        .hostBackdropSource()
+                                        .background(MaterialTheme.colorScheme.background)
                                         .padding(top = top)
                                         .windowInsetsPadding(bottomInsets)
                                         .clipToBounds(),

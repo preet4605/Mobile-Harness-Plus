@@ -107,6 +107,32 @@ class ChatLiquidGlassRegressionTest {
     }
 
     @Test
+    fun terminalAndPreview_captureCanvasWithChromeAsSiblings() {
+        listOf("TERMINAL", "PREVIEW").forEach { tab ->
+            val start = workspace.indexOf("WorkspaceTab.$tab -> Box(")
+            assertTrue("$tab content box exists", start >= 0)
+            val box = callAt(workspace, start, withBlock = true)
+            val modifier = callAt(workspace, start)
+            assertEquals("$tab has exactly one source", 1, Regex("""hostBackdropSource\(\)""").findAll(box).count())
+            val capture = modifier.indexOf(".hostBackdropSource()")
+            val canvas = modifier.indexOf(".background(MaterialTheme.colorScheme.background)")
+            val padding = modifier.indexOf(".padding(top = top)")
+            assertTrue("$tab captures the canvas behind both bars", capture >= 0 && canvas > capture && padding > canvas)
+            assertFalse("Workspace bar must not sample itself", box.contains("WorkspaceBar("))
+            assertFalse("Tab bar must not sample itself", box.contains("WorkspaceTabBar("))
+        }
+    }
+
+    @Test
+    fun glassGroups_useIndividualFallbackUntilCaptureIsReady() {
+        val group = read("theme/glass/GlassGroup.kt")
+        val start = group.indexOf("val merging =")
+        val end = group.indexOf("val state =", start)
+        assertTrue("Merging eligibility exists", start >= 0 && end > start)
+        assertTrue("No capture must leave members on their existing fallback path", group.substring(start, end).contains("backdrop.hasCapture"))
+    }
+
+    @Test
     fun workspaceTabs_scrollingViewsAreSources_othersStartBelowTheBar() {
         assertEquals("Files list is its view's one source", 1, Regex("""hostBackdropSource\(\)""").findAll(functionBody("FilesTab")).count())
         assertEquals("Terminal and Preview start below the bar", 2, Regex("""\.padding\(top = top\)""").findAll(workspace).count())

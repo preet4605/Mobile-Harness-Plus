@@ -68,7 +68,8 @@ fun GlassGroup(
 ) {
     val config = LocalLiquidGlassConfig.current
     val backdrop = LocalLiquidGlassBackdrop.current
-    val merging = config.mergeShapes && backdrop != null &&
+    // Members draw their normal glass fallback until the shared capture is ready.
+    val merging = config.mergeShapes && backdrop != null && backdrop.hasCapture &&
         glassTier(config, samplesBackdrop = true) == GlassTier.Lens
     val state = remember(merging) { GlassGroupState(merging) }
     val groupModifier = if (merging && backdrop != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
