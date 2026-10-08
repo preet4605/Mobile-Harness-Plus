@@ -36,7 +36,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -45,6 +48,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -89,7 +94,7 @@ fun MarkdownText(
                     modifier = Modifier.padding(vertical = 4.dp),
                 )
                 is MarkdownBlock.Paragraph -> {
-                    Text(
+                    InlineMarkdownText(
                         text = formatInlineMarkdown(block.text),
                         style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
                         color = color,
@@ -107,7 +112,7 @@ private fun HeaderBlock(header: MarkdownBlock.Header) {
         2 -> MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 17.sp)
         else -> MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
     }
-    Text(
+    InlineMarkdownText(
         text = formatInlineMarkdown(header.text),
         style = style,
         color = MaterialTheme.colorScheme.onSurface,
@@ -129,7 +134,7 @@ private fun BulletBlock(item: MarkdownBlock.BulletItem, color: Color) {
                 .size(5.dp)
                 .background(MaterialTheme.colorScheme.onSurfaceVariant, CircleShape),
         )
-        Text(
+        InlineMarkdownText(
             text = formatInlineMarkdown(item.text),
             style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
             color = color,
@@ -149,7 +154,7 @@ private fun NumberedBlock(item: MarkdownBlock.NumberedItem, color: Color) {
             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant),
             modifier = Modifier.padding(end = 6.dp),
         )
-        Text(
+        InlineMarkdownText(
             text = formatInlineMarkdown(item.text),
             style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
             color = color,
@@ -175,7 +180,7 @@ private fun QuoteBlock(quote: MarkdownBlock.BlockQuote) {
                 .background(MaterialTheme.colorScheme.outline, RoundedCornerShape(2.dp)),
         )
         Spacer(Modifier.width(10.dp))
-        Text(
+        InlineMarkdownText(
             text = formatInlineMarkdown(quote.text),
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontStyle = FontStyle.Italic,
@@ -295,7 +300,6 @@ private fun Modifier.scrollEdgeFade(scroll: ScrollState): Modifier = this
 internal fun buildInlineMarkdown(
     text: String,
     primaryColor: Color,
-    codeBg: Color,
     codeColor: Color,
 ): AnnotatedString {
     return buildAnnotatedString {
@@ -312,10 +316,10 @@ internal fun buildInlineMarkdown(
                         val nextChar = text.getOrNull(end + 1)
                         val hasTrailingPunctuation = nextChar != null && nextChar in ":,.;!?)'\""
                         val trailingSpace = if (hasTrailingPunctuation) "" else " "
+                        pushStringAnnotation(InlineCodeTag, CodeChipAnnotation)
                         withStyle(
                             SpanStyle(
                                 fontFamily = FontFamily.Monospace,
-                                background = codeBg,
                                 color = codeColor,
                                 fontSize = 12.5.sp,
                                 fontWeight = FontWeight.SemiBold,
@@ -323,6 +327,7 @@ internal fun buildInlineMarkdown(
                         ) {
                             append(" $codeContent$trailingSpace")
                         }
+                        pop()
                         i = end + 1
                     } else {
                         append(text[i])
@@ -404,19 +409,20 @@ internal fun buildInlineMarkdown(
                         val isCodeLabel = rawLabel.startsWith("`") && rawLabel.endsWith("`") && rawLabel.length >= 2
                         val label = if (isCodeLabel) rawLabel.removeSurrounding("`") else rawLabel
 
+                        if (isCodeLabel) pushStringAnnotation(InlineCodeTag, LabelChipAnnotation)
                         withStyle(
                             SpanStyle(
                                 color = primaryColor,
                                 textDecoration = TextDecoration.Underline,
                                 fontWeight = if (isCodeLabel) FontWeight.SemiBold else FontWeight.Medium,
                                 fontFamily = if (isCodeLabel) FontFamily.Monospace else null,
-                                background = if (isCodeLabel) codeBg.copy(alpha = 0.45f) else Color.Transparent,
                             ),
                         ) {
                             if (isCodeLabel) append(" ")
                             append(label)
                             if (isCodeLabel) append(" ")
                         }
+                        if (isCodeLabel) pop()
                         i = closeParen + 1
                     } else {
                         append(text[i])
@@ -432,15 +438,80 @@ internal fun buildInlineMarkdown(
     }
 }
 
+/** Tags inline code spans so [InlineMarkdownText] can draw a rounded chip behind each. */
+internal const val InlineCodeTag = "inlineCode"
+private const val CodeChipAnnotation = "code"
+private const val LabelChipAnnotation = "label"
+private val InlineCodeRadius = 5.dp
+
 @Composable
 private fun formatInlineMarkdown(text: String): AnnotatedString {
-    val codeBg = MaterialTheme.colorScheme.surfaceVariant
     val codeColor = MaterialTheme.colorScheme.onSurface
     val primaryColor = MaterialTheme.colorScheme.primary
 
-    return remember(text, codeBg, codeColor, primaryColor) {
-        buildInlineMarkdown(text, primaryColor, codeBg, codeColor)
+    return remember(text, codeColor, primaryColor) {
+        buildInlineMarkdown(text, primaryColor, codeColor)
     }
+}
+
+/**
+ * Text with a rounded chip behind each inline code span. Chips are drawn from the laid-out glyph
+ * boxes, so they wrap with the text and the string itself stays selectable and copyable.
+ */
+@Composable
+private fun InlineMarkdownText(
+    text: AnnotatedString,
+    style: TextStyle,
+    modifier: Modifier = Modifier,
+    color: Color = Color.Unspecified,
+) {
+    val chipColor = MaterialTheme.colorScheme.surfaceVariant
+    var chips by remember(text) { mutableStateOf(emptyList<InlineCodeChip>()) }
+    Text(
+        text = text,
+        style = style,
+        color = color,
+        modifier = modifier.drawBehind {
+            chips.forEach { chip ->
+                drawRoundRect(
+                    color = if (chip.label) chipColor.copy(alpha = 0.45f) else chipColor,
+                    topLeft = chip.bounds.topLeft,
+                    size = chip.bounds.size,
+                    cornerRadius = CornerRadius(InlineCodeRadius.toPx()),
+                )
+            }
+        },
+        onTextLayout = { chips = inlineCodeChips(it, text) },
+    )
+}
+
+private data class InlineCodeChip(val bounds: Rect, val label: Boolean)
+
+/** One chip per code span per line it occupies, sized to the glyph boxes on that line. */
+private fun inlineCodeChips(layout: TextLayoutResult, text: AnnotatedString): List<InlineCodeChip> {
+    val chips = mutableListOf<InlineCodeChip>()
+    text.getStringAnnotations(InlineCodeTag, 0, text.length).forEach { span ->
+        var offset = span.start
+        while (offset < span.end) {
+            val line = layout.getLineForOffset(offset)
+            val lineEnd = minOf(layout.getLineEnd(line), span.end)
+            if (lineEnd <= offset) break
+            var left = Float.MAX_VALUE
+            var top = Float.MAX_VALUE
+            var right = -Float.MAX_VALUE
+            var bottom = -Float.MAX_VALUE
+            for (i in offset until lineEnd) {
+                val box = layout.getBoundingBox(i)
+                left = minOf(left, box.left)
+                top = minOf(top, box.top)
+                right = maxOf(right, box.right)
+                bottom = maxOf(bottom, box.bottom)
+            }
+            if (right > left) chips += InlineCodeChip(Rect(left, top, right, bottom), span.item == LabelChipAnnotation)
+            offset = lineEnd
+        }
+    }
+    return chips
 }
 
 internal fun parseMarkdown(raw: String): List<MarkdownBlock> {

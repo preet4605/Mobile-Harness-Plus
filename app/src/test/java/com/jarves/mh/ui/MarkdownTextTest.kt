@@ -77,10 +77,9 @@ class MarkdownTextTest {
     fun testBuildInlineMarkdownStripsLinkCodeBackticks() {
         val raw = "[`app-online-debug.apk`](file:///workspace/clever-kalam/app-online-debug.apk)"
         val primary = Color.Cyan
-        val codeBg = Color.DarkGray
         val codeColor = Color.Yellow
 
-        val annotated = buildInlineMarkdown(raw, primary, codeBg, codeColor)
+        val annotated = buildInlineMarkdown(raw, primary, codeColor)
         val text = annotated.text
 
         // Backticks should be stripped from link label
@@ -99,13 +98,23 @@ class MarkdownTextTest {
     fun testBuildInlineMarkdownTrailingPunctuation() {
         val raw = "File `app.apk`: ready for test."
         val primary = Color.Cyan
-        val codeBg = Color.DarkGray
         val codeColor = Color.Yellow
 
-        val annotated = buildInlineMarkdown(raw, primary, codeBg, codeColor)
+        val annotated = buildInlineMarkdown(raw, primary, codeColor)
         val text = annotated.text
 
         // There should not be a space between app.apk and the colon
         assertEquals("File  app.apk: ready for test.", text)
+    }
+
+    @Test
+    fun testBuildInlineMarkdownTagsCodeSpansForChips() {
+        val annotated = buildInlineMarkdown("Run `gradle` and [`app.apk`](file:///a.apk)", Color.Cyan, Color.Yellow)
+
+        // Inline code and linked code labels both get a chip; the chip covers the padded span text.
+        val chips = annotated.getStringAnnotations(InlineCodeTag, 0, annotated.length)
+        assertEquals(2, chips.size)
+        assertEquals(" gradle ", annotated.text.substring(chips[0].start, chips[0].end))
+        assertEquals(" app.apk ", annotated.text.substring(chips[1].start, chips[1].end))
     }
 }
