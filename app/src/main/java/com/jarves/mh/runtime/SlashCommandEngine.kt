@@ -46,6 +46,12 @@ object SlashCommandEngine {
             isLocalOnly = true,
         ),
         SlashCommand(
+            name = "usage",
+            description = "Show plan usage, limits, and this chat's token totals",
+            category = SlashCommandCategory.DIAGNOSTICS,
+            isLocalOnly = true,
+        ),
+        SlashCommand(
             name = "model",
             description = "Display active model, quota, and switch reasoning effort",
             category = SlashCommandCategory.CONFIG,

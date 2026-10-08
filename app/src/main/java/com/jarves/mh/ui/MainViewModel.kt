@@ -337,6 +337,9 @@ data class AppUiState(
     /** Saved model list for the active provider; refreshed when the picker opens. */
     val providerModels: List<com.jarves.mh.network.DiscoveredModel> = emptyList(),
     val effortPickerVisible: Boolean = false,
+    /** Plan usage the active agent last reported; refreshed only on request. */
+    val usage: com.jarves.mh.model.AgentUsage = com.jarves.mh.model.AgentUsage(),
+    val usageRefreshing: Boolean = false,
     val mentionMenuVisible: Boolean = false,
     val filteredMentionEntries: List<WorkspaceEntry> = emptyList(),
     /** True while the two-stage graceful→force interrupt sequence is in progress. */
@@ -1651,6 +1654,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 activeApiKeyName = vault.list(provider.secretId).firstOrNull(ApiKeyInfo::isActive)?.name,
                 // Ping results belong to the previous agent; never leak them across.
                 apiPingStatus = ApiPingStatus.IDLE,
+                usage = com.jarves.mh.model.AgentUsage(),
                 apiPingMessage = null,
             )
         }
@@ -3919,6 +3923,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return EffortChange.Applied(effortLabel(agent, value))
     }
 
+    /** Refreshes the Usage section. Manual only: nothing polls. */
+    fun refreshUsage() {
+        if (_state.value.usageRefreshing) return
+        _state.update { it.copy(usageRefreshing = true) }
+        viewModelScope.launch {
+            val usage = loadUsage()
+            _state.update { it.copy(usage = usage, usageRefreshing = false) }
+        }
+    }
+
+    /** Reads the active agent's plan usage. Network work runs on IO; failures come back as a note, never a throw. */
+    private suspend fun loadUsage(): com.jarves.mh.model.AgentUsage {
+        val current = _state.value
+        val usage = when (current.agentKind) {
+            AgentKind.CODEX -> withContext(Dispatchers.IO) { codexModelCatalog.fetchUsage() }
+            AgentKind.CLAUDE_CODE -> com.jarves.mh.runtime.ClaudeUsageReport.parse(preferences.claudeRateLimitEvent)
+            AgentKind.ANTIGRAVITY -> com.jarves.mh.runtime.AntigravityUsageReport.from(
+                current.antigravityAccounts.firstOrNull { it.isPrimary } ?: current.antigravityAccounts.firstOrNull(),
+            )
+            AgentKind.DEEPSEEK_HARNESS -> if (current.provider.kind == ProviderKind.DEEPSEEK) {
+                val key = vault.get(current.provider.secretId).orEmpty()
+                if (key.isBlank()) {
+                    com.jarves.mh.model.AgentUsage(note = "Save a DeepSeek API key to see your balance.")
+                } else {
+                    withContext(Dispatchers.IO) { com.jarves.mh.runtime.DeepSeekBalanceReport.fetch(key) }
+                }
+            } else {
+                com.jarves.mh.model.AgentUsage(note = "Balance is shown for the DeepSeek provider only.")
+            }
+        }
+        return usage.copy(checkedAtMillis = System.currentTimeMillis())
+    }
+
     /** Codex levels the selected model lists in the saved catalog. Empty for other agents or when unknown. */
     private fun codexModelLevelsNow(): List<String> {
         val current = _state.value
@@ -4154,6 +4191,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     persistMessages()
                 } else {
                     toggleModelPicker(true)
+                }
+            }
+            "usage" -> {
+                val pending = ChatMessage(fromUser = false, text = "Checking usage…")
+                _state.update { it.copy(messages = it.messages + ChatMessage(fromUser = true, text = "/usage") + pending) }
+                viewModelScope.launch {
+                    val usage = loadUsage()
+                    _state.update { current ->
+                        val summary = com.jarves.mh.model.usageSummary(current.agentKind, current.tokenMetrics, usage)
+                        current.copy(
+                            usage = usage,
+                            messages = current.messages.dropLast(1) + ChatMessage(fromUser = false, text = summary),
+                        )
+                    }
+                    persistMessages()
                 }
             }
             "effort" -> {

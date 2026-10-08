@@ -1,6 +1,10 @@
 package com.jarves.mh.runtime
 
 import android.content.Context
+import com.jarves.mh.model.AgentUsage
+import com.jarves.mh.model.UsageLimit
+import com.jarves.mh.model.usageResetText
+import com.jarves.mh.model.usageWindowLabel
 import com.jarves.mh.network.DiscoveredModel
 import com.jarves.mh.network.ModelDiscoveryResult
 import org.json.JSONObject
@@ -16,14 +20,24 @@ import java.io.RandomAccessFile
 internal class CodexModelCatalog(private val context: Context) {
     private val installer = RuntimeInstaller(context)
 
-    fun fetch(): ModelDiscoveryResult {
+    fun fetch(): ModelDiscoveryResult = withAppServer(
+        failure = { ModelDiscoveryResult.Failure(it) },
+    ) { process, output -> readCatalog(process, output) }
+
+    /** Plan limits of the signed-in ChatGPT account. Blocking, so call from IO. Never throws. */
+    fun fetchUsage(): AgentUsage = withAppServer(
+        failure = { AgentUsage(note = it) },
+    ) { process, output -> readUsage(process, output) }
+
+    /** Starts one app-server process, runs [body], and always kills the process and removes its capture file. */
+    private fun <T> withAppServer(failure: (String) -> T, body: (NativeSpawnProcess, File) -> T): T {
         if (!installer.isCodexInstalled()) {
-            return ModelDiscoveryResult.Failure("Codex is not installed. Open Settings → Coding agent and tap Install.")
+            return failure("Codex is not installed. Open Settings → Coding agent and tap Install.")
         }
         val runtime = runCatching { installer.installedRuntime() }
-            .getOrElse { return ModelDiscoveryResult.Failure(it.message ?: "The core runtime is not ready.") }
+            .getOrElse { return failure(it.message ?: "The core runtime is not ready.") }
         val workspace = File(context.filesDir, "workspaces/$WORKSPACE").apply { mkdirs() }
-        val output = File(context.cacheDir, "codex-models-${System.nanoTime()}.log")
+        val output = File(context.cacheDir, "codex-app-server-${System.nanoTime()}.log")
         val process = runCatching {
             installer.process(
                 proot = runtime.proot,
@@ -35,13 +49,36 @@ internal class CodexModelCatalog(private val context: Context) {
                 emulateHardLinks = false,
                 outputFile = output,
             ) as? NativeSpawnProcess
-        }.getOrNull() ?: return ModelDiscoveryResult.Failure("Codex could not start to read its model list.")
+        }.getOrNull() ?: return failure("Codex could not start to read its data.")
         return try {
-            readCatalog(process, output)
+            body(process, output)
         } finally {
             runCatching { process.outputStream.close() }
             runCatching { if (process.isAlive) process.destroyForcibly() }
             runCatching { output.delete() }
+        }
+    }
+
+    private fun readUsage(process: NativeSpawnProcess, output: File): AgentUsage {
+        val reader = CaptureLineReader(output)
+        val deadline = System.currentTimeMillis() + TIMEOUT_MS
+        val started = send(process, CodexAppServerProtocol.initializeRequest(INIT_ID)) &&
+            send(process, CodexAppServerProtocol.initializedNotification()) &&
+            send(process, CodexAppServerProtocol.rateLimitsRequest(LIST_ID_FIRST))
+        if (!started) return AgentUsage(note = "Codex stopped before it reported usage.")
+        while (true) {
+            val alive = process.isAlive
+            for (line in reader.readLines()) {
+                val reply = CodexAppServerProtocol.parseReply(line) ?: continue
+                if (reply.id != LIST_ID_FIRST) continue
+                reply.errorMessage?.let { return CodexAppServerProtocol.usageError(it) }
+                return CodexAppServerProtocol.parseRateLimits(reply.result ?: JSONObject())
+            }
+            if (!alive) return AgentUsage(note = "Codex stopped before it reported usage.")
+            if (System.currentTimeMillis() >= deadline) {
+                return AgentUsage(note = "Codex did not report usage within ${TIMEOUT_MS / 1000} seconds.")
+            }
+            Thread.sleep(POLL_MS)
         }
     }
 
@@ -181,6 +218,51 @@ internal object CodexAppServerProtocol {
     )
 
     fun initializedNotification(): String = line(JSONObject().put("jsonrpc", "2.0").put("method", "initialized"))
+
+    fun rateLimitsRequest(id: Int): String = line(
+        JSONObject().put("jsonrpc", "2.0").put("id", id).put("method", "account/rateLimits/read"),
+    )
+
+    /** Codex refuses the read without a ChatGPT sign-in; say what to do rather than echoing the server text. */
+    fun usageError(message: String): AgentUsage = AgentUsage(
+        note = if (message.contains("authentication", ignoreCase = true)) {
+            "Usage needs ChatGPT sign-in. Sign in from Settings → Coding agent."
+        } else {
+            message.take(200)
+        },
+    )
+
+    /** Limits from `account/rateLimits/read`: the primary and secondary windows, plus plan and credits when reported. */
+    fun parseRateLimits(result: JSONObject): AgentUsage {
+        val snapshot = result.optJSONObject("rateLimits")
+        val limits = buildList {
+            for (key in listOf("primary", "secondary")) {
+                val window = snapshot?.optJSONObject(key) ?: continue
+                if (window.isNull("usedPercent")) continue
+                val minutes = if (window.isNull("windowDurationMins")) null else window.optLong("windowDurationMins")
+                val resets = if (window.isNull("resetsAt")) null else window.optLong("resetsAt")
+                add(UsageLimit(usageWindowLabel(minutes), "${window.optInt("usedPercent")}% used${usageResetText(resets)}"))
+            }
+        }
+        val notes = mutableListOf<String>()
+        val plan = snapshot?.takeIf { !it.isNull("planType") }?.optString("planType").orEmpty()
+        if (plan.isNotBlank()) notes += "Plan: $plan"
+        if (!result.isNull("ordinaryUsageAllowed") && !result.optBoolean("ordinaryUsageAllowed")) {
+            notes += "Usage is paused for this account."
+        }
+        val credits = snapshot?.optJSONObject("credits")
+        val balance = when {
+            credits == null -> null
+            credits.optBoolean("unlimited") -> "Credits: unlimited"
+            credits.optBoolean("hasCredits") && !credits.isNull("balance") -> "Credits: ${credits.optString("balance")}"
+            else -> null
+        }
+        return AgentUsage(
+            limits = limits,
+            balance = balance,
+            note = notes.takeIf { it.isNotEmpty() }?.joinToString(" "),
+        )
+    }
 
     fun modelListRequest(id: Int, cursor: String?): String {
         val params = JSONObject()

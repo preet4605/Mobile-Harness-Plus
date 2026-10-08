@@ -360,6 +360,9 @@ class ClaudeRuntimeBridge(
                                         process.destroyForcibly()
                                         throw ProviderSessionException(reason)
                                     }
+                                    if (line.contains("\"rate_limit_event\"")) {
+                                        runCatching { com.jarves.mh.data.AppPreferences(context).claudeRateLimitEvent = line.take(4096) }
+                                    }
                                     if (!consumeClaudeEvent(sessionId, line)) {
                                         lastDiagnostic = line.takeLast(500)
                                         runCatching {

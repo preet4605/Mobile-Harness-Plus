@@ -218,6 +218,7 @@ fun AgentScreen(
     onSetAntigravityModel: (String) -> Unit = {},
     onSetAntigravityEffort: (String) -> Unit = {},
     onSetCodexReasoningEffort: (String) -> Unit = {},
+    onRefreshUsage: () -> Unit = {},
     onStartClaudeLogin: () -> Unit = {},
     onCancelClaudeLogin: () -> Unit = {},
     onSubmitClaudeCode: (String) -> Unit = {},
@@ -787,6 +788,10 @@ fun AgentScreen(
                 }
             }
 
+            if (viewedAgent == state.agentKind && viewedAgentInstalled) {
+                item(key = "usage") { AgentUsageSection(state = state, onRefresh = onRefreshUsage) }
+            }
+
             item(key = "updates") {
                 AgentUpdatesSection(state = state, onCheck = onCheckAgentUpdates, onUpdate = onUpdateAgent)
             }
@@ -955,6 +960,33 @@ private fun StatusCaption(color: Color, label: String) {
         Box(Modifier.size(8.dp).clip(PocketShape.capsule).background(color))
         Spacer(Modifier.width(PocketSpacing.xs + 2.dp))
         Text(label, style = PocketType.footnote, color = PocketColors.current.secondaryLabel)
+    }
+}
+
+/** Plan usage for the active agent, read only when the user taps Refresh usage (or runs /usage). */
+@Composable
+private fun AgentUsageSection(state: AppUiState, onRefresh: () -> Unit) {
+    val tokens = state.tokenMetrics
+    val usage = state.usage
+    ListSection(
+        header = "Usage",
+        footer = "Session totals come from this chat. Limits are read only when you refresh.",
+    ) {
+        ListRow(
+            "This session",
+            subtitle = "${tokens.promptTokens} in · ${tokens.completionTokens} out · ${tokens.cachedTokens} cached tokens",
+            subtitleMaxLines = 2,
+        )
+        usage.limits.forEach { limit ->
+            ListRow(limit.label, subtitle = limit.detail, subtitleMaxLines = 2)
+        }
+        usage.balance?.let { ListRow("Balance", subtitle = it, subtitleMaxLines = 2) }
+        usage.note?.let { ListRow(it, subtitleMaxLines = 3) }
+        ListRow(
+            if (state.usageRefreshing) "Refreshing usage…" else "Refresh usage",
+            titleColor = MaterialTheme.colorScheme.primary,
+            onClick = onRefresh,
+        )
     }
 }
 

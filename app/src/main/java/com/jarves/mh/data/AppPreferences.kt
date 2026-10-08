@@ -184,6 +184,11 @@ class AppPreferences(
     fun loadModelList(agent: AgentKind, kind: ProviderKind, baseUrl: String): List<com.jarves.mh.network.DiscoveredModel> =
         ModelListCache.decode(preferences.getString(ModelListCache.key(agent, kind, baseUrl), null))
 
+    /** The last `rate_limit_event` line Claude printed, kept for the Usage section. */
+    var claudeRateLimitEvent: String?
+        get() = preferences.getString("claude_rate_limit_event", null)
+        set(value) { preferences.edit().putString("claude_rate_limit_event", value).apply() }
+
     var antigravityAccountEmail: String
         get() {
             val accounts = loadAntigravityAccounts()

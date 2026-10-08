@@ -2,6 +2,9 @@ package com.jarves.mh.model
 
 import com.jarves.mh.network.DiscoveredModel
 import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import java.text.Normalizer
 import java.util.Locale
 import java.util.UUID
@@ -838,4 +841,44 @@ data class SessionTokenMetrics(
     val estimatedCostUsd: Double = 0.0,
 )
 
+/** One limit an agent reports, as the Usage section shows it: [detail] is a short line such as "42% used · resets Thu 18:30". */
+data class UsageLimit(val label: String, val detail: String)
+
+/** Plan usage the active agent last reported. Empty lists and nulls mean the agent did not report that part. */
+data class AgentUsage(
+    val limits: List<UsageLimit> = emptyList(),
+    val balance: String? = null,
+    val note: String? = null,
+    val checkedAtMillis: Long? = null,
+)
+
+/** Label for a rate-limit window length in minutes, for example 300 is "5-hour limit" and 10080 is "Weekly limit". */
+fun usageWindowLabel(minutes: Long?): String = when {
+    minutes == null || minutes <= 0L -> "Limit"
+    minutes == 300L -> "5-hour limit"
+    minutes == 10080L -> "Weekly limit"
+    minutes % 1440L == 0L -> "${minutes / 1440L}-day limit"
+    minutes % 60L == 0L -> "${minutes / 60L}-hour limit"
+    else -> "$minutes-minute limit"
+}
+
+/** " · resets Thu 18:30" for a Unix time in seconds, or an empty string when the reset is unknown. */
+fun usageResetText(epochSeconds: Long?): String {
+    if (epochSeconds == null || epochSeconds <= 0L) return ""
+    val local = ZonedDateTime.ofInstant(Instant.ofEpochSecond(epochSeconds), ZoneId.systemDefault())
+    return " · resets " + DateTimeFormatter.ofPattern("EEE HH:mm", Locale.ENGLISH).format(local)
+}
+
+/** The /usage reply: this chat's token totals, then whatever limits the agent reported. */
+fun usageSummary(agent: AgentKind, session: SessionTokenMetrics, usage: AgentUsage): String = buildString {
+    appendLine("### Usage · ${agent.title}")
+    appendLine("- Session: ${session.promptTokens} in · ${session.completionTokens} out · ${session.cachedTokens} cached tokens")
+    if (session.estimatedCostUsd > 0.0) appendLine("- Estimated cost: $${"%.4f".format(Locale.ROOT, session.estimatedCostUsd)}")
+    usage.limits.forEach { appendLine("- ${it.label}: ${it.detail}") }
+    usage.balance?.let { appendLine("- Balance: $it") }
+    usage.note?.let { appendLine(it) }
+    if (usage.limits.isEmpty() && usage.balance == null && usage.note == null) {
+        appendLine("No limits reported yet. Use Refresh usage in Settings.")
+    }
+}.trimEnd()
 
