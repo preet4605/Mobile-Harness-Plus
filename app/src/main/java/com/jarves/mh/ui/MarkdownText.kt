@@ -59,6 +59,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarves.mh.ui.theme.PocketRadius
+import com.jarves.mh.ui.theme.PocketType
+import com.jarves.mh.ui.theme.emphasized
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -108,9 +110,9 @@ fun MarkdownText(
 @Composable
 private fun HeaderBlock(header: MarkdownBlock.Header) {
     val style = when (header.level) {
-        1 -> MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold, fontSize = 20.sp)
-        2 -> MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 17.sp)
-        else -> MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+        1 -> PocketType.title3.copy(fontWeight = FontWeight.Bold)
+        2 -> PocketType.headline.copy(fontWeight = FontWeight.Bold)
+        else -> PocketType.subheadline.emphasized
     }
     InlineMarkdownText(
         text = formatInlineMarkdown(header.text),
@@ -265,9 +267,7 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
             ) {
                 Text(
                     text = block.code,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 13.sp,
-                    lineHeight = 19.sp,
+                    style = PocketType.code,
                     color = scheme.onSurface,
                 )
             }
@@ -318,10 +318,8 @@ internal fun buildInlineMarkdown(
                         val trailingSpace = if (hasTrailingPunctuation) "" else " "
                         pushStringAnnotation(InlineCodeTag, CodeChipAnnotation)
                         withStyle(
-                            SpanStyle(
-                                fontFamily = FontFamily.Monospace,
+                            PocketType.codeSpan.copy(
                                 color = codeColor,
-                                fontSize = 12.5.sp,
                                 fontWeight = FontWeight.SemiBold,
                             ),
                         ) {

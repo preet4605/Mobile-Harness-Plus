@@ -1,5 +1,6 @@
 package com.jarves.mh.ui.theme
 
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -35,6 +36,9 @@ object PocketType {
 
     /** Smaller monospaced text for dense logs and diffs. */
     val codeSmall: TextStyle = code.copy(fontSize = 12.sp, lineHeight = 16.sp)
+
+    /** [codeSmall] as a span, for inline code inside running text (same size, no line height). */
+    val codeSpan: SpanStyle = SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp)
 }
 
 /** The same role one weight step heavier (Regular → SemiBold, SemiBold → Bold). */

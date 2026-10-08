@@ -87,6 +87,7 @@ import androidx.compose.ui.unit.sp
 import com.jarves.mh.ui.theme.AppThemeMode
 import com.jarves.mh.ui.theme.PocketGreen
 import com.jarves.mh.ui.theme.PocketOrange
+import com.jarves.mh.ui.theme.PocketType
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -194,8 +195,8 @@ fun TerminalScreen(
                         }
                         Spacer(Modifier.width(11.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                            Text(subtitle, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(title, style = PocketType.subheadline.copy(fontWeight = FontWeight.Bold))
+                            Text(subtitle, style = PocketType.caption2, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         IconButton(onClick = onClear, modifier = Modifier.size(38.dp)) {
                             Icon(Icons.Outlined.DeleteOutline, contentDescription = "Clear output", modifier = Modifier.size(20.dp))
@@ -240,7 +241,7 @@ fun TerminalScreen(
                             Spacer(Modifier.width(10.dp))
                             Column {
                                 Text(title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
-                                Text(subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(subtitle, style = PocketType.caption2, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     },
@@ -284,8 +285,7 @@ fun TerminalScreen(
                             label = {
                                 Text(
                                     cmd,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
+                                    style = PocketType.caption2.copy(fontFamily = FontFamily.Monospace),
                                 )
                             },
                         )
@@ -327,8 +327,7 @@ fun TerminalScreen(
                             if (lines.isEmpty()) {
                                 Text(
                                     "Mobile Harness Terminal ready.\nType a bash command below or tap a quick command chip above.",
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 12.sp,
+                                    style = PocketType.codeSmall,
                                     color = emptyStateColor,
                                 )
                             }
@@ -339,9 +338,7 @@ fun TerminalScreen(
                                     if (item.output.isNotEmpty()) {
                                         Text(
                                             text = sanitizeTerminalOutput(item.output),
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 12.sp,
-                                            lineHeight = 18.sp,
+                                            style = PocketType.codeSmall.copy(lineHeight = 18.sp),
                                             color = if (item.exitCode != 0) MaterialTheme.colorScheme.error else outputTextColor,
                                             modifier = Modifier.padding(start = 8.dp),
                                         )
@@ -356,9 +353,7 @@ fun TerminalScreen(
                             if (liveOutput.isNotBlank()) {
                                 Text(
                                     sanitizeTerminalOutput(liveOutput),
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 12.sp,
-                                    lineHeight = 18.sp,
+                                    style = PocketType.codeSmall.copy(lineHeight = 18.sp),
                                     color = outputTextColor,
                                 )
                             }
@@ -423,9 +418,7 @@ fun TerminalScreen(
                             singleLine = false,
                             visualTransformation = prefixVisualTransformation,
                             cursorBrush = SolidColor(promptGreen),
-                            textStyle = androidx.compose.ui.text.TextStyle(
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 12.sp,
+                            textStyle = PocketType.codeSmall.copy(
                                 lineHeight = 18.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = commandTextColor,
@@ -506,8 +499,7 @@ private fun TerminalKeyButton(
     ) {
         Text(
             if (active) "$label ✓" else label,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 12.sp,
+            style = PocketType.codeSmall,
             maxLines = 1,
         )
     }
@@ -537,9 +529,7 @@ private fun TerminalCommandPrompt(promptPath: String, command: String, isDark: B
     Text(
         text = promptText,
         modifier = Modifier.fillMaxWidth(),
-        fontFamily = FontFamily.Monospace,
-        fontSize = 12.sp,
-        lineHeight = 18.sp,
+        style = PocketType.codeSmall.copy(lineHeight = 18.sp),
         softWrap = true,
     )
 }

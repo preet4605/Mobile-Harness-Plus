@@ -15,8 +15,8 @@ class DesignRatchetTest {
     private data class Ceiling(val fontSizes: Int, val shapes: Int, val colors: Int)
 
     private val ceilings = mapOf(
-        "MarkdownText.kt" to Ceiling(5, 3, 0),
-        "TerminalScreen.kt" to Ceiling(10, 5, 7),
+        "MarkdownText.kt" to Ceiling(0, 3, 0),
+        "TerminalScreen.kt" to Ceiling(0, 5, 7),
     )
 
     private val uiDir: File by lazy {
