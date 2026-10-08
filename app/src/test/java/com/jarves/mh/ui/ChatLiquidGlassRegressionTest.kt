@@ -69,7 +69,7 @@ class ChatLiquidGlassRegressionTest {
     @Test
     fun workspace_floatingGlassBar_noMaterialChrome() {
         assertTrue("Workspace uses its floating glass bar", workspace.contains("WorkspaceBar("))
-        assertTrue("The bar is one row: no second switcher row under it", !workspace.contains("SegmentedControl("))
+        assertTrue("The view switcher sits in a row under the bar", workspace.contains("below = {") && workspace.contains("SegmentedControl(") && workspace.contains("items = WorkspaceTab.entries"))
         assertTrue("Views switch from the menu on the chat title", workspace.contains("onTitleClick = { showViews = true }") && workspace.contains("GlassMenu(expanded = showViews"))
         assertTrue("Bar actions are one glass group", workspace.contains("GlassToolbarGroup {"))
         assertTrue("The bar softens content under it", functionBody("WorkspaceBar").contains("ScrollEdgeEffect("))

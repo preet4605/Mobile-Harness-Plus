@@ -192,6 +192,7 @@ import com.jarves.mh.ui.kit.PocketIconButton
 import com.jarves.mh.ui.kit.PocketTextField
 import com.jarves.mh.ui.kit.ProgressRing
 import com.jarves.mh.ui.kit.SectionHeader
+import com.jarves.mh.ui.kit.SegmentedControl
 import com.jarves.mh.ui.kit.SheetTextButton
 import com.jarves.mh.ui.kit.SymbolTile
 import com.jarves.mh.ui.kit.largeTitleBarPadding
@@ -238,11 +239,15 @@ internal enum class WorkspaceTab(val label: String) {
 /** The composer never gets shorter than this, so it stays an easy target while typing. */
 private val ComposerMinHeight = 52.dp
 
+/** Height of the view switcher row under the workspace title. */
+private val SwitcherHeight = 44.dp
+
 /**
  * The workspace's floating bar, one row: a glass back button, the title centred between the edges
  * with a second line under it, and glass actions on the right. Tapping the title ([onTitleClick])
- * opens the view menu. Content scrolls beneath the bar and softens into the canvas once anything
- * is underneath; the bar has no fill or hairline.
+ * opens the view menu. An optional row under the bar holds the view switcher ([below]). Content
+ * scrolls beneath the bar and softens into the canvas once anything is underneath; the bar has no
+ * fill or hairline.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -260,6 +265,7 @@ private fun WorkspaceBar(
     onTitleLongPress: (() -> Unit)? = null,
     titleAnchor: OverlayAnchor? = null,
     actions: @Composable RowScope.() -> Unit = {},
+    below: (@Composable () -> Unit)? = null,
 ) {
     CappedTextScale {
         val colors = PocketColors.current
@@ -345,6 +351,9 @@ private fun WorkspaceBar(
                         )
                     },
                 )
+                if (below != null) {
+                    Box(Modifier.fillMaxWidth().padding(horizontal = ListInset)) { below() }
+                }
             }
         }
     }
@@ -784,7 +793,7 @@ internal fun WorkspaceScreen(
                 )
             } else {
                 Box(Modifier.fillMaxSize()) {
-                    val top = barHeight ?: (largeTitleBarPadding() + PocketSpacing.sm)
+                    val top = barHeight ?: (largeTitleBarPadding() + PocketSpacing.sm + SwitcherHeight)
                     val underBar = if (selectedTab == WorkspaceTab.CHAT) chatListState else if (selectedTab == WorkspaceTab.FILES) filesListState else null
                     // Chat and Files scroll under the floating bar; Terminal and Preview start below it.
                     AnimatedContent(
@@ -937,6 +946,18 @@ internal fun WorkspaceScreen(
                                     Modifier.overlayAnchor(chatsAnchor),
                                 )
                             }
+                        },
+                        below = {
+                            SegmentedControl(
+                                items = WorkspaceTab.entries,
+                                selected = selectedTab,
+                                onSelect = { tab ->
+                                    selectedTab = tab
+                                    if (tab == WorkspaceTab.FILES) onRefreshFiles()
+                                    if (tab == WorkspaceTab.TERMINAL) onTerminalOpened()
+                                },
+                                label = { it.label },
+                            )
                         },
                     )
                     GlassMenu(expanded = showViews, onDismiss = { showViews = false }, anchor = viewsAnchor) {
