@@ -108,6 +108,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -621,13 +622,15 @@ internal fun WorkspaceScreen(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
         onResult = onAddAttachments,
     )
-    val chatListState = rememberLazyListState()
-    val filesListState = rememberLazyListState()
-    var userScrolledUp by rememberSaveable { mutableStateOf(false) }
-
     val chatItemCount = state.messages.size +
         (if (state.liveProcess.isNotEmpty() || state.liveThinking) 1 else 0) +
         (if (state.pendingApproval != null) 1 else 0)
+    // Keyed by project and chat, so a chat opens on its newest message rather than on the first one.
+    val chatListState = key(state.activeProject?.id, state.activeChatId) {
+        rememberLazyListState(initialFirstVisibleItemIndex = (chatItemCount - 1).coerceAtLeast(0))
+    }
+    val filesListState = rememberLazyListState()
+    var userScrolledUp by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(state.activeChatId) {
         userScrolledUp = false
@@ -1579,7 +1582,11 @@ private fun ChatTab(
                     }
                 }
             }
-            items(safeMessages, key = { it.id }) { message ->
+            items(
+                safeMessages,
+                key = { it.id },
+                contentType = { if (it.workItems.isNotEmpty()) "work" else if (it.fromUser) "user" else "assistant" },
+            ) { message ->
                 // New turns fade in; no placement animation, so streaming growth never lags.
                 Box(
                     Modifier.animateItem(
