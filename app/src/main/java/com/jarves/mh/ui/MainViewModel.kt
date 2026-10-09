@@ -134,6 +134,7 @@ import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -381,7 +382,14 @@ data class AppUiState(
 )
 
 
-class MainViewModel(application: Application) : AndroidViewModel(application) {
+class MainViewModel(
+    application: Application,
+    /** Runs project file, customization and file read work. Tests pass a dispatcher they drain by hand. */
+    private val ioDispatcher: CoroutineDispatcher,
+) : AndroidViewModel(application) {
+    /** The default ViewModel factory looks up a constructor that takes only the application. */
+    constructor(application: Application) : this(application, Dispatchers.IO)
+
     private val vault = ApiKeyVault(application)
     private val preferences = AppPreferences(application)
     private val memoryStore = ContextMemoryStore(application)
@@ -2582,7 +2590,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             projectOpenJob = viewModelScope.launch {
                 val loaded = runCatching {
-                    withContext(Dispatchers.IO) {
+                    withContext(ioDispatcher) {
                         val chats = preferences.loadProjectChats(project.id).ifEmpty {
                             listOf(ProjectChat(title = "Main chat"))
                         }
@@ -2641,7 +2649,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshProjectFiles()
         projectOpenJob = viewModelScope.launch {
             val opened = runCatching {
-                withContext(Dispatchers.IO) {
+                withContext(ioDispatcher) {
                     val chats = preferences.loadProjectChats(project.id).ifEmpty {
                         listOf(ProjectChat(title = "Main chat")).also { preferences.saveProjectChats(project.id, it) }
                     }
@@ -3618,11 +3626,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(filesLoading = true) }
         viewModelScope.launch {
             val workspaceDir = projectWorkspaceRoot(project)
-            val entries = withContext(Dispatchers.IO) { readWorkspace(project) }
-            val suggestedRoot = withContext(Dispatchers.IO) { if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null }
-            val androidProjectDetected = withContext(Dispatchers.IO) { findAndroidGradleProjectRoot(workspaceDir) != null }
+            val entries = withContext(ioDispatcher) { readWorkspace(project) }
+            val suggestedRoot = withContext(ioDispatcher) { if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null }
+            val androidProjectDetected = withContext(ioDispatcher) { findAndroidGradleProjectRoot(workspaceDir) != null }
             if (_state.value.activeProject?.id == project.id) {
-                withContext(Dispatchers.IO) { reloadCustomizations(project) }
+                withContext(ioDispatcher) { reloadCustomizations(project) }
                 _state.update {
                     it.copy(
                         workspaceFiles = entries,
@@ -3656,7 +3664,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val project = _state.value.activeProject ?: return
         _state.update { it.copy(openedFilePath = entry.path, openedFileContent = null, fileContentLoading = true) }
         viewModelScope.launch {
-            val content = withContext(Dispatchers.IO) {
+            val content = withContext(ioDispatcher) {
                 val file = File(projectWorkspaceRoot(project), entry.path)
                 runCatching {
                     if (file.length() > 512_000L) {
