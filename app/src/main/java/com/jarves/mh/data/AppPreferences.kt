@@ -23,6 +23,7 @@ import com.jarves.mh.model.ProjectCustomizationConfig
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
@@ -705,6 +706,9 @@ class AppPreferences(
     @Synchronized
     fun saveProjectChats(projectId: String, chats: List<ProjectChat>) {
         val projectDir = File(chatsDir, projectId).also { it.mkdirs() }
+        val index = File(projectDir, "index.json")
+        // Never replace an index that cannot be read: move it aside first so its chat list survives.
+        if (index.isFile && readProjectChatIndex(index) == null) moveAsideUnreadableIndex(index)
         val arr = JSONArray()
         chats.forEach { chat ->
             arr.put(JSONObject().apply {
@@ -714,26 +718,22 @@ class AppPreferences(
                 put("updatedAtMillis", chat.updatedAtMillis)
             })
         }
-        File(projectDir, "index.json").writeText(arr.toString())
+        writeReplacing(index, arr.toString())
     }
 
+    @Synchronized
     fun loadProjectChats(projectId: String): List<ProjectChat> {
         val projectDir = File(chatsDir, projectId).also { it.mkdirs() }
         val index = File(projectDir, "index.json")
         if (index.exists()) {
-            return runCatching {
-                val arr = JSONArray(index.readText())
-                (0 until arr.length()).map { i ->
-                    val obj = arr.getJSONObject(i)
-                    ProjectChat(
-                        id = obj.getString("id"),
-                        title = obj.optString("title", "Chat"),
-                        createdAtMillis = obj.optLong("createdAtMillis", System.currentTimeMillis()),
-                        updatedAtMillis = obj.optLong("updatedAtMillis", System.currentTimeMillis()),
-                    )
-                }.sortedByDescending { it.updatedAtMillis }
-            }.getOrDefault(emptyList())
+            readProjectChatIndex(index)?.let { return it }
+            // Keep the unreadable index for recovery; the next save writes a fresh one.
+            moveAsideUnreadableIndex(index)
+            return emptyList()
         }
+        // A moved-aside index means its chat list was lost. Do not rebuild a "main" chat here, because that would
+        // attach the old main.json messages to a new index.
+        if (projectDir.listFiles().orEmpty().any { it.name.startsWith(MOVED_ASIDE_INDEX_PREFIX) }) return emptyList()
 
         // Migrate the original one-file-per-project conversation without losing it.
         val legacy = File(chatsDir, "$projectId.json")
@@ -748,6 +748,46 @@ class AppPreferences(
         saveProjectChats(projectId, listOf(chat))
         if (legacyMessages.isNotEmpty()) saveMessages(projectId, chat.id, legacyMessages)
         return listOf(chat)
+    }
+
+    /** The chats listed in [index], or null when the file cannot be read as a chat index. */
+    private fun readProjectChatIndex(index: File): List<ProjectChat>? = runCatching {
+        val arr = JSONArray(index.readText())
+        (0 until arr.length()).map { i ->
+            val obj = arr.getJSONObject(i)
+            ProjectChat(
+                id = obj.getString("id"),
+                title = obj.optString("title", "Chat"),
+                createdAtMillis = obj.optLong("createdAtMillis", System.currentTimeMillis()),
+                updatedAtMillis = obj.optLong("updatedAtMillis", System.currentTimeMillis()),
+            )
+        }.sortedByDescending { it.updatedAtMillis }
+    }.getOrNull()
+
+    /** Renames an unreadable index to `index.json.corrupt-<ms>` and logs it. Chat files are never touched. */
+    private fun moveAsideUnreadableIndex(index: File) {
+        val target = corruptBackupTarget(index)
+        if (!index.renameTo(target)) throw IOException("Could not move unreadable ${index.name} aside")
+        logChatFileProblem(index, "unreadable chat index moved aside as ${target.name}")
+    }
+
+    /** A `<name>.corrupt-<ms>` path beside [file] that no existing file uses. */
+    private fun corruptBackupTarget(file: File): File {
+        val stamp = System.currentTimeMillis()
+        var target = File(file.parentFile, "${file.name}.corrupt-$stamp")
+        var attempt = 1
+        while (target.exists()) target = File(file.parentFile, "${file.name}.corrupt-$stamp-${attempt++}")
+        return target
+    }
+
+    /** Writes [content] to a temp file beside [destination], then renames it over [destination]. */
+    private fun writeReplacing(destination: File, content: String) {
+        val temporary = File(destination.parentFile, ".${destination.name}.tmp")
+        temporary.writeText(content)
+        if (!temporary.renameTo(destination)) {
+            temporary.copyTo(destination, overwrite = true)
+            temporary.delete()
+        }
     }
 
     @Synchronized
@@ -790,12 +830,7 @@ class AppPreferences(
         val projectDir = File(chatsDir, projectId).also { it.mkdirs() }
         val destination = File(projectDir, "$chatId.json")
         backupUnverifiedChatFile(destination)
-        val temporary = File(projectDir, ".$chatId.json.tmp")
-        temporary.writeText(arr.toString())
-        if (!temporary.renameTo(destination)) {
-            temporary.copyTo(destination, overwrite = true)
-            temporary.delete()
-        }
+        writeReplacing(destination, arr.toString())
         verifiedChatFiles.add(destination.path)
     }
 
@@ -824,6 +859,7 @@ class AppPreferences(
         return repaired
     }
 
+    @Synchronized
     fun deleteProjectChats(projectId: String) {
         File(chatsDir, projectId).deleteRecursively()
         File(chatsDir, "$projectId.json").delete()
@@ -1012,6 +1048,7 @@ class AppPreferences(
 
     companion object {
         private const val CHAT_STORE_TAG = "ChatStore"
+        private const val MOVED_ASIDE_INDEX_PREFIX = "index.json.corrupt-"
 
         /** Chat files this process has read or written cleanly; only other files get a backup before a save. */
         private val verifiedChatFiles: MutableSet<String> = ConcurrentHashMap.newKeySet()

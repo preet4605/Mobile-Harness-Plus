@@ -1,14 +1,20 @@
 package com.jarves.mh.data
 
 import com.jarves.mh.model.ChatMessage
+import com.jarves.mh.model.ProjectChat
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assume
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.attribute.BasicFileAttributes
 
 class ChatFileRecoveryTest {
 
@@ -31,6 +37,11 @@ class ChatFileRecoveryTest {
 
     private fun backupsOf(file: File): List<File> = file.parentFile?.listFiles().orEmpty()
         .filter { it.name.startsWith("${file.name}.corrupt-") }
+
+    private fun movedAsideIndexes(root: File, projectId: String): List<File> =
+        File(root, projectId).listFiles().orEmpty().filter { it.name.startsWith("index.json.corrupt-") }
+
+    private fun indexFile(root: File, projectId: String): File = File(File(root, projectId), "index.json")
 
     @Test
     fun malformedEntrySkipsOnlyItself() {
@@ -108,5 +119,95 @@ class ChatFileRecoveryTest {
 
         assertTrue(backupsOf(file).isEmpty())
         assertEquals(listOf("a", "b"), prefs.loadMessages("p", "c").map { it.id })
+    }
+
+    @Test
+    fun unreadableIndexIsMovedAsideBeforeTheNextSave() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        val original = "{\"truncated\":"
+        writeRaw(indexFile(root, "p"), original)
+
+        prefs.saveProjectChats("p", listOf(ProjectChat(id = "fresh", title = "fresh")))
+
+        val moved = movedAsideIndexes(root, "p")
+        assertEquals("unreadable index must be moved aside, not overwritten", 1, moved.size)
+        assertEquals(original, moved.single().readText())
+        assertEquals(listOf("fresh"), prefs.loadProjectChats("p").map { it.id })
+    }
+
+    @Test
+    fun loadMovesUnreadableIndexAsideAndNextSaveCreatesAFreshOne() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        val original = "{\"truncated\":"
+        writeRaw(indexFile(root, "p"), original)
+
+        assertTrue(prefs.loadProjectChats("p").isEmpty())
+        val moved = movedAsideIndexes(root, "p")
+        assertEquals("load must move the unreadable index aside", 1, moved.size)
+        assertEquals(original, moved.single().readText())
+
+        prefs.saveProjectChats("p", listOf(ProjectChat(id = "fresh", title = "fresh")))
+
+        assertEquals(listOf("fresh"), prefs.loadProjectChats("p").map { it.id })
+        assertEquals(1, movedAsideIndexes(root, "p").size)
+    }
+
+    @Test
+    fun readableIndexIsNeverMovedAside() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        prefs.saveProjectChats(
+            "p",
+            listOf(
+                ProjectChat(id = "a", title = "A", updatedAtMillis = 1L),
+                ProjectChat(id = "b", title = "B", updatedAtMillis = 2L),
+            ),
+        )
+
+        assertEquals(listOf("b", "a"), prefs.loadProjectChats("p").map { it.id })
+        prefs.saveProjectChats("p", listOf(ProjectChat(id = "a", title = "A", updatedAtMillis = 1L)))
+
+        assertTrue(movedAsideIndexes(root, "p").isEmpty())
+        assertEquals(listOf("a"), prefs.loadProjectChats("p").map { it.id })
+    }
+
+    @Test
+    fun indexIsReplacedByRenameNotRewrittenInPlace() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        val index = indexFile(root, "p").toPath()
+        prefs.saveProjectChats("p", listOf(ProjectChat(id = "a", title = "A")))
+        val before = Files.readAttributes(index, BasicFileAttributes::class.java).fileKey()
+        Assume.assumeNotNull(before)
+
+        prefs.saveProjectChats("p", listOf(ProjectChat(id = "a", title = "A"), ProjectChat(id = "b", title = "B")))
+
+        assertNotEquals(
+            "index must be written to a temp file and renamed over, so a crash cannot truncate it",
+            before,
+            Files.readAttributes(index, BasicFileAttributes::class.java).fileKey(),
+        )
+    }
+
+    @Test
+    fun movedAsideIndexStopsLegacyMainMigrationFromAttachingOldChats() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        writeRaw(File(File(root, "p"), "index.json.corrupt-1"), "{\"truncated\":")
+        writeRaw(chatFile(root, "p", "main"), JSONArray().put(json("a", true, "old")).toString())
+
+        assertTrue("no chat list may be rebuilt while a moved-aside index exists", prefs.loadProjectChats("p").isEmpty())
+        assertFalse(indexFile(root, "p").exists())
+    }
+
+    @Test
+    fun missingIndexWithoutMovedAsideFileStillMigratesTheMainChat() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+
+        assertEquals(listOf("main"), prefs.loadProjectChats("p").map { it.id })
+        assertTrue(indexFile(root, "p").isFile)
     }
 }
