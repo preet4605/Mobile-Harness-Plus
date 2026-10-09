@@ -6,6 +6,7 @@ import android.net.Uri
 import android.system.Os
 import android.util.Log
 import java.io.File
+import java.net.URI
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -67,7 +68,7 @@ exec /pocket-bridge/open-url.sh "${'$'}@"
     }
 
     fun openBrowser(url: String) {
-        Log.i("BrowserBridge", "Opening browser URL: $url")
+        Log.i("BrowserBridge", "Opening browser URL: ${redactedForLog(url)}")
         // A caller-supplied handler owns opening the link (and de-duplicating it); launching
         // the browser here as well would open every link twice.
         if (onUrlOpened != null) {
@@ -80,11 +81,21 @@ exec /pocket-bridge/open-url.sh "${'$'}@"
             }
             context.startActivity(intent)
         }.onFailure { error ->
-            Log.w("BrowserBridge", "Failed to open browser: ${error.message}")
+            Log.w("BrowserBridge", "Failed to open browser for ${redactedForLog(url)}: ${error.javaClass.simpleName}")
         }
     }
 
     companion object {
         const val BROWSER_ENV_PATH = "/pocket-bridge/open-url.sh"
+
+        /**
+         * Scheme, host and path only. A browser URL can carry OAuth codes or state in its query or
+         * fragment, so logs never get those parts.
+         */
+        internal fun redactedForLog(url: String): String {
+            val uri = runCatching { URI(url) }.getOrNull() ?: return "<unparseable url>"
+            val scheme = uri.scheme ?: return "<unparseable url>"
+            return "$scheme://${uri.host.orEmpty()}${uri.rawPath.orEmpty()}"
+        }
     }
 }
