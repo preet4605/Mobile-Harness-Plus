@@ -308,8 +308,8 @@ class StepByStepSupervisedExecutionTest {
     @Test
     fun test07_successfulStepAdvancesExactlyOnce() = runBlocking {
         val taskId = "step3-test-7"
-        val step0 = ExecutionStep(stepOrder = 0, title = "Step 0", description = "Desc 0", verificationCommand = "true", status = StepStatus.PENDING)
-        val step1 = ExecutionStep(stepOrder = 1, title = "Step 1", description = "Desc 1", verificationCommand = "true", status = StepStatus.PENDING)
+        val step0 = ExecutionStep(stepOrder = 0, title = "Step 0", description = "Desc 0", verificationCommand = "test -d .", status = StepStatus.PENDING)
+        val step1 = ExecutionStep(stepOrder = 1, title = "Step 1", description = "Desc 1", verificationCommand = "test -d .", status = StepStatus.PENDING)
         val plan = ExecutionPlan(steps = listOf(step0, step1), currentStepIndex = 0)
 
         supervisor.createTask(
@@ -541,7 +541,7 @@ class StepByStepSupervisedExecutionTest {
     @Test
     fun test13_finalStepCompletesPlan() = runBlocking {
         val taskId = "step3-test-13"
-        val step = ExecutionStep(stepOrder = 0, title = "Final Step", description = "Final step description", verificationCommand = "true", status = StepStatus.PENDING)
+        val step = ExecutionStep(stepOrder = 0, title = "Final Step", description = "Final step description", verificationCommand = "test -d .", status = StepStatus.PENDING)
         supervisor.createTask(
             taskId = taskId,
             projectId = "p-13",
@@ -654,15 +654,15 @@ class StepByStepSupervisedExecutionTest {
 
         assertNotNull(snapshotAttemptId)
         assertTrue("Global execution policies must be preserved in snapshot", containsPolicies)
-        assertEquals(TaskExecutionStatus.COMPLETED, supervisor.stateStore.get(taskId)?.status)
+        assertEquals(TaskExecutionStatus.UNVERIFIED, supervisor.stateStore.get(taskId)?.status)
     }
 
     // 17. No duplicate execution or advancement of steps
     @Test
     fun test17_noDuplicateExecutionOrAdvancement() = runBlocking {
         val taskId = "step3-test-17"
-        val step0 = ExecutionStep(stepOrder = 0, title = "Step 0", description = "Desc 0", verificationCommand = "true", status = StepStatus.PENDING)
-        val step1 = ExecutionStep(stepOrder = 1, title = "Step 1", description = "Desc 1", verificationCommand = "true", status = StepStatus.PENDING)
+        val step0 = ExecutionStep(stepOrder = 0, title = "Step 0", description = "Desc 0", verificationCommand = "test -d .", status = StepStatus.PENDING)
+        val step1 = ExecutionStep(stepOrder = 1, title = "Step 1", description = "Desc 1", verificationCommand = "test -d .", status = StepStatus.PENDING)
         supervisor.createTask(
             taskId = taskId,
             projectId = "p-17",

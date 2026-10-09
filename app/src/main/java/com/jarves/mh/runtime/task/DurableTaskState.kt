@@ -12,12 +12,13 @@ enum class TaskExecutionStatus {
     RECOVERING,
     COMPLETING,
     COMPLETED,
+    UNVERIFIED,
     FAILED,
     CANCELLED,
     ABANDONED;
 
     val isTerminal: Boolean
-        get() = this in setOf(COMPLETED, FAILED, CANCELLED, ABANDONED)
+        get() = this in setOf(COMPLETED, UNVERIFIED, FAILED, CANCELLED, ABANDONED)
 
     val isActive: Boolean
         get() = this in setOf(STARTING, RUNNING, WAITING_FOR_INPUT, WAITING_FOR_APPROVAL, RECOVERING, COMPLETING)
@@ -50,6 +51,7 @@ object TaskStateMachine {
                 TaskExecutionStatus.RECOVERING,
                 TaskExecutionStatus.COMPLETING,
                 TaskExecutionStatus.COMPLETED,
+                TaskExecutionStatus.UNVERIFIED,
                 TaskExecutionStatus.FAILED,
                 TaskExecutionStatus.CANCELLED,
                 TaskExecutionStatus.ABANDONED
@@ -75,10 +77,12 @@ object TaskStateMachine {
             )
             TaskExecutionStatus.COMPLETING -> to in setOf(
                 TaskExecutionStatus.COMPLETED,
+                TaskExecutionStatus.UNVERIFIED,
                 TaskExecutionStatus.FAILED,
                 TaskExecutionStatus.CANCELLED
             )
             TaskExecutionStatus.COMPLETED,
+            TaskExecutionStatus.UNVERIFIED,
             TaskExecutionStatus.FAILED,
             TaskExecutionStatus.CANCELLED,
             TaskExecutionStatus.ABANDONED -> false

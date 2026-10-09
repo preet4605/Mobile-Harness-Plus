@@ -507,20 +507,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val taskSupervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(application)
         viewModelScope.launch {
             taskSupervisor.activeTasks.collect { activeMap ->
-                val activeProj = _state.value.activeProject
-                if (activeProj != null) {
-                    val activeForProject = activeMap.values.firstOrNull { it.projectId == activeProj.id && it.status.isActive }
-                    if (activeForProject != null && !_state.value.isRunning) {
-                        _state.update { it.copy(isRunning = true, activeSessionId = activeForProject.sessionId) }
-                    } else if (activeForProject == null && _state.value.isRunning && !activeRuntime().isRunning) {
-                        _state.update { it.copy(isRunning = false, isStopping = false, activeSessionId = null) }
+                val current = _state.value
+                val tracked = activeUiTaskId
+                if (tracked != null) {
+                    taskSupervisor.stateStore.get(tracked)?.takeIf { it.status.isTerminal }?.let {
+                        finishSupervisedTask(tracked)
+                    }
+                } else {
+                    // Reattach after Activity/ViewModel recreation only to this chat and engine.
+                    val active = activeMap.values.firstOrNull {
+                        it.projectId == current.activeProject?.id && it.chatId == (current.activeChatId ?: "default") &&
+                            it.agentKind == current.agentKind.name && it.status.isActive
+                    }
+                    if (active != null) {
+                        activeUiTaskId = active.taskId
+                        _state.update { it.copy(isRunning = true, activeSessionId = active.sessionId) }
                     }
                 }
             }
         }
-        viewModelScope.launch { dshRuntime.events.collect(::onRuntimeEvent) }
-        viewModelScope.launch { antigravityRuntime.events.collect(::onRuntimeEvent) }
-        viewModelScope.launch { codexRuntime.events.collect(::onRuntimeEvent) }
+        viewModelScope.launch { dshRuntime.events.collect { onRuntimeEvent(it, AgentKind.DEEPSEEK_HARNESS) } }
+        viewModelScope.launch { antigravityRuntime.events.collect { onRuntimeEvent(it, AgentKind.ANTIGRAVITY) } }
+        viewModelScope.launch { codexRuntime.events.collect { onRuntimeEvent(it, AgentKind.CODEX) } }
         viewModelScope.launch {
             antigravityAuthController.state.collect { auth ->
                 _state.update { it.copy(antigravityAuth = auth) }
@@ -1292,7 +1300,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         viewModelScope.launch { RuntimeSetupController.snapshot.collect(::onSetupSnapshot) }
-        viewModelScope.launch { claudeRuntime.events.collect(::onRuntimeEvent) }
+        viewModelScope.launch { claudeRuntime.events.collect { onRuntimeEvent(it, AgentKind.CLAUDE_CODE) } }
         viewModelScope.launch { bootstrap() }
     }
 
@@ -4668,97 +4676,114 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             applyFallbackForTask(taskId, errorMsg)
         }
         activeUiTaskId = taskRecord.taskId
-        // SessionFailed clears activeRuntimeRequest, so each retry falls back to the last
-        // request this task ran rather than silently starting nothing.
+        // Retain the latest task request across retries and provider fallback.
         var lastTaskRequest: RuntimeRetryRequest? = activeRuntimeRequest
         val job = supervisor.executeTask(taskRecord.taskId) { task ->
-            try {
-                lastTaskRequest?.let { previous ->
-                    val request = RuntimeSessionRouting.requestForAttempt(
-                        activeRuntimeRequest, activeRuntimeRequest?.taskId, previous, task.taskId,
-                    )
-                    val snapshot = supervisor.getBrainSnapshot(task.taskId)
-                    val effectiveAttemptId = snapshot?.attemptId ?: "${task.taskId}:attempt-${task.retryCount}"
-                    val attemptRequest = request.copy(
-                        taskId = task.taskId,
-                        attemptId = effectiveAttemptId,
-                        brainSnapshot = snapshot,
-                    )
+            lastTaskRequest?.let { previous ->
+                val request = RuntimeSessionRouting.requestForAttempt(
+                    activeRuntimeRequest, activeRuntimeRequest?.taskId, previous, task.taskId,
+                )
+                val snapshot = supervisor.getBrainSnapshot(task.taskId)
+                val effectiveAttemptId = snapshot?.attemptId ?: "${task.taskId}:attempt-${task.retryCount}"
+                val attemptRequest = request.copy(
+                    taskId = task.taskId,
+                    attemptId = effectiveAttemptId,
+                    brainSnapshot = snapshot,
+                )
+                if (RuntimeSessionRouting.followsTask(_state.value, activeUiTaskId, task)) {
                     activeRuntimeRequest = attemptRequest
-                    lastTaskRequest = attemptRequest
-                    // Each attempt runs in a new bridge session: follow it, not the failed one.
-                    // Bridges bind every session to the task before emitting SessionStarted, so the
-                    // task's bound session here is the previous attempt's, even if the chat never saw it.
-                    val previousSessionId = supervisor.stateStore.get(task.taskId)?.sessionId
-                    _state.update {
-                        RuntimeSessionRouting.prepareForAttempt(
-                            it, activeUiTaskId, task.taskId, task.projectId, previousSessionId, requestText,
-                        )
-                    }
-                    val sessionId = request.runtime.startSession(
-                        request.project.id,
-                        request.project.slug,
-                        request.project.kind,
-                        request.prompt,
-                        request.history,
-                        request.provider,
-                        request.memory,
-                        task.taskId,
-                        snapshot,
-                        effectiveAttemptId,
+                }
+                lastTaskRequest = attemptRequest
+                // Each attempt runs in a new bridge session: follow it, not the failed one.
+                // Bridges bind every session to the task before emitting SessionStarted, so the
+                // task's bound session here is the previous attempt's, even if the chat never saw it.
+                val previousSessionId = supervisor.stateStore.get(task.taskId)?.sessionId
+                _state.update {
+                    RuntimeSessionRouting.prepareForAttempt(
+                        it, activeUiTaskId, task.taskId, task.projectId, previousSessionId, requestText,
                     )
-                    supervisor.bindSession(task.taskId, sessionId)
                 }
-            } catch (t: Throwable) {
-                val isCancelled = supervisor.processSupervisor.isCancellationRequested(task.taskId) ||
-                    supervisor.isCancellationActive(task.taskId)
-                val checkpoints = com.jarves.mh.runtime.WorkspaceCheckpoints(getApplication<Application>().filesDir)
-                val mutated = runCatching { checkpoints.readChangedPaths(task.projectId) }.getOrDefault(emptyList()).isNotEmpty()
-                val classification = supervisor.classifyError(t.localizedMessage ?: t.message ?: "", mutated, isCancelled)
-                val canFallback = classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.PERMANENT_AUTH_OR_CONFIG &&
-                    canFallbackForTask(task.taskId, t.localizedMessage ?: t.message ?: "")
-                val willRetry = ((classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.TRANSIENT_API_ERROR ||
-                    classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.PROCESS_FAILURE ||
-                    classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.TRANSIENT_SYSTEM_FAULT ||
-                    classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.ENVIRONMENT_DRIFT ||
-                    classification == com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.WORKSPACE_MUTATED_FAILURE) ||
-                    canFallback) &&
-                    task.retryCount < task.maxRetries &&
-                    !isCancelled
-
-                if (!willRetry) {
-                    _state.update {
-                        it.copy(
-                            isRunning = false,
-                            liveThinking = false,
-                            activeSessionId = null,
-                            toastMessage = "Session error: ${t.localizedMessage ?: t.message}",
-                        )
-                    }
-                }
-                throw t
+                val sessionId = request.runtime.startSession(
+                    request.project.id,
+                    request.project.slug,
+                    request.project.kind,
+                    request.prompt,
+                    request.history,
+                    request.provider,
+                    request.memory,
+                    task.taskId,
+                    snapshot,
+                    effectiveAttemptId,
+                )
+                supervisor.bindSession(task.taskId, sessionId)
             }
         }
-        // A launch the supervisor refused before any session started (for example the previous
-        // task still holds the project lock) emits no runtime events; release the chat here.
         val launchedTaskId = taskRecord.taskId
         job.invokeOnCompletion {
-            val record = supervisor.stateStore.get(launchedTaskId) ?: return@invokeOnCompletion
-            if (!record.status.isTerminal || record.sessionId != null) return@invokeOnCompletion
-            _state.update { current ->
-                if (activeUiTaskId != launchedTaskId || !current.isRunning || current.activeSessionId != null) {
-                    current
-                } else {
-                    current.copy(
-                        isRunning = false,
-                        liveThinking = false,
-                        liveProcess = emptyList(),
-                        currentTaskRequest = null,
-                        toastMessage = record.lastError ?: "Task could not start.",
-                    )
+            viewModelScope.launch { finishSupervisedTask(launchedTaskId) }
+        }
+    }
+
+    /** Only the durable supervisor outcome can finish chat or record task success. */
+    private fun finishSupervisedTask(taskId: String) {
+        val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
+        val record = supervisor.stateStore.get(taskId) ?: return
+        if (!RuntimeSessionRouting.canFinish(_state.value, activeUiTaskId, record)) return
+        val verified = record.status == com.jarves.mh.runtime.task.TaskExecutionStatus.COMPLETED
+        val unverified = record.status == com.jarves.mh.runtime.task.TaskExecutionStatus.UNVERIFIED
+        val cancelled = record.status == com.jarves.mh.runtime.task.TaskExecutionStatus.CANCELLED
+        val title = when {
+            verified -> "Task completed"
+            unverified -> "Task finished — unverified"
+            cancelled -> "Task stopped"
+            else -> "Task failed"
+        }
+        val detail = when {
+            verified -> "Runtime verification passed"
+            unverified -> "No deterministic verification criteria were available; review the result."
+            else -> record.lastError ?: title
+        }
+        val finishedAt = record.completedAt ?: System.currentTimeMillis()
+        _state.update { current ->
+            if (!RuntimeSessionRouting.followsTask(current, activeUiTaskId, record)) current else {
+                val subagents = when {
+                    verified -> SubagentRegistry.completeAll(current.subagents, finishedAt)
+                    unverified || cancelled -> SubagentRegistry.terminate(current.subagents, "*", finishedAt)
+                    else -> SubagentRegistry.failAll(current.subagents, detail, finishedAt)
                 }
+                val backgroundTasks = when {
+                    verified -> TaskRegistry.completeRunning(current.backgroundTasks)
+                    unverified || cancelled -> TaskRegistry.terminate(current.backgroundTasks, "*")
+                    else -> TaskRegistry.failRunning(current.backgroundTasks)
+                }
+                attachTaskDuration(finishWorkSegment(current, finishedAt), finishedAt).copy(
+                    isRunning = false,
+                    isStopping = false,
+                    activeSessionId = null,
+                    retiredSessionIds = current.retiredSessionIds + listOfNotNull(current.activeSessionId, record.sessionId),
+                    pendingApproval = null,
+                    subagents = subagents,
+                    backgroundTasks = backgroundTasks,
+                    activity = listOf(ActivityItem(title, detail)) + current.activity.map { it.copy(isComplete = true) },
+                    taskFinishedAtMillis = finishedAt,
+                    currentTaskRequest = null,
+                    toastMessage = if (!verified && !unverified && !cancelled) detail else current.toastMessage,
+                )
             }
         }
+        activeUiTaskId = null
+        if (activeRuntimeRequest?.taskId == taskId) activeRuntimeRequest = null
+        failedApiKeyIds.clear()
+        attemptedProfileIds.clear()
+        if (verified) {
+            runCatching { memoryStore.taskRepository.recordSuccess(record.projectId, detail) }
+            extractMemoryFromSession(record.projectId, _state.value.messages)
+        } else if (!unverified && !cancelled) {
+            runCatching { memoryStore.taskRepository.recordError(record.projectId, detail) }
+        }
+        touchProject(record.projectId)
+        refreshProjectFiles()
+        persistMessages(includeLiveProcess = true, immediate = true)
     }
 
     fun answerApproval(approved: Boolean) {
@@ -4972,7 +4997,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    private fun onRuntimeEvent(event: RuntimeEvent) {
+    private fun onRuntimeEvent(event: RuntimeEvent, source: AgentKind) {
+        val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
+        val task = activeUiTaskId?.let { supervisor.stateStore.get(it) }
+        // Gate before authentication, fallback, persistence, or any other event side effect.
+        if (!RuntimeSessionRouting.acceptsOwned(_state.value, event, activeUiTaskId, task, source)) return
         if (event is RuntimeEvent.SessionFailed && _state.value.agentKind == AgentKind.ANTIGRAVITY &&
             (event.reason.contains("sign-in", true) || event.reason.contains("authentication", true))) {
             antigravityAuthController.invalidateSession(event.reason)
@@ -4989,9 +5018,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ) {
             codexAuthController.markExpired()
         }
-        if (event is RuntimeEvent.SessionFailed && retryWithNextApiKey(event)) return
+        if (event is RuntimeEvent.SessionFailed && retryWithNextApiKey(event)) {
+            // A predicted fallback can still fail later. Consume the close so final failure can finish chat.
+            _state.update { current ->
+                if (RuntimeSessionRouting.acceptsOwned(current, event, activeUiTaskId, task, source)) {
+                    RuntimeSessionRouting.closeAttempt(current, event.sessionId)
+                } else current
+            }
+            task?.taskId?.let(::finishSupervisedTask)
+            return
+        }
+        var accepted = false
         _state.update { current ->
-            if (!RuntimeSessionRouting.accepts(current, event)) {
+            accepted = RuntimeSessionRouting.acceptsOwned(current, event, activeUiTaskId, task, source)
+            if (!accepted) {
                 current
             } else when (event) {
                 is RuntimeEvent.SessionStarted -> current.copy(
@@ -5086,21 +5126,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ActivityItem(event.title, event.detail),
                 )
                 is RuntimeEvent.ToolRequested -> {
-                    com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).pauseForApproval(event.sessionId)
+                    if (task?.status?.isTerminal != true) supervisor.pauseForApproval(event.sessionId)
                     appendWorkItem(current.copy(
                         pendingApproval = event.request,
                         activity = listOf(ActivityItem("Waiting for approval", event.request.explanation, false)) + current.activity,
                     ), ActivityItem("Waiting for approval", event.request.explanation, false))
                 }
                 is RuntimeEvent.ToolApproved -> {
-                    com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).resumeFromApproval(event.sessionId)
+                    if (task?.status?.isTerminal != true) supervisor.resumeFromApproval(event.sessionId)
                     appendWorkItem(current.copy(
                         pendingApproval = null,
                         activity = listOf(ActivityItem("Applying approved changes", "Editing project files", false)) + current.activity,
                     ), ActivityItem("Action approved", "Claude is continuing the task", false))
                 }
                 is RuntimeEvent.ToolRejected -> {
-                    com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).resumeFromApproval(event.sessionId)
+                    if (task?.status?.isTerminal != true) supervisor.resumeFromApproval(event.sessionId)
                     appendWorkItem(current.copy(
                         pendingApproval = null,
                     ), ActivityItem("Action rejected", "Claude will continue without this action"))
@@ -5150,92 +5190,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     liveThinking = false,
                     workSegmentStartedAtMillis = current.workSegmentStartedAtMillis ?: System.currentTimeMillis(),
                 )
-                is RuntimeEvent.SessionCompleted -> {
-                    val finishedAt = System.currentTimeMillis()
-                    // Invariant: ALL non-terminal subagents must transition to DONE on session completion.
-                    val completedSubagents = SubagentRegistry.completeAll(current.subagents, finishedAt)
-                    val completedTasks = TaskRegistry.completeRunning(current.backgroundTasks)
-                    attachTaskDuration(finishWorkSegment(current, finishedAt), finishedAt).copy(
-                        isRunning = false,
-                        isStopping = false,
-                        activeSessionId = null,
-                        subagents = completedSubagents,
-                        backgroundTasks = completedTasks,
-                        activity = listOf(ActivityItem("Task completed", "${current.agentKind.title} finished successfully")) +
-                            current.activity.map { if (!it.isComplete) it.copy(isComplete = true) else it },
-                        taskFinishedAtMillis = finishedAt,
-                        currentTaskRequest = null,
-                    )
-                }
-                is RuntimeEvent.SessionFailed -> {
-                    val finishedAt = System.currentTimeMillis()
-                    val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
-                    val activeTask = current.activeProject?.let { proj ->
-                        supervisor.activeTasks.value.values.firstOrNull { it.projectId == proj.id }
-                    }
-                    val isTransientApi = supervisor.classifyError(event.reason, false, false) ==
-                        com.jarves.mh.runtime.task.TaskSupervisor.TaskErrorClassification.TRANSIENT_API_ERROR
-                    val willRetry = activeTask != null && activeTask.retryCount < activeTask.maxRetries && isTransientApi
-
-                    val failureTitle = when {
-                        event.reason.contains("503", ignoreCase = true) ||
-                        event.reason.contains("UNAVAILABLE", ignoreCase = true) ||
-                        event.reason.contains("service is currently unavailable", ignoreCase = true) ||
-                        event.reason.contains("overloaded", ignoreCase = true) -> "Service unavailable"
-
-                        event.reason.contains("network", ignoreCase = true) ||
-                        event.reason.contains("connection abort", ignoreCase = true) ||
-                        event.reason.contains("connection interrupted", ignoreCase = true) ||
-                        event.reason.contains("socket", ignoreCase = true) ||
-                        event.reason.contains("broken pipe", ignoreCase = true) ||
-                        event.reason.contains("unreachable", ignoreCase = true) ||
-                        event.reason.contains("read tcp", ignoreCase = true) ||
-                        event.reason.contains("streamgeneratecontent", ignoreCase = true) ||
-                        event.reason.contains("timed out", ignoreCase = true) -> "Network connection interrupted"
-
-                        event.reason.contains("API key", ignoreCase = true) ||
-                        event.reason.contains("authentication", ignoreCase = true) ||
-                        event.reason.contains("unauthorized", ignoreCase = true) ||
-                        event.reason.contains("user not found", ignoreCase = true) ||
-                        event.reason.contains("Google account not signed in", ignoreCase = true) -> "Authentication failed"
-
-                        event.reason.contains("Stopped by user", ignoreCase = true) || current.isStopping -> "Task stopped"
-
-                        else -> "Task failed"
-                    }
-
-                    val activityTitle = if (willRetry) {
-                        "$failureTitle (retrying attempt ${(activeTask?.retryCount ?: 0) + 1}/${activeTask?.maxRetries ?: 2})"
-                    } else {
-                        failureTitle
-                    }
-
-                    // Invariant: ALL non-terminal subagents transition to ERRORED on failure.
-                    val failedSubagents = if (willRetry) current.subagents else SubagentRegistry.failAll(current.subagents, event.reason, finishedAt)
-                    val failedTasks = if (willRetry) current.backgroundTasks else TaskRegistry.failRunning(current.backgroundTasks)
-                    attachTaskDuration(
-                        finishWorkSegment(
-                            appendWorkItem(current, ActivityItem(activityTitle, event.reason)),
-                            finishedAt,
-                        ),
-                        finishedAt,
-                    ).copy(
-                        isRunning = willRetry,
-                        isStopping = false,
-                        activeSessionId = if (willRetry) current.activeSessionId else null,
-                        pendingApproval = null,
-                        subagents = failedSubagents,
-                        backgroundTasks = failedTasks,
-                        toastMessage = event.reason.takeIf { reason ->
-                            reason.contains("user not found", true) ||
-                                reason.contains("API key", true) ||
-                                reason.contains("authentication", true)
-                        },
-                        activity = listOf(ActivityItem(activityTitle, event.reason)) + current.activity,
-                        taskFinishedAtMillis = if (willRetry) null else finishedAt,
-                        currentTaskRequest = if (willRetry) current.currentTaskRequest else null,
-                    )
-                }
+                is RuntimeEvent.SessionCompleted -> appendWorkItem(
+                    RuntimeSessionRouting.closeAttempt(current, event.sessionId).copy(
+                        activity = listOf(ActivityItem("Checking result", "Execution finished; supervisor verification is pending", false)) + current.activity,
+                    ),
+                    ActivityItem("Checking result", "Waiting for supervisor verification", false),
+                )
+                is RuntimeEvent.SessionFailed -> appendWorkItem(
+                    RuntimeSessionRouting.closeAttempt(current, event.sessionId).copy(
+                        activity = listOf(ActivityItem("Attempt failed", event.reason)) + current.activity,
+                    ),
+                    ActivityItem("Attempt failed", "${event.reason} — supervisor will decide recovery"),
+                )
                 is RuntimeEvent.SubagentUpdated -> {
                     val updated = SubagentRegistry.update(current.subagents, event.subagent, isStopping = current.isStopping)
                     current.copy(subagents = updated)
@@ -5267,26 +5233,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-        if (event is RuntimeEvent.SessionCompleted || event is RuntimeEvent.SessionFailed) {
-            activeRuntimeRequest = null
-            failedApiKeyIds.clear()
-        }
-        if (event is RuntimeEvent.SessionFailed) {
-            _state.value.activeProject?.let { project ->
-                runCatching {
-                    memoryStore.taskRepository.recordError(project.id, event.reason)
-                }
-            }
-        }
-        if (event is RuntimeEvent.SessionCompleted) {
-            _state.value.activeProject?.let { project ->
-                runCatching {
-                    memoryStore.taskRepository.recordSuccess(project.id, "Session completed successfully")
-                }
-                extractMemoryFromSession(project.id, _state.value.messages)
-            }
-        }
-        if (event is RuntimeEvent.FilesChanged || event is RuntimeEvent.SessionCompleted) {
+        if (!accepted) return
+        if (event is RuntimeEvent.FilesChanged) {
             _state.value.activeProject?.id?.let { touchProject(it) }
             refreshProjectFiles()
         }
@@ -5295,16 +5243,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // is restored as an interrupted work block rather than disappearing.
         val isTerminalEvent = event is RuntimeEvent.SessionCompleted || event is RuntimeEvent.SessionFailed
         persistMessages(includeLiveProcess = true, immediate = isTerminalEvent)
+        // The outcome may already be durable while the final bridge event was buffered.
+        if (isTerminalEvent) task?.taskId?.let(::finishSupervisedTask)
     }
 
     fun canFallbackForTask(taskId: String, errorMsg: String): Boolean {
         val current = _state.value
         val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
-        val taskRecord = supervisor.stateStore.get(taskId)
+        val taskRecord = supervisor.stateStore.get(taskId) ?: return false
+        if (!RuntimeSessionRouting.followsTask(current, activeUiTaskId, taskRecord)) return false
         val isCancelled = supervisor.isCancellationActive(taskId)
-        val isTerminal = taskRecord != null && taskRecord.status.isTerminal
+        val isTerminal = taskRecord.status.isTerminal
 
-        val request = activeRuntimeRequest ?: return false
+        val request = activeRuntimeRequest?.takeIf { it.taskId == taskId } ?: return false
         val failure = ProviderFailureClassifier.classify(errorMsg)
         val secretId = request.provider.secretId
         val credentials = vault.credentials(secretId)
@@ -5334,10 +5285,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!current.isRunning || current.isStopping) return false
         val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
         if (supervisor.isCancellationActive(taskId)) return false
-        val taskRecord = supervisor.stateStore.get(taskId)
-        if (taskRecord != null && taskRecord.status.isTerminal) return false
+        val taskRecord = supervisor.stateStore.get(taskId) ?: return false
+        if (!RuntimeSessionRouting.followsTask(current, activeUiTaskId, taskRecord) || taskRecord.status.isTerminal) return false
 
-        val request = activeRuntimeRequest ?: return false
+        val request = activeRuntimeRequest?.takeIf { it.taskId == taskId } ?: return false
         val failure = ProviderFailureClassifier.classify(errorMsg)
         val secretId = request.provider.secretId
         val credentials = vault.credentials(secretId)

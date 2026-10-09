@@ -644,7 +644,7 @@ class StepAwareExecutionLoopTest {
         job.join()
 
         assertNotNull("Brain snapshot must be captured during attempt", snapshotRef.get())
-        assertEquals(TaskExecutionStatus.COMPLETED, supervisor.stateStore.get(taskId)?.status)
+        assertEquals(TaskExecutionStatus.UNVERIFIED, supervisor.stateStore.get(taskId)?.status)
     }
 
     // 14. Retry regression (transient API errors retry with backoff)
@@ -672,7 +672,7 @@ class StepAwareExecutionLoopTest {
         job.join()
 
         assertEquals("Task must have retried after transient 503 error", 2, executions.get())
-        assertEquals(TaskExecutionStatus.COMPLETED, supervisor.stateStore.get(taskId)?.status)
+        assertEquals(TaskExecutionStatus.UNVERIFIED, supervisor.stateStore.get(taskId)?.status)
         assertEquals(1, supervisor.stateStore.get(taskId)?.retryCount)
     }
 }

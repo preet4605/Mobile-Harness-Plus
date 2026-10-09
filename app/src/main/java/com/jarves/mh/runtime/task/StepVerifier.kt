@@ -2,8 +2,12 @@ package com.jarves.mh.runtime.task
 
 import com.jarves.mh.model.brain.CanonicalTask
 import com.jarves.mh.model.brain.ExecutionStep
-import com.jarves.mh.model.brain.StepStatus
+import com.jarves.mh.runtime.NativeSpawnProcess
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeoutException
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 
@@ -13,7 +17,8 @@ import java.util.concurrent.TimeUnit
 data class StepVerificationResult(
     val passed: Boolean,
     val summary: String,
-    val failureReason: String? = null
+    val failureReason: String? = null,
+    val unverified: Boolean = false
 )
 
 /**
@@ -201,55 +206,135 @@ object StepCommandValidator {
  */
 interface StepCommandRunner {
     fun execute(command: String, workingDir: File, timeoutSeconds: Long = 60): Pair<Int, String>
+
+    fun execute(task: CanonicalTask, command: String, workingDir: File, timeoutSeconds: Long): Pair<Int, String> =
+        execute(command, workingDir, timeoutSeconds)
 }
 
-class ControlledStepCommandRunner : StepCommandRunner {
+class ControlledStepCommandRunner(
+    private val onProcessStarted: (Process) -> Unit = {},
+    private val processLauncher: ((command: String, workingDir: File) -> Process)? = null
+) : StepCommandRunner {
     override fun execute(command: String, workingDir: File, timeoutSeconds: Long): Pair<Int, String> {
         val canonicalWs = workingDir.canonicalFile
-        if (!canonicalWs.exists()) {
-            return Pair(-1, "Working directory does not exist: ${canonicalWs.path}")
-        }
-
+        if (!canonicalWs.isDirectory) return Pair(-1, "Working directory does not exist: ${canonicalWs.path}")
         val validation = StepCommandValidator.validateCommand(command, canonicalWs)
         if (validation is StepCommandValidator.ValidationResult.Invalid) {
             return Pair(-1, "Command confinement validation failed: ${validation.reason}")
         }
 
-        return runCatching {
-            val shellPath = when {
-                File("/bin/sh").canExecute() -> "/bin/sh"
-                File("/system/bin/sh").canExecute() -> "/system/bin/sh"
-                else -> "sh"
+        val workers = Executors.newFixedThreadPool(2) { runnable ->
+            Thread(runnable, "step-verification-io").apply { isDaemon = true }
+        }
+        var process: Process? = null
+        try {
+            if (Thread.currentThread().isInterrupted) throw InterruptedException("Verification cancelled")
+            val launched = processLauncher?.invoke(command, canonicalWs) ?: launchHostProcess(command, canonicalWs)
+            process = launched
+            val exit = workers.submit<Int> {
+                if (launched is NativeSpawnProcess) {
+                    // Use a bounded wait while leaving Stop able to inspect and kill the process.
+                    if (!launched.waitFor(timeoutSeconds, TimeUnit.SECONDS)) throw TimeoutException()
+                    launched.exitValue()
+                } else launched.waitFor()
             }
+            onProcessStarted(launched)
+            // Verification never needs interactive input. Closing stdin also lets commands reach EOF.
+            launched.outputStream.close()
+            val nativeCapture = (launched as? NativeSpawnProcess)?.outputFile
+            // A native PTY already drains to a bounded capture. Host pipes must be drained while waiting.
+            val output = if (nativeCapture == null) workers.submit<String> {
+                readBounded(launched.inputStream)
+            } else null
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
+            fun remaining() = (deadline - System.nanoTime()).coerceAtLeast(0)
+            val exitCode = exit.get(remaining(), TimeUnit.NANOSECONDS)
+            val text = if (nativeCapture != null) nativeCapture.inputStream().use { readBounded(it) }
+                else output!!.get(remaining(), TimeUnit.NANOSECONDS)
+            val escaped = StepCommandValidator.findEscapingSymlinks(canonicalWs)
+            return if (escaped.isNotEmpty()) {
+                Pair(-1, "Verification command created symlink escaping workspace boundary: ${escaped.first().name}")
+            } else Pair(exitCode, text.trim())
+        } catch (e: InterruptedException) {
+            // runInterruptible propagates this as coroutine cancellation after cleanup.
+            throw e
+        } catch (_: TimeoutException) {
+            return Pair(-1, "Verification command timed out after $timeoutSeconds seconds")
+        } catch (e: ExecutionException) {
+            return if (e.cause is TimeoutException) Pair(-1, "Verification command timed out after $timeoutSeconds seconds")
+                else Pair(-1, e.cause?.message ?: "Verification command failed to execute")
+        } catch (e: Exception) {
+            return Pair(-1, e.message ?: "Verification command failed to execute")
+        } finally {
+            // NativeSpawnProcess signals the process group, including verification descendants.
+            process?.let { launched ->
+                runCatching { terminate(launched) }
+                runCatching { launched.inputStream.close() }
+                runCatching { launched.errorStream.close() }
+                runCatching { launched.outputStream.close() }
+            }
+            workers.shutdown()
+            // Give the wait/reap worker a bounded opportunity to finish after kill.
+            try {
+                workers.awaitTermination(2, TimeUnit.SECONDS)
+            } finally {
+                workers.shutdownNow()
+                (process as? NativeSpawnProcess)?.outputFile?.delete()
+            }
+        }
+    }
 
-            val processBuilder = ProcessBuilder(shellPath, "-c", command)
-                .directory(canonicalWs)
-                .redirectErrorStream(true)
+    private fun launchHostProcess(command: String, workspace: File): Process {
+        val shellPath = when {
+            File("/bin/sh").canExecute() -> "/bin/sh"
+            File("/system/bin/sh").canExecute() -> "/system/bin/sh"
+            else -> "sh"
+        }
+        val builder = ProcessBuilder(shellPath, "-c", command).directory(workspace).redirectErrorStream(true)
+        val sandboxTmp = File(workspace, ".tmp_step_verify").apply { mkdirs() }
+        builder.environment().apply {
+            put("PWD", workspace.absolutePath)
+            put("HOME", workspace.absolutePath)
+            put("TMPDIR", sandboxTmp.absolutePath)
+            put("TEMP", sandboxTmp.absolutePath)
+            put("TMP", sandboxTmp.absolutePath)
+        }
+        return builder.start()
+    }
 
-            val env = processBuilder.environment()
-            env["PWD"] = canonicalWs.absolutePath
-            env["HOME"] = canonicalWs.absolutePath
-            val sandboxTmp = File(canonicalWs, ".tmp_step_verify").apply { mkdirs() }
-            env["TMPDIR"] = sandboxTmp.absolutePath
-            env["TEMP"] = sandboxTmp.absolutePath
-            env["TMP"] = sandboxTmp.absolutePath
-
-            val process = processBuilder.start()
-            val completed = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
-            if (!completed) {
-                process.destroyForcibly()
-                Pair(-1, "Verification command timed out after $timeoutSeconds seconds")
-            } else {
-                val out = process.inputStream.bufferedReader().use { it.readText() }.trim()
-                val postEscaped = StepCommandValidator.findEscapingSymlinks(canonicalWs)
-                if (postEscaped.isNotEmpty()) {
-                    Pair(-1, "Verification command created symlink escaping workspace boundary: ${postEscaped.first().name}")
-                } else {
-                    Pair(process.exitValue(), out)
+    private fun terminate(process: Process) {
+        if (process !is NativeSpawnProcess) {
+            // JVM host verification uses ProcessHandle; Android production uses native group kill.
+            // Reflection keeps this fallback compatible with Android versions without ProcessHandle.
+            runCatching {
+                val handleClass = Class.forName("java.lang.ProcessHandle")
+                val handle = Process::class.java.getMethod("toHandle").invoke(process)
+                val descendants = handleClass.getMethod("descendants").invoke(handle) as java.util.stream.Stream<*>
+                descendants.use { stream ->
+                    stream.toArray().reversed().forEach { child ->
+                        handleClass.getMethod("destroyForcibly").invoke(child)
+                    }
                 }
             }
-        }.getOrElse { Pair(-1, it.message ?: "Verification command failed to execute") }
+        }
+        process.destroyForcibly()
     }
+
+    private fun readBounded(input: java.io.InputStream): String {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        var truncated = false
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            val retained = minOf(count, MAX_OUTPUT_BYTES - output.size())
+            if (retained > 0) output.write(buffer, 0, retained)
+            if (retained < count) truncated = true
+        }
+        return output.toString("UTF-8") + if (truncated) "\n[Verification output truncated]" else ""
+    }
+
+    companion object { const val MAX_OUTPUT_BYTES = 65536 }
 }
 
 /**
@@ -288,16 +373,19 @@ class DefaultStepVerifier(
 
         // 0. Verification Criteria Presence Gate:
         // Process exit code 0 alone must never complete a step without deterministic criteria.
+        val meaningfulCommand = !step.verificationCommand.isNullOrBlank() &&
+            step.verificationCommand.trim() !in setOf("true", ":", "exit 0")
         val hasCriteria = step.expectedFiles.isNotEmpty() ||
             step.forbiddenFiles.isNotEmpty() ||
             step.expectedContent.isNotEmpty() ||
-            !step.verificationCommand.isNullOrBlank()
+            meaningfulCommand
 
         if (!hasCriteria) {
             return StepVerificationResult(
                 passed = false,
-                summary = "",
-                failureReason = "No verification criteria defined for step '${step.title}'. Process exit code 0 alone cannot complete a step without deterministic verification."
+                summary = "Unverified: no deterministic verification criteria for step '${step.title}'",
+                failureReason = "No verification criteria defined for step '${step.title}'. Process exit code 0 alone cannot complete a step without deterministic verification.",
+                unverified = true
             )
         }
 
@@ -433,7 +521,8 @@ class DefaultStepVerifier(
         }
 
         // 4. Verification command must succeed (exit code 0) inside workspace
-        if (!step.verificationCommand.isNullOrBlank()) {
+        if (meaningfulCommand) {
+            val verificationCommand = requireNotNull(step.verificationCommand)
             if (workspaceDir != null && !workspaceDir.exists()) {
                 return StepVerificationResult(
                     passed = false,
@@ -444,7 +533,7 @@ class DefaultStepVerifier(
             val canonicalWs = (workspaceDir?.takeIf { it.exists() } ?: File(".")).canonicalFile
 
             // Confinement and escape validation gate
-            val commandValidation = StepCommandValidator.validateCommand(step.verificationCommand, canonicalWs)
+            val commandValidation = StepCommandValidator.validateCommand(verificationCommand, canonicalWs)
             if (commandValidation is StepCommandValidator.ValidationResult.Invalid) {
                 return StepVerificationResult(
                     passed = false,
@@ -454,9 +543,9 @@ class DefaultStepVerifier(
             }
 
             val (exitCode, output) = if (commandRunner != null) {
-                commandRunner.invoke(step.verificationCommand, canonicalWs)
+                commandRunner.invoke(verificationCommand, canonicalWs)
             } else {
-                confinementRunner.execute(step.verificationCommand, canonicalWs, commandTimeoutSeconds)
+                confinementRunner.execute(task, verificationCommand, canonicalWs, commandTimeoutSeconds)
             }
 
             if (exitCode != 0) {

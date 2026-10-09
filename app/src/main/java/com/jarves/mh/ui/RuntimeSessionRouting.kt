@@ -1,6 +1,8 @@
 package com.jarves.mh.ui
 
 import com.jarves.mh.model.RuntimeEvent
+import com.jarves.mh.model.AgentKind
+import com.jarves.mh.runtime.task.DurableTaskRecord
 
 /**
  * Decides which runtime session the chat follows. Every attempt of a task (first run,
@@ -24,6 +26,36 @@ internal object RuntimeSessionRouting {
         if (event is RuntimeEvent.SessionStarted && state.activeSessionId == null) return true
         return state.activeSessionId == event.sessionId
     }
+
+    /** Gate all side effects, including SessionStarted, against the durable attempt owner. */
+    fun acceptsOwned(
+        state: AppUiState,
+        event: RuntimeEvent,
+        trackedTaskId: String?,
+        task: DurableTaskRecord?,
+        source: AgentKind,
+    ): Boolean = task != null && trackedTaskId == task.taskId &&
+        task.projectId == state.activeProject?.id &&
+        task.chatId == (state.activeChatId ?: "default") &&
+        task.agentKind == source.name && state.agentKind == source &&
+        task.sessionId == event.sessionId &&
+        (accepts(state, event) || (state.isRunning && state.activeSessionId == null &&
+            event is RuntimeEvent.SessionFailed && event.sessionId !in state.retiredSessionIds))
+
+    fun followsTask(state: AppUiState, trackedTaskId: String?, task: DurableTaskRecord): Boolean =
+        trackedTaskId == task.taskId && task.projectId == state.activeProject?.id &&
+            task.chatId == (state.activeChatId ?: "default") && task.agentKind == state.agentKind.name
+
+    fun closeAttempt(state: AppUiState, sessionId: String): AppUiState = state.copy(
+        activeSessionId = null,
+        retiredSessionIds = state.retiredSessionIds + sessionId,
+        pendingApproval = null,
+    )
+
+    /** Preserve buffered answer events until the current attempt's close has been consumed. */
+    fun canFinish(state: AppUiState, trackedTaskId: String?, task: DurableTaskRecord): Boolean =
+        followsTask(state, trackedTaskId, task) && task.status.isTerminal &&
+            (task.sessionId == null || task.sessionId in state.retiredSessionIds)
 
     /**
      * Called before each attempt of [attemptTaskId] starts its bridge session. When the chat

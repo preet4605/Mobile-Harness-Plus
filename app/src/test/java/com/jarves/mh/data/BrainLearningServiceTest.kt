@@ -27,9 +27,26 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
+import java.io.File
 import java.time.Instant
 
 class BrainLearningServiceTest {
+    @get:Rule val temporary = TemporaryFolder()
+
+    private fun requireVerifiedFixture(supervisor: TaskSupervisor, taskId: String): File {
+        val workspace = temporary.newFolder()
+        supervisor.workspaceDirectoryResolver = { workspace }
+        val canonical = requireNotNull(supervisor.canonicalTaskRepository.getTask(taskId))
+        supervisor.canonicalTaskRepository.saveTask(canonical.copy(
+            plan = canonical.plan.copy(steps = canonical.plan.steps.map {
+                it.copy(expectedFiles = listOf("result.txt"), expectedContent = mapOf("result.txt" to "verified fixture"))
+            })
+        ))
+        return workspace
+    }
+
 
     private lateinit var db: BrainDatabase
     private lateinit var knowledgeRepo: BrainKnowledgeRepository
@@ -748,7 +765,9 @@ class BrainLearningServiceTest {
             prompt = "Do work"
         )
 
+        val workspace = requireVerifiedFixture(supervisor, record.taskId)
         val job = supervisor.executeTask(record.taskId) {
+            File(workspace, "result.txt").writeText("verified fixture")
             // Work succeeds
         }
         job.join()
@@ -775,7 +794,9 @@ class BrainLearningServiceTest {
             prompt = "Run test"
         )
 
+        val workspace = requireVerifiedFixture(supervisor, record.taskId)
         val job = supervisor.executeTask(record.taskId) {
+            File(workspace, "result.txt").writeText("verified fixture")
             executionCallCount++
         }
         job.join()
@@ -991,7 +1012,9 @@ class BrainLearningServiceTest {
             prompt = "Run success task"
         )
 
+        val workspace = requireVerifiedFixture(supervisor, record.taskId)
         val job = supervisor.executeTask(record.taskId) {
+            File(workspace, "result.txt").writeText("verified fixture")
             // Task succeeds
         }
         job.join()

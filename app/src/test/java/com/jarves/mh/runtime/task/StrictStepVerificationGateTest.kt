@@ -122,9 +122,9 @@ class StrictStepVerificationGateTest {
         assertEquals(0, canonical.plan.currentStepIndex)
     }
 
-    // 2. Process exit code 0 alone without verifier criteria fails
+    // 2. Process exit code 0 alone without verifier criteria finishes unverified
     @Test
-    fun test2_exit0WithoutVerifierCriteriaFails() = runBlocking {
+    fun test2_exit0WithoutVerifierCriteriaIsUnverified() = runBlocking {
         val taskId = "test-exit0-no-criteria"
         val step = ExecutionStep(
             stepOrder = 0,
@@ -156,12 +156,12 @@ class StrictStepVerificationGateTest {
         val canonical = supervisor.canonicalTaskRepository.getTask(taskId)
         assertNotNull(canonical)
         val resultStep = canonical!!.plan.steps[0]
-        assertEquals("Exit 0 without verifier criteria must FAIL step", StepStatus.FAILED, resultStep.status)
+        assertEquals("Exit 0 without verifier criteria cannot prove completion", StepStatus.UNVERIFIED, resultStep.status)
         assertTrue(
             "Failure reason must state no criteria specified: ${resultStep.resultSummary}",
-            resultStep.resultSummary?.contains("No verification criteria defined") == true
+            resultStep.resultSummary?.contains("no deterministic verification criteria") == true
         )
-        assertEquals(TaskExecutionStatus.FAILED, supervisor.stateStore.get(taskId)?.status)
+        assertEquals(TaskExecutionStatus.UNVERIFIED, supervisor.stateStore.get(taskId)?.status)
     }
 
     // 3. Expected file exists pass and fail (including directory rejection)
@@ -427,8 +427,8 @@ class StrictStepVerificationGateTest {
         val stepPass = ExecutionStep(
             stepOrder = 0,
             title = "Cmd Pass",
-            description = "Exit code 0",
-            verificationCommand = "true",
+            description = "Workspace directory exists",
+            verificationCommand = "test -d .",
             status = StepStatus.PENDING
         )
         supervisor.createTask(

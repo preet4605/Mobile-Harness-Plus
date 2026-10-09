@@ -484,7 +484,7 @@ class DeterministicTaskDecompositionTest {
         assertTrue("Execution loop executed steps", stepsExecuted > 0)
         val finalTask = canonicalRepo.getTask(taskId)
         assertNotNull(finalTask)
-        assertEquals(PlanStatus.COMPLETED, finalTask!!.plan.status)
+        assertEquals(PlanStatus.UNVERIFIED, finalTask!!.plan.status)
         assertTrue(finalTask.plan.isFinished)
     }
 

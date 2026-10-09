@@ -12,9 +12,11 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.ConscryptMode
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
+@ConscryptMode(ConscryptMode.Mode.OFF)
 class WakeLockManagerTest {
     private val context: Context get() = RuntimeEnvironment.getApplication()
 

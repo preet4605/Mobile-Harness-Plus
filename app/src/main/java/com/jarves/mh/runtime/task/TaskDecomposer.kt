@@ -146,7 +146,6 @@ class DefaultTaskDecomposer : TaskDecomposer {
                     title = milestone.title,
                     objective = milestone.objective,
                     acceptanceCriteria = effectiveCriteria,
-                    verificationCommand = "true",
                     stepOrder = index
                 )
             }
@@ -155,7 +154,6 @@ class DefaultTaskDecomposer : TaskDecomposer {
                 title = "Execute Task",
                 objective = cleanObjective,
                 acceptanceCriteria = effectiveCriteria,
-                verificationCommand = "true",
                 stepOrder = 0
             )
         }
@@ -176,7 +174,6 @@ class DefaultTaskDecomposer : TaskDecomposer {
                     title = "Execute Task",
                     objective = cleanObjective,
                     acceptanceCriteria = effectiveCriteria,
-                    verificationCommand = "true",
                     stepOrder = 0
                 )
                 fallbackBuilder.build()

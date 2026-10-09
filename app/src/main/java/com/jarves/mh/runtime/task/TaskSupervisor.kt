@@ -26,6 +26,7 @@ import com.jarves.mh.model.brain.RecoveryStrategy
 import com.jarves.mh.model.brain.StepStatus
 import com.jarves.mh.model.brain.validateExecutionPlan
 import com.jarves.mh.model.brain.TaskFailureRecord
+import com.jarves.mh.model.brain.TaskOutcome
 import com.jarves.mh.model.RuntimeEvent
 import com.jarves.mh.runtime.ControlledBrainInjector
 import com.jarves.mh.runtime.RuntimeExecutionService
@@ -47,6 +48,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 
 /**
  * Top-level authoritative supervisor for background development tasks.
@@ -138,6 +140,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
     fun getTaskIdForSession(sessionId: String): String? =
         processSupervisor.getTaskIdForSession(sessionId) ?: stateStore.getBySessionId(sessionId)?.taskId
 
+    private var startupReconciliation: Job? = null
+
     companion object {
         private const val TAG = "TaskSupervisor"
         @Volatile private var instance: TaskSupervisor? = null
@@ -145,10 +149,11 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         fun getInstance(context: Context): TaskSupervisor {
             return instance ?: synchronized(this) {
                 instance ?: TaskSupervisor(context.applicationContext).also {
-                    instance = it
-                    it.supervisorScope.launch {
-                        it.reconcileOnStartup()
+                    val startupTasks = it.stateStore.getActiveTasks()
+                    it.startupReconciliation = it.supervisorScope.launch {
+                        it.reconcileOnStartup(startupTasks)
                     }
+                    instance = it
                 }
             }
         }
@@ -165,10 +170,10 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
      * Reconciles persisted task states on application startup.
      * Recovers from OS process death or crashes without leaving zombie tasks.
      */
-    fun reconcileOnStartup(): List<DurableTaskRecord> {
+    fun reconcileOnStartup(startupTasks: List<DurableTaskRecord> = stateStore.getActiveTasks()): List<DurableTaskRecord> {
         val reconciled = mutableListOf<DurableTaskRecord>()
         try {
-            val active = stateStore.getActiveTasks()
+            val active = startupTasks
             runCatching { Log.d(TAG, "Reconciling ${active.size} active tasks from database on startup") }
 
             for (task in active) try {
@@ -403,7 +408,17 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         }
     }
 
-    var stepVerifier: StepVerifier = DefaultStepVerifier()
+    var stepVerifier: StepVerifier = DefaultStepVerifier(
+        confinementRunner = appContext?.let { context ->
+            GuestStepCommandRunner(context) { task, process ->
+                val owner = stateStore.get(task.taskId)
+                val sessionId = owner?.sessionId
+                owner != null && owner.projectId == task.projectId && sessionId != null &&
+                    !owner.status.isTerminal && !isCancellationActive(task.taskId) &&
+                    bindProcess(task.taskId, sessionId, process)
+            }
+        } ?: ControlledStepCommandRunner()
+    )
     var recoveryEngine: RecoveryEngine = DefaultRecoveryEngine(checkpointsProvider = { getCheckpoints() })
 
     fun detectStepMutatedFiles(
@@ -642,7 +657,6 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                     title = "Execute Task",
                     objective = fallbackObjective,
                     acceptanceCriteria = fallbackCriteria,
-                    verificationCommand = "true",
                     stepOrder = 0
                 ).build()
             }
@@ -766,7 +780,6 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                     title = "Execute Task",
                     objective = fallbackObjective,
                     acceptanceCriteria = fallbackCriteria,
-                    verificationCommand = "true",
                     stepOrder = 0
                 ).build()
             }
@@ -801,6 +814,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
      */
     enum class TaskErrorClassification {
         USER_CANCELLED,
+        REPLAY_UNSAFE,
         TRANSIENT_API_ERROR,
         PERMANENT_AUTH_OR_CONFIG,
         WORKSPACE_MUTATED_FAILURE,
@@ -822,6 +836,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             return TaskErrorClassification.USER_CANCELLED
         }
         val lower = errorMsg.lowercase()
+        if (lower.contains("replay_unsafe")) return TaskErrorClassification.REPLAY_UNSAFE
         if (lower.contains("api key") || lower.contains("user not found") ||
             lower.contains("authentication failed") || lower.contains("not signed in") ||
             lower.contains("http 401") || lower.contains("http 403") ||
@@ -903,17 +918,17 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         }
 
         val finalizedRecord = when (status) {
-            TaskExecutionStatus.COMPLETED -> {
+            TaskExecutionStatus.COMPLETED, TaskExecutionStatus.UNVERIFIED -> {
                 if (task.status != TaskExecutionStatus.COMPLETING) {
                     runCatching { stateStore.transition(targetTaskId, TaskExecutionStatus.COMPLETING) }
                 }
-                val completed = stateStore.transition(targetTaskId, TaskExecutionStatus.COMPLETED)
+                val completed = stateStore.transition(targetTaskId, status)
                 healthMonitor.onTaskCompleted(targetTaskId, pid ?: completed.pid)
                 if (appContext != null) {
                     RuntimeExecutionService.finish(
                         context = appContext,
-                        title = "Task completed",
-                        detail = "Mobile Harness finished working in ${task.projectSlug}.",
+                        title = if (status == TaskExecutionStatus.UNVERIFIED) "Task finished — unverified" else "Task completed",
+                        detail = if (status == TaskExecutionStatus.UNVERIFIED) "No deterministic check was available for ${task.projectSlug}." else "Mobile Harness finished working in ${task.projectSlug}.",
                         failed = false
                     )
                 }
@@ -981,6 +996,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         runCatching {
             when (status) {
                 TaskExecutionStatus.COMPLETED -> canonicalTaskRepository.updatePlanStatus(targetTaskId, PlanStatus.COMPLETED)
+                TaskExecutionStatus.UNVERIFIED -> canonicalTaskRepository.updatePlanStatus(targetTaskId, PlanStatus.UNVERIFIED)
                 TaskExecutionStatus.FAILED, TaskExecutionStatus.ABANDONED -> canonicalTaskRepository.updatePlanStatus(targetTaskId, PlanStatus.FAILED)
                 TaskExecutionStatus.CANCELLED -> canonicalTaskRepository.updatePlanStatus(targetTaskId, PlanStatus.CANCELLED)
                 else -> {}
@@ -1051,6 +1067,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         }
 
         val job = supervisorScope.launch {
+            startupReconciliation?.join()
             var executionOwnedElsewhere = false
             try {
                 executionLock.withExecutionLock(task.taskId, task.projectId) {
@@ -1186,14 +1203,14 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
 
                                 // If all steps in the plan are already completed or skipped
                                 val allStepsDone = currentPlanSteps.isNotEmpty() && currentPlanSteps.all {
-                                    it.status == StepStatus.COMPLETED || it.status == StepStatus.SKIPPED
+                                    it.status == StepStatus.COMPLETED || it.status == StepStatus.SKIPPED || it.status == StepStatus.UNVERIFIED
                                 }
                                 if (allStepsDone || currentStepIndex >= currentPlanSteps.size) {
                                     break
                                 }
 
                                 var stepRecord = currentPlanSteps[currentStepIndex]
-                                if (stepRecord.status == StepStatus.COMPLETED || stepRecord.status == StepStatus.SKIPPED) {
+                                if (stepRecord.status == StepStatus.COMPLETED || stepRecord.status == StepStatus.SKIPPED || stepRecord.status == StepStatus.UNVERIFIED) {
                                     val nextIndex = (currentStepIndex + 1).coerceAtMost(currentPlanSteps.size)
                                     canonicalTask = canonicalTask.copy(
                                         plan = canonicalTask.plan.copy(currentStepIndex = nextIndex)
@@ -1232,8 +1249,9 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                 // Never mark COMPLETED automatically; rerun trusted verification or transition safely to failure/recovery.
                                 if (stepRecord.status == StepStatus.VERIFYING) {
                                     val verificationResult = try {
-                                        stepVerifier.verify(canonicalTask, stepRecord, wsDir)
+                                        runInterruptible(Dispatchers.IO) { stepVerifier.verify(canonicalTask, stepRecord, wsDir) }
                                     } catch (t: Throwable) {
+                                        if (t is kotlinx.coroutines.CancellationException) throw t
                                         StepVerificationResult(
                                             passed = false,
                                             summary = "",
@@ -1241,9 +1259,9 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                         )
                                     }
 
-                                    if (verificationResult.passed && !isCancellationActive(taskId)) {
+                                    if ((verificationResult.passed || verificationResult.unverified) && !isCancellationActive(taskId)) {
                                         val completedStep = stepRecord.copy(
-                                            status = StepStatus.COMPLETED,
+                                            status = if (verificationResult.unverified) StepStatus.UNVERIFIED else StepStatus.COMPLETED,
                                             completedAt = Instant.now(),
                                             resultSummary = verificationResult.summary
                                         )
@@ -1251,7 +1269,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                             plan = canonicalTask.plan.withUpdatedStep(completedStep)
                                         )
                                         canonicalTaskRepository.saveTask(canonicalTask)
-                                        stateStore.update(taskId) { it.copy(lastKnownStep = "step-${completedStep.stepOrder}:COMPLETED") }
+                                        stateStore.update(taskId) { it.copy(lastKnownStep = "step-${completedStep.stepOrder}:${completedStep.status}") }
                                         refreshActiveTasks()
 
                                         val nextStepIndex = (stepIndex + 1).coerceAtMost(canonicalTask.plan.steps.size)
@@ -1548,7 +1566,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                         val mutatedFiles = detectStepMutatedFiles(current.projectId, stepTag, wsDir)
                                         val classification = classifyError(errorMsg, mutatedFiles.isNotEmpty(), isCancellationActive(taskId))
 
-                                        if (classification == TaskErrorClassification.PERMANENT_AUTH_OR_CONFIG) {
+                                        if (classification == TaskErrorClassification.PERMANENT_AUTH_OR_CONFIG || classification == TaskErrorClassification.REPLAY_UNSAFE) {
                                             throw stepExecError
                                         }
 
@@ -1723,8 +1741,9 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
 
                                     // 4. Perform Trusted Runtime Verification
                                     val verificationResult = try {
-                                        stepVerifier.verify(canonicalTask, activeStep, wsDir)
+                                        runInterruptible(Dispatchers.IO) { stepVerifier.verify(canonicalTask, activeStep, wsDir) }
                                     } catch (t: Throwable) {
+                                        if (t is kotlinx.coroutines.CancellationException) throw t
                                         StepVerificationResult(
                                             passed = false,
                                             summary = "",
@@ -1732,7 +1751,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                         )
                                     }
 
-                                    if (verificationResult.passed) {
+                                    if (verificationResult.passed || verificationResult.unverified) {
                                         if (isCancellationActive(taskId)) {
                                             finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user during step verification")
                                             break
@@ -1740,7 +1759,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
 
                                         // Requirement 8 & 9: StepVerifier alone marks COMPLETED, persist COMPLETED before advancing currentStepIndex
                                         activeStep = activeStep.copy(
-                                            status = StepStatus.COMPLETED,
+                                            status = if (verificationResult.unverified) StepStatus.UNVERIFIED else StepStatus.COMPLETED,
                                             completedAt = Instant.now(),
                                             resultSummary = verificationResult.summary
                                         )
@@ -1748,7 +1767,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                             plan = canonicalTask.plan.withUpdatedStep(activeStep)
                                         )
                                         canonicalTaskRepository.saveTask(canonicalTask)
-                                        stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:COMPLETED") }
+                                        stateStore.update(taskId) { it.copy(lastKnownStep = "step-${activeStep.stepOrder}:${activeStep.status}") }
                                         refreshActiveTasks()
 
                                         // Requirement 10: Advance currentStepIndex exactly once
@@ -1927,43 +1946,42 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                             // Check if all steps completed
                             val finalCanonical = canonicalTaskRepository.getTask(taskId) ?: canonicalTask
                             val allStepsCompleted = finalCanonical.plan.steps.isNotEmpty() &&
-                                finalCanonical.plan.steps.all { it.status == StepStatus.COMPLETED || it.status == StepStatus.SKIPPED }
+                                finalCanonical.plan.steps.all { it.status == StepStatus.COMPLETED || it.status == StepStatus.SKIPPED || it.status == StepStatus.UNVERIFIED }
 
                             if (allStepsCompleted && !isCancellationActive(taskId)) {
                                 succeeded = true
 
-                                // Requirement 15: Persist plan COMPLETED
-                                canonicalTaskRepository.updatePlanStatus(taskId, PlanStatus.COMPLETED)
-                                val updatedPlan = finalCanonical.plan.copy(status = PlanStatus.COMPLETED)
-                                canonicalTaskRepository.saveTask(finalCanonical.copy(plan = updatedPlan))
+                                val unverified = finalCanonical.plan.steps.any { it.status == StepStatus.UNVERIFIED } ||
+                                    finalCanonical.plan.steps.none { it.status == StepStatus.COMPLETED }
+                                val finalPlanStatus = if (unverified) PlanStatus.UNVERIFIED else PlanStatus.COMPLETED
+                                val summary = if (unverified) "Execution finished; deterministic verification unavailable for one or more steps"
+                                    else "Task execution verified on attempt $attempt"
+                                canonicalTaskRepository.saveTask(finalCanonical.copy(
+                                    plan = finalCanonical.plan.copy(status = finalPlanStatus),
+                                    outcome = TaskOutcome(success = !unverified, summary = summary)
+                                ))
 
-                                // Learning: construct verified execution feedback for successful attempt
-                                val successAttemptId = attemptId
-                                val completedSteps = finalCanonical.plan.steps.filter { it.status == StepStatus.COMPLETED }.map { it.stepId }
-                                val verifiedCriteria = if (finalCanonical.outcome?.testsPassed == true) finalCanonical.acceptanceCriteria else emptyList()
-                                val checkpoints = getCheckpoints()
-                                val mutatedFiles = runCatching { checkpoints.readChangedPaths(task.projectId) }.getOrDefault(emptyList()) ?: emptyList()
-                                val wsState = if (mutatedFiles.isNotEmpty()) ExecutionWorkspaceState(modifiedFiles = mutatedFiles) else null
-
-                                val feedback = ExecutionFeedback(
-                                    taskId = taskId,
-                                    projectId = current.projectId,
-                                    attemptId = successAttemptId,
-                                    outcome = ExecutionOutcome.SUCCESS,
-                                    summary = finalCanonical.outcome?.summary ?: "Task execution completed successfully on attempt $attempt",
-                                    completedStepIds = completedSteps,
-                                    verifiedCriteria = verifiedCriteria,
-                                    workspaceState = wsState,
-                                    source = MemorySource.TOOL_VERIFIED,
-                                    contextFingerprint = brainSnapshots[successAttemptId]?.fingerprint
-                                )
-                                runCatching {
-                                    learnExecutionFeedback(feedback)
-                                }.onFailure {
-                                    runCatching { Log.e(TAG, "Brain learning persistence failed for task $taskId attempt $successAttemptId", it) }
+                                // Unverified execution must not create success/progress evidence in Brain.
+                                if (!unverified) {
+                                    val completedSteps = finalCanonical.plan.steps.filter { it.status == StepStatus.COMPLETED }.map { it.stepId }
+                                    val checkpoints = getCheckpoints()
+                                    val mutatedFiles = runCatching { checkpoints.readChangedPaths(task.projectId) }.getOrDefault(emptyList())
+                                    val feedback = ExecutionFeedback(
+                                        taskId = taskId,
+                                        projectId = current.projectId,
+                                        attemptId = attemptId,
+                                        outcome = ExecutionOutcome.SUCCESS,
+                                        summary = summary,
+                                        completedStepIds = completedSteps,
+                                        workspaceState = if (mutatedFiles.isNotEmpty()) ExecutionWorkspaceState(modifiedFiles = mutatedFiles) else null,
+                                        source = MemorySource.TOOL_VERIFIED,
+                                        contextFingerprint = brainSnapshots[attemptId]?.fingerprint
+                                    )
+                                    runCatching { learnExecutionFeedback(feedback) }.onFailure {
+                                        runCatching { Log.e(TAG, "Brain learning persistence failed for task $taskId attempt $attemptId", it) }
+                                    }
                                 }
-
-                                finalizeTask(taskId, TaskExecutionStatus.COMPLETED)
+                                finalizeTask(taskId, if (unverified) TaskExecutionStatus.UNVERIFIED else TaskExecutionStatus.COMPLETED)
                             } else {
                                 val currentStatus = stateStore.get(taskId)?.status
                                 if (currentStatus in setOf(TaskExecutionStatus.WAITING_FOR_APPROVAL, TaskExecutionStatus.WAITING_FOR_INPUT) ||
@@ -2064,6 +2082,10 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                             when (classification) {
                                 TaskErrorClassification.USER_CANCELLED -> {
                                     finalizeTask(taskId, TaskExecutionStatus.CANCELLED, error = "Cancelled by user")
+                                    break
+                                }
+                                TaskErrorClassification.REPLAY_UNSAFE -> {
+                                    finalizeTask(taskId, TaskExecutionStatus.FAILED, error = errorMsg, recoveryRequired = true)
                                     break
                                 }
                                 TaskErrorClassification.PERMANENT_AUTH_OR_CONFIG -> {

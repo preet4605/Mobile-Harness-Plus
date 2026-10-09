@@ -294,7 +294,7 @@ class CanonicalTaskLifecycleTest {
         job.join()
         assertTrue("Execution block should have run", blockExecuted)
         val finalizedRecord = supervisor.stateStore.get(taskId)
-        assertEquals(TaskExecutionStatus.COMPLETED, finalizedRecord?.status)
+        assertEquals(TaskExecutionStatus.UNVERIFIED, finalizedRecord?.status)
     }
 
     // TEST: Detached HEAD git SHA resolution

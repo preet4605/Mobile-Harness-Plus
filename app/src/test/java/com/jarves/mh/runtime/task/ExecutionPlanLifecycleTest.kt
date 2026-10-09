@@ -518,7 +518,7 @@ class ExecutionPlanLifecycleTest {
             stepOrder = 0,
             title = "Single Step",
             description = "Desc",
-            verificationCommand = "true",
+            verificationCommand = "test -d .",
             status = StepStatus.PENDING
         )
         supervisor.createTask(

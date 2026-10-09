@@ -275,7 +275,7 @@ class RuntimeRetrySessionRoutingTest {
         assertEquals("The supervisor must run a second attempt", 2, attempts.get())
         assertEquals("The retry must run the task's request, not nothing", listOf(initialRequest, initialRequest), requestsUsed)
         assertEquals("s2", supervisor.stateStore.get(taskId)!!.sessionId)
-        assertEquals(TaskExecutionStatus.COMPLETED, supervisor.stateStore.get(taskId)!!.status)
+        assertEquals(TaskExecutionStatus.UNVERIFIED, supervisor.stateStore.get(taskId)!!.status)
         val finalUi = ui.get()
         assertEquals("Retried answer", finalUi.messages.last().text)
         assertFalse(finalUi.isRunning)

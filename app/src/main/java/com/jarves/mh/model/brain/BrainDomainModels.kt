@@ -17,6 +17,7 @@ enum class StepStatus {
     VERIFYING,
     RECOVERING,
     COMPLETED,
+    UNVERIFIED,
     FAILED,
     SKIPPED
 }
@@ -28,6 +29,7 @@ enum class PlanStatus {
     PENDING,
     IN_PROGRESS,
     COMPLETED,
+    UNVERIFIED,
     FAILED,
     CANCELLED
 }
@@ -73,7 +75,7 @@ data class ExecutionPlan(
         get() = steps.getOrNull(currentStepIndex)
 
     val isFinished: Boolean
-        get() = steps.isNotEmpty() && steps.all { it.status == StepStatus.COMPLETED || it.status == StepStatus.SKIPPED }
+        get() = steps.isNotEmpty() && steps.all { it.status == StepStatus.COMPLETED || it.status == StepStatus.SKIPPED || it.status == StepStatus.UNVERIFIED }
 
     val progressFraction: Float
         get() = if (steps.isEmpty()) 0f else steps.count { it.status == StepStatus.COMPLETED }.toFloat() / steps.size

@@ -675,4 +675,12 @@ class DeterministicSelfRecoveryEngineTest {
         assertEquals("currentStepIndex must advance exactly to total step count", 2, canonical.plan.currentStepIndex)
         assertEquals(TaskExecutionStatus.COMPLETED, supervisor.stateStore.get(taskId)?.status)
     }
+    @Test
+    fun ambiguousToolExecutionIsNotRetriedEvenWithoutWorkspaceChanges() = runBlocking {
+        val task = CanonicalTask(taskId = "replay", projectId = "project", projectSlug = "slug", objective = "review", plan = ExecutionPlan(steps = listOf(ExecutionStep(stepOrder = 0, title = "step", description = "review"))))
+        val classification = supervisor.classifyError("REPLAY_UNSAFE: network interrupted after tool", workspaceMutated = false, isCancelled = false)
+        assertEquals(TaskSupervisor.TaskErrorClassification.REPLAY_UNSAFE, classification)
+        assertNull(DefaultRecoveryEngine().planRecovery(task, task.plan.steps.first(), classification, "REPLAY_UNSAFE", emptyList(), 0))
+    }
+
 }

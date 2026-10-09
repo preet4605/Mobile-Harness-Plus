@@ -1046,6 +1046,8 @@ class ClaudeRuntimeBridge(
     }
 
     private fun finishForegroundRuntime(completed: Boolean, projectName: String, detail: String) {
+        // Supervised tasks retain the service until verification/recovery reaches a final outcome.
+        if (activeTaskId != null) return
         // The first completion/failure post wins; later cleanup must not duplicate it.
         if (foregroundResultPosted) return
         foregroundResultPosted = true
@@ -1061,6 +1063,7 @@ class ClaudeRuntimeBridge(
     }
 
     private fun cancelForegroundRuntime() {
+        if (activeTaskId != null) return
         if (foregroundResultPosted) return
         foregroundResultPosted = true
         runCatching {
