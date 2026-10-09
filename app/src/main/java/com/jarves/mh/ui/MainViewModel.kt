@@ -444,6 +444,12 @@ class MainViewModel(
     private val previewDiscoveryJobs = mutableMapOf<String, Job>()
     /** The project open in flight. A newer open or a close cancels it; [projectOpenGeneration] drops late results. */
     private var projectOpenJob: Job? = null
+
+    /** The file read in flight. Selecting or closing a file, or switching project, cancels it. */
+    private var fileReadJob: Job? = null
+
+    /** Bumped whenever the viewer's file changes. A read that finds a newer value publishes nothing. */
+    private var fileReadGeneration = 0L
     private var projectOpenGeneration = 0L
     private val initialAgentKind = AgentKind.fromStored(preferences.agentKind)
     private val initialPrimaryAgentKind = preferences.primaryAgentKind
@@ -2613,10 +2619,14 @@ class MainViewModel(
         }
         configureBridgeRoots(project.id, project.rootPath)
         // Shell first: the project shows at once with a placeholder, and its chat history loads off the main thread.
+        cancelFileRead()
         _state.update {
             it.copy(
                 activeProject = project,
                 workspaceVisible = true,
+                openedFilePath = null,
+                openedFileContent = null,
+                fileContentLoading = false,
                 readOnlyProject = null,
                 readOnlyProjectChats = emptyList(),
                 readOnlyChatId = null,
@@ -2736,9 +2746,13 @@ class MainViewModel(
 
         projectOpenGeneration++
         projectOpenJob?.cancel()
+        cancelFileRead()
         _state.update {
             it.copy(
                 activeProject = null,
+                openedFilePath = null,
+                openedFileContent = null,
+                fileContentLoading = false,
                 workspaceVisible = false,
                 projectChats = emptyList(),
                 activeChatId = null,
@@ -3682,8 +3696,10 @@ class MainViewModel(
             return
         }
         val project = _state.value.activeProject ?: return
+        cancelFileRead()
+        val request = fileReadGeneration
         _state.update { it.copy(openedFilePath = entry.path, openedFileContent = null, fileContentLoading = true) }
-        viewModelScope.launch {
+        fileReadJob = viewModelScope.launch {
             val content = withContext(ioDispatcher) {
                 val file = File(projectWorkspaceRoot(project), entry.path)
                 runCatching {
@@ -3698,12 +3714,22 @@ class MainViewModel(
                     }
                 }.getOrElse { "Could not read file: ${it.message}" }
             }
+            // A newer selection or a close happened while this file was read.
+            if (request != fileReadGeneration) return@launch
             _state.update { it.copy(openedFileContent = content, fileContentLoading = false) }
         }
     }
 
     fun closeFile() {
+        cancelFileRead()
         _state.update { it.copy(openedFilePath = null, openedFileContent = null, fileContentLoading = false) }
+    }
+
+    /** Cancels the file read in flight. The generation bump keeps a read that is already running from publishing. */
+    private fun cancelFileRead() {
+        fileReadGeneration++
+        fileReadJob?.cancel()
+        fileReadJob = null
     }
 
     private val skipIntermediateDirNames = setOf(
