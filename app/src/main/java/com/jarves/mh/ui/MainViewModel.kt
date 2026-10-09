@@ -134,6 +134,7 @@ import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -3677,22 +3678,37 @@ class MainViewModel(
         val generation = ++projectFilesGeneration
         _state.update { it.copy(filesLoading = true) }
         viewModelScope.launch {
-            val workspaceDir = projectWorkspaceRoot(project)
-            val entries = withContext(ioDispatcher) { readWorkspace(project) }
-            val suggestedRoot = withContext(ioDispatcher) { if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null }
-            val androidProjectDetected = withContext(ioDispatcher) { findAndroidGradleProjectRoot(workspaceDir) != null }
-            val customizations = withContext(ioDispatcher) { customizationUpdate(project) }
-            // Publish only if this is still the newest refresh and the same project root is still active.
-            if (generation != projectFilesGeneration || !isCurrentProjectRoot(project)) return@launch
-            _state.update {
-                customizations(
-                    it.copy(
-                        workspaceFiles = entries,
-                        filesLoading = false,
-                        suggestedProjectRoot = suggestedRoot,
-                        androidProjectDetected = androidProjectDetected,
-                    ),
-                )
+            try {
+                val workspaceDir = projectWorkspaceRoot(project)
+                val entries = withContext(ioDispatcher) { readWorkspace(project) }
+                val suggestedRoot = withContext(ioDispatcher) { if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null }
+                val androidProjectDetected = withContext(ioDispatcher) { findAndroidGradleProjectRoot(workspaceDir) != null }
+                val customizations = withContext(ioDispatcher) { customizationUpdate(project) }
+                // Publish only if this is still the newest refresh and the same project root is still active.
+                if (generation == projectFilesGeneration && isCurrentProjectRoot(project)) {
+                    _state.update {
+                        customizations(
+                            it.copy(
+                                workspaceFiles = entries,
+                                filesLoading = false,
+                                suggestedProjectRoot = suggestedRoot,
+                                androidProjectDetected = androidProjectDetected,
+                            ),
+                        )
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                // A failed refresh is recorded as a message instead of escaping viewModelScope.
+                if (generation == projectFilesGeneration) {
+                    _state.update { it.copy(toastMessage = "Could not load project files: ${error.message}") }
+                }
+            } finally {
+                // Only the newest refresh owns the spinner, so an older one must not clear it early.
+                if (generation == projectFilesGeneration) {
+                    _state.update { it.copy(filesLoading = false) }
+                }
             }
         }
     }
