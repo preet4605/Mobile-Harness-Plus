@@ -814,14 +814,7 @@ class AntigravityRuntimeBridge(
     }
 
     override suspend fun undoLastChanges(projectId: String): Boolean = withContext(Dispatchers.IO) {
-        val checkpoint = checkpoints.checkpointDir(projectId)
-        val backup = File(checkpoint, "project")
-        val paths = checkpoints.readChangedPaths(projectId)
-        if (!backup.isDirectory || paths.isEmpty()) return@withContext false
-        val workspace = checkpoints.ensureWorkspace(projectId)
-        paths.forEach { restore(workspace, backup, it) }
-        checkpoint.deleteRecursively()
-        true
+        checkpoints.undoLastChanges(projectId)
     }
 
     override suspend fun acceptLastChanges(projectId: String): Unit = withContext(Dispatchers.IO) {
@@ -835,10 +828,7 @@ class AntigravityRuntimeBridge(
     }
 
     override suspend fun undoFileChange(projectId: String, path: String): Boolean = withContext(Dispatchers.IO) {
-        if (path !in checkpoints.readChangedPaths(projectId)) return@withContext false
-        restore(checkpoints.ensureWorkspace(projectId), File(checkpoints.checkpointDir(projectId), "project"), path)
-        checkpoints.removeChangedPath(projectId, path)
-        true
+        checkpoints.undoFileChange(projectId, path)
     }
 
     override suspend fun acceptFileChange(projectId: String, path: String): Boolean = withContext(Dispatchers.IO) {
@@ -853,15 +843,6 @@ class AntigravityRuntimeBridge(
         } else baseline.delete()
         checkpoints.removeChangedPath(projectId, path)
         true
-    }
-
-    private fun restore(workspace: File, backup: File, path: String) {
-        val target = checkpoints.safeWorkspaceFile(workspace, path)
-        val original = checkpoints.safeWorkspaceFile(backup, path)
-        if (original.isFile) {
-            target.parentFile?.mkdirs()
-            original.copyTo(target, overwrite = true)
-        } else target.delete()
     }
 
     private suspend fun emitCompleted(sessionId: String) {

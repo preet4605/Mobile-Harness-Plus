@@ -501,28 +501,7 @@ class ClaudeRuntimeBridge(
     }
 
     override suspend fun undoLastChanges(projectId: String): Boolean = withContext(Dispatchers.IO) {
-        val checkpoint = checkpointDir(projectId)
-        val backup = File(checkpoint, "project")
-        val manifest = File(checkpoint, "changes.json")
-        if (!backup.isDirectory || !manifest.isFile) return@withContext false
-        val workspace = ensureWorkspace(projectId)
-        val paths = runCatching {
-            val array = JSONArray(manifest.readText())
-            (0 until array.length()).map(array::getString)
-        }.getOrElse { return@withContext false }.filterNot(::isInternalRuntimePath)
-
-        paths.forEach { path ->
-            val target = safeWorkspaceFile(workspace, path)
-            val original = safeWorkspaceFile(backup, path)
-            if (original.isFile) {
-                target.parentFile?.mkdirs()
-                original.copyTo(target, overwrite = true)
-            } else if (target.isFile) {
-                target.delete()
-            }
-        }
-        checkpoint.deleteRecursively()
-        true
+        checkpoints.undoLastChanges(projectId)
     }
 
     override suspend fun acceptLastChanges(projectId: String) {
@@ -538,19 +517,7 @@ class ClaudeRuntimeBridge(
     }
 
     override suspend fun undoFileChange(projectId: String, path: String): Boolean = withContext(Dispatchers.IO) {
-        if (isInternalRuntimePath(path) || path !in readChangedPaths(projectId)) return@withContext false
-        val workspace = ensureWorkspace(projectId)
-        val backup = File(checkpointDir(projectId), "project")
-        val target = safeWorkspaceFile(workspace, path)
-        val original = safeWorkspaceFile(backup, path)
-        if (original.isFile) {
-            target.parentFile?.mkdirs()
-            original.copyTo(target, overwrite = true)
-        } else if (target.isFile) {
-            target.delete()
-        }
-        removeChangedPath(projectId, path)
-        true
+        checkpoints.undoFileChange(projectId, path)
     }
 
     override suspend fun acceptFileChange(projectId: String, path: String): Boolean = withContext(Dispatchers.IO) {

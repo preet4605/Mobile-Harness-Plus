@@ -100,10 +100,14 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
 
     var checkpointsResolver: (() -> com.jarves.mh.runtime.WorkspaceCheckpoints)? = null
 
-    fun getCheckpoints(): com.jarves.mh.runtime.WorkspaceCheckpoints {
-        return checkpointsResolver?.invoke()
-            ?: com.jarves.mh.runtime.WorkspaceCheckpoints(appContext?.filesDir ?: File("."))
+    private val defaultCheckpoints by lazy {
+        val preferences = appContext?.let { com.jarves.mh.data.AppPreferences(it) }
+        WorkspaceCheckpoints(appContext?.filesDir ?: File("."), rootPathResolver = { projectId ->
+            preferences?.loadProjects()?.firstOrNull { it.id == projectId }?.rootPath.orEmpty()
+        })
     }
+
+    fun getCheckpoints(): WorkspaceCheckpoints = checkpointsResolver?.invoke() ?: defaultCheckpoints
 
     private val activeJobs = ConcurrentHashMap<String, Job>()
     private val outputBuffers = ConcurrentHashMap<String, BoundedOutputBuffer>()
@@ -454,7 +458,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
 
     fun resolveWorkspaceDir(projectId: String): File? {
         return workspaceDirectoryResolver?.invoke(projectId)
-            ?: appContext?.let { File(it.filesDir, "workspaces/$projectId") }
+            ?: appContext?.let { getCheckpoints().ensureWorkspace(projectId) }
             ?: File("workspaces/$projectId").takeIf { it.exists() }
             ?: File(projectId).takeIf { it.exists() }
     }

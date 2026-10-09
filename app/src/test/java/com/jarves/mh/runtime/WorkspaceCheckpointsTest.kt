@@ -406,4 +406,305 @@ class WorkspaceCheckpointsTest {
         val updated = checkpoints.readMetadata("proj-meta", "step-1")
         assertEquals(listOf("A.txt"), updated?.changes)
     }
+
+    @Test
+    fun `restore refuses oversized originals and keeps all changes pending`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        val original = File(workspace, "original.bin")
+        RandomAccessFile(original, "rw").use { it.setLength(WorkspaceCheckpoints.MAX_CHECKPOINT_COPY_BYTES + 1) }
+        checkpoints.createCheckpoint("project", workspace)
+        original.writeText("changed original")
+        val created = File(workspace, "new.txt").apply { writeText("new content") }
+        checkpoints.saveChangedPaths("project", listOf("original.bin", "new.txt"))
+
+        assertFalse(checkpoints.restoreCheckpoint("project", workspace))
+        assertEquals("changed original", original.readText())
+        assertTrue(created.isFile)
+        assertEquals(listOf("new.txt", "original.bin"), checkpoints.readChangedPaths("project"))
+    }
+
+    @Test
+    fun `restore refuses missing backups before touching other files`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        val first = File(workspace, "a.txt").apply { writeText("original a") }
+        val second = File(workspace, "b.txt").apply { writeText("original b") }
+        checkpoints.createCheckpoint("project", workspace)
+        File(checkpoints.checkpointDir("project"), "project/b.txt").delete()
+        first.writeText("changed a")
+        second.writeText("changed b")
+        checkpoints.saveChangedPaths("project", listOf("a.txt", "b.txt"))
+
+        assertFalse(checkpoints.restoreCheckpoint("project", workspace))
+        assertEquals("changed a", first.readText())
+        assertEquals("changed b", second.readText())
+    }
+
+    @Test
+    fun `restore refuses truncated backups`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        val original = File(workspace, "original.txt").apply { writeText("complete original") }
+        checkpoints.createCheckpoint("project", workspace)
+        File(checkpoints.checkpointDir("project"), "project/original.txt").writeText("partial")
+        original.writeText("changed")
+        checkpoints.saveChangedPaths("project", listOf("original.txt"))
+
+        assertFalse(checkpoints.restoreCheckpoint("project", workspace))
+        assertEquals("changed", original.readText())
+    }
+
+    @Test
+    fun `legacy checkpoint cannot delete a file without a backup`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        val original = File(workspace, "original.txt").apply { writeText("keep me") }
+        File(checkpoints.checkpointDir("project"), "project").mkdirs()
+        checkpoints.saveChangedPaths("project", listOf("original.txt"))
+
+        assertFalse(checkpoints.restoreCheckpoint("project", workspace))
+        assertEquals("keep me", original.readText())
+    }
+
+    @Test
+    fun `checkpoint restores originals and removes proven new files after store recreation`() {
+        val filesDir = tempFolder.newFolder()
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = tempFolder.newFolder()
+        val original = File(workspace, "original.txt").apply { writeText("baseline") }
+        checkpoints.createCheckpoint("project", workspace)
+        original.delete()
+        val created = File(workspace, "new.txt").apply { writeText("created") }
+        checkpoints.saveChangedPaths("project", listOf("original.txt", "new.txt"))
+
+        assertTrue(WorkspaceCheckpoints(filesDir).restoreCheckpoint("project", workspace))
+        assertEquals("baseline", original.readText())
+        assertFalse(created.exists())
+    }
+
+    @Test
+    fun `checkpoint refuses restore to a different workspace root`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        File(workspace, "original.txt").writeText("baseline")
+        checkpoints.createCheckpoint("project", workspace)
+        checkpoints.saveChangedPaths("project", listOf("original.txt"))
+        val otherWorkspace = tempFolder.newFolder()
+        val unrelated = File(otherWorkspace, "original.txt").apply { writeText("unrelated") }
+
+        assertFalse(checkpoints.restoreCheckpoint("project", otherWorkspace))
+        assertEquals("unrelated", unrelated.readText())
+    }
+
+    @Test
+    fun `restore never follows a final symlink outside workspace`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        val original = File(workspace, "original.txt").apply { writeText("baseline") }
+        checkpoints.createCheckpoint("project", workspace)
+        val outside = tempFolder.newFile().apply { writeText("outside") }
+        original.delete()
+        java.nio.file.Files.createSymbolicLink(original.toPath(), outside.toPath())
+        checkpoints.saveChangedPaths("project", listOf("original.txt"))
+
+        assertFalse(checkpoints.restoreCheckpoint("project", workspace))
+        assertEquals("outside", outside.readText())
+    }
+
+    @Test
+    fun `single file Undo retains oversized pending original`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = checkpoints.ensureWorkspace("project")
+        val original = File(workspace, "large.bin")
+        RandomAccessFile(original, "rw").use { it.setLength(WorkspaceCheckpoints.MAX_CHECKPOINT_COPY_BYTES + 1) }
+        checkpoints.createCheckpoint("project", workspace)
+        original.writeText("changed")
+        checkpoints.saveChangedPaths("project", listOf("large.bin"))
+
+        assertFalse(checkpoints.undoFileChange("project", "large.bin"))
+        assertEquals("changed", original.readText())
+        assertEquals(listOf("large.bin"), checkpoints.readChangedPaths("project"))
+        assertTrue(checkpoints.checkpointExists("project"))
+    }
+
+    @Test
+    fun `Undo all refuses incomplete backup and preserves pending baseline`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = checkpoints.ensureWorkspace("project")
+        val original = File(workspace, "original.txt").apply { writeText("baseline") }
+        checkpoints.createCheckpoint("project", workspace)
+        File(checkpoints.checkpointDir("project"), "project/original.txt").delete()
+        original.writeText("changed")
+        val created = File(workspace, "new.txt").apply { writeText("new") }
+        checkpoints.saveChangedPaths("project", listOf("original.txt", "new.txt"))
+
+        assertFalse(checkpoints.undoLastChanges("project"))
+        assertEquals("changed", original.readText())
+        assertTrue(created.isFile)
+        assertEquals(listOf("new.txt", "original.txt"), checkpoints.readChangedPaths("project"))
+    }
+
+    @Test
+    fun `nested root and Undo baseline survive store recreation and reconfiguration`() {
+        val filesDir = tempFolder.newFolder()
+        val checkpoints = WorkspaceCheckpoints(filesDir, rootPathResolver = { "apps/demo" })
+        val workspace = checkpoints.ensureWorkspace("project")
+        val original = File(workspace, "original.txt").apply { writeText("baseline") }
+        val enclosing = File(filesDir, "workspaces/project/original.txt").apply { writeText("enclosing") }
+        checkpoints.createCheckpoint("project", workspace)
+        original.writeText("changed")
+        checkpoints.saveChangedPaths("project", listOf("original.txt"))
+
+        val recreated = WorkspaceCheckpoints(filesDir, rootPathResolver = { "apps/demo" })
+        recreated.configureProjectRoot("project", "apps/demo")
+        assertEquals(workspace.canonicalFile, recreated.ensureWorkspace("project"))
+        assertTrue(recreated.undoFileChange("project", "original.txt"))
+        assertEquals("baseline", original.readText())
+        assertEquals("enclosing", enclosing.readText())
+        assertFalse(recreated.checkpointExists("project"))
+    }
+
+    @Test
+    fun `malformed metadata cannot authorize deletion`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = checkpoints.ensureWorkspace("project")
+        checkpoints.createCheckpoint("project", workspace)
+        val created = File(workspace, "new.txt").apply { writeText("new") }
+        checkpoints.saveChangedPaths("project", listOf("new.txt"))
+        File(checkpoints.checkpointDir("project"), "metadata.json").writeText("{truncated")
+
+        assertFalse(checkpoints.undoLastChanges("project"))
+        assertTrue(created.isFile)
+        assertTrue(checkpoints.checkpointExists("project"))
+    }
+
+    @Test
+    fun `disguised original path cannot be deleted as a new file`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = checkpoints.ensureWorkspace("project")
+        val original = File(workspace, "large.bin")
+        RandomAccessFile(original, "rw").use { it.setLength(WorkspaceCheckpoints.MAX_CHECKPOINT_COPY_BYTES + 1) }
+        checkpoints.createCheckpoint("project", workspace)
+        original.writeText("changed")
+        checkpoints.saveChangedPaths("project", listOf("./large.bin"))
+
+        assertFalse(checkpoints.undoLastChanges("project"))
+        assertEquals("changed", original.readText())
+    }
+
+    @Test
+    fun `Undo all removes only proven new files and clears successful pending changes`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = checkpoints.ensureWorkspace("project")
+        val original = File(workspace, "original.txt").apply { writeText("baseline") }
+        checkpoints.createCheckpoint("project", workspace)
+        original.writeText("changed")
+        val created = File(workspace, "new.txt").apply { writeText("new") }
+        checkpoints.saveChangedPaths("project", listOf("original.txt", "new.txt"))
+
+        assertTrue(checkpoints.undoLastChanges("project"))
+        assertEquals("baseline", original.readText())
+        assertFalse(created.exists())
+        assertFalse(checkpoints.checkpointExists("project"))
+    }
+
+    @Test
+    fun `interrupted checkpoint is not a legacy checkpoint or a usable recovery baseline`() {
+        val filesDir = tempFolder.newFolder()
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = checkpoints.ensureWorkspace("project")
+        val original = File(workspace, "original.txt").apply { writeText("current content") }
+        val checkpoint = checkpoints.checkpointDir("project", "step-1")
+        File(checkpoint, "project").mkdirs()
+        File(checkpoint, "project/original.txt").writeText("incomplete backup")
+        File(checkpoint, "incomplete").writeText("")
+
+        val recreated = WorkspaceCheckpoints(filesDir)
+        assertFalse(recreated.restoreCheckpoint("project", workspace, "step-1"))
+        assertFalse(recreated.checkpointExists("project", "step-1"))
+        assertTrue(recreated.listCheckpoints("project").isEmpty())
+        assertEquals("current content", original.readText())
+    }
+
+    @Test
+    fun `legacy checkpoint still restores an available original backup`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = checkpoints.ensureWorkspace("project")
+        val original = File(workspace, "original.txt").apply { writeText("changed") }
+        val backup = File(checkpoints.checkpointDir("project"), "project").apply { mkdirs() }
+        File(backup, "original.txt").writeText("baseline")
+        checkpoints.saveChangedPaths("project", listOf("original.txt"))
+
+        assertTrue(checkpoints.undoFileChange("project", "original.txt"))
+        assertEquals("baseline", original.readText())
+    }
+
+    @Test
+    fun `kept backup stays usable by a later Undo while other changes remain pending`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = checkpoints.ensureWorkspace("project")
+        val original = File(workspace, "original.txt").apply { writeText("original") }
+        File(workspace, "other.txt").writeText("other baseline")
+        checkpoints.createCheckpoint("project", workspace)
+        checkpoints.saveChangedPaths("project", listOf("original.txt", "other.txt"))
+        // Keep updates the baseline, then removes its pending path in each bridge.
+        File(checkpoints.checkpointDir("project"), "project/original.txt").writeText("accepted content")
+        checkpoints.removeChangedPath("project", "original.txt")
+        original.writeText("later edit")
+        checkpoints.saveChangedPaths("project", listOf("original.txt"))
+
+        assertTrue(checkpoints.undoFileChange("project", "original.txt"))
+        assertEquals("accepted content", original.readText())
+        assertEquals(listOf("other.txt"), checkpoints.readChangedPaths("project"))
+    }
+
+    @Test
+    fun `kept deletion becomes a proven absence for a later creation`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = checkpoints.ensureWorkspace("project")
+        val original = File(workspace, "original.txt").apply { writeText("original") }
+        File(workspace, "other.txt").writeText("other baseline")
+        checkpoints.createCheckpoint("project", workspace)
+        checkpoints.saveChangedPaths("project", listOf("original.txt", "other.txt"))
+        original.delete()
+        File(checkpoints.checkpointDir("project"), "project/original.txt").delete()
+        checkpoints.removeChangedPath("project", "original.txt")
+        original.writeText("later creation")
+        checkpoints.saveChangedPaths("project", listOf("original.txt"))
+
+        assertTrue(checkpoints.undoFileChange("project", "original.txt"))
+        assertFalse(original.exists())
+        assertEquals(listOf("other.txt"), checkpoints.readChangedPaths("project"))
+    }
+
+    @Test
+    fun `checkpoint preserves case insensitive ignored directory behavior`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        File(workspace, "Build/original.txt").apply { parentFile?.mkdirs(); writeText("generated") }
+        checkpoints.createCheckpoint("project", workspace)
+
+        assertFalse(File(checkpoints.checkpointDir("project"), "project/Build/original.txt").exists())
+    }
+
+    @Test
+    fun `paths below an original skipped directory cannot be classified as new`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = checkpoints.ensureWorkspace("project")
+        val outside = tempFolder.newFolder()
+        File(outside, "original.txt").writeText("outside original")
+        val linkedDirectory = File(workspace, "linked")
+        java.nio.file.Files.createSymbolicLink(linkedDirectory.toPath(), outside.toPath())
+        checkpoints.createCheckpoint("project", workspace)
+        java.nio.file.Files.delete(linkedDirectory.toPath())
+        linkedDirectory.mkdirs()
+        val current = File(linkedDirectory, "original.txt").apply { writeText("current copy") }
+        checkpoints.saveChangedPaths("project", listOf("linked/original.txt"))
+
+        assertFalse(checkpoints.undoLastChanges("project"))
+        assertEquals("current copy", current.readText())
+        assertEquals("outside original", File(outside, "original.txt").readText())
+    }
+
 }
