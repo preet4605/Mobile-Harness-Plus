@@ -1973,11 +1973,12 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         return file
     }
 
-    private suspend fun downloadVerified(
+    internal suspend fun downloadVerified(
         url: String,
         destination: File,
         expectedChecksum: String,
         algorithm: String = "SHA-256",
+        openConnection: (String) -> HttpURLConnection = { URL(it).openConnection() as HttpURLConnection },
         onBytes: suspend (downloaded: Long, total: Long) -> Unit,
     ) {
         destination.parentFile?.mkdirs()
@@ -1987,32 +1988,35 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         }
         val temporary = File(destination.parentFile, "${destination.name}.part")
         var existing = temporary.takeIf(File::isFile)?.length() ?: 0L
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 20_000
-        connection.readTimeout = 120_000
-        connection.instanceFollowRedirects = true
-        if (existing > 0L) connection.setRequestProperty("Range", "bytes=$existing-")
-        check(connection.responseCode in 200..299) { "Download failed with HTTP ${connection.responseCode}" }
-        val resumed = connection.responseCode == HttpURLConnection.HTTP_PARTIAL && existing > 0L
-        if (!resumed) {
-            temporary.delete()
-            existing = 0L
-        }
-        val total = connection.contentLengthLong.takeIf { it >= 0L }?.plus(existing) ?: -1L
-        connection.inputStream.use { input ->
-            FileOutputStream(temporary, resumed).use { output ->
-                val buffer = ByteArray(128 * 1024)
-                var downloaded = existing
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    output.write(buffer, 0, count)
-                    downloaded += count
-                    onBytes(downloaded, total)
+        val connection = openConnection(url)
+        try {
+            connection.connectTimeout = 20_000
+            connection.readTimeout = 120_000
+            connection.instanceFollowRedirects = true
+            if (existing > 0L) connection.setRequestProperty("Range", "bytes=$existing-")
+            check(connection.responseCode in 200..299) { "Download failed with HTTP ${connection.responseCode}" }
+            val resumed = connection.responseCode == HttpURLConnection.HTTP_PARTIAL && existing > 0L
+            if (!resumed) {
+                temporary.delete()
+                existing = 0L
+            }
+            val total = connection.contentLengthLong.takeIf { it >= 0L }?.plus(existing) ?: -1L
+            connection.inputStream.use { input ->
+                FileOutputStream(temporary, resumed).use { output ->
+                    val buffer = ByteArray(128 * 1024)
+                    var downloaded = existing
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        downloaded += count
+                        onBytes(downloaded, total)
+                    }
                 }
             }
+        } finally {
+            connection.disconnect()
         }
-        connection.disconnect()
         val actual = digest(temporary, algorithm)
         if (!actual.equals(expectedChecksum, ignoreCase = true)) {
             temporary.delete()
@@ -2022,13 +2026,20 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         check(temporary.renameTo(destination)) { "Could not finish download" }
     }
 
-    private fun fetchText(url: String): String {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 15_000
-        connection.readTimeout = 30_000
-        connection.setRequestProperty("Accept", "application/json")
-        check(connection.responseCode in 200..299) { "Request failed with HTTP ${connection.responseCode}" }
-        return connection.inputStream.bufferedReader().use { it.readText() }.also { connection.disconnect() }
+    internal fun fetchText(
+        url: String,
+        openConnection: (String) -> HttpURLConnection = { URL(it).openConnection() as HttpURLConnection },
+    ): String {
+        val connection = openConnection(url)
+        try {
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 30_000
+            connection.setRequestProperty("Accept", "application/json")
+            check(connection.responseCode in 200..299) { "Request failed with HTTP ${connection.responseCode}" }
+            return connection.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun digest(file: File, algorithm: String): String {

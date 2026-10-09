@@ -31,7 +31,9 @@ sealed interface GitHubTokenPoll {
     data class Failure(val message: String) : GitHubTokenPoll
 }
 
-class GitHubClient {
+class GitHubClient(
+    private val openConnection: (String) -> HttpURLConnection = { url -> URL(url).openConnection() as HttpURLConnection },
+) {
     fun requestDeviceCode(clientId: String): GitHubDeviceCode {
         val json = postForm(
             "https://github.com/login/device/code",
@@ -100,7 +102,7 @@ class GitHubClient {
         val body = values.entries.joinToString("&") { (key, value) ->
             "${URLEncoder.encode(key, "UTF-8")}=${URLEncoder.encode(value, "UTF-8")}" 
         }.toByteArray()
-        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+        val connection = openConnection(endpoint).apply {
             requestMethod = "POST"
             connectTimeout = 15_000
             readTimeout = 20_000
@@ -109,12 +111,16 @@ class GitHubClient {
             setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
             setRequestProperty("User-Agent", "PocketDev-Android")
         }
-        connection.outputStream.use { it.write(body) }
-        return readResponse(connection) as JSONObject
+        return try {
+            connection.outputStream.use { it.write(body) }
+            readResponse(connection) as JSONObject
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun getJson(endpoint: String, token: String): Any {
-        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+        val connection = openConnection(endpoint).apply {
             requestMethod = "GET"
             connectTimeout = 15_000
             readTimeout = 30_000
@@ -123,7 +129,11 @@ class GitHubClient {
             setRequestProperty("X-GitHub-Api-Version", "2026-03-10")
             setRequestProperty("User-Agent", "PocketDev-Android")
         }
-        return readResponse(connection)
+        return try {
+            readResponse(connection)
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun readResponse(connection: HttpURLConnection): Any {

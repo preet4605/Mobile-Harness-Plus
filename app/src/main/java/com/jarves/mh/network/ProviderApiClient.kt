@@ -32,7 +32,9 @@ sealed interface ConnectionValidation {
     ) : ConnectionValidation
 }
 
-class ProviderApiClient {
+class ProviderApiClient(
+    private val openConnection: (String) -> HttpURLConnection = { url -> URL(url).openConnection() as HttpURLConnection },
+) {
     suspend fun discoverModels(
         baseUrl: String,
         apiKey: String,
@@ -163,7 +165,7 @@ class ProviderApiClient {
             return HttpResult(403, "Blocked: revoked phishing provider", "Connection blocked: revoked phishing provider")
         }
         return runCatching {
-            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+            val connection = openConnection(endpoint).apply {
                 requestMethod = method
                 connectTimeout = connectTimeoutMs
                 readTimeout = readTimeoutMs
@@ -183,12 +185,15 @@ class ProviderApiClient {
                 }
                 if (body != null) doOutput = true
             }
-            if (body != null) connection.outputStream.use { it.write(body.toByteArray()) }
-            val code = connection.responseCode
-            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val responseBody = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            connection.disconnect()
-            HttpResult(code, responseBody)
+            try {
+                if (body != null) connection.outputStream.use { it.write(body.toByteArray()) }
+                val code = connection.responseCode
+                val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                val responseBody = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                HttpResult(code, responseBody)
+            } finally {
+                connection.disconnect()
+            }
         }.getOrElse { HttpResult(0, "", it.message ?: "Network connection failed",) }
     }
 

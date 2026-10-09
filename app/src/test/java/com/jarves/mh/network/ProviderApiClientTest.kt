@@ -85,4 +85,13 @@ class ProviderApiClientTest {
         org.junit.Assert.assertTrue(validation is ConnectionValidation.Failure)
         org.junit.Assert.assertEquals("Revoked", (validation as ConnectionValidation.Failure).label)
     }
+
+    @Test
+    fun bodyReadFailureStillReleasesConnection() = kotlinx.coroutines.runBlocking {
+        val connection = FakeHttpConnection(200, readFailure = java.io.IOException("read timed out"))
+        val result = ProviderApiClient(openConnection = { connection })
+            .validate("https://api.example.test/v1", "model", "key", ProviderProtocol.OPENAI_CHAT, emptyList())
+        org.junit.Assert.assertTrue(result is ConnectionValidation.Failure)
+        org.junit.Assert.assertTrue("connection left open after a read failure", connection.disconnected)
+    }
 }
