@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import com.jarves.mh.BuildConfig
+import com.jarves.mh.network.readBoundedText
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -45,7 +46,7 @@ class AppUpdater(
             connection.setRequestProperty("Accept", "application/json")
             val code = connection.responseCode
             if (code !in 200..299) return null
-            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            val body = connection.inputStream.use { it.readBoundedText(MAX_MANIFEST_BYTES) }
             val root = JSONObject(body)
             val versionCode = root.optLong("versionCode")
             if (versionCode <= BuildConfig.VERSION_CODE) return null
@@ -138,6 +139,9 @@ class AppUpdater(
     private companion object {
         /** Largest update APK accepted, checked against the declared length and the bytes actually streamed. */
         const val MAX_UPDATE_APK_BYTES = 512L * 1024 * 1024
+
+        /** The update manifest is a small JSON document; anything larger is not parsed. */
+        const val MAX_MANIFEST_BYTES = 1024 * 1024
     }
 }
 

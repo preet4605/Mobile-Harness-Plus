@@ -27,4 +27,13 @@ class GitHubClientTest {
         runCatching { GitHubClient(openConnection = { connection }).pollDeviceToken("client", "device") }
         assertTrue("connection left open after a form post failure", connection.disconnected)
     }
+
+    @Test
+    fun oversizedResponseIsRejectedInsteadOfParsed() {
+        val padding = "x".repeat(9 * 1024 * 1024)
+        val connection = FakeHttpConnection(200, """{"login":"octocat","avatar_url":"","padding":"$padding"}""".toByteArray())
+        val error = runCatching { GitHubClient(openConnection = { connection }).account("token") }.exceptionOrNull()
+        assertTrue("expected a size-limit failure, got $error", error is IOException && error.message?.contains("limit") == true)
+        assertTrue("connection left open after an oversized response", connection.disconnected)
+    }
 }

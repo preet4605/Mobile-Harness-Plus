@@ -70,4 +70,14 @@ class RuntimeInstallerDownloadTest {
         assertTrue("expected the read failure, got $error", error is IOException)
         assertTrue("connection left open after a read failure", connection.disconnected)
     }
+
+    @Test
+    fun fetchTextRejectsBodiesLargerThanItsLimit() {
+        val connection = FakeHttpConnection(200, ByteArray(5 * 1024 * 1024) { ' '.code.toByte() })
+        val error = runCatching {
+            installer().fetchText("https://example.test/manifest.json", openConnection = { connection })
+        }.exceptionOrNull()
+        assertTrue("expected a size-limit failure, got $error", error is IOException && error.message?.contains("limit") == true)
+        assertTrue("connection left open after an oversized body", connection.disconnected)
+    }
 }

@@ -189,7 +189,7 @@ class ProviderApiClient(
                 if (body != null) connection.outputStream.use { it.write(body.toByteArray()) }
                 val code = connection.responseCode
                 val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-                val responseBody = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                val responseBody = stream?.use { it.readBoundedText(MAX_RESPONSE_BYTES) }.orEmpty()
                 HttpResult(code, responseBody)
             } finally {
                 connection.disconnect()
@@ -291,6 +291,11 @@ class ProviderApiClient(
             .replace(Regex("\\s+"), " ")
             .trim()
             .take(280)
+    }
+
+    private companion object {
+        /** Model lists and non-streaming completions can be large; anything beyond this is rejected. */
+        const val MAX_RESPONSE_BYTES = 16 * 1024 * 1024
     }
 
     private data class HttpResult(val code: Int, val body: String, val error: String? = null)

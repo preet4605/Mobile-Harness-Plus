@@ -139,11 +139,16 @@ class GitHubClient(
     private fun readResponse(connection: HttpURLConnection): Any {
         val status = connection.responseCode
         val text = (if (status in 200..299) connection.inputStream else connection.errorStream)
-            ?.bufferedReader()?.use { it.readText() }.orEmpty()
+            ?.use { it.readBoundedText(MAX_RESPONSE_BYTES) }.orEmpty()
         if (status !in 200..299) {
             val message = runCatching { JSONObject(text).optString("message") }.getOrNull()
             error(message?.takeIf(String::isNotBlank) ?: "GitHub returned HTTP $status")
         }
         return if (text.trimStart().startsWith("[")) JSONArray(text) else JSONObject(text)
+    }
+
+    private companion object {
+        /** API responses are small JSON documents; the cap only guards against a broken or hostile endpoint. */
+        const val MAX_RESPONSE_BYTES = 8 * 1024 * 1024
     }
 }

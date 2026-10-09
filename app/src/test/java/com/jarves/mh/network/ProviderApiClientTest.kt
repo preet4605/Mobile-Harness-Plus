@@ -94,4 +94,15 @@ class ProviderApiClientTest {
         org.junit.Assert.assertTrue(result is ConnectionValidation.Failure)
         org.junit.Assert.assertTrue("connection left open after a read failure", connection.disconnected)
     }
+
+    @Test
+    fun oversizedDiscoveryResponseIsRejectedInsteadOfParsed() = kotlinx.coroutines.runBlocking {
+        val padding = "x".repeat(17 * 1024 * 1024)
+        val connection = FakeHttpConnection(200, """{"data":[{"id":"model-a"}],"padding":"$padding"}""".toByteArray())
+        val result = ProviderApiClient(openConnection = { connection })
+            .discoverModels("https://api.example.test/v1", "key", ProviderProtocol.OPENAI_CHAT)
+        org.junit.Assert.assertTrue("expected a size-limit failure, got $result", result is ModelDiscoveryResult.Failure)
+        org.junit.Assert.assertTrue((result as ModelDiscoveryResult.Failure).message.contains("limit"))
+        org.junit.Assert.assertTrue("connection left open after an oversized body", connection.disconnected)
+    }
 }

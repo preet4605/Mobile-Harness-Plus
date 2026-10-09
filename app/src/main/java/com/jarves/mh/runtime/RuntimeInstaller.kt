@@ -6,6 +6,7 @@ import android.net.LinkProperties
 import android.net.Network
 import android.system.Os
 import com.jarves.mh.BuildConfig
+import com.jarves.mh.network.readBoundedText
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -2036,7 +2037,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
             connection.readTimeout = 30_000
             connection.setRequestProperty("Accept", "application/json")
             check(connection.responseCode in 200..299) { "Request failed with HTTP ${connection.responseCode}" }
-            return connection.inputStream.bufferedReader().use { it.readText() }
+            return connection.inputStream.use { it.readBoundedText(MAX_FETCH_TEXT_BYTES) }
         } finally {
             connection.disconnect()
         }
@@ -2182,6 +2183,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
             sha256 = "a659ab9188956fc4721ca86fb21b5118e0e489f47a5e02ae6b4f2fb423659d78",
             compressedBytes = 41_870_025L,
         )
+        private const val MAX_FETCH_TEXT_BYTES = 4 * 1024 * 1024
         private const val MAX_TERMINAL_LINE = 500
         private const val MAX_COLLECTED_OUTPUT = 24_000
         private val ANSI_ESCAPE = Regex("\\u001B(?:\\[[0-?]*[ -/]*[@-~]|\\][^\\u0007]*(?:\\u0007|\\u001B\\\\))")

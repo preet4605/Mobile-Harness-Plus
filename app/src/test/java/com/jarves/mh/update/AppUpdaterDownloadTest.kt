@@ -85,4 +85,15 @@ class AppUpdaterDownloadTest {
         assertTrue(connection.disconnected)
         assertFalse(partial.exists())
     }
+
+    @Test
+    fun oversizedManifestIsRejectedBeforeItIsParsed() {
+        val manifest = """{"versionCode":9999,"url":"https://example.test/app.apk","notes":"${"x".repeat(2 * 1024 * 1024)}"}"""
+        val connection = FakeHttpConnection(200, manifest.toByteArray())
+        val error = runCatching {
+            AppUpdater(context, manifestUrlOverride = "https://example.test/manifest.json", openConnection = { connection }).check()
+        }.exceptionOrNull()
+        assertTrue("expected a size-limit failure, got $error", error is IOException && error.message?.contains("limit") == true)
+        assertTrue("connection left open after an oversized manifest", connection.disconnected)
+    }
 }
