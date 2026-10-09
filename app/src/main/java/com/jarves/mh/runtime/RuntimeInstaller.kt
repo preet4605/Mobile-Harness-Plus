@@ -1198,7 +1198,7 @@ class RuntimeInstaller(private val context: Context) {
         archive.delete()
     }
 
-    private fun extractZipArchive(archive: File, destination: File) {
+    internal fun extractZipArchive(archive: File, destination: File) {
         ZipInputStream(BufferedInputStream(archive.inputStream())).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
@@ -1209,6 +1209,7 @@ class RuntimeInstaller(private val context: Context) {
                         target.mkdirs()
                     } else {
                         target.parentFile?.mkdirs()
+                        removeLinkBeforeWrite(target)
                         FileOutputStream(target).use { output -> zip.copyTo(output) }
                     }
                 }
@@ -1838,7 +1839,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         writeResolver(context, rootfs, dnsServersOverride)
     }
 
-    private fun extractRootfs(archive: File, destination: File) {
+    internal fun extractRootfs(archive: File, destination: File) {
         val deferredLinks = mutableListOf<Pair<File, File>>()
         TarArchiveInputStream(GzipCompressorInputStream(BufferedInputStream(archive.inputStream()))).use { tar ->
             var entry: TarArchiveEntry? = tar.nextEntry
@@ -1855,7 +1856,9 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
                     entry.isLink -> {
                         target.parentFile?.mkdirs()
                         val linkTarget = safeChild(destination, entry.linkName.removePrefix("./"))
+                        requireHardLinkSource(linkTarget)
                         if (linkTarget.exists()) {
+                            removeLinkBeforeWrite(target)
                             linkTarget.inputStream().use { input -> FileOutputStream(target).use { input.copyTo(it) } }
                         } else {
                             deferredLinks += target to linkTarget
@@ -1863,6 +1866,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
                     }
                     entry.isFile -> {
                         target.parentFile?.mkdirs()
+                        removeLinkBeforeWrite(target)
                         FileOutputStream(target).use { output -> tar.copyTo(output) }
                         runCatching { Os.chmod(target.absolutePath, entry.mode and 0b111111111) }
                     }
@@ -1871,8 +1875,10 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
             }
         }
         deferredLinks.forEach { (target, linkTarget) ->
+            requireHardLinkSource(linkTarget)
             require(linkTarget.isFile) { "Archive hard-link target is missing" }
             target.parentFile?.mkdirs()
+            removeLinkBeforeWrite(target)
             linkTarget.inputStream().use { input -> FileOutputStream(target).use { input.copyTo(it) } }
             runCatching { Os.chmod(target.absolutePath, android.system.Os.stat(linkTarget.absolutePath).st_mode) }
         }
@@ -1898,7 +1904,9 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
                         entry.isLink -> {
                             target.parentFile?.mkdirs()
                             val linkTarget = safeChild(destination, entry.linkName.removePrefix("./"))
+                            requireHardLinkSource(linkTarget)
                             if (linkTarget.exists()) {
+                                removeLinkBeforeWrite(target)
                                 linkTarget.inputStream().use { input -> FileOutputStream(target).use { input.copyTo(it) } }
                             } else {
                                 deferredLinks += target to linkTarget
@@ -1906,6 +1914,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
                         }
                         entry.isFile -> {
                             target.parentFile?.mkdirs()
+                            removeLinkBeforeWrite(target)
                             FileOutputStream(target).use { output -> tar.copyTo(output) }
                             runCatching { Os.chmod(target.absolutePath, entry.mode and 0b111111111) }
                         }
@@ -1915,14 +1924,16 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
             }
         }
         deferredLinks.forEach { (target, linkTarget) ->
+            requireHardLinkSource(linkTarget)
             require(linkTarget.isFile) { "Archive hard-link target is missing" }
             target.parentFile?.mkdirs()
+            removeLinkBeforeWrite(target)
             linkTarget.inputStream().use { input -> FileOutputStream(target).use { input.copyTo(it) } }
             runCatching { Os.chmod(target.absolutePath, android.system.Os.stat(linkTarget.absolutePath).st_mode) }
         }
     }
 
-    private fun extractNodeArchive(archive: File, destination: File) {
+    internal fun extractNodeArchive(archive: File, destination: File) {
         val deferredLinks = mutableListOf<Pair<File, File>>()
         TarArchiveInputStream(GzipCompressorInputStream(BufferedInputStream(archive.inputStream()))).use { tar ->
             var entry: TarArchiveEntry? = tar.nextEntry
@@ -1940,8 +1951,10 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
                         entry.isLink -> {
                             val relativeLink = entry.linkName.removePrefix("./").substringAfter('/', "")
                             val linkTarget = safeChild(destination, relativeLink)
+                            requireHardLinkSource(linkTarget)
                             target.parentFile?.mkdirs()
                             if (linkTarget.exists()) {
+                                removeLinkBeforeWrite(target)
                                 linkTarget.inputStream().use { input -> FileOutputStream(target).use { input.copyTo(it) } }
                             } else {
                                 deferredLinks += target to linkTarget
@@ -1949,6 +1962,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
                         }
                         entry.isFile -> {
                             target.parentFile?.mkdirs()
+                            removeLinkBeforeWrite(target)
                             FileOutputStream(target).use { output -> tar.copyTo(output) }
                             runCatching { Os.chmod(target.absolutePath, entry.mode and 0b111111111) }
                         }
@@ -1958,11 +1972,24 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
             }
         }
         deferredLinks.forEach { (target, linkTarget) ->
+            requireHardLinkSource(linkTarget)
             require(linkTarget.isFile) { "Node.js archive hard-link target is missing" }
             target.parentFile?.mkdirs()
+            removeLinkBeforeWrite(target)
             linkTarget.inputStream().use { input -> FileOutputStream(target).use { input.copyTo(it) } }
             runCatching { Os.chmod(target.absolutePath, android.system.Os.stat(linkTarget.absolutePath).st_mode) }
         }
+    }
+
+    /** Tar replaces an existing link with the entry that names it. Writing through the link would reach its target. */
+    private fun removeLinkBeforeWrite(target: File) {
+        val path = target.toPath()
+        if (java.nio.file.Files.isSymbolicLink(path)) java.nio.file.Files.delete(path)
+    }
+
+    /** A hard link copies its source's bytes, so a symlink source would copy whatever the link points to. */
+    private fun requireHardLinkSource(source: File) {
+        require(!java.nio.file.Files.isSymbolicLink(source.toPath())) { "Archive hard-link target is a symlink" }
     }
 
     private fun safeChild(root: File, relative: String): File {
