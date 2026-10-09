@@ -121,6 +121,45 @@ class Phase1RemediationTest {
     }
 
     @Test
+    fun `test F04 finalization by taskId removes session alias, session mapping and cancellation flags`() = runBlocking {
+        val taskId = "task-f04-finalize"
+        val sessionId = "session-f04-finalize"
+        processSupervisor.bindProcess(taskId, sessionId, createDummyProcess(), 4242)
+
+        // A stop addressed by session ID flags both the session and the task.
+        processSupervisor.markCancellationRequested(sessionId)
+        assertTrue(processSupervisor.isCancellationRequested(sessionId))
+
+        // TaskSupervisor.finalizeTask unregisters by the canonical task ID, not the session ID.
+        processSupervisor.unregister(taskId)
+
+        assertNull("session alias must be removed from tracked processes", processSupervisor.getProcess(sessionId))
+        assertNull("session alias must not resolve a PID", processSupervisor.getPid(sessionId))
+        assertNull("session-to-task mapping must be removed", processSupervisor.getTaskIdForSession(sessionId))
+        assertFalse("cancellation under session ID must not survive finalization", processSupervisor.isCancellationRequested(sessionId))
+        assertFalse("cancellation under task ID must not survive finalization", processSupervisor.isCancellationRequested(taskId))
+        assertFalse(
+            "terminate must not resolve a stale session alias",
+            processSupervisor.terminate(sessionId, force = true, markCancelled = false)
+        )
+
+        // A fresh process registered under the same IDs must not inherit the old stop.
+        val fresh = createDummyProcess()
+        processSupervisor.register(taskId, fresh, 4244, sessionId)
+        assertEquals("re-registered process must not be cancelled by a stale flag", 0, fresh.exitValue())
+    }
+
+    @Test
+    fun `test F04 cleanupAll clears the session-to-task mapping`() {
+        processSupervisor.bindProcess("task-f04-cleanup", "session-f04-cleanup", createDummyProcess(), 4243)
+
+        processSupervisor.cleanupAll()
+
+        assertNull("cleanupAll must clear sessionToTaskMap", processSupervisor.getTaskIdForSession("session-f04-cleanup"))
+        assertNull(processSupervisor.getProcess("task-f04-cleanup"))
+    }
+
+    @Test
     fun `test P0-2 WorkspaceCheckpoints dirty detection prevents non-idempotent auto-retry`() {
         val tempDir = Files.createTempDirectory("checkpoint-test").toFile()
         try {

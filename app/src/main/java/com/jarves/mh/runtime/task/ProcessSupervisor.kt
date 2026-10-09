@@ -69,10 +69,14 @@ class ProcessSupervisor {
 
     fun unregister(taskIdOrSessionId: String): Process? {
         val canonicalId = sessionToTaskMap[taskIdOrSessionId] ?: taskIdOrSessionId
+        // Collect bound session IDs before their mapping is removed, so their cancellation flags go too.
+        val sessionIds = sessionToTaskMap.entries.filter { it.value == canonicalId }.map { it.key }
         val removed = trackedProcesses.remove(canonicalId)
-        userCancellationRequests.remove(canonicalId)
-        sessionToTaskMap.entries.removeIf { it.value == canonicalId || it.key == taskIdOrSessionId }
+        // Session aliases carry the owning task ID in TrackedProcess.taskId, so this removes every alias of the task.
+        trackedProcesses.entries.removeIf { it.value.taskId == canonicalId }
         trackedProcesses.remove(taskIdOrSessionId)
+        sessionToTaskMap.entries.removeIf { it.value == canonicalId || it.key == taskIdOrSessionId }
+        (sessionIds + canonicalId + taskIdOrSessionId).forEach { userCancellationRequests.remove(it) }
         return removed?.process
     }
 
@@ -214,6 +218,7 @@ class ProcessSupervisor {
             }
         }
         trackedProcesses.clear()
+        sessionToTaskMap.clear()
         userCancellationRequests.clear()
     }
 }
