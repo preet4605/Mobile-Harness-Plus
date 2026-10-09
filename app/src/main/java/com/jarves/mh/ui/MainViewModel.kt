@@ -454,6 +454,8 @@ class MainViewModel(
 
     /** Bumped by each file refresh. A refresh that is no longer the newest publishes nothing. */
     private var projectFilesGeneration = 0L
+    /** Bumped by each customization reload. A reload that is no longer the newest publishes nothing. */
+    private var customizationsGeneration = 0L
     private var projectOpenGeneration = 0L
     private val initialAgentKind = AgentKind.fromStored(preferences.agentKind)
     private val initialPrimaryAgentKind = preferences.primaryAgentKind
@@ -3670,8 +3672,31 @@ class MainViewModel(
         }
     }
 
+    /**
+     * Re-reads the project's rules, skills and customization config off Main, then publishes them. Only the
+     * newest reload publishes, and only while the same project root is still active.
+     */
     fun reloadCustomizations(project: Project) {
-        _state.update(customizationUpdate(project))
+        val generation = ++customizationsGeneration
+        viewModelScope.launch {
+            val loaded = withContext(ioDispatcher) { runRequest { customizationUpdate(project) } }
+            if (generation != customizationsGeneration || !isCurrentProjectRoot(project)) return@launch
+            loaded
+                .onSuccess { change -> _state.update(change) }
+                .onFailure { error ->
+                    _state.update { it.copy(toastMessage = "Could not load customizations: ${error.message}") }
+                }
+        }
+    }
+
+    /**
+     * Saves [config] and shows it at once, so a change made before the scan finishes builds on it. The scan
+     * itself runs off Main through [reloadCustomizations].
+     */
+    private fun saveCustomizationConfig(project: Project, config: ProjectCustomizationConfig) {
+        preferences.saveProjectCustomizationConfig(config)
+        _state.update { it.copy(activeCustomizationConfig = config) }
+        reloadCustomizations(project)
     }
 
     /** True while [project] is still the active project at the same root, so a late result may be published. */
@@ -3690,19 +3715,18 @@ class MainViewModel(
                 val entries = withContext(ioDispatcher) { readWorkspace(project) }
                 val suggestedRoot = withContext(ioDispatcher) { if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null }
                 val androidProjectDetected = withContext(ioDispatcher) { findAndroidGradleProjectRoot(workspaceDir) != null }
-                val customizations = withContext(ioDispatcher) { customizationUpdate(project) }
                 // Publish only if this is still the newest refresh and the same project root is still active.
                 if (generation == projectFilesGeneration && isCurrentProjectRoot(project)) {
                     _state.update {
-                        customizations(
-                            it.copy(
-                                workspaceFiles = entries,
-                                filesLoading = false,
-                                suggestedProjectRoot = suggestedRoot,
-                                androidProjectDetected = androidProjectDetected,
-                            ),
+                        it.copy(
+                            workspaceFiles = entries,
+                            filesLoading = false,
+                            suggestedProjectRoot = suggestedRoot,
+                            androidProjectDetected = androidProjectDetected,
                         )
                     }
+                    // Customizations reload under their own generation rather than riding along with these files.
+                    reloadCustomizations(project)
                 }
             } catch (error: CancellationException) {
                 throw error
@@ -4196,8 +4220,7 @@ class MainViewModel(
         val project = _state.value.activeProject ?: return
         val currentConfig = _state.value.activeCustomizationConfig
         val newConfig = currentConfig.copy(scopeMode = mode)
-        preferences.saveProjectCustomizationConfig(newConfig)
-        reloadCustomizations(project)
+        saveCustomizationConfig(project, newConfig)
     }
 
     fun toggleRule(ruleId: String) {
@@ -4212,8 +4235,7 @@ class MainViewModel(
             if (disabled.contains(ruleId)) disabled.remove(ruleId) else disabled.add(ruleId)
             currentConfig.copy(disabledRuleIds = disabled)
         }
-        preferences.saveProjectCustomizationConfig(newConfig)
-        reloadCustomizations(project)
+        saveCustomizationConfig(project, newConfig)
     }
 
     fun toggleSkill(skillId: String) {
@@ -4228,8 +4250,7 @@ class MainViewModel(
             if (disabled.contains(skillId)) disabled.remove(skillId) else disabled.add(skillId)
             currentConfig.copy(disabledSkillIds = disabled)
         }
-        preferences.saveProjectCustomizationConfig(newConfig)
-        reloadCustomizations(project)
+        saveCustomizationConfig(project, newConfig)
     }
 
     fun linkSkill(sourceProjectId: String, skillName: String, relativeSkillPath: String = ".agents/skills/$skillName") {
@@ -4248,8 +4269,7 @@ class MainViewModel(
             relativeSkillPath = relativeSkillPath,
         )
         val newConfig = currentConfig.copy(linkedSkills = currentConfig.linkedSkills + newRef)
-        preferences.saveProjectCustomizationConfig(newConfig)
-        reloadCustomizations(project)
+        saveCustomizationConfig(project, newConfig)
         _state.update { it.copy(toastMessage = "Linked '$skillName' from $sourceProjectName.") }
     }
 
@@ -4261,8 +4281,7 @@ class MainViewModel(
                 "linked:${it.sourceProjectId}:${it.skillName}" != linkIdOrSkillName
         }
         val newConfig = currentConfig.copy(linkedSkills = newLinks)
-        preferences.saveProjectCustomizationConfig(newConfig)
-        reloadCustomizations(project)
+        saveCustomizationConfig(project, newConfig)
         _state.update { it.copy(toastMessage = "Unlinked skill.") }
     }
 
