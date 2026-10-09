@@ -1,5 +1,7 @@
 import java.util.Properties
 import org.gradle.api.tasks.Sync
+import groovy.json.JsonSlurper
+import java.security.MessageDigest
 
 plugins {
     id("com.android.application")
@@ -37,13 +39,47 @@ val prepareBundledAgentAssets = tasks.register<Sync>("prepareBundledAgentAssets"
     into(generatedRuntimeAssets.map { it.dir("shared/runtime") })
 }
 
+val requiredOfflineArchives = listOf(
+    "pocketdev-core-arm64-2026.09.5.tar.zst", "pocketdev-claude-arm64-2026.09.1.tar.zst",
+    "pocketdev-python-arm64-2026.09.2.tar.zst", "pocketdev-android-arm64-2026.09.1.tar.zst",
+    "pocketdev-dsh-arm64-2026.09.1.tar.zst", "pocketdev-agy-arm64-2026.09.1.tar.zst",
+    "codex-0.161.0-linux-arm64.tgz",
+)
+val verifyOfflineRuntimeAssets = tasks.register("verifyOfflineRuntimeAssets") {
+    doLast {
+        val missing = requiredOfflineArchives.filterNot { runtimeBundleDir.file(it).asFile.isFile }
+        check(missing.isEmpty()) { "Offline runtime archives missing: ${missing.joinToString()}" }
+        val manifest = JsonSlurper().parse(runtimeBundleDir.file("manifest.json").asFile) as Map<*, *>
+        val bundles = (manifest["bundles"] as Map<*, *>).values.map { it as Map<*, *> }
+        for (name in requiredOfflineArchives) {
+            val bundle = bundles.single { it["file"] == name }
+            val archive = runtimeBundleDir.file(name).asFile
+            check(archive.length() == (bundle["compressedBytes"] as Number).toLong()) { "Offline archive size mismatch: $name" }
+            val algorithm = if (bundle["sha512"] != null) "SHA-512" else "SHA-256"
+            val digest = MessageDigest.getInstance(algorithm)
+            archive.inputStream().buffered().use { input ->
+                val buffer = ByteArray(1024 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+            val actual = digest.digest().joinToString("") { "%02x".format(it) }
+            check(actual == bundle[if (algorithm == "SHA-512") "sha512" else "sha256"]) { "Offline archive checksum mismatch: $name" }
+        }
+    }
+}
+
 val prepareOfflineRuntimeAssets = tasks.register<Sync>("prepareOfflineRuntimeAssets") {
+    dependsOn(verifyOfflineRuntimeAssets)
     from(
         runtimeBundleDir.file("pocketdev-core-arm64-2026.09.5.tar.zst"),
         runtimeBundleDir.file("pocketdev-claude-arm64-2026.09.1.tar.zst"),
         runtimeBundleDir.file("pocketdev-python-arm64-2026.09.2.tar.zst"),
         runtimeBundleDir.file("pocketdev-android-arm64-2026.09.1.tar.zst"),
         runtimeBundleDir.file("pocketdev-dsh-arm64-2026.09.1.tar.zst"),
+        runtimeBundleDir.file("codex-0.161.0-linux-arm64.tgz"),
     )
     into(generatedRuntimeAssets.map { it.dir("offline/runtime") })
 }
@@ -192,6 +228,7 @@ android {
     packaging.jniLibs.pickFirsts += "**/libc++_shared.so"
     packaging.jniLibs.useLegacyPackaging = true
     androidResources.noCompress += "zst"
+    androidResources.noCompress += "tgz"
     testOptions {
         // Robolectric screenshot tests (Roborazzi) need merged resources and the test manifest.
         unitTests.isIncludeAndroidResources = true

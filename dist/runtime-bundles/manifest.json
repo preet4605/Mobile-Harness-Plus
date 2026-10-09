@@ -76,6 +76,23 @@
         "Sessions",
         "Chats and projects"
       ]
+    },
+    "codex": {
+      "version": "0.161.0",
+      "file": "codex-0.161.0-linux-arm64.tgz",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.161.0-linux-arm64.tgz",
+      "sha512": "481bb49f80b53dbcbdac6294340d36c87120fd271b1028224c888a88a85b6168945aa18f575858d01afb8e8127b5bcf4772373496a8d3c3f2e3aac5c3abcbf16",
+      "compressedBytes": 157136568,
+      "includes": [
+        "Pinned Codex and code-mode host, static ARM64 musl binaries"
+      ],
+      "excludes": [
+        "Credentials",
+        "Settings",
+        "Conversations",
+        "Projects",
+        "Device data"
+      ]
     }
   }
 }

@@ -56,3 +56,19 @@ installation.
 5. Extract each completed archive into a fresh directory and execute its tools.
 6. Publish the archive and manifest together. Sign the manifest with a private
    release key kept outside this repository before production distribution.
+
+## Preparing offline build inputs
+
+Run `python3 scripts/runtime-bundles/fetch-pinned-bundles.py` from the checkout.
+It fetches only the manifest's pinned archives, checks compressed size and digest,
+and publishes each verified file into `dist/runtime-bundles`. Failed downloads
+retain an ignored staging file for bounded resumption. Existing invalid archives
+are reported without overwriting them. Use `--verify-only` to check local inputs.
+
+Offline assets also include the official pinned Codex ARM64 npm archive and its
+code-mode host. Its size and SHA-512 match `CodexInstallSpec`; it contains no
+app/user session data. `verifyOfflineRuntimeAssets` repeats manifest verification
+before offline asset preparation. The offline installer checks the embedded
+archive again and uses the same extraction and guest verification as online
+installation, without falling back to a download. Build with the installed
+`gradle assembleOfflineDebug`; the resulting APK is intentionally large.

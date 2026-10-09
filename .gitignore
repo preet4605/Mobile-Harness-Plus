@@ -66,6 +66,8 @@ captures/
 # Locally produced runtime bundles and their downloaded source archives.
 # Publish release artifacts separately; keep the small manifest in Git.
 dist/runtime-bundles/*.tar.zst
+dist/runtime-bundles/*.tgz
+scripts/runtime-bundles/__pycache__/
 dist/runtime-bundles/*.invalid
 dist/runtime-bundles/sources/
 

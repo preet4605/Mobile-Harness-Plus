@@ -593,9 +593,6 @@ class RuntimeInstaller(private val context: Context) {
         onProgress: suspend (RuntimeInstallProgress) -> Unit,
     ) {
         if (isCodexInstalled()) return
-        check(!BuildConfig.OFFLINE_RUNTIME_BUNDLES) {
-            "Codex is too large to bundle. Install it from the online APK."
-        }
         val destination = CodexInstallLayout.binary(rootfs)
         val helper = CodexInstallLayout.helper(rootfs)
         val keepBinary = CodexInstallLayout.binaryUsable(rootfs, codexMarker.readTextOrNull())
@@ -610,24 +607,44 @@ class RuntimeInstaller(private val context: Context) {
         val end = 0.995f
         var replacedBinary = false
         try {
-            onProgress(RuntimeInstallProgress("Downloading Codex ${CodexInstallSpec.VERSION}", fraction))
             val downloadSpan = (end - fraction) * 0.8f
-            downloadVerified(
-                CodexInstallSpec.ARCHIVE_URL,
-                archive,
-                CodexInstallSpec.ARCHIVE_SHA512,
-                algorithm = "SHA-512",
-            ) { bytes, total ->
-                val ratio = if (total > 0L) bytes.toFloat() / total else 0f
-                onProgress(
-                    RuntimeInstallProgress(
-                        message = "Downloading Codex ${CodexInstallSpec.VERSION}",
-                        fraction = fraction + ratio * downloadSpan,
-                        downloadedBytes = bytes,
-                        totalBytes = total.takeIf { it > 0L },
-                        event = RuntimeInstallEvent.DOWNLOAD,
-                    ),
-                )
+            if (BuildConfig.OFFLINE_RUNTIME_BUNDLES) {
+                onProgress(RuntimeInstallProgress("Loading Codex ${CodexInstallSpec.VERSION}", fraction))
+                context.assets.open("runtime/${archive.name}").use { input ->
+                    FileOutputStream(archive).use { output ->
+                        val buffer = ByteArray(256 * 1024)
+                        var copied = 0L
+                        while (true) {
+                            coroutineContext.ensureActive()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            copied += count
+                            check(copied <= CodexInstallSpec.ARCHIVE_BYTES) { "Offline Codex archive is oversized" }
+                            output.write(buffer, 0, count)
+                            onProgress(RuntimeInstallProgress("Loading Codex ${CodexInstallSpec.VERSION}", fraction + copied.toFloat() / CodexInstallSpec.ARCHIVE_BYTES * downloadSpan, copied, CodexInstallSpec.ARCHIVE_BYTES))
+                        }
+                    }
+                }
+                check(archive.length() == CodexInstallSpec.ARCHIVE_BYTES && digest(archive, "SHA-512") == CodexInstallSpec.ARCHIVE_SHA512) { "Offline Codex archive failed verification" }
+            } else {
+                onProgress(RuntimeInstallProgress("Downloading Codex ${CodexInstallSpec.VERSION}", fraction))
+                downloadVerified(
+                    CodexInstallSpec.ARCHIVE_URL,
+                    archive,
+                    CodexInstallSpec.ARCHIVE_SHA512,
+                    algorithm = "SHA-512",
+                ) { bytes, total ->
+                    val ratio = if (total > 0L) bytes.toFloat() / total else 0f
+                    onProgress(
+                        RuntimeInstallProgress(
+                            message = "Downloading Codex ${CodexInstallSpec.VERSION}",
+                            fraction = fraction + ratio * downloadSpan,
+                            downloadedBytes = bytes,
+                            totalBytes = total.takeIf { it > 0L },
+                            event = RuntimeInstallEvent.DOWNLOAD,
+                        ),
+                    )
+                }
             }
             onProgress(RuntimeInstallProgress("Installing Codex ${CodexInstallSpec.VERSION}", fraction + (end - fraction) * 0.85f, indeterminate = true))
             val targets = buildList {
@@ -1118,6 +1135,7 @@ class RuntimeInstaller(private val context: Context) {
             context.assets.open("runtime/${bundle.fileName}").use { }
             true
         }.getOrDefault(false)
+        check(!BuildConfig.OFFLINE_RUNTIME_BUNDLES || hasEmbedded) { "Offline runtime bundle is missing: ${bundle.fileName}" }
         val useEmbedded = (preferEmbedded || BuildConfig.OFFLINE_RUNTIME_BUNDLES) && hasEmbedded
         if (useEmbedded) {
             onProgress(RuntimeInstallProgress("Loading ${bundle.label} bundle", from, 0, bundle.compressedBytes))
