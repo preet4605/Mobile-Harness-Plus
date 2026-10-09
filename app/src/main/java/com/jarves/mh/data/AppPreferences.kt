@@ -1,6 +1,7 @@
 package com.jarves.mh.data
 
 import android.content.Context
+import android.util.Log
 import com.jarves.mh.model.AgentKind
 import com.jarves.mh.model.ChatMessage
 import com.jarves.mh.model.ChatAttachment
@@ -23,6 +24,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 
 class AppPreferences(
     private val context: Context? = null,
@@ -759,20 +761,34 @@ class AppPreferences(
         }
         val projectDir = File(chatsDir, projectId).also { it.mkdirs() }
         val destination = File(projectDir, "$chatId.json")
+        backupUnverifiedChatFile(destination)
         val temporary = File(projectDir, ".$chatId.json.tmp")
         temporary.writeText(arr.toString())
         if (!temporary.renameTo(destination)) {
             temporary.copyTo(destination, overwrite = true)
             temporary.delete()
         }
+        verifiedChatFiles.add(destination.path)
+    }
+
+    /** Copies a chat file this process has not verified, and that fails verification, to `<name>.corrupt-<ts>` before it is overwritten. */
+    private fun backupUnverifiedChatFile(file: File) {
+        if (!file.isFile || file.path in verifiedChatFiles) return
+        if (decodeChatFile(file).isClean) {
+            verifiedChatFiles.add(file.path)
+            return
+        }
+        file.copyTo(File(file.parentFile, "${file.name}.corrupt-${System.currentTimeMillis()}"), overwrite = true)
     }
 
     fun loadMessages(projectId: String, chatId: String): List<ChatMessage> {
         val file = File(File(chatsDir, projectId), "$chatId.json")
         if (!file.exists()) return emptyList()
-        val rawMessages = readRawLegacyMessages(file)
-        val (repaired, wasRepaired) = repairDuplicateMessageIds(rawMessages)
-        if (wasRepaired) {
+        val decoded = decodeChatFile(file)
+        if (decoded.isClean) verifiedChatFiles.add(file.path)
+        val (repaired, wasRepaired) = repairDuplicateMessageIds(decoded.messages)
+        // A file with unreadable parts is not rewritten here; the next save keeps a backup of it first.
+        if (wasRepaired && decoded.isClean) {
             runCatching {
                 saveMessages(projectId, chatId, repaired)
             }
@@ -790,52 +806,73 @@ class AppPreferences(
         return repairDuplicateMessageIds(raw).first
     }
 
-    internal fun readRawLegacyMessages(file: File): List<ChatMessage> {
-        if (!file.exists()) return emptyList()
-        return runCatching {
-            val arr = JSONArray(file.readText())
-            (0 until arr.length()).map { i ->
-                val obj = arr.getJSONObject(i)
-                ChatMessage(
-                    id = obj.getString("id"),
-                    fromUser = obj.getBoolean("fromUser"),
-                    text = obj.getString("text"),
-                    createdAt = runCatching { Instant.parse(obj.getString("createdAt")) }
-                        .getOrDefault(Instant.now()),
-                    attachments = obj.optJSONArray("attachments")?.let { attachments ->
-                        (0 until attachments.length()).mapNotNull { index ->
-                            runCatching {
-                                attachments.getJSONObject(index).let { attachment ->
-                                    ChatAttachment(
-                                        id = attachment.optString("id").ifBlank { java.util.UUID.randomUUID().toString() },
-                                        displayName = attachment.getString("displayName"),
-                                        relativePath = attachment.getString("relativePath"),
-                                        mimeType = attachment.optString("mimeType", "application/octet-stream"),
-                                        sizeBytes = attachment.optLong("sizeBytes", 0L),
-                                    )
-                                }
-                            }.getOrNull()
-                        }
-                    }.orEmpty(),
-                    workedMillis = obj.optLong("workedMillis", 0L),
-                    workItems = obj.optJSONArray("workItems")?.let { workItems ->
-                        (0 until workItems.length()).mapNotNull { index ->
-                            runCatching {
-                                workItems.getJSONObject(index).let { item ->
-                                    com.jarves.mh.model.ActivityItem(
-                                        title = item.optString("title"),
-                                        detail = item.optString("detail"),
-                                        isComplete = item.optBoolean("isComplete", true),
-                                        isCommand = item.optBoolean("isCommand", false),
-                                    )
-                                }
-                            }.getOrNull()
-                        }
-                    }.orEmpty(),
-                    activeSkill = obj.optString("activeSkill").takeIf { it.isNotBlank() },
-                )
+    /** What a chat file yielded: the readable messages, how many entries were skipped, and whether the file was not a JSON array. */
+    internal class ChatFileDecode(val messages: List<ChatMessage>, val skippedEntries: Int, val unreadable: Boolean) {
+        val isClean: Boolean get() = !unreadable && skippedEntries == 0
+    }
+
+    /** Decodes entry by entry, so one malformed message skips only itself. */
+    internal fun decodeChatFile(file: File): ChatFileDecode {
+        if (!file.exists()) return ChatFileDecode(emptyList(), skippedEntries = 0, unreadable = false)
+        val arr = runCatching { JSONArray(file.readText()) }.getOrNull() ?: run {
+            logChatFileProblem(file, "not a readable JSON array")
+            return ChatFileDecode(emptyList(), skippedEntries = 0, unreadable = true)
+        }
+        var skipped = 0
+        val messages = (0 until arr.length()).mapNotNull { i ->
+            runCatching { decodeChatMessage(arr.getJSONObject(i)) }.getOrElse {
+                skipped++
+                null
             }
-        }.getOrDefault(emptyList())
+        }
+        if (skipped > 0) logChatFileProblem(file, "skipped $skipped unreadable message(s)")
+        return ChatFileDecode(messages, skippedEntries = skipped, unreadable = false)
+    }
+
+    internal fun readRawLegacyMessages(file: File): List<ChatMessage> = decodeChatFile(file).messages
+
+    private fun decodeChatMessage(obj: JSONObject): ChatMessage = ChatMessage(
+        id = obj.getString("id"),
+        fromUser = obj.getBoolean("fromUser"),
+        text = obj.getString("text"),
+        createdAt = runCatching { Instant.parse(obj.getString("createdAt")) }
+            .getOrDefault(Instant.now()),
+        attachments = obj.optJSONArray("attachments")?.let { attachments ->
+            (0 until attachments.length()).mapNotNull { index ->
+                runCatching {
+                    attachments.getJSONObject(index).let { attachment ->
+                        ChatAttachment(
+                            id = attachment.optString("id").ifBlank { java.util.UUID.randomUUID().toString() },
+                            displayName = attachment.getString("displayName"),
+                            relativePath = attachment.getString("relativePath"),
+                            mimeType = attachment.optString("mimeType", "application/octet-stream"),
+                            sizeBytes = attachment.optLong("sizeBytes", 0L),
+                        )
+                    }
+                }.getOrNull()
+            }
+        }.orEmpty(),
+        workedMillis = obj.optLong("workedMillis", 0L),
+        workItems = obj.optJSONArray("workItems")?.let { workItems ->
+            (0 until workItems.length()).mapNotNull { index ->
+                runCatching {
+                    workItems.getJSONObject(index).let { item ->
+                        com.jarves.mh.model.ActivityItem(
+                            title = item.optString("title"),
+                            detail = item.optString("detail"),
+                            isComplete = item.optBoolean("isComplete", true),
+                            isCommand = item.optBoolean("isCommand", false),
+                        )
+                    }
+                }.getOrNull()
+            }
+        }.orEmpty(),
+        activeSkill = obj.optString("activeSkill").takeIf { it.isNotBlank() },
+    )
+
+    private fun logChatFileProblem(file: File, problem: String) {
+        // android.util.Log is stubbed in JVM unit tests; recovery does not depend on the log line.
+        runCatching { Log.w(CHAT_STORE_TAG, "${file.name}: $problem") }
     }
 
     fun saveProjectCustomizationConfig(config: ProjectCustomizationConfig) {
@@ -928,6 +965,11 @@ class AppPreferences(
     }
 
     companion object {
+        private const val CHAT_STORE_TAG = "ChatStore"
+
+        /** Chat files this process has read or written cleanly; only other files get a backup before a save. */
+        private val verifiedChatFiles: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
         fun repairDuplicateMessageIds(messages: List<ChatMessage>): Pair<List<ChatMessage>, Boolean> {
             if (messages.isEmpty()) return messages to false
             val seen = mutableSetOf<String>()
