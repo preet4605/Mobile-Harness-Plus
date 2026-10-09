@@ -2565,6 +2565,7 @@ class MainViewModel(
     fun openProject(project: Project) {
         val current = _state.value
         if (current.activeProject?.id == project.id) {
+            dismissReadOnlyLoad()
             _state.update {
                 it.copy(
                     workspaceVisible = true,
@@ -2765,6 +2766,7 @@ class MainViewModel(
     }
 
     fun closeReadOnlyProject() {
+        dismissReadOnlyLoad()
         _state.update {
             it.copy(
                 readOnlyProject = null,
@@ -2773,6 +2775,17 @@ class MainViewModel(
                 readOnlyMessages = emptyList(),
             )
         }
+    }
+
+    /**
+     * Ends a read-only load the user dismissed. Its late result must not publish, and the loading flag it
+     * set must not stay on.
+     */
+    private fun dismissReadOnlyLoad() {
+        if (_state.value.readOnlyProject == null) return
+        projectOpenGeneration++
+        projectOpenJob?.cancel()
+        _state.update { it.copy(chatLoading = false) }
     }
 
     fun switchReadOnlyChat(chatId: String) {
