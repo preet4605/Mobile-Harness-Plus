@@ -108,6 +108,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -504,6 +505,7 @@ internal fun ReadOnlyProjectScreen(
     Box(Modifier.fillMaxSize()) {
         ChatTab(
             messages = state.readOnlyMessages,
+            loading = state.chatLoading,
             approval = null,
             liveProcess = emptyList(),
             isRunning = false,
@@ -620,13 +622,15 @@ internal fun WorkspaceScreen(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
         onResult = onAddAttachments,
     )
-    val chatListState = rememberLazyListState()
-    val filesListState = rememberLazyListState()
-    var userScrolledUp by rememberSaveable { mutableStateOf(false) }
-
     val chatItemCount = state.messages.size +
         (if (state.liveProcess.isNotEmpty() || state.liveThinking) 1 else 0) +
         (if (state.pendingApproval != null) 1 else 0)
+    // Keyed by project and chat, so a chat opens on its newest message rather than on the first one.
+    val chatListState = key(state.activeProject?.id, state.activeChatId) {
+        rememberLazyListState(initialFirstVisibleItemIndex = (chatItemCount - 1).coerceAtLeast(0))
+    }
+    val filesListState = rememberLazyListState()
+    var userScrolledUp by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(state.activeChatId) {
         userScrolledUp = false
@@ -746,14 +750,24 @@ internal fun WorkspaceScreen(
             tokenMetrics = state.tokenMetrics,
         )
     }
-    state.selectedSubagentForLogs?.let { subagent ->
+    state.selectedSubagentForLogs?.let { selected ->
+        val subagent = state.subagents.firstOrNull { it.conversationId == selected.conversationId } ?: selected
         SubagentTranscriptViewerDialog(
             subagent = subagent,
             onDismiss = { onSelectSubagentForLogs(null) },
             onTerminate = onTerminateSubagent,
+            project = state.activeProject,
+            projectSlug = state.activeProject?.slug,
+            engineHome = when (state.agentKind) {
+                com.jarves.mh.model.AgentKind.CLAUDE_CODE -> "/root/.claude"
+                com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS -> "/root/.dsh"
+                com.jarves.mh.model.AgentKind.CODEX -> "/root/.codex"
+                com.jarves.mh.model.AgentKind.ANTIGRAVITY -> "/root/.gemini"
+            },
         )
     }
-    state.selectedTaskForLogs?.let { task ->
+    state.selectedTaskForLogs?.let { selected ->
+        val task = state.backgroundTasks.firstOrNull { it.taskId == selected.taskId } ?: selected
         TaskLogViewerDialog(
             task = task,
             onDismiss = { onSelectTaskForLogs(null) },
@@ -914,6 +928,7 @@ internal fun WorkspaceScreen(
                                     activeChatId = state.activeChatId,
                                     topClearance = top,
                                     bottomBarClearance = bottomBar,
+                                    loading = state.chatLoading,
                                 )
                                 WorkspaceTab.FILES -> FilesTab(
                                     files = state.workspaceFiles,
@@ -1416,6 +1431,23 @@ private fun FileRow(entry: WorkspaceEntry, expanded: Boolean, childCount: Int, o
     }
 }
 
+/** Quiet stand-in for the transcript while a project's chat history loads. */
+@Composable
+private fun ChatLoadingPlaceholder() {
+    val colors = PocketColors.current
+    Column(verticalArrangement = Arrangement.spacedBy(PocketSpacing.md)) {
+        listOf(0.9f, 0.6f, 0.75f).forEach { fraction ->
+            Box(
+                Modifier
+                    .fillMaxWidth(fraction)
+                    .height(14.dp)
+                    .clip(PocketShape.sm)
+                    .background(colors.codeSurface),
+            )
+        }
+    }
+}
+
 internal fun sanitizeChatTabMessages(messages: List<ChatMessage>): List<ChatMessage> {
     if (messages.isEmpty()) return messages
     val seen = HashSet<String>(messages.size)
@@ -1454,6 +1486,7 @@ private fun ChatTab(
     onRunInTerminal: (String) -> Unit,
     readOnly: Boolean = false,
     readOnlyBlocked: Boolean = false,
+    loading: Boolean = false,
     onContinueHere: () -> Unit = {},
     slashCommands: List<SlashCommand> = emptyList(),
     slashCommandsVisible: Boolean = false,
@@ -1538,15 +1571,24 @@ private fun ChatTab(
             if (isEmpty) {
                 item(key = "empty-chat") {
                     Box(Modifier.fillParentMaxHeight(0.7f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        EmptyState(
-                            Icons.Outlined.AutoAwesome,
-                            if (readOnly) "No messages" else "Start a conversation",
-                            message = if (readOnly) null else "Ask ${agentKind.title} to build, fix or explain something in this project.",
-                        )
+                        // While history loads, a quiet placeholder stands in so the chat never flashes "Start a conversation".
+                        if (loading) {
+                            ChatLoadingPlaceholder()
+                        } else {
+                            EmptyState(
+                                Icons.Outlined.AutoAwesome,
+                                if (readOnly) "No messages" else "Start a conversation",
+                                message = if (readOnly) null else "Ask ${agentKind.title} to build, fix or explain something in this project.",
+                            )
+                        }
                     }
                 }
             }
-            items(safeMessages, key = { it.id }) { message ->
+            items(
+                safeMessages,
+                key = { it.id },
+                contentType = { if (it.workItems.isNotEmpty()) "work" else if (it.fromUser) "user" else "assistant" },
+            ) { message ->
                 // New turns fade in; no placement animation, so streaming growth never lags.
                 Box(
                     Modifier.animateItem(
@@ -2498,6 +2540,7 @@ private fun PreviewTab(ready: Boolean, url: String?) {
     var activeUrl by rememberSaveable(url) { mutableStateOf(if (ready) url else null) }
     var addressError by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
+    var navigationRequest by remember { mutableIntStateOf(0) }
     var webView by remember { mutableStateOf<WebView?>(null) }
     val colors = PocketColors.current
 
@@ -2509,7 +2552,9 @@ private fun PreviewTab(ready: Boolean, url: String?) {
             addressError = null
             address = normalized
             activeUrl = normalized
+            navigationRequest++
         }
+        Unit
     }
 
     LaunchedEffect(ready, url) {
@@ -2587,17 +2632,32 @@ private fun PreviewTab(ready: Boolean, url: String?) {
                                 return false
                             }
 
+                            override fun onPageStarted(view: WebView?, pageUrl: String?, favicon: android.graphics.Bitmap?) {
+                                pageUrl?.takeIf { normalizePreviewUrl(it) != null }?.let { address = it }
+                            }
+
                             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                                 val target = request?.url ?: return blockedPreviewResponse()
                                 return if (target.isLoopbackPreviewUrl()) null else blockedPreviewResponse()
                             }
                         }
+                        tag = navigationRequest to targetUrl
                         loadUrl(targetUrl)
                     }
                 },
                 update = { current ->
                     webView = current
-                    if (current.url != targetUrl) current.loadUrl(targetUrl)
+                    val request = navigationRequest to targetUrl
+                    if (current.tag != request) {
+                        current.tag = request
+                        current.loadUrl(targetUrl)
+                    }
+                },
+                onRelease = { current ->
+                    current.stopLoading()
+                    current.webChromeClient = null
+                    current.destroy()
+                    if (webView === current) webView = null
                 },
                 modifier = Modifier.fillMaxSize(),
             )

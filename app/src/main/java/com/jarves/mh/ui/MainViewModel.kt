@@ -201,6 +201,20 @@ private data class TranscriptWrite(
     val messages: List<ChatMessage>,
 )
 
+/** Chat history read off the main thread when a project opens. */
+private data class LoadedChat(
+    val chats: List<ProjectChat>,
+    val chatId: String,
+    val messages: List<ChatMessage>,
+)
+
+private data class ProjectOpened(
+    val chat: LoadedChat,
+    val terminal: ProjectTerminalSnapshot,
+    val suggestedRoot: String?,
+    val memory: ContextMemory,
+)
+
 private data class ImportedZipProject(
     val project: Project,
     val sourceAttachment: ChatAttachment,
@@ -243,6 +257,8 @@ data class AppUiState(
     val readOnlyMessages: List<ChatMessage> = emptyList(),
     val projectChats: List<ProjectChat> = emptyList(),
     val activeChatId: String? = null,
+    /** True while the open project's chat history is loading off the main thread. */
+    val chatLoading: Boolean = false,
     val workspaceFiles: List<WorkspaceEntry> = emptyList(),
     val androidProjectDetected: Boolean = false,
     val filesLoading: Boolean = false,
@@ -418,6 +434,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var transcriptDebounceJob: kotlinx.coroutines.Job? = null
     private var previewDiscoverySession: String? = null
     private val previewDiscoveryJobs = mutableMapOf<String, Job>()
+    /** The project open in flight. A newer open or a close cancels it; [projectOpenGeneration] drops late results. */
+    private var projectOpenJob: Job? = null
+    private var projectOpenGeneration = 0L
     private val initialAgentKind = AgentKind.fromStored(preferences.agentKind)
     private val initialPrimaryAgentKind = preferences.primaryAgentKind
         .takeIf(String::isNotBlank)
@@ -656,15 +675,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val loadedProjects = preferences.loadProjects()
         val cleanedProjects = loadedProjects.filter { project ->
             if (project.kind == ProjectKind.QUICK_PROJECT) {
-                val chats = preferences.loadProjectChats(project.id)
-                val userMessages = chats.sumOf { preferences.loadMessages(project.id, it.id).count { m -> m.fromUser } }
                 val workspaceDir = File(application.filesDir, "workspaces/${project.id}")
                 val userFiles = if (workspaceDir.isDirectory) {
                     workspaceDir.walkTopDown().filter { file ->
                         file.isFile && !file.name.startsWith(".claude") && file.name != ".pocket-dev-stacks.json"
                     }.count()
                 } else 0
-                val keep = userMessages > 0 || userFiles > 0
+                // Removed only when every chat file on disk is an empty list; any unreadable or non-empty file keeps it.
+                val keep = userFiles > 0 || !preferences.hasNoChatMessages(project.id)
                 if (!keep) {
                     workspaceDir.deleteRecursively()
                     terminalHistoryFile(project.id).delete()
@@ -2550,31 +2568,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
+        val generation = ++projectOpenGeneration
+        projectOpenJob?.cancel()
         if (current.isRunning || current.projectTerminalRunning) {
-            val chats = preferences.loadProjectChats(project.id).ifEmpty {
-                listOf(ProjectChat(title = "Main chat"))
-            }
-            val chat = chats.first()
             _state.update {
                 it.copy(
                     readOnlyProject = project,
-                    readOnlyProjectChats = chats,
-                    readOnlyChatId = chat.id,
-                    readOnlyMessages = preferences.loadMessages(project.id, chat.id),
+                    readOnlyProjectChats = emptyList(),
+                    readOnlyChatId = null,
+                    readOnlyMessages = emptyList(),
+                    chatLoading = true,
                 )
+            }
+            projectOpenJob = viewModelScope.launch {
+                val loaded = runCatching {
+                    withContext(Dispatchers.IO) {
+                        val chats = preferences.loadProjectChats(project.id).ifEmpty {
+                            listOf(ProjectChat(title = "Main chat"))
+                        }
+                        val chat = chats.first()
+                        LoadedChat(chats, chat.id, preferences.loadMessages(project.id, chat.id))
+                    }
+                }.getOrNull()
+                if (generation != projectOpenGeneration) return@launch
+                _state.update {
+                    it.copy(
+                        readOnlyProjectChats = loaded?.chats.orEmpty(),
+                        readOnlyChatId = loaded?.chatId,
+                        readOnlyMessages = loaded?.messages.orEmpty(),
+                        chatLoading = false,
+                    )
+                }
             }
             return
         }
         configureBridgeRoots(project.id, project.rootPath)
-        val terminal = loadProjectTerminal(project)
-        val suggestedRoot = if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null
-        val chats = preferences.loadProjectChats(project.id).ifEmpty {
-            listOf(ProjectChat(title = "Main chat")).also { preferences.saveProjectChats(project.id, it) }
-        }
-        val activeChat = chats.first()
-        val saved = preferences.loadMessages(project.id, activeChat.id)
-        val msgs = saved.ifEmpty { listOf(ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change.")) }
-        val memory = memoryStore.load(project.id)
+        // Shell first: the project shows at once with a placeholder, and its chat history loads off the main thread.
         _state.update {
             it.copy(
                 activeProject = project,
@@ -2583,10 +2612,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 readOnlyProjectChats = emptyList(),
                 readOnlyChatId = null,
                 readOnlyMessages = emptyList(),
-                projectChats = chats,
-                activeChatId = activeChat.id,
-                contextMemory = memory,
-                messages = msgs,
+                projectChats = emptyList(),
+                activeChatId = null,
+                contextMemory = ContextMemory(""),
+                messages = emptyList(),
+                chatLoading = true,
                 liveProcess = emptyList(),
                 liveThinking = false,
                 taskStartedAtMillis = null,
@@ -2595,20 +2625,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 workspaceFiles = emptyList(),
                 androidProjectDetected = false,
                 filesLoading = true,
-                projectTerminalLines = terminal.lines,
+                projectTerminalLines = emptyList(),
                 projectTerminalLiveOutput = "",
                 projectTerminalRunning = false,
-                projectTerminalCwd = terminal.cwd,
+                projectTerminalCwd = projectGuestRoot(project),
                 projectTerminalCommand = null,
                 projectTerminalDraft = null,
                 pendingTerminalCommand = null,
-                suggestedProjectRoot = suggestedRoot,
+                suggestedProjectRoot = null,
                 previewReady = false,
                 previewUrl = null,
                 pendingAttachments = emptyList(),
             )
         }
         refreshProjectFiles()
+        projectOpenJob = viewModelScope.launch {
+            val opened = runCatching {
+                withContext(Dispatchers.IO) {
+                    val chats = preferences.loadProjectChats(project.id).ifEmpty {
+                        listOf(ProjectChat(title = "Main chat")).also { preferences.saveProjectChats(project.id, it) }
+                    }
+                    val activeChat = chats.first()
+                    ProjectOpened(
+                        chat = LoadedChat(chats, activeChat.id, preferences.loadMessages(project.id, activeChat.id)),
+                        terminal = loadProjectTerminal(project),
+                        suggestedRoot = if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null,
+                        memory = memoryStore.load(project.id),
+                    )
+                }
+            }.getOrNull()
+            if (generation != projectOpenGeneration) return@launch
+            if (opened == null) {
+                _state.update { it.copy(chatLoading = false, toastMessage = "Could not load this project's chat history.") }
+                return@launch
+            }
+            // One update publishes the chat, its messages and the terminal together, so nothing renders half-loaded.
+            _state.update {
+                it.copy(
+                    projectChats = opened.chat.chats,
+                    activeChatId = opened.chat.chatId,
+                    contextMemory = opened.memory,
+                    messages = opened.chat.messages.ifEmpty {
+                        listOf(ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change."))
+                    },
+                    chatLoading = false,
+                    projectTerminalLines = opened.terminal.lines,
+                    projectTerminalCwd = opened.terminal.cwd,
+                    suggestedProjectRoot = opened.suggestedRoot,
+                )
+            }
+        }
         viewModelScope.launch {
             val pending = activeRuntime().loadPendingChanges(project.id)
             if (_state.value.activeProject?.id == project.id) _state.update { it.copy(changes = pending) }
@@ -2617,6 +2683,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closeProject() {
         val active = _state.value.activeProject
+        // A write that is queued or still flushing is not on disk yet, so the emptiness check must not trust the disk.
+        val writeInFlight = pendingTranscriptWrite != null || transcriptDebounceJob?.isActive == true
         persistMessages()
         if (_state.value.isRunning || _state.value.projectTerminalRunning) {
             _state.update {
@@ -2633,8 +2701,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (active != null) {
-            val chats = preferences.loadProjectChats(active.id)
-            val userMessages = chats.sumOf { preferences.loadMessages(active.id, it.id).count { m -> m.fromUser } }
             val workspaceDir = File(getApplication<Application>().filesDir, "workspaces/${active.id}")
             val userFiles = if (workspaceDir.isDirectory) {
                 workspaceDir.walkTopDown().filter { file ->
@@ -2642,8 +2708,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }.count()
             } else 0
 
-            if (userMessages == 0 && userFiles == 0 && !_state.value.isRunning && !_state.value.projectTerminalRunning) {
+            if (!writeInFlight && preferences.hasNoChatMessages(active.id) && userFiles == 0 &&
+                !_state.value.isRunning && !_state.value.projectTerminalRunning
+            ) {
                 // Unused empty project; delete immediately so it does not clutter the project list.
+                // Drop the write queued above so the deleted project's folder is not written again.
+                pendingTranscriptWrite = null
+                transcriptDebounceJob?.cancel()
                 _state.update { current -> current.copy(projects = current.projects.filterNot { it.id == active.id }) }
                 preferences.saveProjects(_state.value.projects)
                 viewModelScope.launch(Dispatchers.IO) {
@@ -2654,12 +2725,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        projectOpenGeneration++
+        projectOpenJob?.cancel()
         _state.update {
             it.copy(
                 activeProject = null,
                 workspaceVisible = false,
                 projectChats = emptyList(),
                 activeChatId = null,
+                chatLoading = false,
                 changes = emptyList(),
                 workspaceFiles = emptyList(),
                 androidProjectDetected = false,
@@ -3676,6 +3750,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val project = current.activeProject ?: return
         val chatId = current.activeChatId ?: return
         if (current.isRunning || uris.isEmpty()) return
+        val importMessages = current.messages
         val remaining = (MAX_ATTACHMENTS_PER_MESSAGE - current.pendingAttachments.size).coerceAtLeast(0)
         if (remaining == 0) {
             _state.update { it.copy(toastMessage = "You can attach up to $MAX_ATTACHMENTS_PER_MESSAGE files per message") }
@@ -3693,13 +3768,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 added to errors
             }
             val (added, errors) = result
+            var acceptedIds = emptySet<String>()
             _state.update { state ->
+                if (state.activeProject?.id != project.id || state.activeChatId != chatId ||
+                    state.isRunning || state.messages !== importMessages) return@update state
+                val capacity = (MAX_ATTACHMENTS_PER_MESSAGE - state.pendingAttachments.size).coerceAtLeast(0)
+                val accepted = added.take(capacity)
+                acceptedIds = accepted.map { it.id }.toSet()
                 state.copy(
-                    pendingAttachments = state.pendingAttachments + added,
-                    toastMessage = errors.firstOrNull() ?: if (uris.size > remaining) "Only $remaining more file${if (remaining == 1) "" else "s"} could be added" else null,
+                    pendingAttachments = state.pendingAttachments + accepted,
+                    toastMessage = errors.firstOrNull() ?: if (added.size > capacity || uris.size > remaining)
+                        "You can attach up to $MAX_ATTACHMENTS_PER_MESSAGE files per message" else null,
                 )
             }
-            if (added.isNotEmpty()) refreshProjectFiles()
+            withContext(Dispatchers.IO) {
+                val root = projectWorkspaceRoot(project).canonicalFile
+                added.filterNot { it.id in acceptedIds }.forEach { attachment ->
+                    val file = File(root, attachment.relativePath).canonicalFile
+                    if (file.toPath().startsWith(root.toPath())) file.delete()
+                }
+            }
+            if (acceptedIds.isNotEmpty() && _state.value.activeProject?.id == project.id) refreshProjectFiles()
         }
     }
 
@@ -3846,9 +3935,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun terminateSubagent(conversationId: String) {
-        _state.update { current ->
-            current.copy(subagents = SubagentRegistry.terminate(current.subagents, conversationId))
-        }
+        _state.update { it.copy(toastMessage = "This harness does not support stopping an individual subagent. Use Stop to cancel the full task.") }
     }
 
     fun clearCompletedSubagents() {
@@ -3858,9 +3945,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun terminateBackgroundTask(taskId: String) {
-        _state.update { current ->
-            current.copy(backgroundTasks = TaskRegistry.terminate(current.backgroundTasks, taskId))
-        }
+        _state.update { it.copy(toastMessage = "This harness does not support stopping an individual background task. Use Stop to cancel the full task.") }
     }
 
     fun clearCompletedTasks() {
@@ -4564,7 +4649,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val attachments = state.value.pendingAttachments
         val trimmed = prompt.trim()
-        if ((trimmed.isBlank() && attachments.isEmpty()) || state.value.isRunning) return
+        if ((trimmed.isBlank() && attachments.isEmpty()) || state.value.isRunning || state.value.chatLoading) return
 
         // Check if input is a slash command
         val parsedCmd = SlashCommandEngine.parseCommand(trimmed)

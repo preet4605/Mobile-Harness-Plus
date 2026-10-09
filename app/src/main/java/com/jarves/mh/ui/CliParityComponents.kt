@@ -762,9 +762,7 @@ private fun SubagentRow(subagent: SubagentInfo, onOpen: () -> Unit, onStop: () -
         iconTile = status.color,
         accessory = ListRowAccessory.Chevron,
         onClick = onOpen,
-        trailing = if (!subagent.state.isTerminal) {
-            { StopButton("Stop ${subagent.role}", onStop) }
-        } else null,
+        trailing = null,
     )
 }
 
@@ -782,9 +780,7 @@ private fun TaskRow(task: BackgroundTaskInfo, onOpen: () -> Unit, onStop: () -> 
             iconTile = status.color,
             accessory = ListRowAccessory.Chevron,
             onClick = onOpen,
-            trailing = if (task.status == BackgroundTaskStatus.RUNNING) {
-                { StopButton("Stop task", onStop) }
-            } else null,
+            trailing = null,
         )
         if (tail.isNotEmpty()) {
             Column(
@@ -1759,7 +1755,7 @@ fun TaskLogViewerDialog(
     task: BackgroundTaskInfo,
     onDismiss: () -> Unit,
     onTerminate: (String) -> Unit = {},
-    onSendInput: (String, String) -> Unit = { _, _ -> },
+    onSendInput: ((String, String) -> Unit)? = null,
 ) {
     val clipboard = LocalClipboardManager.current
     val banner = rememberBanner()
@@ -1768,7 +1764,7 @@ fun TaskLogViewerDialog(
     val isRunning = task.status == BackgroundTaskStatus.RUNNING
     val sendInput = {
         if (stdinDraft.isNotBlank()) {
-            onSendInput(task.taskId, stdinDraft)
+            onSendInput?.invoke(task.taskId, stdinDraft)
             stdinDraft = ""
         }
     }
@@ -1810,7 +1806,10 @@ fun TaskLogViewerDialog(
                 .padding(horizontal = ListInset)
                 .padding(top = PocketSpacing.md, bottom = if (isRunning) 0.dp else PocketSpacing.lg),
         )
-        if (isRunning) {
+        if (isRunning && onSendInput == null) {
+            TextSection("Controls", "Individual input and Stop are unavailable for this harness. Use the chat Stop control to cancel the full task.", Modifier.padding(top = PocketSpacing.sm))
+        }
+        if (isRunning && onSendInput != null) {
             InputBar(
                 value = stdinDraft,
                 onValueChange = { stdinDraft = it },
@@ -1839,8 +1838,11 @@ fun TaskLogViewerDialog(
 fun SubagentTranscriptViewerDialog(
     subagent: SubagentInfo,
     onDismiss: () -> Unit,
-    onSendMessage: (String, String) -> Unit = { _, _ -> },
+    onSendMessage: ((String, String) -> Unit)? = null,
     onTerminate: (String) -> Unit = {},
+    project: com.jarves.mh.model.Project? = null,
+    projectSlug: String? = project?.slug,
+    engineHome: String = "/root/.claude",
 ) {
     val clipboard = LocalClipboardManager.current
     val banner = rememberBanner()
@@ -1849,16 +1851,38 @@ fun SubagentTranscriptViewerDialog(
     var confirmStop by remember { mutableStateOf(false) }
     val active = !subagent.state.isTerminal
 
-    val transcriptLines = remember(subagent.transcriptPath) {
-        runCatching {
-            subagent.transcriptPath?.let { path ->
-                java.io.File(path).takeIf { it.exists() }?.readLines()
-            } ?: emptyList()
-        }.getOrDefault(emptyList())
+    val filesDir = androidx.compose.ui.platform.LocalContext.current.filesDir
+    val transcriptLines by androidx.compose.runtime.produceState<List<String>>(
+        initialValue = emptyList(), subagent.transcriptPath, project?.id, project?.rootPath, engineHome,
+    ) {
+        value = emptyList()
+        val path = subagent.transcriptPath ?: return@produceState
+        val workspace = project?.let {
+            val base = java.io.File(filesDir, "workspaces/${it.id}").canonicalFile
+            java.io.File(base, it.rootPath).canonicalFile.takeIf { selected -> selected.toPath().startsWith(base.toPath()) }
+        }
+        val resolved = TranscriptTailReader.resolve(path, filesDir, workspace, projectSlug, engineHome) ?: return@produceState
+        val (file, roots) = resolved
+        val changes = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+        val observer = object : android.os.FileObserver((file.parentFile ?: file).absolutePath,
+            MODIFY or CLOSE_WRITE or CREATE or MOVED_TO or DELETE) {
+            override fun onEvent(event: Int, changed: String?) {
+                if (changed == null || changed == file.name) changes.trySend(Unit)
+            }
+        }
+        observer.startWatching()
+        changes.trySend(Unit)
+        try {
+            for (ignored in changes) {
+                value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching { TranscriptTailReader.read(file, roots) }.getOrDefault(emptyList())
+                }
+            }
+        } finally { observer.stopWatching(); changes.close() }
     }
     val sendMessage = {
         if (messageDraft.isNotBlank()) {
-            onSendMessage(subagent.conversationId, messageDraft)
+            onSendMessage?.invoke(subagent.conversationId, messageDraft)
             messageDraft = ""
         }
     }
@@ -1902,7 +1926,10 @@ fun SubagentTranscriptViewerDialog(
                 )
             }
         }
-        if (active) {
+        if (active && onSendMessage == null) {
+            TextSection("Controls", "Individual messages and Stop are unavailable for this harness. Use the chat Stop control to cancel the full task.", Modifier.padding(top = PocketSpacing.sm))
+        }
+        if (active && onSendMessage != null) {
             InputBar(
                 value = messageDraft,
                 onValueChange = { messageDraft = it },
