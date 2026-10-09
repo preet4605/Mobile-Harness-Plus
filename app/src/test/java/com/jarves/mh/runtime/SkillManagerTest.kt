@@ -371,4 +371,72 @@ class SkillManagerTest {
         }
         assertTrue("Must block path traversal in promoteRuleToGlobal", ruleTraversalBlocked)
     }
+
+    @Test
+    fun activeProjectSkillsComeFromTheSelectedRootNotTheWorkspaceTop() {
+        val manager = SkillManager(tempFolder.newFolder("rooted_skills"))
+        val workspacesBase = tempFolder.newFolder("rooted_workspaces")
+        val project = Project(id = "proj-rooted", name = "Rooted", description = "", language = "Kotlin", rootPath = "apps/mobile")
+        writeProjectSkill(File(workspacesBase, "${project.id}/apps/mobile"), "selected-root-skill")
+        writeProjectSkill(File(workspacesBase, project.id), "workspace-top-skill")
+
+        val active = manager.compileActiveProjectSkills(
+            activeProject = project,
+            config = ProjectCustomizationConfig(projectId = project.id),
+            allProjects = listOf(project),
+            workspacesBaseDir = workspacesBase,
+        )
+
+        assertEquals(listOf("selected-root-skill"), active.filter { it.source == SkillSource.PROJECT }.map { it.name })
+    }
+
+    @Test
+    fun otherProjectSkillsAndLinksComeFromTheirSelectedRoot() {
+        val manager = SkillManager(tempFolder.newFolder("other_root_skills"))
+        val workspacesBase = tempFolder.newFolder("other_root_workspaces")
+        val source = Project(id = "proj-source", name = "Source", description = "", language = "Kotlin", rootPath = "service")
+        val current = Project(id = "proj-current", name = "Current", description = "", language = "Kotlin")
+        writeProjectSkill(File(workspacesBase, "${source.id}/service"), "service-skill")
+        writeProjectSkill(File(workspacesBase, source.id), "stale-top-skill")
+
+        val catalog = manager.discoverAllProjectsSkills(listOf(source, current), current.id, workspacesBase)
+        assertEquals(listOf("service-skill"), catalog[source]?.map { it.name })
+
+        val link = LinkedSkillReference(
+            sourceProjectId = source.id,
+            sourceProjectName = source.name,
+            skillName = "service-skill",
+            relativeSkillPath = ".agents/skills/service-skill",
+        )
+        val active = manager.compileActiveProjectSkills(
+            activeProject = current,
+            config = ProjectCustomizationConfig(projectId = current.id, linkedSkills = listOf(link)),
+            allProjects = listOf(source, current),
+            workspacesBaseDir = workspacesBase,
+        )
+        assertFalse(active.single { it.source == SkillSource.LINKED }.isMissingSource)
+    }
+
+    @Test
+    fun rootThatResolvesOutsideTheWorkspaceContributesNoSkills() {
+        val manager = SkillManager(tempFolder.newFolder("escape_root_skills"))
+        val workspacesBase = tempFolder.newFolder("escape_root_workspaces")
+        val project = Project(id = "proj-escape", name = "Escape", description = "", language = "Kotlin", rootPath = "../proj-sibling")
+        writeProjectSkill(File(workspacesBase, "proj-sibling"), "sibling-skill")
+        writeProjectSkill(File(workspacesBase, project.id), "own-top-skill")
+
+        val active = manager.compileActiveProjectSkills(
+            activeProject = project,
+            config = ProjectCustomizationConfig(projectId = project.id),
+            allProjects = listOf(project),
+            workspacesBaseDir = workspacesBase,
+        )
+
+        assertTrue(active.none { it.source == SkillSource.PROJECT })
+    }
+
+    private fun writeProjectSkill(projectDir: File, name: String) {
+        val skillDir = File(projectDir, ".agents/skills/$name").apply { mkdirs() }
+        File(skillDir, "SKILL.md").writeText("---\nname: $name\ndescription: test skill\n---\nBody.")
+    }
 }

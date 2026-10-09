@@ -409,6 +409,17 @@ class SkillManager(
     }
 
     /**
+     * Directory a project's skills are read from: its selected root, as rules use, kept inside its
+     * workspace. Null when the root resolves outside the workspace, so nothing is read from there.
+     */
+    private fun projectSkillRoot(projectId: String, rootPath: String, workspacesBaseDir: File): File? =
+        runCatching {
+            val workspace = File(workspacesBaseDir, projectId).canonicalFile
+            if (rootPath.isBlank()) return@runCatching workspace
+            File(workspace, rootPath).canonicalFile.takeIf { it.toPath().startsWith(workspace.toPath()) }
+        }.getOrNull()
+
+    /**
      * Discovers all skills available across all registered projects in Mobile Harness.
      */
     fun discoverAllProjectsSkills(
@@ -418,8 +429,8 @@ class SkillManager(
     ): Map<Project, List<SkillInfo>> {
         val catalog = mutableMapOf<Project, List<SkillInfo>>()
         allProjects.filter { it.id != currentProjectId }.forEach { project ->
-            val projectDir = File(workspacesBaseDir, project.id)
-            if (projectDir.isDirectory) {
+            val projectDir = projectSkillRoot(project.id, project.rootPath, workspacesBaseDir)
+            if (projectDir != null && projectDir.isDirectory) {
                 val skills = scanProjectWorkspaceForSkills(projectDir, SkillSource.OTHER_PROJECT)
                     .map { it.copy(sourceProjectId = project.id, sourceProjectName = project.name) }
                 if (skills.isNotEmpty()) {
@@ -528,8 +539,9 @@ class SkillManager(
 
         // 1. Current Project Local Skills (Highest precedence)
         if (allowLocal) {
-            val localDir = File(workspacesBaseDir, activeProject.id)
-            val localSkills = scanProjectWorkspaceForSkills(localDir, SkillSource.PROJECT)
+            val localSkills = projectSkillRoot(activeProject.id, activeProject.rootPath, workspacesBaseDir)
+                ?.let { scanProjectWorkspaceForSkills(it, SkillSource.PROJECT) }
+                .orEmpty()
             localSkills.forEach { skill ->
                 val isEnabled = if (config.scopeMode == CustomizationScopeMode.CUSTOM) {
                     skill.id in config.enabledSkillIds
@@ -544,9 +556,10 @@ class SkillManager(
 
         // 2. Linked Skills from other projects (Virtually referenced)
         config.linkedSkills.forEach { link ->
-            val sourceDir = File(workspacesBaseDir, link.sourceProjectId)
-            val skillFile = File(sourceDir, "${link.relativeSkillPath}/SKILL.md")
-            if (skillFile.isFile) {
+            val sourceRootPath = allProjects.firstOrNull { it.id == link.sourceProjectId }?.rootPath.orEmpty()
+            val sourceDir = projectSkillRoot(link.sourceProjectId, sourceRootPath, workspacesBaseDir)
+            val skillFile = sourceDir?.let { File(it, "${link.relativeSkillPath}/SKILL.md") }
+            if (skillFile != null && skillFile.isFile) {
                 parseSkillFile(skillFile, SkillSource.LINKED)?.let { parsed ->
                     val isEnabled = parsed.id !in config.disabledSkillIds
                     if (seenNames.add(parsed.name.lowercase())) {
@@ -569,7 +582,7 @@ class SkillManager(
                             id = orphanId,
                             name = link.skillName,
                             description = "Source file missing from ${link.sourceProjectName}",
-                            filePath = skillFile.absolutePath,
+                            filePath = skillFile?.absolutePath.orEmpty(),
                             source = SkillSource.LINKED,
                             isEnabled = false,
                             sourceProjectId = link.sourceProjectId,
