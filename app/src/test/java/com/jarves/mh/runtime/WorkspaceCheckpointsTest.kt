@@ -116,6 +116,27 @@ class WorkspaceCheckpointsTest {
     }
 
     @Test
+    fun `buildChangeDetails never reads through a final symlink outside workspace`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        File(workspace, "notes.txt").writeText("inside baseline\n")
+        checkpoints.createCheckpoint("project", workspace)
+        val outside = tempFolder.newFile().apply { writeText("OUTSIDE SECRET\n") }
+        File(workspace, "notes.txt").delete()
+        java.nio.file.Files.createSymbolicLink(File(workspace, "notes.txt").toPath(), outside.toPath())
+
+        val details = checkpoints.buildChangeDetails("project", workspace, listOf("notes.txt"))
+
+        assertEquals(1, details.size)
+        details[0].diffLines.forEach { line ->
+            assertFalse("outside content reached the diff: ${line.text}", line.text.contains("OUTSIDE SECRET"))
+        }
+        // A link that replaced a tracked file reads as absent, the same as snapshot(), which skips links.
+        assertEquals(0, details[0].additions)
+        assertEquals(1, details[0].deletions)
+    }
+
+    @Test
     fun `TEST 1 create checkpoint with tag step-1 and verify it exists`() {
         val filesDir = tempFolder.newFolder("cp_t1")
         val checkpoints = WorkspaceCheckpoints(filesDir)

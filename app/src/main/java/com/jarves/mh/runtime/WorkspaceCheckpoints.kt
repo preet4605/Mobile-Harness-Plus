@@ -509,8 +509,8 @@ class WorkspaceCheckpoints(
     fun buildChangeDetails(projectId: String, workspace: File, paths: List<String>): List<ChangeItem> {
         val backup = File(checkpointDir(projectId), "project")
         return paths.map { path ->
-            val beforeFile = safeWorkspaceFile(backup, path).takeIf(File::isFile)
-            val afterFile = safeWorkspaceFile(workspace, path).takeIf(File::isFile)
+            val beforeFile = regularChangeFile(backup, path)
+            val afterFile = regularChangeFile(workspace, path)
             val beforeLength = beforeFile?.length() ?: 0L
             val afterLength = afterFile?.length() ?: 0L
             val isKnownBin = isKnownBinaryPath(path)
@@ -555,6 +555,12 @@ class WorkspaceCheckpoints(
             }
         }
     }
+
+    /** Diffs never read through a final symlink: snapshot() skips links, so a link that replaced a tracked file reads as absent. */
+    private fun regularChangeFile(root: File, relative: String): File? =
+        safeWorkspaceFile(root, relative).takeIf { file ->
+            file.isFile && !java.nio.file.Files.isSymbolicLink(file.toPath())
+        }
 
     private fun isBinaryFile(file: File?): Boolean {
         if (file == null || !file.isFile || file.length() == 0L) return false
