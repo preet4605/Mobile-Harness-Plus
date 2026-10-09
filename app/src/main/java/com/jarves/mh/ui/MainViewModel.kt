@@ -663,15 +663,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val loadedProjects = preferences.loadProjects()
         val cleanedProjects = loadedProjects.filter { project ->
             if (project.kind == ProjectKind.QUICK_PROJECT) {
-                val chats = preferences.loadProjectChats(project.id)
-                val userMessages = chats.sumOf { preferences.loadMessages(project.id, it.id).count { m -> m.fromUser } }
+                val userMessages = preferences.userMessageCount(project.id)
                 val workspaceDir = File(application.filesDir, "workspaces/${project.id}")
                 val userFiles = if (workspaceDir.isDirectory) {
                     workspaceDir.walkTopDown().filter { file ->
                         file.isFile && !file.name.startsWith(".claude") && file.name != ".pocket-dev-stacks.json"
                     }.count()
                 } else 0
-                val keep = userMessages > 0 || userFiles > 0
+                // An unknown count (legacy index) keeps the project; the backfill runs off the main thread.
+                if (userMessages == null) viewModelScope.launch(Dispatchers.IO) { preferences.backfillUserMessageCounts(project.id) }
+                val keep = userMessages == null || userMessages > 0 || userFiles > 0
                 if (!keep) {
                     workspaceDir.deleteRecursively()
                     terminalHistoryFile(project.id).delete()
@@ -2693,8 +2694,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (active != null) {
-            val chats = preferences.loadProjectChats(active.id)
-            val userMessages = chats.sumOf { preferences.loadMessages(active.id, it.id).count { m -> m.fromUser } }
+            val userMessages = preferences.userMessageCount(active.id)
+            if (userMessages == null) viewModelScope.launch(Dispatchers.IO) { preferences.backfillUserMessageCounts(active.id) }
             val workspaceDir = File(getApplication<Application>().filesDir, "workspaces/${active.id}")
             val userFiles = if (workspaceDir.isDirectory) {
                 workspaceDir.walkTopDown().filter { file ->

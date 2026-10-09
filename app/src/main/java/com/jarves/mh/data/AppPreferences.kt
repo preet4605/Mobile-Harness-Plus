@@ -675,8 +675,10 @@ class AppPreferences(
         "chats",
     ).also { it.mkdirs() }
 
+    @Synchronized
     fun saveProjectChats(projectId: String, chats: List<ProjectChat>) {
         val projectDir = File(chatsDir, projectId).also { it.mkdirs() }
+        val known = readIndexUserCounts(projectDir)
         val arr = JSONArray()
         chats.forEach { chat ->
             arr.put(JSONObject().apply {
@@ -684,6 +686,9 @@ class AppPreferences(
                 put("title", chat.title)
                 put("createdAtMillis", chat.createdAtMillis)
                 put("updatedAtMillis", chat.updatedAtMillis)
+                // Keep the counted value; a chat with no message file yet has no user messages.
+                val count = known[chat.id] ?: if (File(projectDir, "${chat.id}.json").exists()) null else 0
+                count?.let { put("userMessageCount", it) }
             })
         }
         File(projectDir, "index.json").writeText(arr.toString())
@@ -769,6 +774,7 @@ class AppPreferences(
             temporary.delete()
         }
         verifiedChatFiles.add(destination.path)
+        recordUserMessageCount(projectId, chatId, repairedMessages.count { it.fromUser })
     }
 
     /** Copies a chat file this process has not verified, and that fails verification, to `<name>.corrupt-<ts>` before it is overwritten. */
@@ -799,6 +805,62 @@ class AppPreferences(
     fun deleteProjectChats(projectId: String) {
         File(chatsDir, projectId).deleteRecursively()
         File(chatsDir, "$projectId.json").delete()
+    }
+
+    /** Total user messages across a project's chats, read from the index. Null while any chat's count is unknown. */
+    fun userMessageCount(projectId: String): Int? {
+        val arr = runCatching { JSONArray(File(File(chatsDir, projectId), "index.json").readText()) }.getOrNull() ?: return null
+        var total = 0
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: return null
+            if (!obj.has("userMessageCount")) return null
+            total += obj.optInt("userMessageCount")
+        }
+        return total
+    }
+
+    /** One-time backfill for legacy indexes. Reads every chat file, so call it off the main thread. */
+    fun backfillUserMessageCounts(projectId: String) {
+        val counts = loadProjectChats(projectId).associate { chat ->
+            chat.id to loadMessages(projectId, chat.id).count { it.fromUser }
+        }
+        synchronized(this) {
+            val index = File(File(chatsDir, projectId), "index.json")
+            val arr = runCatching { JSONArray(index.readText()) }.getOrNull() ?: return
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                // A count written meanwhile by saveMessages is newer than this backfill, so it is never overwritten.
+                if (!obj.has("userMessageCount")) counts[obj.optString("id")]?.let { obj.put("userMessageCount", it) }
+            }
+            index.writeText(arr.toString())
+        }
+    }
+
+    /** Keeps the index's count for one chat current. Touches the index only when the count changed. */
+    private fun recordUserMessageCount(projectId: String, chatId: String, count: Int) {
+        val index = File(File(chatsDir, projectId), "index.json")
+        synchronized(this) {
+            val arr = runCatching { JSONArray(index.readText()) }.getOrNull() ?: return
+            var changed = false
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                if (obj.optString("id") == chatId && obj.optInt("userMessageCount", -1) != count) {
+                    obj.put("userMessageCount", count)
+                    changed = true
+                }
+            }
+            if (changed) index.writeText(arr.toString())
+        }
+    }
+
+    private fun readIndexUserCounts(projectDir: File): Map<String, Int> {
+        val arr = runCatching { JSONArray(File(projectDir, "index.json").readText()) }.getOrNull() ?: return emptyMap()
+        return buildMap {
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                if (obj.has("userMessageCount")) put(obj.optString("id"), obj.optInt("userMessageCount"))
+            }
+        }
     }
 
     private fun loadLegacyMessages(file: File): List<ChatMessage> {
