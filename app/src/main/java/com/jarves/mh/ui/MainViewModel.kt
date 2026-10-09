@@ -3669,6 +3669,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val project = current.activeProject ?: return
         val chatId = current.activeChatId ?: return
         if (current.isRunning || uris.isEmpty()) return
+        val importMessages = current.messages
         val remaining = (MAX_ATTACHMENTS_PER_MESSAGE - current.pendingAttachments.size).coerceAtLeast(0)
         if (remaining == 0) {
             _state.update { it.copy(toastMessage = "You can attach up to $MAX_ATTACHMENTS_PER_MESSAGE files per message") }
@@ -3686,13 +3687,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 added to errors
             }
             val (added, errors) = result
+            var acceptedIds = emptySet<String>()
             _state.update { state ->
+                if (state.activeProject?.id != project.id || state.activeChatId != chatId ||
+                    state.isRunning || state.messages !== importMessages) return@update state
+                val capacity = (MAX_ATTACHMENTS_PER_MESSAGE - state.pendingAttachments.size).coerceAtLeast(0)
+                val accepted = added.take(capacity)
+                acceptedIds = accepted.map { it.id }.toSet()
                 state.copy(
-                    pendingAttachments = state.pendingAttachments + added,
-                    toastMessage = errors.firstOrNull() ?: if (uris.size > remaining) "Only $remaining more file${if (remaining == 1) "" else "s"} could be added" else null,
+                    pendingAttachments = state.pendingAttachments + accepted,
+                    toastMessage = errors.firstOrNull() ?: if (added.size > capacity || uris.size > remaining)
+                        "You can attach up to $MAX_ATTACHMENTS_PER_MESSAGE files per message" else null,
                 )
             }
-            if (added.isNotEmpty()) refreshProjectFiles()
+            withContext(Dispatchers.IO) {
+                val root = projectWorkspaceRoot(project).canonicalFile
+                added.filterNot { it.id in acceptedIds }.forEach { attachment ->
+                    val file = File(root, attachment.relativePath).canonicalFile
+                    if (file.toPath().startsWith(root.toPath())) file.delete()
+                }
+            }
+            if (acceptedIds.isNotEmpty() && _state.value.activeProject?.id == project.id) refreshProjectFiles()
         }
     }
 
@@ -3839,9 +3854,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun terminateSubagent(conversationId: String) {
-        _state.update { current ->
-            current.copy(subagents = SubagentRegistry.terminate(current.subagents, conversationId))
-        }
+        _state.update { it.copy(toastMessage = "This harness does not support stopping an individual subagent. Use Stop to cancel the full task.") }
     }
 
     fun clearCompletedSubagents() {
@@ -3851,9 +3864,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun terminateBackgroundTask(taskId: String) {
-        _state.update { current ->
-            current.copy(backgroundTasks = TaskRegistry.terminate(current.backgroundTasks, taskId))
-        }
+        _state.update { it.copy(toastMessage = "This harness does not support stopping an individual background task. Use Stop to cancel the full task.") }
     }
 
     fun clearCompletedTasks() {

@@ -746,14 +746,24 @@ internal fun WorkspaceScreen(
             tokenMetrics = state.tokenMetrics,
         )
     }
-    state.selectedSubagentForLogs?.let { subagent ->
+    state.selectedSubagentForLogs?.let { selected ->
+        val subagent = state.subagents.firstOrNull { it.conversationId == selected.conversationId } ?: selected
         SubagentTranscriptViewerDialog(
             subagent = subagent,
             onDismiss = { onSelectSubagentForLogs(null) },
             onTerminate = onTerminateSubagent,
+            project = state.activeProject,
+            projectSlug = state.activeProject?.slug,
+            engineHome = when (state.agentKind) {
+                com.jarves.mh.model.AgentKind.CLAUDE_CODE -> "/root/.claude"
+                com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS -> "/root/.dsh"
+                com.jarves.mh.model.AgentKind.CODEX -> "/root/.codex"
+                com.jarves.mh.model.AgentKind.ANTIGRAVITY -> "/root/.gemini"
+            },
         )
     }
-    state.selectedTaskForLogs?.let { task ->
+    state.selectedTaskForLogs?.let { selected ->
+        val task = state.backgroundTasks.firstOrNull { it.taskId == selected.taskId } ?: selected
         TaskLogViewerDialog(
             task = task,
             onDismiss = { onSelectTaskForLogs(null) },
@@ -2496,6 +2506,7 @@ private fun PreviewTab(ready: Boolean, url: String?) {
     var activeUrl by rememberSaveable(url) { mutableStateOf(if (ready) url else null) }
     var addressError by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
+    var navigationRequest by remember { mutableIntStateOf(0) }
     var webView by remember { mutableStateOf<WebView?>(null) }
     val colors = PocketColors.current
 
@@ -2507,7 +2518,9 @@ private fun PreviewTab(ready: Boolean, url: String?) {
             addressError = null
             address = normalized
             activeUrl = normalized
+            navigationRequest++
         }
+        Unit
     }
 
     LaunchedEffect(ready, url) {
@@ -2585,17 +2598,32 @@ private fun PreviewTab(ready: Boolean, url: String?) {
                                 return false
                             }
 
+                            override fun onPageStarted(view: WebView?, pageUrl: String?, favicon: android.graphics.Bitmap?) {
+                                pageUrl?.takeIf { normalizePreviewUrl(it) != null }?.let { address = it }
+                            }
+
                             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                                 val target = request?.url ?: return blockedPreviewResponse()
                                 return if (target.isLoopbackPreviewUrl()) null else blockedPreviewResponse()
                             }
                         }
+                        tag = navigationRequest to targetUrl
                         loadUrl(targetUrl)
                     }
                 },
                 update = { current ->
                     webView = current
-                    if (current.url != targetUrl) current.loadUrl(targetUrl)
+                    val request = navigationRequest to targetUrl
+                    if (current.tag != request) {
+                        current.tag = request
+                        current.loadUrl(targetUrl)
+                    }
+                },
+                onRelease = { current ->
+                    current.stopLoading()
+                    current.webChromeClient = null
+                    current.destroy()
+                    if (webView === current) webView = null
                 },
                 modifier = Modifier.fillMaxSize(),
             )
