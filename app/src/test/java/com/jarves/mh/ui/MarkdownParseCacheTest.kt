@@ -35,6 +35,23 @@ class MarkdownParseCacheTest {
     }
 
     @Test
+    fun cacheEvictsOldestEntriesWhenTotalCharactersExceedTheBudget() {
+        // Three 200k-character texts exceed the 512k-character budget long before the entry count limit.
+        val first = MarkdownParseCache.blocksFor("first-" + "a".repeat(200_000))
+        MarkdownParseCache.blocksFor("second-" + "b".repeat(200_000))
+        MarkdownParseCache.blocksFor("third-" + "c".repeat(200_000))
+
+        assertNotSame(first, MarkdownParseCache.blocksFor("first-" + "a".repeat(200_000)))
+    }
+
+    @Test
+    fun textLargerThanTheWholeBudgetIsParsedButNotKept() {
+        val oversized = "o".repeat(600_000)
+
+        assertNotSame(MarkdownParseCache.blocksFor(oversized), MarkdownParseCache.blocksFor(oversized))
+    }
+
+    @Test
     fun orderedListStillParsesAsNumberedItems() {
         val blocks = parseMarkdown("1. first\n2. second\n\nplain")
 

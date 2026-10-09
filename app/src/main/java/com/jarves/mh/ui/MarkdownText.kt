@@ -600,16 +600,40 @@ private val OrderedListItem = Regex("^([0-9]+[.)])\\s+(.*)")
 /**
  * Parsed blocks by exact text. A row that leaves the list and comes back reuses its parse instead of
  * parsing again. A streaming message changes its text and so gets a fresh entry; old entries age out.
+ * Entries are bounded by count and by total characters, so streamed prefixes cannot pile up. A text
+ * larger than the whole budget is parsed but not kept.
  */
 internal object MarkdownParseCache {
     internal const val MAX_ENTRIES = 128
-    private val cache = object : LinkedHashMap<String, List<MarkdownBlock>>(MAX_ENTRIES, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<MarkdownBlock>>?): Boolean =
-            size > MAX_ENTRIES
+    internal const val MAX_TOTAL_CHARS = 512 * 1024
+
+    private val cache = LinkedHashMap<String, List<MarkdownBlock>>(MAX_ENTRIES, 0.75f, true)
+    private var totalChars = 0
+
+    /** Parses outside the lock, so concurrent misses do not queue behind each other's parse. */
+    fun blocksFor(markdown: String): List<MarkdownBlock> {
+        lookup(markdown)?.let { return it }
+        val parsed = parseMarkdown(markdown)
+        return if (markdown.length > MAX_TOTAL_CHARS) parsed else store(markdown, parsed)
     }
 
     @Synchronized
-    fun blocksFor(markdown: String): List<MarkdownBlock> = cache.getOrPut(markdown) { parseMarkdown(markdown) }
+    private fun lookup(markdown: String): List<MarkdownBlock>? = cache[markdown]
+
+    @Synchronized
+    private fun store(markdown: String, parsed: List<MarkdownBlock>): List<MarkdownBlock> {
+        // Another caller may have stored the same text while this one was parsing; keep its entry.
+        cache[markdown]?.let { return it }
+        cache[markdown] = parsed
+        totalChars += markdown.length
+        val entries = cache.entries.iterator()
+        while (cache.size > MAX_ENTRIES || totalChars > MAX_TOTAL_CHARS) {
+            val eldest = entries.next()
+            totalChars -= eldest.key.length
+            entries.remove()
+        }
+        return parsed
+    }
 
     @Synchronized
     internal fun entryCount(): Int = cache.size
