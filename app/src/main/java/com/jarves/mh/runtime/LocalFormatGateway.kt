@@ -22,6 +22,14 @@ internal class LocalFormatGateway(
     val gatewaySecret: String = AntigravityGatewayServer.generateGatewaySecret(),
 ) : AutoCloseable {
     private val running = AtomicBoolean(true)
+    private val sockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
+    private val upstreamConnections = java.util.concurrent.ConcurrentHashMap.newKeySet<HttpURLConnection>()
+    private val requests = java.util.concurrent.ThreadPoolExecutor(
+        0, 8, 30, java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.SynchronousQueue(),
+        java.util.concurrent.ThreadFactory { task -> Thread(task, "mh-format-request").apply { isDaemon = true } },
+    )
+    private val responses = com.jarves.mh.model.providerProtocolForAgent(profile, com.jarves.mh.model.AgentKind.CLAUDE_CODE) ==
+        com.jarves.mh.model.ProviderProtocol.OPENAI_RESPONSES
     private val server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
     val url: String = "http://127.0.0.1:${server.localPort}"
 
@@ -32,7 +40,18 @@ internal class LocalFormatGateway(
     private fun acceptLoop() {
         while (running.get()) {
             runCatching { server.accept() }.getOrNull()?.let { socket ->
-                Thread({ socket.use(::handle) }, "mh-format-request").apply { isDaemon = true; start() }
+                socket.soTimeout = 30_000
+                sockets.add(socket)
+                try {
+                    if (!running.get()) { sockets.remove(socket); socket.close(); return }
+                    requests.execute {
+                        try { socket.use { runCatching { handle(it) } } }
+                        finally { sockets.remove(socket) }
+                    }
+                } catch (_: java.util.concurrent.RejectedExecutionException) {
+                    sockets.remove(socket)
+                    socket.close()
+                }
             }
         }
     }
@@ -41,8 +60,11 @@ internal class LocalFormatGateway(
         val input = BufferedInputStream(socket.getInputStream())
         val requestLine = readLine(input) ?: return
         val headers = mutableMapOf<String, String>()
+        var headerBytes = 0
         while (true) {
             val line = readLine(input) ?: return
+            headerBytes += line.length
+            if (headerBytes > 32_768 || headers.size >= 100) return
             if (line.isEmpty()) break
             val split = line.indexOf(':')
             if (split > 0) headers[line.substring(0, split).lowercase()] = line.substring(split + 1).trim()
@@ -54,18 +76,6 @@ internal class LocalFormatGateway(
             return
         }
         if (!isAuthorized(headers["authorization"])) {
-            if (length > 0) {
-                var remaining = length.toLong()
-                while (remaining > 0) {
-                    val skipped = input.skip(remaining)
-                    if (skipped <= 0) {
-                        if (input.read() < 0) break
-                        remaining--
-                    } else {
-                        remaining -= skipped
-                    }
-                }
-            }
             writeUnauthorized(output)
             return
         }
@@ -93,16 +103,17 @@ internal class LocalFormatGateway(
         }
         runCatching {
             val anthropic = JSONObject(bodyBytes.decodeToString())
-            val upstream = callProvider(toOpenAi(anthropic))
+            val upstream = callProvider(if (responses) toResponses(anthropic) else toOpenAi(anthropic))
             if (upstream.first !in 200..299) {
-                Log.w("FormatGateway", "Provider returned HTTP ${upstream.first}: ${providerError(upstream.second)}")
+                runCatching { Log.w("FormatGateway", "Provider returned HTTP ${upstream.first}") }
                 writeJson(output, upstream.first, errorJson("api_error", providerError(upstream.second)))
             } else {
-                val translated = fromOpenAi(JSONObject(upstream.second), anthropic.optString("model", profile.model))
+                val translated = if (responses) fromResponses(JSONObject(upstream.second), anthropic.optString("model", profile.model))
+                    else fromOpenAi(JSONObject(upstream.second), anthropic.optString("model", profile.model))
                 if (anthropic.optBoolean("stream", false)) writeStream(output, translated) else writeJson(output, 200, translated.toString())
             }
         }.onFailure { error ->
-            writeJson(output, 502, errorJson("api_error", error.message ?: "Provider request failed"))
+            writeJson(output, 502, errorJson("api_error", com.jarves.mh.provider.ProviderFailureClassifier.redact(error.message ?: "Provider request failed", listOf(apiKey))))
         }
     }
 
@@ -168,6 +179,73 @@ internal class LocalFormatGateway(
         return target
     }
 
+    internal fun toResponses(source: JSONObject): JSONObject {
+        val chat = toOpenAi(source)
+        val input = JSONArray()
+        val messages = chat.getJSONArray("messages")
+        for (index in 0 until messages.length()) {
+            val message = messages.getJSONObject(index)
+            if (message.optString("role") == "tool") {
+                input.put(JSONObject().put("type", "function_call_output")
+                    .put("call_id", message.getString("tool_call_id")).put("output", message.getString("content")))
+                continue
+            }
+            if (!message.isNull("content")) input.put(JSONObject().put("role", message.getString("role"))
+                .put("content", message.get("content")))
+            val calls = message.optJSONArray("tool_calls")
+            for (callIndex in 0 until (calls?.length() ?: 0)) {
+                val call = calls!!.getJSONObject(callIndex)
+                val function = call.getJSONObject("function")
+                input.put(JSONObject().put("type", "function_call").put("call_id", call.getString("id"))
+                    .put("name", function.getString("name")).put("arguments", function.getString("arguments")))
+            }
+        }
+        val target = JSONObject().put("model", chat.getString("model")).put("input", input)
+            .put("stream", false).put("store", false).put("max_output_tokens", chat.getInt("max_tokens"))
+        if (chat.has("temperature")) target.put("temperature", chat.get("temperature"))
+        chat.optJSONArray("tools")?.let { tools ->
+            val converted = JSONArray()
+            for (index in 0 until tools.length()) {
+                converted.put(JSONObject(tools.getJSONObject(index).getJSONObject("function").toString())
+                    .put("type", "function").put("strict", false))
+            }
+            target.put("tools", converted).put("tool_choice", "auto")
+        }
+        return target
+    }
+
+    internal fun fromResponses(source: JSONObject, model: String): JSONObject {
+        check(source.optString("status") == "completed" && source.isNull("error")) { "Responses provider did not complete the response" }
+        val message = JSONObject()
+        val text = StringBuilder()
+        val calls = JSONArray()
+        val items = source.getJSONArray("output")
+        for (index in 0 until items.length()) {
+            val item = items.getJSONObject(index)
+            when (item.optString("type")) {
+                "message" -> {
+                    val content = item.optJSONArray("content") ?: JSONArray()
+                    for (partIndex in 0 until content.length()) {
+                        val part = content.getJSONObject(partIndex)
+                        when (part.optString("type")) {
+                            "output_text" -> text.append(part.optString("text"))
+                            "refusal" -> text.append(part.optString("refusal"))
+                        }
+                    }
+                }
+                "function_call" -> calls.put(JSONObject().put("id", item.getString("call_id"))
+                    .put("function", JSONObject().put("name", item.getString("name")).put("arguments", item.getString("arguments"))))
+            }
+        }
+        message.put("content", text.toString()).put("tool_calls", calls)
+        val usage = source.optJSONObject("usage") ?: JSONObject()
+        val translated = JSONObject().put("id", source.optString("id"))
+            .put("choices", JSONArray().put(JSONObject().put("message", message)))
+            .put("usage", JSONObject().put("prompt_tokens", usage.optInt("input_tokens"))
+                .put("completion_tokens", usage.optInt("output_tokens")))
+        return fromOpenAi(translated, model)
+    }
+
     private fun fromOpenAi(source: JSONObject, model: String): JSONObject {
         val message = source.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message") ?: JSONObject()
         val content = JSONArray()
@@ -195,9 +273,12 @@ internal class LocalFormatGateway(
         if (com.jarves.mh.provider.isRevokedProvider(profile.baseUrl)) {
             return 403 to "Connection blocked: ${profile.baseUrl} is a revoked phishing provider"
         }
-        val endpoint = profile.baseUrl.trimEnd('/') + "/chat/completions"
+        val endpoint = com.jarves.mh.provider.ProviderEndpointNormalizer.normalize(profile.baseUrl, profile.dshApi).baseUrl +
+            if (responses) "/responses" else "/chat/completions"
         val connection = URL(endpoint).openConnection() as HttpURLConnection
+        upstreamConnections.add(connection)
         return try {
+            check(running.get()) { "Gateway closed" }
             connection.requestMethod = "POST"
             connection.connectTimeout = 20_000
             connection.readTimeout = 180_000
@@ -207,8 +288,19 @@ internal class LocalFormatGateway(
             connection.outputStream.use { it.write(body.toString().toByteArray()) }
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            code to stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            code to stream?.use { input ->
+                val result = java.io.ByteArrayOutputStream()
+                val bytes = ByteArray(8192)
+                while (true) {
+                    val count = input.read(bytes)
+                    if (count < 0) break
+                    check(result.size() + count <= 16 * 1024 * 1024) { "Provider response too large" }
+                    result.write(bytes, 0, count)
+                }
+                result.toString("UTF-8")
+            }.orEmpty()
         } finally {
+            upstreamConnections.remove(connection)
             connection.disconnect()
         }
     }
@@ -274,6 +366,7 @@ internal class LocalFormatGateway(
             val value = input.read()
             if (value < 0) return if (bytes.isEmpty()) null else bytes.toByteArray().decodeToString()
             if (value == '\n'.code) return bytes.toByteArray().decodeToString().trimEnd('\r')
+            require(bytes.size < 8192) { "HTTP line too long" }
             bytes += value.toByte()
         }
     }
@@ -307,5 +400,8 @@ internal class LocalFormatGateway(
     override fun close() {
         running.set(false)
         runCatching { server.close() }
+        sockets.forEach { runCatching { it.close() } }
+        upstreamConnections.forEach { runCatching { it.disconnect() } }
+        requests.shutdownNow()
     }
 }

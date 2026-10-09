@@ -169,9 +169,9 @@ class CustomProviderTest {
         assertFalse(CustomProviderProfile.listToJson(list).contains("apiKey"))
     }
 
-    @Test fun genericV1EndpointInfersOpenAiCompletions() {
+    @Test fun genericV1InfersOnlyWhenProtocolIsUnspecified() {
         val n1 = ProviderEndpointNormalizer.normalize("https://api.example.com/v1", "anthropic-messages")
-        assertEquals(NormalizedEndpoint("https://api.example.com/v1", "openai-completions"), n1)
+        assertEquals(NormalizedEndpoint("https://api.example.com/v1", "anthropic-messages"), n1)
 
         val n2 = ProviderEndpointNormalizer.normalize("https://api.example.com/v1", "")
         assertEquals(NormalizedEndpoint("https://api.example.com/v1", "openai-completions"), n2)
@@ -186,7 +186,7 @@ class CustomProviderTest {
         }
     }
 
-    @Test fun customProfileFromJsonHealsLegacyAnthropicMessagesOnV1() {
+    @Test fun customProfileFromJsonPreservesExplicitAnthropicProtocol() {
         val json = org.json.JSONObject()
             .put("id", "profile-1")
             .put("name", "Generic Gateway")
@@ -195,8 +195,8 @@ class CustomProviderTest {
             .put("dshApi", "anthropic-messages")
         val profile = CustomProviderProfile.fromJson(json)
         org.junit.Assert.assertNotNull(profile)
-        assertEquals("openai-completions", profile!!.dshApi)
-        assertEquals("openai-completions", profile.effectiveDshApi())
+        assertEquals("anthropic-messages", profile!!.dshApi)
+        assertEquals("anthropic-messages", profile.effectiveDshApi())
     }
 
     @Test fun aiqanaProfileIsRevokedFromJson() {

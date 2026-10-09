@@ -52,17 +52,12 @@ data class CustomProviderProfile(
                 return null
             }
             val storedApi = obj.optString("dshApi")
-            val effectiveApi = if (storedApi == "anthropic-messages" && baseUrl.trim().trimEnd('/').lowercase(Locale.ROOT).endsWith("/v1") && "anthropic" !in baseUrl.lowercase(Locale.ROOT)) {
-                "openai-completions"
-            } else {
-                storedApi
-            }
             return CustomProviderProfile(
                 id = id,
                 name = name,
                 baseUrl = baseUrl,
                 model = model,
-                dshApi = effectiveApi,
+                dshApi = storedApi,
                 enabled = obj.optBoolean("enabled", true),
                 priority = obj.optInt("priority", 100),
             )
@@ -121,8 +116,6 @@ object ProviderEndpointNormalizer {
         val api = when {
             suffixApi != null -> suffixApi
             configuredApi.isBlank() -> com.jarves.mh.model.inferredDshApiForUrl(url)
-            configuredApi == "anthropic-messages" && lower.endsWith("/v1") && "anthropic" !in lower ->
-                com.jarves.mh.model.inferredDshApiForUrl(url)
             else -> configuredApi
         }
         return NormalizedEndpoint(url, api)

@@ -457,13 +457,6 @@ class AppPreferences(
                 !(hasAgentProfile && preferences.getBoolean("${prefix}dsh_api_explicit", false))
             if (legacyClaudeCustom) {
                 "anthropic-messages"
-            } else if (kind == ProviderKind.CUSTOM && candidate == "anthropic-messages") {
-                val lowerUrl = effectiveBaseUrl.trim().trimEnd('/').lowercase(java.util.Locale.ROOT)
-                if (lowerUrl.endsWith("/v1") && "anthropic" !in lowerUrl) {
-                    com.jarves.mh.model.inferredDshApiForUrl(effectiveBaseUrl)
-                } else {
-                    candidate
-                }
             } else {
                 candidate
             }

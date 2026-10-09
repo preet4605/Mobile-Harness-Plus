@@ -54,9 +54,12 @@ class AntigravityGatewayServer(
     private val server = ServerSocket(0, 32, InetAddress.getByName("127.0.0.1"))
     val url: String = "http://127.0.0.1:${server.localPort}"
 
-    private val requestExecutor = Executors.newFixedThreadPool(16) { runnable ->
-        Thread(runnable, "antigravity-req").apply { isDaemon = true }
-    }
+    private val sockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
+    private val upstreamConnections = java.util.concurrent.ConcurrentHashMap.newKeySet<HttpURLConnection>()
+    private val requestExecutor = java.util.concurrent.ThreadPoolExecutor(
+        0, 16, 30, java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.SynchronousQueue(),
+        java.util.concurrent.ThreadFactory { task -> Thread(task, "antigravity-req").apply { isDaemon = true } },
+    )
 
     fun start(): AntigravityGatewayServer = apply {
         Thread({ acceptLoop() }, "antigravity-gateway").apply {
@@ -68,6 +71,8 @@ class AntigravityGatewayServer(
     override fun close() {
         if (running.compareAndSet(true, false)) {
             runCatching { server.close() }
+            sockets.forEach { runCatching { it.close() } }
+            upstreamConnections.forEach { runCatching { it.disconnect() } }
             runCatching { requestExecutor.shutdownNow() }
         }
     }
@@ -81,10 +86,15 @@ class AntigravityGatewayServer(
                     runCatching { socket.close() }
                     return
                 }
-                requestExecutor.execute {
-                    socket.use { s ->
-                        runCatching { handle(s) }
+                sockets.add(socket)
+                try {
+                    requestExecutor.execute {
+                        try { socket.use { runCatching { handle(it) } } }
+                        finally { sockets.remove(socket) }
                     }
+                } catch (_: java.util.concurrent.RejectedExecutionException) {
+                    sockets.remove(socket)
+                    socket.close()
                 }
             }
         }
@@ -96,8 +106,11 @@ class AntigravityGatewayServer(
             val input = BufferedInputStream(socket.getInputStream())
             val requestLine = readLine(input) ?: return
             val headers = mutableMapOf<String, String>()
+            var headerBytes = 0
             while (true) {
                 val line = readLine(input) ?: return
+                headerBytes += line.length
+                if (headerBytes > 32_768 || headers.size >= 100) return
                 if (line.isEmpty()) break
                 val split = line.indexOf(':')
                 if (split > 0) headers[line.substring(0, split).lowercase()] = line.substring(split + 1).trim()
@@ -110,18 +123,6 @@ class AntigravityGatewayServer(
             }
 
             if (!isAuthorized(headers["authorization"])) {
-                if (length > 0) {
-                    var remaining = length.toLong()
-                    while (remaining > 0) {
-                        val skipped = input.skip(remaining)
-                        if (skipped <= 0) {
-                            if (input.read() < 0) break
-                            remaining--
-                        } else {
-                            remaining -= skipped
-                        }
-                    }
-                }
                 writeUnauthorized(output, requestLine)
                 return
             }
@@ -329,6 +330,7 @@ class AntigravityGatewayServer(
 
         var lastError: Throwable? = null
         for (attempt in 0..1) {
+            var currentConnection: HttpURLConnection? = null
             try {
                 val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                     requestMethod = method
@@ -337,17 +339,28 @@ class AntigravityGatewayServer(
                     doOutput = body != null
                     headers.forEach { (k, v) -> setRequestProperty(k, v) }
                 }
+                currentConnection = conn
+                upstreamConnections.add(conn)
+                check(running.get()) { "Gateway closed" }
                 if (body != null) {
                     conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
                 }
                 val code = conn.responseCode
                 return if (code in 200..299) {
-                    GatewayHttpResult(code, "", conn.inputStream)
+                    GatewayHttpResult(code, "", object : java.io.FilterInputStream(conn.inputStream) {
+                        override fun close() {
+                            try { super.close() }
+                            finally { upstreamConnections.remove(conn); conn.disconnect() }
+                        }
+                    })
                 } else {
-                    val errBody = (conn.errorStream ?: conn.inputStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    val errBody = (conn.errorStream ?: conn.inputStream)?.use { readBoundedBody(it) }.orEmpty()
+                    upstreamConnections.remove(conn)
+                    conn.disconnect()
                     GatewayHttpResult(code, errBody)
                 }
             } catch (t: Throwable) {
+                currentConnection?.let { upstreamConnections.remove(it); it.disconnect() }
                 lastError = t
                 if (attempt == 0) {
                     runCatching { Thread.sleep(1000L) }
@@ -371,6 +384,7 @@ class AntigravityGatewayServer(
         var activeBlockType: String? = null
         var totalOutputTokens = 0
         var hasToolCall = false
+        var upstreamCompleted = false
 
         if (format == WireFormat.ANTHROPIC) {
             output.write(AntigravityProtocolAdapter.anthropicMessageStart(msgId, model).toByteArray(Charsets.UTF_8))
@@ -379,15 +393,24 @@ class AntigravityGatewayServer(
 
         val reader = BufferedReader(InputStreamReader(httpResult.stream ?: httpResult.body.byteInputStream(), Charsets.UTF_8))
         try {
-            reader.useLines { lines ->
-            for (rawLine in lines) {
+            reader.use {
+            while (true) {
+                val rawLine = readBoundedStreamLine(reader) ?: break
                 val line = rawLine.trim()
                 if (!line.startsWith("data:")) continue
                 val dataContent = line.removePrefix("data:").trim()
-                if (dataContent.isEmpty() || dataContent == "[DONE]") continue
+                if (dataContent == "[DONE]") { upstreamCompleted = true; continue }
+                if (dataContent.isEmpty()) continue
 
                 val geminiJson = runCatching { JSONObject(dataContent) }.getOrNull() ?: continue
                 val effectiveJson = geminiJson.optJSONObject("response") ?: geminiJson
+                if (effectiveJson.has("error")) error("Antigravity upstream returned an error")
+                val candidates = effectiveJson.optJSONArray("candidates")
+                for (index in 0 until (candidates?.length() ?: 0)) {
+                    val finish = candidates?.optJSONObject(index)?.optString("finishReason").orEmpty()
+                    if (finish == "STOP" || finish == "MAX_TOKENS") upstreamCompleted = true
+                    else if (finish.isNotBlank()) error("Antigravity upstream stopped: $finish")
+                }
                 val parts = AntigravityProtocolAdapter.parseGeminiChunk(effectiveJson)
 
                 for (part in parts) {
@@ -457,7 +480,13 @@ class AntigravityGatewayServer(
         }
     } catch (t: Throwable) {
         logW("Upstream streaming connection interrupted: ${t.message}")
+        writeStreamError(output, format)
+        return
     }
+        if (!upstreamCompleted) {
+            writeStreamError(output, format)
+            return
+        }
 
         when (format) {
             WireFormat.ANTHROPIC -> {
@@ -478,8 +507,16 @@ class AntigravityGatewayServer(
         }
     }
 
+    private fun writeStreamError(output: BufferedOutputStream, format: WireFormat) {
+        val error = JSONObject().put("type", "error").put("error", JSONObject()
+            .put("type", "api_error").put("message", "Antigravity upstream stream interrupted before completion"))
+        val prefix = if (format == WireFormat.ANTHROPIC) "event: error\n" else ""
+        output.write("${prefix}data: $error\n\n".toByteArray(Charsets.UTF_8))
+        output.flush()
+    }
+
     private fun relayNonStreamingResponse(output: BufferedOutputStream, httpResult: GatewayHttpResult, format: WireFormat, model: String) {
-        val rawBody = httpResult.stream?.bufferedReader()?.use { it.readText() } ?: httpResult.body
+        val rawBody = httpResult.stream?.use { readBoundedBody(it) } ?: httpResult.body
         val geminiJson = runCatching { JSONObject(rawBody) }.getOrElse {
             writeJson(output, 502, AntigravityProtocolAdapter.anthropicErrorJson("api_error", "Failed to parse upstream response"))
             return
@@ -529,6 +566,29 @@ class AntigravityGatewayServer(
         output.write("Connection: close\r\n\r\n".toByteArray(Charsets.UTF_8))
         output.write(bytes)
         output.flush()
+    }
+
+    private fun readBoundedBody(input: InputStream): String {
+        val output = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            check(output.size() + count <= 16 * 1024 * 1024) { "Upstream response too large" }
+            output.write(buffer, 0, count)
+        }
+        return output.toString("UTF-8")
+    }
+
+    private fun readBoundedStreamLine(reader: BufferedReader): String? {
+        val line = StringBuilder()
+        while (true) {
+            val value = reader.read()
+            if (value < 0) return line.toString().takeIf { it.isNotEmpty() }
+            if (value == '\n'.code) return line.toString()
+            check(line.length < 1024 * 1024) { "Upstream stream line too large" }
+            line.append(value.toChar())
+        }
     }
 
     private fun readLine(input: InputStream): String? {
