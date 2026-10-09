@@ -504,6 +504,7 @@ internal fun ReadOnlyProjectScreen(
     Box(Modifier.fillMaxSize()) {
         ChatTab(
             messages = state.readOnlyMessages,
+            loading = state.chatLoading,
             approval = null,
             liveProcess = emptyList(),
             isRunning = false,
@@ -922,6 +923,7 @@ internal fun WorkspaceScreen(
                                     activeChatId = state.activeChatId,
                                     topClearance = top,
                                     bottomBarClearance = bottomBar,
+                                    loading = state.chatLoading,
                                 )
                                 WorkspaceTab.FILES -> FilesTab(
                                     files = state.workspaceFiles,
@@ -1424,6 +1426,23 @@ private fun FileRow(entry: WorkspaceEntry, expanded: Boolean, childCount: Int, o
     }
 }
 
+/** Quiet stand-in for the transcript while a project's chat history loads. */
+@Composable
+private fun ChatLoadingPlaceholder() {
+    val colors = PocketColors.current
+    Column(verticalArrangement = Arrangement.spacedBy(PocketSpacing.md)) {
+        listOf(0.9f, 0.6f, 0.75f).forEach { fraction ->
+            Box(
+                Modifier
+                    .fillMaxWidth(fraction)
+                    .height(14.dp)
+                    .clip(PocketShape.sm)
+                    .background(colors.codeSurface),
+            )
+        }
+    }
+}
+
 internal fun sanitizeChatTabMessages(messages: List<ChatMessage>): List<ChatMessage> {
     if (messages.isEmpty()) return messages
     val seen = HashSet<String>(messages.size)
@@ -1462,6 +1481,7 @@ private fun ChatTab(
     onRunInTerminal: (String) -> Unit,
     readOnly: Boolean = false,
     readOnlyBlocked: Boolean = false,
+    loading: Boolean = false,
     onContinueHere: () -> Unit = {},
     slashCommands: List<SlashCommand> = emptyList(),
     slashCommandsVisible: Boolean = false,
@@ -1546,11 +1566,16 @@ private fun ChatTab(
             if (isEmpty) {
                 item(key = "empty-chat") {
                     Box(Modifier.fillParentMaxHeight(0.7f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        EmptyState(
-                            Icons.Outlined.AutoAwesome,
-                            if (readOnly) "No messages" else "Start a conversation",
-                            message = if (readOnly) null else "Ask ${agentKind.title} to build, fix or explain something in this project.",
-                        )
+                        // While history loads, a quiet placeholder stands in so the chat never flashes "Start a conversation".
+                        if (loading) {
+                            ChatLoadingPlaceholder()
+                        } else {
+                            EmptyState(
+                                Icons.Outlined.AutoAwesome,
+                                if (readOnly) "No messages" else "Start a conversation",
+                                message = if (readOnly) null else "Ask ${agentKind.title} to build, fix or explain something in this project.",
+                            )
+                        }
                     }
                 }
             }

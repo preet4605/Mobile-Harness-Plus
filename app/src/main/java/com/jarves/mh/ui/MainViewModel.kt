@@ -201,6 +201,20 @@ private data class TranscriptWrite(
     val messages: List<ChatMessage>,
 )
 
+/** Chat history read off the main thread when a project opens. */
+private data class LoadedChat(
+    val chats: List<ProjectChat>,
+    val chatId: String,
+    val messages: List<ChatMessage>,
+)
+
+private data class ProjectOpened(
+    val chat: LoadedChat,
+    val terminal: ProjectTerminalSnapshot,
+    val suggestedRoot: String?,
+    val memory: ContextMemory,
+)
+
 private data class ImportedZipProject(
     val project: Project,
     val sourceAttachment: ChatAttachment,
@@ -243,6 +257,8 @@ data class AppUiState(
     val readOnlyMessages: List<ChatMessage> = emptyList(),
     val projectChats: List<ProjectChat> = emptyList(),
     val activeChatId: String? = null,
+    /** True while the open project's chat history is loading off the main thread. */
+    val chatLoading: Boolean = false,
     val workspaceFiles: List<WorkspaceEntry> = emptyList(),
     val androidProjectDetected: Boolean = false,
     val filesLoading: Boolean = false,
@@ -415,6 +431,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val attemptedProfileIds = mutableSetOf<String>()
     @Volatile private var pendingTranscriptWrite: TranscriptWrite? = null
     private var transcriptDebounceJob: kotlinx.coroutines.Job? = null
+    /** The project open in flight. A newer open or a close cancels it; [projectOpenGeneration] drops late results. */
+    private var projectOpenJob: Job? = null
+    private var projectOpenGeneration = 0L
     private val initialAgentKind = AgentKind.fromStored(preferences.agentKind)
     private val initialPrimaryAgentKind = preferences.primaryAgentKind
         .takeIf(String::isNotBlank)
@@ -2543,31 +2562,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
+        val generation = ++projectOpenGeneration
+        projectOpenJob?.cancel()
         if (current.isRunning || current.projectTerminalRunning) {
-            val chats = preferences.loadProjectChats(project.id).ifEmpty {
-                listOf(ProjectChat(title = "Main chat"))
-            }
-            val chat = chats.first()
             _state.update {
                 it.copy(
                     readOnlyProject = project,
-                    readOnlyProjectChats = chats,
-                    readOnlyChatId = chat.id,
-                    readOnlyMessages = preferences.loadMessages(project.id, chat.id),
+                    readOnlyProjectChats = emptyList(),
+                    readOnlyChatId = null,
+                    readOnlyMessages = emptyList(),
+                    chatLoading = true,
                 )
+            }
+            projectOpenJob = viewModelScope.launch {
+                val loaded = runCatching {
+                    withContext(Dispatchers.IO) {
+                        val chats = preferences.loadProjectChats(project.id).ifEmpty {
+                            listOf(ProjectChat(title = "Main chat"))
+                        }
+                        val chat = chats.first()
+                        LoadedChat(chats, chat.id, preferences.loadMessages(project.id, chat.id))
+                    }
+                }.getOrNull()
+                if (generation != projectOpenGeneration) return@launch
+                _state.update {
+                    it.copy(
+                        readOnlyProjectChats = loaded?.chats.orEmpty(),
+                        readOnlyChatId = loaded?.chatId,
+                        readOnlyMessages = loaded?.messages.orEmpty(),
+                        chatLoading = false,
+                    )
+                }
             }
             return
         }
         configureBridgeRoots(project.id, project.rootPath)
-        val terminal = loadProjectTerminal(project)
-        val suggestedRoot = if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null
-        val chats = preferences.loadProjectChats(project.id).ifEmpty {
-            listOf(ProjectChat(title = "Main chat")).also { preferences.saveProjectChats(project.id, it) }
-        }
-        val activeChat = chats.first()
-        val saved = preferences.loadMessages(project.id, activeChat.id)
-        val msgs = saved.ifEmpty { listOf(ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change.")) }
-        val memory = memoryStore.load(project.id)
+        // Shell first: the project shows at once with a placeholder, and its chat history loads off the main thread.
         _state.update {
             it.copy(
                 activeProject = project,
@@ -2576,10 +2606,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 readOnlyProjectChats = emptyList(),
                 readOnlyChatId = null,
                 readOnlyMessages = emptyList(),
-                projectChats = chats,
-                activeChatId = activeChat.id,
-                contextMemory = memory,
-                messages = msgs,
+                projectChats = emptyList(),
+                activeChatId = null,
+                contextMemory = ContextMemory(""),
+                messages = emptyList(),
+                chatLoading = true,
                 liveProcess = emptyList(),
                 liveThinking = false,
                 taskStartedAtMillis = null,
@@ -2588,20 +2619,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 workspaceFiles = emptyList(),
                 androidProjectDetected = false,
                 filesLoading = true,
-                projectTerminalLines = terminal.lines,
+                projectTerminalLines = emptyList(),
                 projectTerminalLiveOutput = "",
                 projectTerminalRunning = false,
-                projectTerminalCwd = terminal.cwd,
+                projectTerminalCwd = projectGuestRoot(project),
                 projectTerminalCommand = null,
                 projectTerminalDraft = null,
                 pendingTerminalCommand = null,
-                suggestedProjectRoot = suggestedRoot,
+                suggestedProjectRoot = null,
                 previewReady = false,
                 previewUrl = null,
                 pendingAttachments = emptyList(),
             )
         }
         refreshProjectFiles()
+        projectOpenJob = viewModelScope.launch {
+            val opened = runCatching {
+                withContext(Dispatchers.IO) {
+                    val chats = preferences.loadProjectChats(project.id).ifEmpty {
+                        listOf(ProjectChat(title = "Main chat")).also { preferences.saveProjectChats(project.id, it) }
+                    }
+                    val activeChat = chats.first()
+                    ProjectOpened(
+                        chat = LoadedChat(chats, activeChat.id, preferences.loadMessages(project.id, activeChat.id)),
+                        terminal = loadProjectTerminal(project),
+                        suggestedRoot = if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null,
+                        memory = memoryStore.load(project.id),
+                    )
+                }
+            }.getOrNull()
+            if (generation != projectOpenGeneration) return@launch
+            if (opened == null) {
+                _state.update { it.copy(chatLoading = false, toastMessage = "Could not load this project's chat history.") }
+                return@launch
+            }
+            // One update publishes the chat, its messages and the terminal together, so nothing renders half-loaded.
+            _state.update {
+                it.copy(
+                    projectChats = opened.chat.chats,
+                    activeChatId = opened.chat.chatId,
+                    contextMemory = opened.memory,
+                    messages = opened.chat.messages.ifEmpty {
+                        listOf(ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change."))
+                    },
+                    chatLoading = false,
+                    projectTerminalLines = opened.terminal.lines,
+                    projectTerminalCwd = opened.terminal.cwd,
+                    suggestedProjectRoot = opened.suggestedRoot,
+                )
+            }
+        }
         viewModelScope.launch {
             val pending = activeRuntime().loadPendingChanges(project.id)
             if (_state.value.activeProject?.id == project.id) _state.update { it.copy(changes = pending) }
@@ -2647,12 +2714,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        projectOpenGeneration++
+        projectOpenJob?.cancel()
         _state.update {
             it.copy(
                 activeProject = null,
                 workspaceVisible = false,
                 projectChats = emptyList(),
                 activeChatId = null,
+                chatLoading = false,
                 changes = emptyList(),
                 workspaceFiles = emptyList(),
                 androidProjectDetected = false,
@@ -4531,7 +4601,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val attachments = state.value.pendingAttachments
         val trimmed = prompt.trim()
-        if ((trimmed.isBlank() && attachments.isEmpty()) || state.value.isRunning) return
+        if ((trimmed.isBlank() && attachments.isEmpty()) || state.value.isRunning || state.value.chatLoading) return
 
         // Check if input is a slash command
         val parsedCmd = SlashCommandEngine.parseCommand(trimmed)
