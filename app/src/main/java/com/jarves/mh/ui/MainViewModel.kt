@@ -3551,7 +3551,14 @@ class MainViewModel(
     fun createChat() {
         val project = _state.value.activeProject ?: return
         if (_state.value.isRunning) return
+        // The saved chat index is only known once it has loaded. Writing it earlier would replace the saved chats.
+        if (_state.value.chatLoading || _state.value.projectChats.isEmpty()) {
+            _state.update { it.copy(toastMessage = "Chat history has not loaded yet.") }
+            return
+        }
         persistMessages()
+        // An open still in flight must not publish over the chat created here.
+        projectOpenGeneration++
         val chat = ProjectChat()
         val chats = listOf(chat) + _state.value.projectChats
         preferences.saveProjectChats(project.id, chats)
