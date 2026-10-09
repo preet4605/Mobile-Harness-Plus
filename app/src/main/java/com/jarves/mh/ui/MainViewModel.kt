@@ -663,16 +663,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val loadedProjects = preferences.loadProjects()
         val cleanedProjects = loadedProjects.filter { project ->
             if (project.kind == ProjectKind.QUICK_PROJECT) {
-                val userMessages = preferences.userMessageCount(project.id)
                 val workspaceDir = File(application.filesDir, "workspaces/${project.id}")
                 val userFiles = if (workspaceDir.isDirectory) {
                     workspaceDir.walkTopDown().filter { file ->
                         file.isFile && !file.name.startsWith(".claude") && file.name != ".pocket-dev-stacks.json"
                     }.count()
                 } else 0
-                // An unknown count (legacy index) keeps the project; the backfill runs off the main thread.
-                if (userMessages == null) viewModelScope.launch(Dispatchers.IO) { preferences.backfillUserMessageCounts(project.id) }
-                val keep = userMessages == null || userMessages > 0 || userFiles > 0
+                // Removed only when every chat file on disk is an empty list; any unreadable or non-empty file keeps it.
+                val keep = userFiles > 0 || !preferences.hasNoChatMessages(project.id)
                 if (!keep) {
                     workspaceDir.deleteRecursively()
                     terminalHistoryFile(project.id).delete()
@@ -2678,6 +2676,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closeProject() {
         val active = _state.value.activeProject
+        // A write that is queued or still flushing is not on disk yet, so the emptiness check must not trust the disk.
+        val writeInFlight = pendingTranscriptWrite != null || transcriptDebounceJob?.isActive == true
         persistMessages()
         if (_state.value.isRunning || _state.value.projectTerminalRunning) {
             _state.update {
@@ -2694,8 +2694,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (active != null) {
-            val userMessages = preferences.userMessageCount(active.id)
-            if (userMessages == null) viewModelScope.launch(Dispatchers.IO) { preferences.backfillUserMessageCounts(active.id) }
             val workspaceDir = File(getApplication<Application>().filesDir, "workspaces/${active.id}")
             val userFiles = if (workspaceDir.isDirectory) {
                 workspaceDir.walkTopDown().filter { file ->
@@ -2703,8 +2701,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }.count()
             } else 0
 
-            if (userMessages == 0 && userFiles == 0 && !_state.value.isRunning && !_state.value.projectTerminalRunning) {
+            if (!writeInFlight && preferences.hasNoChatMessages(active.id) && userFiles == 0 &&
+                !_state.value.isRunning && !_state.value.projectTerminalRunning
+            ) {
                 // Unused empty project; delete immediately so it does not clutter the project list.
+                // Drop the write queued above so the deleted project's folder is not written again.
+                pendingTranscriptWrite = null
+                transcriptDebounceJob?.cancel()
                 _state.update { current -> current.copy(projects = current.projects.filterNot { it.id == active.id }) }
                 preferences.saveProjects(_state.value.projects)
                 viewModelScope.launch(Dispatchers.IO) {
