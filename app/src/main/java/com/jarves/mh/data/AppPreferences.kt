@@ -830,25 +830,37 @@ class AppPreferences(
         val projectDir = File(chatsDir, projectId).also { it.mkdirs() }
         val destination = File(projectDir, "$chatId.json")
         backupUnverifiedChatFile(destination)
+        verifiedChatFiles.remove(destination.path)
         writeReplacing(destination, arr.toString())
-        verifiedChatFiles.add(destination.path)
+        verifiedChatFiles[destination.path] = chatFileStamp(destination)
     }
 
-    /** Copies a chat file this process has not verified, and that fails verification, to `<name>.corrupt-<ts>` before it is overwritten. */
+    /** Copies a chat file that is not verified as it is now, and fails verification, to `<name>.corrupt-<ts>` before it is overwritten. */
     private fun backupUnverifiedChatFile(file: File) {
-        if (!file.isFile || file.path in verifiedChatFiles) return
+        if (!file.isFile) return
+        val stamp = chatFileStamp(file)
+        if (verifiedChatFiles[file.path] == stamp) return
         if (decodeChatFile(file).isClean) {
-            verifiedChatFiles.add(file.path)
+            verifiedChatFiles[file.path] = stamp
             return
         }
-        file.copyTo(File(file.parentFile, "${file.name}.corrupt-${System.currentTimeMillis()}"), overwrite = true)
+        file.copyTo(corruptBackupTarget(file), overwrite = true)
     }
+
+    /** Size and modification time of [file], compared with the stamp recorded when the file was last verified. */
+    private fun chatFileStamp(file: File): Pair<Long, Long> = file.length() to file.lastModified()
 
     fun loadMessages(projectId: String, chatId: String): List<ChatMessage> {
         val file = File(File(chatsDir, projectId), "$chatId.json")
         if (!file.exists()) return emptyList()
+        val stamp = chatFileStamp(file)
         val decoded = decodeChatFile(file)
-        if (decoded.isClean) verifiedChatFiles.add(file.path)
+        if (decoded.isClean) {
+            verifiedChatFiles[file.path] = stamp
+        } else {
+            // Damaged: stop trusting it, so the next save backs it up before it is overwritten.
+            verifiedChatFiles.remove(file.path)
+        }
         val (repaired, wasRepaired) = repairDuplicateMessageIds(decoded.messages)
         // A file with unreadable parts is not rewritten here; the next save keeps a backup of it first.
         if (wasRepaired && decoded.isClean) {
@@ -861,7 +873,9 @@ class AppPreferences(
 
     @Synchronized
     fun deleteProjectChats(projectId: String) {
-        File(chatsDir, projectId).deleteRecursively()
+        val projectDir = File(chatsDir, projectId)
+        verifiedChatFiles.keys.removeAll { it.startsWith(projectDir.path + File.separator) }
+        projectDir.deleteRecursively()
         File(chatsDir, "$projectId.json").delete()
     }
 
@@ -1050,8 +1064,11 @@ class AppPreferences(
         private const val CHAT_STORE_TAG = "ChatStore"
         private const val MOVED_ASIDE_INDEX_PREFIX = "index.json.corrupt-"
 
-        /** Chat files this process has read or written cleanly; only other files get a backup before a save. */
-        private val verifiedChatFiles: MutableSet<String> = ConcurrentHashMap.newKeySet()
+        /**
+         * Chat files this process read or wrote cleanly, with the size and modification time they had then. A save trusts
+         * an entry only while the file still has that stamp; a changed, damaged or deleted file is verified again.
+         */
+        private val verifiedChatFiles: MutableMap<String, Pair<Long, Long>> = ConcurrentHashMap()
 
         fun repairDuplicateMessageIds(messages: List<ChatMessage>): Pair<List<ChatMessage>, Boolean> {
             if (messages.isEmpty()) return messages to false

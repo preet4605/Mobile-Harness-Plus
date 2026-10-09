@@ -210,4 +210,63 @@ class ChatFileRecoveryTest {
         assertEquals(listOf("main"), prefs.loadProjectChats("p").map { it.id })
         assertTrue(indexFile(root, "p").isFile)
     }
+
+    @Test
+    fun verifiedFileDamagedLaterIsBackedUpOnTheNextSave() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        val file = chatFile(root, "p", "c")
+        prefs.saveMessages("p", "c", listOf(ChatMessage(id = "a", fromUser = true, text = "one")))
+
+        val damaged = "{\"damaged\":"
+        writeRaw(file, damaged)
+        prefs.saveMessages("p", "c", listOf(ChatMessage(id = "b", fromUser = false, text = "two")))
+
+        assertEquals("damage after verification must be backed up", listOf(damaged), backupsOf(file).map { it.readText() })
+        assertEquals(listOf("b"), prefs.loadMessages("p", "c").map { it.id })
+    }
+
+    @Test
+    fun damageSeenOnLoadIsBackedUpOnTheNextSave() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        val file = chatFile(root, "p", "c")
+        prefs.saveMessages("p", "c", listOf(ChatMessage(id = "a", fromUser = true, text = "one")))
+        val damaged = "not json at all"
+        writeRaw(file, damaged)
+
+        assertTrue(prefs.loadMessages("p", "c").isEmpty())
+        prefs.saveMessages("p", "c", listOf(ChatMessage(id = "b", fromUser = false, text = "two")))
+
+        assertEquals(listOf(damaged), backupsOf(file).map { it.readText() })
+    }
+
+    @Test
+    fun fileRecreatedAfterDeleteDoesNotInheritVerifiedTrust() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        val file = chatFile(root, "p", "c")
+        prefs.saveMessages("p", "c", listOf(ChatMessage(id = "a", fromUser = true, text = "one")))
+        prefs.deleteProjectChats("p")
+        val damaged = "not json at all"
+        writeRaw(file, damaged)
+
+        prefs.saveMessages("p", "c", listOf(ChatMessage(id = "b", fromUser = false, text = "two")))
+
+        assertEquals(listOf(damaged), backupsOf(file).map { it.readText() })
+    }
+
+    @Test
+    fun eachDamageEventIsBackedUpSeparately() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        val file = chatFile(root, "p", "c")
+        prefs.saveMessages("p", "c", listOf(ChatMessage(id = "a", fromUser = true, text = "one")))
+        writeRaw(file, "{\"first\":")
+        prefs.saveMessages("p", "c", listOf(ChatMessage(id = "b", fromUser = true, text = "two")))
+        writeRaw(file, "{\"second\":")
+        prefs.saveMessages("p", "c", listOf(ChatMessage(id = "c", fromUser = true, text = "three")))
+
+        assertEquals(listOf("{\"first\":", "{\"second\":"), backupsOf(file).map { it.readText() }.sorted())
+    }
 }
