@@ -2621,7 +2621,6 @@ class MainViewModel(
             }
             return
         }
-        configureBridgeRoots(project.id, project.rootPath)
         // Shell first: the project shows at once with a placeholder, and its chat history loads off the main thread.
         cancelFileRead()
         _state.update {
@@ -2665,6 +2664,8 @@ class MainViewModel(
         projectOpenJob = viewModelScope.launch {
             val opened = runCatching {
                 withContext(ioDispatcher) {
+                    // Bridge roots are configured off Main, before anything in this project reads them.
+                    configureBridgeRoots(project.id, project.rootPath)
                     val chats = preferences.loadProjectChats(project.id).ifEmpty {
                         listOf(ProjectChat(title = "Main chat")).also { preferences.saveProjectChats(project.id, it) }
                     }
@@ -2697,8 +2698,7 @@ class MainViewModel(
                     suggestedProjectRoot = opened.suggestedRoot,
                 )
             }
-        }
-        viewModelScope.launch {
+            // Pending changes read the bridge root, so they load only after it is configured above.
             runRequest { activeRuntime().loadPendingChanges(project.id) }
                 .onSuccess { pending ->
                     if (_state.value.activeProject?.id == project.id) _state.update { it.copy(changes = pending) }
@@ -3686,7 +3686,7 @@ class MainViewModel(
         _state.update { it.copy(filesLoading = true) }
         viewModelScope.launch {
             try {
-                val workspaceDir = projectWorkspaceRoot(project)
+                val workspaceDir = withContext(ioDispatcher) { projectWorkspaceRoot(project) }
                 val entries = withContext(ioDispatcher) { readWorkspace(project) }
                 val suggestedRoot = withContext(ioDispatcher) { if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null }
                 val androidProjectDetected = withContext(ioDispatcher) { findAndroidGradleProjectRoot(workspaceDir) != null }
