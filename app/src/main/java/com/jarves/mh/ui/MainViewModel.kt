@@ -2699,8 +2699,15 @@ class MainViewModel(
             }
         }
         viewModelScope.launch {
-            val pending = activeRuntime().loadPendingChanges(project.id)
-            if (_state.value.activeProject?.id == project.id) _state.update { it.copy(changes = pending) }
+            runRequest { activeRuntime().loadPendingChanges(project.id) }
+                .onSuccess { pending ->
+                    if (_state.value.activeProject?.id == project.id) _state.update { it.copy(changes = pending) }
+                }
+                .onFailure { error ->
+                    if (_state.value.activeProject?.id == project.id) {
+                        _state.update { it.copy(toastMessage = "Could not load pending changes: ${error.message}") }
+                    }
+                }
         }
     }
 
@@ -3737,8 +3744,8 @@ class MainViewModel(
         _state.update { it.copy(openedFilePath = entry.path, openedFileContent = null, fileContentLoading = true) }
         fileReadJob = viewModelScope.launch {
             val content = withContext(ioDispatcher) {
-                val file = File(projectWorkspaceRoot(project), entry.path)
-                runCatching {
+                runRequest {
+                    val file = File(projectWorkspaceRoot(project), entry.path)
                     if (file.length() > 512_000L) {
                         file.inputStream().use { stream ->
                             val buf = ByteArray(512_000)
@@ -3766,6 +3773,18 @@ class MainViewModel(
         fileReadGeneration++
         fileReadJob?.cancel()
         fileReadJob = null
+    }
+
+    /**
+     * Runs one request. Cancellation propagates so the scope can stop; any other failure comes back as a
+     * failed Result instead of escaping viewModelScope.
+     */
+    private inline fun <T> runRequest(block: () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        Result.failure(error)
     }
 
     private val skipIntermediateDirNames = setOf(
