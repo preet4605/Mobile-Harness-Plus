@@ -5,6 +5,9 @@ import android.content.pm.PackageManager
 import android.os.Build
 import com.jarves.mh.BuildConfig
 import java.io.File
+import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -29,11 +32,12 @@ class AppUpdater(
      * publishing a release to GitHub.
      */
     private val manifestUrlOverride: String = "",
+    private val openConnection: (String) -> HttpURLConnection = { url -> URL(url).openConnection() as HttpURLConnection },
 ) {
     fun check(): AppUpdateInfo? {
         val manifestUrl = manifestUrlOverride.ifBlank { BuildConfig.APP_UPDATE_MANIFEST_URL }
         if (!manifestUrl.startsWith("https://")) return null
-        val connection = URL(manifestUrl).openConnection() as HttpURLConnection
+        val connection = openConnection(manifestUrl)
         return try {
             connection.connectTimeout = 8_000
             connection.readTimeout = 10_000
@@ -67,38 +71,38 @@ class AppUpdater(
         val directory = File(context.filesDir, "updates").also { it.mkdirs() }
         val partial = File(directory, "mobile-harness-${BuildConfig.APP_VARIANT}.apk.part")
         val target = File(directory, "mobile-harness-${BuildConfig.APP_VARIANT}.apk")
-        val connection = URL(info.apkUrl).openConnection() as HttpURLConnection
+        var completed = false
         try {
-            connection.connectTimeout = 15_000
-            connection.readTimeout = 30_000
-            connection.instanceFollowRedirects = true
-            val code = connection.responseCode
-            check(code in 200..299) { "Update download failed (HTTP $code)" }
-            val total = connection.contentLengthLong.takeIf { it > 0 } ?: info.sizeBytes
-            connection.inputStream.use { input ->
-                partial.outputStream().use { output ->
-                    val buffer = ByteArray(128 * 1024)
-                    var downloaded = 0L
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        output.write(buffer, 0, count)
-                        downloaded += count
-                        progress(downloaded, total)
+            val connection = openConnection(info.apkUrl)
+            try {
+                connection.connectTimeout = 15_000
+                connection.readTimeout = 30_000
+                connection.instanceFollowRedirects = true
+                val code = connection.responseCode
+                check(code in 200..299) { "Update download failed (HTTP $code)" }
+                val declared = connection.contentLengthLong
+                if (declared > MAX_UPDATE_APK_BYTES) throw updateTooLarge(MAX_UPDATE_APK_BYTES)
+                val total = declared.takeIf { it > 0 } ?: info.sizeBytes
+                connection.inputStream.use { input ->
+                    partial.outputStream().use { output ->
+                        copyUpdateStream(input, output, MAX_UPDATE_APK_BYTES, total, progress)
                     }
                 }
+            } finally {
+                connection.disconnect()
             }
+            if (info.sha256.isNotBlank()) {
+                val actual = sha256(partial)
+                check(actual.equals(info.sha256, ignoreCase = true)) { "Downloaded APK failed its SHA-256 verification" }
+            }
+            verifyApk(partial, info.versionCode)
+            if (target.exists()) target.delete()
+            check(partial.renameTo(target)) { "Could not prepare the downloaded update" }
+            completed = true
+            return target
         } finally {
-            connection.disconnect()
+            if (!completed) partial.delete()
         }
-        if (info.sha256.isNotBlank()) {
-            val actual = sha256(partial)
-            check(actual.equals(info.sha256, ignoreCase = true)) { "Downloaded APK failed its SHA-256 verification" }
-        }
-        verifyApk(partial, info.versionCode)
-        if (target.exists()) target.delete()
-        check(partial.renameTo(target)) { "Could not prepare the downloaded update" }
-        return target
     }
 
     @Suppress("DEPRECATION")
@@ -130,4 +134,32 @@ class AppUpdater(
 
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
         .digest(bytes).joinToString("") { "%02x".format(it) }
+
+    private companion object {
+        /** Largest update APK accepted, checked against the declared length and the bytes actually streamed. */
+        const val MAX_UPDATE_APK_BYTES = 512L * 1024 * 1024
+    }
 }
+
+/** Copies an update stream, failing before any write that would pass [maxBytes], and reports progress. */
+internal fun copyUpdateStream(
+    input: InputStream,
+    output: OutputStream,
+    maxBytes: Long,
+    total: Long,
+    progress: (Long, Long) -> Unit,
+) {
+    val buffer = ByteArray(128 * 1024)
+    var downloaded = 0L
+    while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        if (downloaded + count > maxBytes) throw updateTooLarge(maxBytes)
+        output.write(buffer, 0, count)
+        downloaded += count
+        progress(downloaded, total)
+    }
+}
+
+private fun updateTooLarge(limit: Long): IOException =
+    IOException("Update APK exceeds the ${limit / (1024 * 1024)} MiB limit")

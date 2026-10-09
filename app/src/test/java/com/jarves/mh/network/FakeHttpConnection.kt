@@ -16,6 +16,7 @@ internal class FakeHttpConnection(
     private val status: Int,
     private val body: ByteArray = ByteArray(0),
     private val readFailure: IOException? = null,
+    private val contentLength: Long = body.size.toLong(),
 ) : HttpURLConnection(URL("https://fake.invalid/")) {
     val requestBody = ByteArrayOutputStream()
     var disconnected = false
@@ -31,7 +32,7 @@ internal class FakeHttpConnection(
 
     override fun getResponseCode(): Int = status
 
-    override fun getContentLengthLong(): Long = body.size.toLong()
+    override fun getContentLengthLong(): Long = contentLength
 
     override fun getOutputStream(): OutputStream = requestBody
 
