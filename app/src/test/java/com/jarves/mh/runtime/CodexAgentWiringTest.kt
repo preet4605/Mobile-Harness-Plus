@@ -114,6 +114,7 @@ class CodexAgentModelTest {
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
+@org.robolectric.annotation.ConscryptMode(org.robolectric.annotation.ConscryptMode.Mode.OFF)
 class CodexPreferencesTest {
     private val app get() = RuntimeEnvironment.getApplication()
 

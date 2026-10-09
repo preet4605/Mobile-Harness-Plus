@@ -46,6 +46,14 @@ internal object RuntimeSessionRouting {
         trackedTaskId == task.taskId && task.projectId == state.activeProject?.id &&
             task.chatId == (state.activeChatId ?: "default") && task.agentKind == state.agentKind.name
 
+    /** A readiness probe may finish after successful finalization, but never after navigation, Stop or retry. */
+    fun acceptsPreview(state: AppUiState, trackedTaskId: String?, task: DurableTaskRecord, sessionId: String, startedAt: Long): Boolean =
+        task.projectId == state.activeProject?.id && task.chatId == (state.activeChatId ?: "default") &&
+            task.agentKind == state.agentKind.name && task.sessionId == sessionId &&
+            state.taskStartedAtMillis == startedAt && !state.isStopping &&
+            if (state.isRunning) trackedTaskId == task.taskId && task.status !in setOf(com.jarves.mh.runtime.task.TaskExecutionStatus.FAILED, com.jarves.mh.runtime.task.TaskExecutionStatus.CANCELLED, com.jarves.mh.runtime.task.TaskExecutionStatus.ABANDONED)
+            else task.status in setOf(com.jarves.mh.runtime.task.TaskExecutionStatus.COMPLETED, com.jarves.mh.runtime.task.TaskExecutionStatus.UNVERIFIED)
+
     fun closeAttempt(state: AppUiState, sessionId: String): AppUiState = state.copy(
         activeSessionId = null,
         retiredSessionIds = state.retiredSessionIds + sessionId,

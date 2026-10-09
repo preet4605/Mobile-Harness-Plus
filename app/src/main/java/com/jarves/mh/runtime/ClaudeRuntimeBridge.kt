@@ -137,6 +137,7 @@ class ClaudeRuntimeBridge(
     private val installer = RuntimeInstaller(context)
     private val eventBus = MutableSharedFlow<RuntimeEvent>(extraBufferCapacity = 64)
     override val events: Flow<RuntimeEvent> = eventBus
+    private val answeredPermissions = ConcurrentHashMap.newKeySet<String>()
     private val pending = ConcurrentHashMap<String, PendingPermission>()
     private val toolNames = ConcurrentHashMap<String, String>()
     private val seenToolCalls = ConcurrentHashMap.newKeySet<String>()
@@ -152,6 +153,8 @@ class ClaudeRuntimeBridge(
     @Volatile private var taskStartedAtElapsedRealtime: Long = 0L
     @Volatile private var lastForegroundProgressAt: Long = 0L
     @Volatile private var foregroundResultPosted: Boolean = false
+    @Volatile private var authoritativeResultSeen = false
+    private var nativeConversationId: String? = null
     private val streamedText = StringBuilder()
     private val streamedThinking = StringBuilder()
     private var lastReasoningTokens = 0
@@ -183,6 +186,9 @@ class ClaudeRuntimeBridge(
         val effectiveAttemptId = attemptId ?: snapshot?.attemptId
         val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId, effectiveAttemptId)
         finishedSessions.remove(sessionId)
+        authoritativeResultSeen = false
+        nativeConversationId = null
+        answeredPermissions.clear()
         activeSessionId = sessionId
         activeTaskId = taskId
         val cancellationActive = taskId != null && runCatching {
@@ -286,7 +292,16 @@ class ClaudeRuntimeBridge(
 
             // Build a context-aware prompt that includes conversation history
             val guestWorkspacePath = "/workspace/$projectSlug"
-            val contextPrompt = buildContextPrompt(injectedPrompt, conversationHistory, guestWorkspacePath, projectKind, memory)
+            val prefs = com.jarves.mh.data.AppPreferences(context)
+            installer.ensureSettingsAndHooks(prefs.claudeInteractiveApprovals)
+            val owner = taskId?.let { com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).stateStore.get(it) }
+            val identity = if (provider.kind == ProviderKind.CLAUDE) File(installed.rootfs, "root/.claude/.credentials.json").lastModified().toString()
+                else com.jarves.mh.data.ApiKeyVault(context).credentials(provider.secretId).firstOrNull { it.isActive }?.id.orEmpty()
+            val conversationScope = owner?.chatId?.let { NativeConversationScope.key(it, workspace, provider, identity) }
+            val savedId = conversationScope?.let { prefs.consumeAgentConversation(com.jarves.mh.model.AgentKind.CLAUDE_CODE, projectId, it) }
+            val resumeId = if (owner?.retryCount == 0 && conversationHistory.count { it.fromUser } > 1)
+                NativeConversationScope.validId(savedId) else null
+            val contextPrompt = buildContextPrompt(injectedPrompt, if (resumeId == null) conversationHistory else emptyList(), guestWorkspacePath, projectKind, memory)
 
             val effort = if (provider.kind == ProviderKind.CLAUDE) {
                 com.jarves.mh.model.ClaudeThinkingLevel.fromStored(provider.claudeThinkingLevel).effortArg
@@ -295,15 +310,18 @@ class ClaudeRuntimeBridge(
                 executable = launch.executable,
                 model = launch.environment["ANTHROPIC_MODEL"] ?: provider.model,
                 effort = effort,
+                resumeSessionId = resumeId,
+                maxTurns = prefs.claudeMaxTurns,
             )
             Log.d("ClaudeBridge", "Launching command: $command")
             val process = installer.process(
                 installed.proot,
                 installed.rootfs,
                 workspace,
-                launch.environment,
+                launch.environment + ("MH_APPROVAL_SESSION_ID" to sessionId),
                 command,
                 guestWorkspacePath = guestWorkspacePath,
+                credentialHome = "/root/.claude",
             )
             activeProcess = process
             val nativePid = (process as? NativeSpawnProcess)?.processPid
@@ -325,17 +343,22 @@ class ClaudeRuntimeBridge(
                 }
                 try {
                     var lastDiagnostic = ""
-                    val pendingOutput = StringBuilder()
+                    val pendingOutput = CodexLineAssembler()
                     val nativeProcess = process as? NativeSpawnProcess
                         ?: error("Unsupported Android runtime process")
                     var outputOffset = 0L
                     var lastOutputTime = System.currentTimeMillis()
+                    var terminatedAfterResult = false
                     while (process.isAlive || nativeProcess.outputFile.length() > outputOffset) {
                         val available = nativeProcess.outputFile.length() - outputOffset
                         if (available <= 0) {
-                            if (finishedSessions.contains(sessionId) && (System.currentTimeMillis() - lastOutputTime >= 1500L)) {
+                            if (authoritativeResultSeen && (System.currentTimeMillis() - lastOutputTime >= 1500L)) {
                                 Log.i("ClaudeBridge", "Session completed and output drained; stopping lingering process")
-                                if (process.isAlive) process.destroy()
+                                if (process.isAlive) {
+                                    terminatedAfterResult = true
+                                    process.destroy()
+                                    if (!process.waitFor(1500, java.util.concurrent.TimeUnit.MILLISECONDS)) process.destroyForcibly()
+                                }
                                 break
                             }
                             delay(50)
@@ -349,19 +372,20 @@ class ClaudeRuntimeBridge(
                         }
                         if (count > 0) {
                             outputOffset += count
-                            pendingOutput.append(bytes.decodeToString(0, count))
-                            var newline = pendingOutput.indexOf("\n")
-                            while (newline >= 0) {
-                                val line = pendingOutput.substring(0, newline).trimEnd('\r')
-                                pendingOutput.delete(0, newline + 1)
+                            for (line in pendingOutput.feed(bytes, count)) {
+                                check(line != CodexLineAssembler.OVERSIZED) { "Runtime output line exceeded its safe limit" }
                                 if (line.isNotBlank()) {
-                                    Log.d("ClaudeBridge", "OUTPUT: $line")
                                     ProviderRuntimeErrorDetector.detect(line)?.let { reason ->
                                         process.destroyForcibly()
                                         throw ProviderSessionException(reason)
                                     }
                                     if (line.contains("\"rate_limit_event\"")) {
-                                        runCatching { com.jarves.mh.data.AppPreferences(context).claudeRateLimitEvent = line.take(4096) }
+                                        runCatching {
+                                            com.jarves.mh.data.AppPreferences(context).apply {
+                                                claudeRateLimitEvent = line.take(4096)
+                                                claudeRateLimitReportedAtMillis = System.currentTimeMillis()
+                                            }
+                                        }
                                     }
                                     if (!consumeClaudeEvent(sessionId, line)) {
                                         lastDiagnostic = line.takeLast(500)
@@ -375,15 +399,15 @@ class ClaudeRuntimeBridge(
                                         }
                                     }
                                 }
-                                newline = pendingOutput.indexOf("\n")
                             }
                         }
                     }
-                    pendingOutput.toString().trim().takeIf(String::isNotBlank)?.let { line ->
-                        Log.d("ClaudeBridge", "TRAILING OUTPUT: $line")
+                    pendingOutput.flush()?.let { line ->
+                        check(line != CodexLineAssembler.OVERSIZED) { "Runtime output line exceeded its safe limit" }
                         if (!consumeClaudeEvent(sessionId, line)) lastDiagnostic = line.takeLast(500)
                     }
                     val exit = process.waitFor()
+                    nativeProcess.checkCapture()
                     Log.d("ClaudeBridge", "Process exited with code $exit")
                     val changed = changedFiles(workspace, before)
                     if (changed.isNotEmpty()) {
@@ -394,7 +418,9 @@ class ClaudeRuntimeBridge(
                     } else if (!File(checkpointDir(projectId), "changes.json").isFile) {
                         acceptLastChanges(projectId)
                     }
-                    if (exit == 0 || finishedSessions.contains(sessionId)) {
+                    if (userStopRequested) throw ProviderSessionException("Stopped by user")
+                    if (exit == 0 || authoritativeResultSeen && terminatedAfterResult) {
+                        conversationScope?.let { prefs.saveAgentConversation(com.jarves.mh.model.AgentKind.CLAUDE_CODE, projectId, it, nativeConversationId) }
                         emitCompletedOnce(sessionId)
                         finishForegroundRuntime(
                             completed = true,
@@ -409,7 +435,7 @@ class ClaudeRuntimeBridge(
                     promptWriter.cancel()
                     permissionWatcher.cancelAndJoin()
                     pending.values.filter { it.request.sessionId == sessionId }.forEach { permission ->
-                        runCatching { permission.response.writeText("deny") }
+                        writeApprovalResponse(permission.response, false)
                         pending.remove(permission.request.approvalId)
                     }
                 }
@@ -430,6 +456,7 @@ class ClaudeRuntimeBridge(
             }
             if (!userStopRequested) {
                 if (activeSessionId == sessionId) {
+                    (activeProcess as? NativeSpawnProcess)?.outputFile?.delete()
                     formatGateway?.close()
                     antigravityGateway?.close()
                     activeProcess = null
@@ -441,6 +468,7 @@ class ClaudeRuntimeBridge(
             }
         }
         if (activeSessionId == sessionId) {
+            (activeProcess as? NativeSpawnProcess)?.outputFile?.delete()
             formatGateway?.close()
             antigravityGateway?.close()
             activeProcess = null
@@ -452,10 +480,13 @@ class ClaudeRuntimeBridge(
     }
 
     override suspend fun respondToApproval(request: ToolRequest, approved: Boolean) = withContext(Dispatchers.IO) {
-        val permission = pending.remove(request.approvalId) ?: return@withContext
-        permission.response.writeText(if (approved) "allow" else "deny")
+        if (request.sessionId != activeSessionId) return@withContext
+        val permission = pending[request.approvalId]?.takeIf { it.request == request } ?: return@withContext
+        answeredPermissions.add(request.approvalId)
+        pending.remove(request.approvalId)
+        val delivered = writeApprovalResponse(permission.response, approved)
         eventBus.emit(
-            if (approved) RuntimeEvent.ToolApproved(request.sessionId, request.approvalId)
+            if (approved && delivered) RuntimeEvent.ToolApproved(request.sessionId, request.approvalId)
             else RuntimeEvent.ToolRejected(request.sessionId, request.approvalId),
         )
     }
@@ -537,33 +568,47 @@ class ClaudeRuntimeBridge(
     }
 
     private suspend fun watchPermissionRequests(sessionId: String) {
-        val bridge = File(context.filesDir, "runtime-bridge")
-        while (kotlin.coroutines.coroutineContext.isActive) {
-            bridge.listFiles { file -> file.name.endsWith(".request") }.orEmpty().forEach { file ->
-                val approvalId = file.name.removeSuffix(".request")
-                runCatching {
-                    val json = JSONObject(file.readText())
-                    val toolName = json.optString("tool_name", "Tool")
-                    val input = json.optJSONObject("tool_input") ?: JSONObject()
-                    val command = input.optString("command").ifBlank { null }
-                    val paths = listOf("file_path", "path", "notebook_path")
-                        .mapNotNull { key -> input.optString(key).takeIf(String::isNotBlank) }
-                    val explanation = input.optString("description")
-                        .ifBlank { command.orEmpty() }
-                        .ifBlank { "$toolName running in project" }
-
-                    Log.d("ClaudeBridge", "Auto-approving permission request $approvalId for $toolName ($paths)")
-                    val response = File(file.parentFile, "$approvalId.response")
-                    response.writeText("allow")
-
-                    eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, toolName, explanation))
-                }.onFailure {
-                    File(file.parentFile, "$approvalId.response").writeText("allow")
+        val bridge = File(context.filesDir, "runtime-bridge").apply { mkdirs() }
+        val changes = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+        val observer = object : android.os.FileObserver(bridge.absolutePath, CLOSE_WRITE or MOVED_TO or DELETE) {
+            override fun onEvent(event: Int, path: String?) { changes.trySend(Unit) }
+        }
+        observer.startWatching()
+        changes.trySend(Unit)
+        try {
+            for (ignored in changes) {
+                answeredPermissions.removeIf { !File(bridge, "$it.request").exists() }
+                pending.values.filter { it.request.sessionId == sessionId && !File(bridge, "${it.request.approvalId}.request").exists() }.forEach {
+                    pending.remove(it.request.approvalId)
+                    eventBus.emit(RuntimeEvent.ToolRejected(sessionId, it.request.approvalId))
+                }
+                bridge.listFiles { file -> file.name.startsWith("$sessionId-") && file.name.endsWith(".request") }.orEmpty().forEach { file ->
+                    val approvalId = file.name.removeSuffix(".request")
+                    if (pending.containsKey(approvalId) || approvalId in answeredPermissions) return@forEach
+                    val response = File(bridge, "$approvalId.response")
+                    runCatching {
+                        require(file.canonicalFile.parentFile == bridge.canonicalFile && !java.nio.file.Files.isSymbolicLink(file.toPath()))
+                        require(file.length() <= 65536 && pending.size < 1)
+                        val request = ClaudeApprovalProtocol.request(sessionId, approvalId, JSONObject(file.readText()))
+                        pending[approvalId] = PendingPermission(request, response)
+                        eventBus.emit(RuntimeEvent.ToolRequested(sessionId, request))
+                    }.onFailure { if (writeApprovalResponse(response, false)) answeredPermissions.add(approvalId) }
                 }
             }
-            delay(250)
-        }
+        } finally { observer.stopWatching(); changes.close() }
     }
+
+    private fun writeApprovalResponse(file: File, approved: Boolean): Boolean = runCatching {
+        val bridge = File(context.filesDir, "runtime-bridge").canonicalFile
+        require(file.canonicalFile.parentFile == bridge && !java.nio.file.Files.isSymbolicLink(file.toPath()))
+        require(android.system.Os.lstat(file.absolutePath).st_mode and android.system.OsConstants.S_IFMT == android.system.OsConstants.S_IFIFO)
+        val fd = android.system.Os.open(file.absolutePath,
+            android.system.OsConstants.O_WRONLY or android.system.OsConstants.O_NONBLOCK, 0)
+        try {
+            val bytes = (if (approved) "allow" else "deny").toByteArray()
+            android.system.Os.write(fd, bytes, 0, bytes.size) == bytes.size
+        } finally { android.system.Os.close(fd) }
+    }.getOrDefault(false)
 
     private suspend fun consumeClaudeEvent(sessionId: String, line: String): Boolean {
         val json = runCatching { JSONObject(line) }.getOrNull() ?: return false
@@ -575,7 +620,9 @@ class ClaudeRuntimeBridge(
         when (json.optString("type")) {
             "stream_event" -> json.optJSONObject("event")?.let { consumeClaudeJsonEvent(sessionId, it) }
             "system" -> when (json.optString("subtype")) {
-                "init" -> Unit
+                "init" -> {
+                    if ((json.isNull("parent_tool_use_id") || json.optString("parent_tool_use_id").isBlank())) nativeConversationId = NativeConversationScope.validId(json.optString("session_id"))
+                }
                 "thinking_tokens" -> emitReasoningProgress(sessionId, json.optInt("estimated_tokens"))
                 "permission_denied" -> eventBus.emit(
                     RuntimeEvent.RuntimeLog(
@@ -685,13 +732,7 @@ class ClaudeRuntimeBridge(
                     }
                 }
                 streamedText.clear()
-                // Some Anthropic-compatible providers omit Claude Code's final
-                // `result` envelope. An assistant end_turn is still authoritative;
-                // tool_use means the agent must remain active for another turn.
-                if (message.optString("stop_reason") == "end_turn") {
-                    emitCompletedOnce(sessionId)
-                    terminateActiveProcessGracefully()
-                }
+                // Assistant stop_reason only ends an assistant turn, including child turns.
             }
             "user" -> {
                 val content = json.optJSONObject("message")?.optJSONArray("content") ?: return
@@ -702,7 +743,7 @@ class ClaudeRuntimeBridge(
                         val toolName = toolNames.remove(toolId) ?: "Tool"
                         val result = block.optString("content")
                             .ifBlank { if (block.optBoolean("is_error")) "Tool failed" else "Completed successfully" }
-                        eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, toolName, sanitizeForDisplay(result)))
+                        eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, toolName, sanitizeForDisplay(result), LocalPreviewDiscovery.candidate(result)))
                         if (toolName == "Bash") {
                             eventBus.emit(
                                 RuntimeEvent.TaskUpdated(
@@ -757,11 +798,9 @@ class ClaudeRuntimeBridge(
                         ),
                     )
                 }
-                // The structured result is Claude Code's authoritative terminal event.
-                // Update the UI immediately instead of waiting for a PRoot/Node wrapper
-                // that may remain alive after the answer has already completed.
-                emitCompletedOnce(sessionId)
-                terminateActiveProcessGracefully()
+                // Only a top-level result permits bounded cleanup of a lingering wrapper.
+                // The process outcome is checked before any terminal runtime event is emitted.
+                if ((json.isNull("parent_tool_use_id") || json.optString("parent_tool_use_id").isBlank())) authoritativeResultSeen = true
             }
         }
     }
@@ -879,9 +918,8 @@ class ClaudeRuntimeBridge(
     private suspend fun emitCompletedOnce(sessionId: String) {
         if (finishedSessions.add(sessionId)) {
             eventBus.emit(RuntimeEvent.SessionCompleted(sessionId))
-            // Post the completion notification immediately. Waiting for process
-            // teardown is unsafe: the PRoot/Node wrapper can hang after the answer
-            // is already done, which would freeze the notification on its last step.
+            // Standalone sessions post their bridge result; supervised tasks retain
+            // the service until runtime verification and recovery finish.
             finishForegroundRuntime(
                 completed = true,
                 projectName = activeProjectSlug ?: "your project",
@@ -1019,22 +1057,6 @@ class ClaudeRuntimeBridge(
         return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
     }
 
-    /**
-     * Destroys the CLI process, escalating to a force kill if the PRoot/Node
-     * wrapper ignores the graceful signal. Without this, a hung wrapper would
-     * block session cleanup forever after the answer was already delivered.
-     */
-    private fun terminateActiveProcessGracefully() {
-        val running = activeProcess ?: return
-        Thread {
-            runCatching {
-                running.destroy()
-                Thread.sleep(3_000)
-                if (running.isAlive) running.destroyForcibly()
-            }
-        }.apply { isDaemon = true }.start()
-    }
-
     private fun startForegroundRuntime(projectName: String, taskId: String? = null) {
         ContextCompat.startForegroundService(
             context,
@@ -1098,6 +1120,8 @@ class ClaudeRuntimeBridge(
             executable: String,
             model: String,
             effort: String? = null,
+            resumeSessionId: String? = null,
+            maxTurns: Int = 25,
         ): List<String> {
             val command = mutableListOf(
                 executable,
@@ -1109,13 +1133,18 @@ class ClaudeRuntimeBridge(
                 "--model",
                 model,
             )
+            resumeSessionId?.let {
+                require(NativeConversationScope.validId(it) != null) { "Invalid Claude resume ID" }
+                command.addAll(listOf("--resume", it))
+            }
             val validatedEffort = effort?.takeIf { it in SUPPORTED_EFFORT_LEVELS }
             if (validatedEffort != null) {
                 command.add("--effort")
                 command.add(validatedEffort)
             }
             command.add("--max-turns")
-            command.add("25")
+            require(maxTurns in 1..200) { "Claude turn budget must be between 1 and 200" }
+            command.add(maxTurns.toString())
             NativeSpawnProcess.validateArgv(command)
             return command
         }

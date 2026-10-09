@@ -1741,15 +1741,14 @@ class RuntimeInstaller(private val context: Context) {
         )
     }
 
-    fun ensureSettingsAndHooks() {
+    fun ensureSettingsAndHooks(interactiveApprovals: Boolean = com.jarves.mh.data.AppPreferences(context).claudeInteractiveApprovals) {
         val hook = File(rootfs, "opt/pocket/permission-hook.sh")
         hook.parentFile?.mkdirs()
-        hook.writeText(
+        hook.writeText(if (interactiveApprovals) ClaudeApprovalProtocol.hookScript else
             """#!/bin/sh
 cat > /dev/null
 printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
-""",
-        )
+""")
         Os.chmod(hook.absolutePath, 0b111101101)
 
         val settingsContent = JSONObject()
@@ -1757,8 +1756,8 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
             .put(
                 "permissions",
                 JSONObject()
-                    .put("allow", claudeWorkspaceToolRules())
-                    .put("defaultMode", "acceptEdits"),
+                    .put("allow", if (interactiveApprovals) org.json.JSONArray(listOf("Read", "Glob", "Grep")) else claudeWorkspaceToolRules())
+                    .put("defaultMode", if (interactiveApprovals) "default" else "acceptEdits"),
             )
             .put(
                 "hooks",
@@ -1770,7 +1769,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
                             .put(
                                 "hooks",
                                 org.json.JSONArray().put(
-                                    JSONObject().put("type", "command").put("command", "/opt/pocket/permission-hook.sh"),
+                                    JSONObject().put("type", "command").put("command", "/opt/pocket/permission-hook.sh").put("timeout", 150),
                                 ),
                             ),
                     ),

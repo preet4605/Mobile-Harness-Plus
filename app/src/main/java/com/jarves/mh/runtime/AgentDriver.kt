@@ -56,6 +56,7 @@ class AgentRegistry(drivers: List<AgentDriver>) {
                         AgentCapability.ACCOUNT_LOGIN,
                         AgentCapability.PROVIDER_PICKER,
                         AgentCapability.MODEL_PICKER,
+                        AgentCapability.REASONING_EFFORT,
                         AgentCapability.RESUME,
                         AgentCapability.INTERACTIVE_APPROVALS,
                     ),
@@ -67,8 +68,7 @@ class AgentRegistry(drivers: List<AgentDriver>) {
                         AgentCapability.API_KEY,
                         AgentCapability.PROVIDER_PICKER,
                         AgentCapability.MODEL_PICKER,
-                        AgentCapability.RESUME,
-                        AgentCapability.INTERACTIVE_APPROVALS,
+                        AgentCapability.REASONING_EFFORT,
                     ),
                 ),
                 BuiltInAgentDriver(
@@ -86,6 +86,9 @@ class AgentRegistry(drivers: List<AgentDriver>) {
                     codex,
                     setOf(
                         AgentCapability.API_KEY,
+                        AgentCapability.ACCOUNT_LOGIN,
+                        AgentCapability.REASONING_EFFORT,
+                        AgentCapability.RESUME,
                         AgentCapability.PROVIDER_PICKER,
                         AgentCapability.MODEL_PICKER,
                     ),

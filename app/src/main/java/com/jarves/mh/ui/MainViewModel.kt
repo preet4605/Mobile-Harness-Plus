@@ -317,6 +317,7 @@ data class AppUiState(
     val claudeModel: String = "default",
     val claudeThinkingLevel: String = "default",
     val codexReasoningEffort: String = "",
+    val dshReasoningEffort: String = "default",
     val claudeThinkingPickerVisible: Boolean = false,
     val androidBuildRunning: Boolean = false,
     val androidBuildMessage: String? = null,
@@ -415,6 +416,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val attemptedProfileIds = mutableSetOf<String>()
     @Volatile private var pendingTranscriptWrite: TranscriptWrite? = null
     private var transcriptDebounceJob: kotlinx.coroutines.Job? = null
+    private var previewDiscoverySession: String? = null
+    private val previewDiscoveryJobs = mutableMapOf<String, Job>()
     private val initialAgentKind = AgentKind.fromStored(preferences.agentKind)
     private val initialPrimaryAgentKind = preferences.primaryAgentKind
         .takeIf(String::isNotBlank)
@@ -487,6 +490,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             claudeModel = preferences.claudeModel,
             claudeThinkingLevel = preferences.claudeThinkingLevel,
             codexReasoningEffort = preferences.codexReasoningEffort,
+            dshReasoningEffort = preferences.dshReasoningEffort,
             themeMode = runCatching { com.jarves.mh.ui.theme.AppThemeMode.valueOf(preferences.themeMode.uppercase()) }
                 .getOrDefault(com.jarves.mh.ui.theme.AppThemeMode.DARK),
             projects = preferences.loadProjects(),
@@ -1039,12 +1043,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun detectPreviewUrl(output: String): String? {
-        val match = Regex("https?://(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0):(\\d{2,5})(?:/[^\\s]*)?")
-            .findAll(output)
-            .lastOrNull()
-            ?: return null
-        val port = match.groupValues[1].toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
-        return "http://127.0.0.1:$port/"
+        return com.jarves.mh.runtime.LocalPreviewDiscovery.candidate(output)
     }
 
     private fun detectServerUrl(command: String): String? {
@@ -3933,7 +3932,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return EffortChange.Refused("This model does not offer ${effortLabel(agent, value)} reasoning.")
             }
             AgentKind.CODEX -> setCodexReasoningEffort(value)
-            AgentKind.DEEPSEEK_HARNESS -> Unit
+            AgentKind.DEEPSEEK_HARNESS -> {
+                preferences.dshReasoningEffort = value
+                _state.update { it.copy(dshReasoningEffort = value) }
+            }
         }
         return EffortChange.Applied(effortLabel(agent, value))
     }
@@ -3953,10 +3955,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val current = _state.value
         val usage = when (current.agentKind) {
             AgentKind.CODEX -> withContext(Dispatchers.IO) { codexModelCatalog.fetchUsage() }
-            AgentKind.CLAUDE_CODE -> com.jarves.mh.runtime.ClaudeUsageReport.parse(preferences.claudeRateLimitEvent)
-            AgentKind.ANTIGRAVITY -> com.jarves.mh.runtime.AntigravityUsageReport.from(
-                current.antigravityAccounts.firstOrNull { it.isPrimary } ?: current.antigravityAccounts.firstOrNull(),
-            )
+            AgentKind.CLAUDE_CODE -> com.jarves.mh.runtime.ClaudeUsageReport.parse(preferences.claudeRateLimitEvent).let {
+                if (preferences.claudeRateLimitEvent.isNullOrBlank()) it else it.copy(
+                    note = "Last CLI report; Refresh reads cached limits.",
+                    checkedAtMillis = preferences.claudeRateLimitReportedAtMillis.takeIf { time -> time > 0 },
+                )
+            }
+            AgentKind.ANTIGRAVITY -> {
+                val usedAccountId = current.activeProject?.id?.let { projectId ->
+                    current.activeChatId?.let { preferences.loadAgentConversationAccount(projectId, it) }
+                }
+                com.jarves.mh.runtime.AntigravityUsageReport.from(
+                    current.antigravityAccounts.firstOrNull { it.id == usedAccountId }
+                        ?: current.antigravityAccounts.firstOrNull { it.isPrimary } ?: current.antigravityAccounts.firstOrNull(),
+                )
+            }
             AgentKind.DEEPSEEK_HARNESS -> if (current.provider.kind == ProviderKind.DEEPSEEK) {
                 val key = vault.get(current.provider.secretId).orEmpty()
                 if (key.isBlank()) {
@@ -3968,7 +3981,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 com.jarves.mh.model.AgentUsage(note = "Balance is shown for the DeepSeek provider only.")
             }
         }
-        return usage.copy(checkedAtMillis = System.currentTimeMillis())
+        return if (current.agentKind == AgentKind.CLAUDE_CODE) usage else usage.copy(checkedAtMillis = System.currentTimeMillis())
     }
 
     /** Codex levels the selected model lists in the saved catalog. Empty for other agents or when unknown. */
@@ -4151,6 +4164,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 persistMessages()
             }
             "clear" -> {
+                val owner = _state.value
+                owner.activeProject?.let { project ->
+                    owner.activeChatId?.let { chat ->
+                        AgentKind.entries.forEach { preferences.clearAgentConversation(it, project.id, chat) }
+                    }
+                }
                 _state.update {
                     it.copy(
                         messages = listOf(ChatMessage(fromUser = false, text = "Conversation history cleared. Workspace files are preserved.")),
@@ -4222,6 +4241,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     persistMessages()
                 }
+            }
+            "turns" -> {
+                val value = args.trim().toIntOrNull()
+                val valid = value != null && value in 1..200
+                if (valid) preferences.claudeMaxTurns = requireNotNull(value)
+                val text = if (args.isNotBlank() && !valid) "Use /turns with a number from 1 to 200."
+                    else "Claude's turn budget is ${preferences.claudeMaxTurns}. Applies to the next run."
+                _state.update { it.copy(messages = it.messages + ChatMessage(fromUser = false, text = text)) }
+                persistMessages()
+            }
+            "approvals" -> {
+                val choice = args.trim().lowercase(Locale.ROOT)
+                if (choice == "on" || choice == "off") preferences.claudeInteractiveApprovals = choice == "on"
+                val text = if (choice.isNotEmpty() && choice !in listOf("on", "off")) "Use /approvals on or /approvals off."
+                    else "Claude tool approvals are ${if (preferences.claudeInteractiveApprovals) "on" else "off"}. Applies to the next run."
+                _state.update { it.copy(messages = it.messages + ChatMessage(fromUser = false, text = text)) }
+                persistMessages()
             }
             "effort" -> {
                 val trimmed = args.trim()
@@ -5229,11 +5265,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     current.copy(scheduledTimers = updated)
                 }
                 is RuntimeEvent.TokenUsageUpdated -> {
-                    current.copy(tokenMetrics = event.metrics)
+                    current.copy(tokenMetrics = event.metrics.copy(reported = true))
                 }
             }
         }
         if (!accepted) return
+        discoverAgentPreview(event, task)
         if (event is RuntimeEvent.FilesChanged) {
             _state.value.activeProject?.id?.let { touchProject(it) }
             refreshProjectFiles()
@@ -5245,6 +5282,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persistMessages(includeLiveProcess = true, immediate = isTerminalEvent)
         // The outcome may already be durable while the final bridge event was buffered.
         if (isTerminalEvent) task?.taskId?.let(::finishSupervisedTask)
+    }
+
+    private fun discoverAgentPreview(event: RuntimeEvent, task: com.jarves.mh.runtime.task.DurableTaskRecord?) {
+        if (event is RuntimeEvent.SessionStarted) {
+            previewDiscoveryJobs.values.forEach { it.cancel() }
+            previewDiscoveryJobs.clear()
+            previewDiscoverySession = event.sessionId
+        }
+        if (task == null || event.sessionId != previewDiscoverySession) return
+        val output = when (event) {
+            is RuntimeEvent.AssistantDelta -> event.text
+            is RuntimeEvent.ToolCompleted -> event.previewUrl ?: event.summary
+            is RuntimeEvent.TaskUpdated -> event.task.liveOutputTail
+            else -> return
+        }
+        val url = com.jarves.mh.runtime.LocalPreviewDiscovery.candidate(output) ?: return
+        if (url in previewDiscoveryJobs || previewDiscoveryJobs.size >= 8) return
+        val startedAt = _state.value.taskStartedAtMillis ?: return
+        val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
+        fun owns(current: AppUiState): Boolean = previewDiscoverySession == event.sessionId &&
+            supervisor.stateStore.get(task.taskId)?.let { RuntimeSessionRouting.acceptsPreview(current, activeUiTaskId, it, event.sessionId, startedAt) } == true
+        previewDiscoveryJobs[url] = viewModelScope.launch {
+            // Retry only advertised local URLs, briefly; no port scanning or recurring polling.
+            repeat(5) { attempt ->
+                if (!owns(_state.value)) return@launch
+                val ready = kotlinx.coroutines.runInterruptible(Dispatchers.IO) { com.jarves.mh.runtime.LocalPreviewDiscovery.isReady(url) }
+                if (ready) {
+                    val preview = RuntimeEvent.PreviewStarted(event.sessionId, url)
+                    _state.update { current ->
+                        if (!owns(current) || current.previewUrl == preview.url && current.previewReady) current
+                        else current.copy(previewReady = true, previewUrl = preview.url,
+                            activity = listOf(ActivityItem("Preview ready", preview.url)) + current.activity)
+                    }
+                    return@launch
+                }
+                if (attempt < 4) delay(300L * (attempt + 1))
+            }
+        }
     }
 
     fun canFallbackForTask(taskId: String, errorMsg: String): Boolean {

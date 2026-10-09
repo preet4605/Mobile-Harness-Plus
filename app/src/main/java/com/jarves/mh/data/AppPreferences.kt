@@ -63,6 +63,11 @@ class AppPreferences(
         get() = preferences.getString("claude_thinking_level", "default") ?: "default"
         set(value) { preferences.edit().putString("claude_thinking_level", value).apply() }
 
+    var dshReasoningEffort: String
+        get() = preferences.getString("dsh_reasoning_effort", "default")
+            ?.takeIf { it in listOf("default", "off", "low", "high", "max") } ?: "default"
+        set(value) { preferences.edit().putString("dsh_reasoning_effort", value).apply() }
+
     var antigravityModel: String
         get() = preferences.getString("agent_antigravity_model", "") ?: ""
         set(value) { preferences.edit().putString("agent_antigravity_model", value).apply() }
@@ -189,6 +194,18 @@ class AppPreferences(
         get() = preferences.getString("claude_rate_limit_event", null)
         set(value) { preferences.edit().putString("claude_rate_limit_event", value).apply() }
 
+    var claudeMaxTurns: Int
+        get() = preferences.getInt("claude_max_turns", 25).coerceIn(1, 200)
+        set(value) { preferences.edit().putInt("claude_max_turns", value.coerceIn(1, 200)).apply() }
+
+    var claudeInteractiveApprovals: Boolean
+        get() = preferences.getBoolean("claude_interactive_approvals", false)
+        set(value) { preferences.edit().putBoolean("claude_interactive_approvals", value).apply() }
+
+    var claudeRateLimitReportedAtMillis: Long
+        get() = preferences.getLong("claude_rate_limit_reported_at", 0L)
+        set(value) { preferences.edit().putLong("claude_rate_limit_reported_at", value).apply() }
+
     var antigravityAccountEmail: String
         get() {
             val accounts = loadAntigravityAccounts()
@@ -213,6 +230,23 @@ class AppPreferences(
 
     fun loadAgentConversation(agent: AgentKind, projectId: String, chatId: String): String? =
         preferences.getString(agentConversationKey(agent, projectId, chatId), null)
+
+    /** Clears this chat's native session, including route-scoped resume references. */
+    // Commit invalidation before spawning a native turn: a crash cannot reuse a partial turn.
+    fun consumeAgentConversation(agent: AgentKind, projectId: String, chatId: String): String? {
+        val key = agentConversationKey(agent, projectId, chatId)
+        val value = preferences.getString(key, null)
+        return if (preferences.edit().remove(key).commit()) value else null
+    }
+
+    fun clearAgentConversation(agent: AgentKind, projectId: String, chatId: String) {
+        val key = agentConversationKey(agent, projectId, chatId)
+        val keys = preferences.all.keys.filter { it == key || it.startsWith("$key:") }
+        preferences.edit().apply {
+            keys.forEach(::remove)
+            remove("agent_conversation_account_${projectId}_$chatId")
+        }.apply()
+    }
 
     fun clearAgentConversations(agent: AgentKind) {
         val stable = agent.stableId

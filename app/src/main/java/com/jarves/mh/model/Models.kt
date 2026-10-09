@@ -201,7 +201,7 @@ fun effortLevelsFor(agent: AgentKind, codexModelLevels: List<String>): List<Stri
     AgentKind.CLAUDE_CODE -> ClaudeThinkingLevel.entries.map { it.id }
     AgentKind.ANTIGRAVITY -> listOf("low", "medium", "high")
     AgentKind.CODEX -> listOf(CODEX_DEFAULT_EFFORT_ARG) + codexModelLevels
-    AgentKind.DEEPSEEK_HARNESS -> null
+    AgentKind.DEEPSEEK_HARNESS -> listOf("default", "off", "low", "high", "max")
 }
 
 /** Canonical stored value for an /effort argument, or null when the agent has no such level. Codex default is blank. */
@@ -485,7 +485,7 @@ sealed interface RuntimeEvent {
     data class ToolRequested(override val sessionId: String, val request: ToolRequest) : RuntimeEvent
     data class ToolApproved(override val sessionId: String, val approvalId: String) : RuntimeEvent
     data class ToolRejected(override val sessionId: String, val approvalId: String) : RuntimeEvent
-    data class ToolCompleted(override val sessionId: String, val toolName: String, val summary: String) : RuntimeEvent
+    data class ToolCompleted(override val sessionId: String, val toolName: String, val summary: String, val previewUrl: String? = null) : RuntimeEvent
     data class FilesChanged(override val sessionId: String, val changes: List<ChangeItem>) : RuntimeEvent {
         val paths: List<String> get() = changes.map { it.path }
     }
@@ -839,6 +839,7 @@ data class SessionTokenMetrics(
     val cachedTokens: Int = 0,
     val contextWindowLimit: Int = 200_000,
     val estimatedCostUsd: Double = 0.0,
+    val reported: Boolean = false,
 )
 
 /** One limit an agent reports, as the Usage section shows it: [detail] is a short line such as "42% used · resets Thu 18:30". */
@@ -872,7 +873,9 @@ fun usageResetText(epochSeconds: Long?): String {
 /** The /usage reply: this chat's token totals, then whatever limits the agent reported. */
 fun usageSummary(agent: AgentKind, session: SessionTokenMetrics, usage: AgentUsage): String = buildString {
     appendLine("### Usage · ${agent.title}")
-    appendLine("- Session: ${session.promptTokens} in · ${session.completionTokens} out · ${session.cachedTokens} cached tokens")
+    if (session.reported || session.promptTokens > 0 || session.completionTokens > 0) {
+        appendLine("- Session: ${session.promptTokens} in · ${session.completionTokens} out · ${session.cachedTokens} cached tokens")
+    } else appendLine("- Session usage has not been reported by this harness.")
     if (session.estimatedCostUsd > 0.0) appendLine("- Estimated cost: $${"%.4f".format(Locale.ROOT, session.estimatedCostUsd)}")
     usage.limits.forEach { appendLine("- ${it.label}: ${it.detail}") }
     usage.balance?.let { appendLine("- Balance: $it") }
@@ -881,4 +884,3 @@ fun usageSummary(agent: AgentKind, session: SessionTokenMetrics, usage: AgentUsa
         appendLine("No limits reported yet. Use Refresh usage in Settings.")
     }
 }.trimEnd()
-

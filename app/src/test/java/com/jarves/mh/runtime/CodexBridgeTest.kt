@@ -42,8 +42,8 @@ class CodexJsonlParserTest {
         assertEquals("01a11b84-e5d2-7c52-9f4c-763a4f0e6f38", (events[0] as CodexEvent.ThreadStarted).threadId)
         assertTrue(events[1] is CodexEvent.Notice)
         assertEquals(CodexEvent.TurnStarted, events[2])
-        assertEquals(CodexEvent.Reasoning("Planning the change"), events[3])
-        assertEquals(CodexEvent.AgentMessage("Hello from the mock model."), events[4])
+        assertEquals("Planning the change", (events[3] as CodexEvent.Reasoning).text)
+        assertEquals("Hello from the mock model.", (events[4] as CodexEvent.AgentMessage).text)
         assertEquals(CodexEvent.TurnCompleted(CodexUsage(120, 0, 30, 5)), events[5])
     }
 
@@ -91,7 +91,7 @@ class CodexJsonlParserTest {
     @Test
     fun streamDroppedFixtureKeepsAgentMessageBeforeFailure() {
         val events = CodexFixtures.events("stream-dropped.jsonl")
-        assertTrue(events.any { it == CodexEvent.AgentMessage("Partial answer before the stream drops.") })
+        assertTrue(events.any { it is CodexEvent.AgentMessage && it.text == "Partial answer before the stream drops." })
         assertTrue(events.last() is CodexEvent.TurnFailed)
     }
 
@@ -300,13 +300,13 @@ class CodexEventMapperTest {
         val mapper = CodexEventMapper(sid)
         assertEquals(
             listOf<RuntimeEvent>(RuntimeEvent.ToolStarted(sid, "Bash", "ls")),
-            mapper.map(CodexEvent.CommandStarted("i", "/bin/bash -lc 'ls'")),
+            mapper.map(CodexEvent.CommandStarted("i", "/bin/bash -lc 'ls'")).filterIsInstance<RuntimeEvent.ToolStarted>(),
         )
-        val ok = mapper.map(CodexEvent.CommandFinished("i", "ls", "\n  a.txt\nb.txt", 0, false)).single()
+        val ok = mapper.map(CodexEvent.CommandFinished("i", "ls", "\n  a.txt\nb.txt", 0, false)).filterIsInstance<RuntimeEvent.ToolCompleted>().single()
         assertEquals(RuntimeEvent.ToolCompleted(sid, "Bash", "a.txt"), ok)
-        val empty = mapper.map(CodexEvent.CommandFinished("i", "true", "", 0, false)).single()
+        val empty = mapper.map(CodexEvent.CommandFinished("i", "true", "", 0, false)).filterIsInstance<RuntimeEvent.ToolCompleted>().single()
         assertEquals(RuntimeEvent.ToolCompleted(sid, "Bash", "Command completed"), empty)
-        val bad = mapper.map(CodexEvent.CommandFinished("i", "x", "boom\nmore", 2, true)).single()
+        val bad = mapper.map(CodexEvent.CommandFinished("i", "x", "boom\nmore", 2, true)).filterIsInstance<RuntimeEvent.ToolCompleted>().single()
         assertEquals(RuntimeEvent.ToolCompleted(sid, "Bash", "Exit code 2: boom"), bad)
     }
 
@@ -354,8 +354,8 @@ class CodexLaunchBuilderTest {
     fun chatGptLoginArgvIsExact() {
         assertEquals(
             listOf(
-                "/usr/local/bin/codex", "exec", "--json", "--color", "never", "--skip-git-repo-check", "--ephemeral",
-                "-s", "danger-full-access", "-C", "/workspace/proj", "-m", "gpt-5", "-o", "/tmp/last.txt",
+                "/usr/local/bin/codex", "exec", "--color", "never", "--ephemeral",
+                "-s", "danger-full-access", "-C", "/workspace/proj", "--json", "--skip-git-repo-check", "-m", "gpt-5", "-o", "/tmp/last.txt",
                 "-c", "approval_policy=\"never\"",
                 "-c", "check_for_update_on_startup=false",
                 "-c", "analytics.enabled=false",
@@ -652,7 +652,7 @@ class CodexTurnRunnerTest {
         assertEquals("Fix the bug", run.io.written.toString())
         assertTrue(run.io.inputClosed)
         assertEquals(0, run.io.destroyCalls + run.io.forceKillCalls)
-        assertTrue(run.events.contains(CodexEvent.AgentMessage("Hello from the mock model.")))
+        assertTrue(run.events.any { it is CodexEvent.AgentMessage && it.text == "Hello from the mock model." })
     }
 
     @Test
@@ -737,7 +737,7 @@ class CodexTurnRunnerTest {
         val (run, result) = run { io.output(CodexFixtures.text("stream-dropped.jsonl")); io.exit(1) }
         assertFalse(result.completed)
         assertTrue(result.failure.contains("Network"))
-        assertTrue(run.events.contains(CodexEvent.AgentMessage("Partial answer before the stream drops.")))
+        assertTrue(run.events.any { it is CodexEvent.AgentMessage && it.text == "Partial answer before the stream drops." })
     }
 
     @Test

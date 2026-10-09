@@ -47,6 +47,7 @@ class DshRuntimeBridge(
     private val secretFor: (ProviderProfile) -> String?,
 ) : RuntimeBridge {
     private val installer = RuntimeInstaller(context)
+    private val preferences = com.jarves.mh.data.AppPreferences(context)
     private val checkpoints = WorkspaceCheckpoints(context.filesDir)
     private val eventBus = MutableSharedFlow<RuntimeEvent>(extraBufferCapacity = 64)
     override val events: Flow<RuntimeEvent> = eventBus
@@ -187,6 +188,7 @@ class DshRuntimeBridge(
                 environment,
                 command,
                 guestWorkspacePath = guestWorkspacePath,
+                credentialHome = DSH_HOME_GUEST_PATH,
                 // dsh's editor saves through an atomic temp-file rename. PRoot's
                 // hard-link emulation turns that rename into a dangling `.l2s`
                 // symlink after the temp file is removed, losing the real file.
@@ -214,6 +216,7 @@ class DshRuntimeBridge(
                 prompt = contextPrompt,
             )
             val exit = process.waitFor()
+            (process as? NativeSpawnProcess)?.checkCapture()
             Log.d("DshBridge", "SDK process exited with code $exit")
             val changed = checkpoints.changedFiles(workspace, before)
             if (changed.isNotEmpty()) {
@@ -251,6 +254,7 @@ class DshRuntimeBridge(
             }
             if (!userStopRequested) {
                 if (activeSessionId == sessionId) {
+                    (activeProcess as? NativeSpawnProcess)?.outputFile?.delete()
                     antigravityGateway?.close()
                     activeProcess = null
                     activeSessionId = null
@@ -261,6 +265,7 @@ class DshRuntimeBridge(
             }
         }
         if (activeSessionId == sessionId) {
+            (activeProcess as? NativeSpawnProcess)?.outputFile?.delete()
             antigravityGateway?.close()
             activeProcess = null
             activeSessionId = null
@@ -283,7 +288,7 @@ class DshRuntimeBridge(
         val writer = process.outputStream.bufferedWriter()
         val parser = DshSdkProtocolParser(sessionId)
         var outputOffset = 0L
-        val pendingOutput = StringBuilder()
+        val pendingOutput = CodexLineAssembler()
         var promptSent = false
         var sawRunning = false
         var completed = false
@@ -313,10 +318,7 @@ class DshRuntimeBridge(
         send(
             method = "initialize",
             id = SDK_INITIALIZE_ID,
-            params = JSONObject()
-                .put("cwd", guestWorkspacePath)
-                .put("provider", route.name)
-                .put("model", model),
+            params = buildInitializeParams(guestWorkspacePath, route.name, model, preferences.dshReasoningEffort),
         )
 
         suspend fun handle(protocolEvent: DshSdkProtocolEvent) {
@@ -369,13 +371,21 @@ class DshRuntimeBridge(
                 is DshSdkProtocolEvent.ToolCompleted -> {
                     sawActivity = true
                     eventBus.emit(
-                        RuntimeEvent.ToolCompleted(sessionId, protocolEvent.name, protocolEvent.summary),
+                        RuntimeEvent.ToolCompleted(sessionId, protocolEvent.name, protocolEvent.summary, protocolEvent.previewUrl),
                     )
                 }
                 is DshSdkProtocolEvent.AssistantText -> if (protocolEvent.text.isNotEmpty()) {
                     sawActivity = true
                     eventBus.emit(RuntimeEvent.AssistantDelta(sessionId, protocolEvent.text))
                 }
+                is DshSdkProtocolEvent.UsageUpdated -> {
+                    if (protocolEvent.text.isNotEmpty()) {
+                        sawActivity = true
+                        eventBus.emit(RuntimeEvent.AssistantDelta(sessionId, protocolEvent.text))
+                    }
+                    eventBus.emit(RuntimeEvent.TokenUsageUpdated(sessionId, protocolEvent.metrics))
+                }
+                is DshSdkProtocolEvent.ChildUpdated -> eventBus.emit(RuntimeEvent.SubagentUpdated(sessionId, protocolEvent.child))
                 is DshSdkProtocolEvent.Failed -> failure = protocolEvent.message
                 DshSdkProtocolEvent.TurnCompleted -> sawActivity = true
                 DshSdkProtocolEvent.ShutdownAcknowledged -> closeInput()
@@ -390,7 +400,7 @@ class DshRuntimeBridge(
                 android.os.SystemClock.elapsedRealtime() - shutdownSentAt >= SDK_SHUTDOWN_TIMEOUT_MS
             ) {
                 closeInput()
-                process.destroy()
+                process.destroyForcibly()
             }
             val available = nativeProcess.outputFile.length() - outputOffset
             if (available <= 0) {
@@ -404,18 +414,17 @@ class DshRuntimeBridge(
             }
             if (count <= 0) continue
             outputOffset += count
-            pendingOutput.append(bytes.decodeToString(0, count))
-            var newline = pendingOutput.indexOf("\n")
-            while (newline >= 0) {
-                val line = pendingOutput.substring(0, newline).trimEnd('\r')
-                pendingOutput.delete(0, newline + 1)
-                if (line.isNotBlank()) handle(parser.parseLine(line))
-                newline = pendingOutput.indexOf("\n")
+            for (line in pendingOutput.feed(bytes, count)) {
+                check(line != CodexLineAssembler.OVERSIZED) { "Runtime output line exceeded its safe limit" }
+                handle(parser.parseLine(line))
             }
         }
-        pendingOutput.toString().trim().takeIf(String::isNotBlank)?.let {
+        pendingOutput.flush()?.let {
+            check(it != CodexLineAssembler.OVERSIZED) { "Runtime output line exceeded its safe limit" }
             handle(parser.parseLine(it))
         }
+        nativeProcess.checkCapture()
+
         closeInput()
         return DshSdkRunResult(completed = completed, failure = failure)
     }
@@ -674,6 +683,14 @@ class DshRuntimeBridge(
         private const val SDK_SHUTDOWN_ID = 3
         private const val SDK_SHUTDOWN_TIMEOUT_MS = 3_000L
 
+        internal fun buildInitializeParams(workspace: String, provider: String, model: String, effort: String): JSONObject {
+            val validated = com.jarves.mh.model.normalizeEffortChoice(com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS, effort, emptyList())
+            require(validated != null) { "Unsupported DeepSeek Harness effort" }
+            return JSONObject().put("cwd", workspace).put("provider", provider).put("model", model).apply {
+                if (validated != "default") put("reasoningEffort", validated)
+            }
+        }
+
         internal fun buildDshEnvironment(route: DshRoute, secret: String): Map<String, String> {
             val env = linkedMapOf(
                 "DSH_HOME" to DSH_HOME_GUEST_PATH,
@@ -863,8 +880,10 @@ internal sealed interface DshSdkProtocolEvent {
         val isFinal: Boolean,
     ) : DshSdkProtocolEvent
     data class ToolStarted(val callId: String, val name: String, val detail: String) : DshSdkProtocolEvent
-    data class ToolCompleted(val callId: String, val name: String, val summary: String) : DshSdkProtocolEvent
+    data class ToolCompleted(val callId: String, val name: String, val summary: String, val previewUrl: String? = null) : DshSdkProtocolEvent
     data class AssistantText(val text: String) : DshSdkProtocolEvent
+    data class UsageUpdated(val metrics: com.jarves.mh.model.SessionTokenMetrics, val text: String = "") : DshSdkProtocolEvent
+    data class ChildUpdated(val child: com.jarves.mh.model.SubagentInfo) : DshSdkProtocolEvent
     data class Failed(val message: String) : DshSdkProtocolEvent
     data object TurnCompleted : DshSdkProtocolEvent
     data object ShutdownAcknowledged : DshSdkProtocolEvent
@@ -877,6 +896,8 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
     private val textByBlock = mutableMapOf<Long, StringBuilder>()
     private val streamedTextSinceMessage = StringBuilder()
     private val toolNames = mutableMapOf<String, String>()
+    private val usageByStep = mutableMapOf<Long, com.jarves.mh.model.SessionTokenMetrics>()
+    private val children = mutableMapOf<String, com.jarves.mh.model.SubagentInfo>()
 
     fun parseLine(line: String): DshSdkProtocolEvent {
         val frame = runCatching { JSONObject(line) }.getOrNull()
@@ -908,6 +929,7 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
                 else DshSdkProtocolEvent.Status(params.optString("status") == "running")
             }
             "session.event" -> parseSessionEvent(params)
+            "subagent.started", "subagent.finished" -> parseChild(frame.optString("method"), params)
             else -> DshSdkProtocolEvent.Ignored
         }
     }
@@ -920,16 +942,17 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
             "assistant/chunk" -> parseAssistantChunk(data)
             "assistant/message" -> {
                 val content = data.optJSONObject("message")?.optJSONArray("content")
-                val text = contentText(content)
-                if (text.isBlank()) {
-                    DshSdkProtocolEvent.Ignored
-                } else if (streamedTextSinceMessage.isNotEmpty()) {
+                val text = if (streamedTextSinceMessage.isNotEmpty()) {
                     // `assistant/message` repeats the completed content after the SDK has
                     // already delivered its text deltas. The UI has appended those deltas.
                     streamedTextSinceMessage.clear()
-                    DshSdkProtocolEvent.Ignored
-                } else {
-                    DshSdkProtocolEvent.AssistantText(text)
+                    ""
+                } else contentText(content)
+                val metrics = data.optJSONObject("usage")?.let { parseUsage(data, it) }
+                when {
+                    metrics != null -> DshSdkProtocolEvent.UsageUpdated(metrics, text)
+                    text.isNotBlank() -> DshSdkProtocolEvent.AssistantText(text)
+                    else -> DshSdkProtocolEvent.Ignored
                 }
             }
             "tool/call" -> {
@@ -953,7 +976,7 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
                     .trim()
                     .take(180)
                     .ifBlank { "$name completed" }
-                DshSdkProtocolEvent.ToolCompleted(callId, name, summary)
+                DshSdkProtocolEvent.ToolCompleted(callId, name, summary, LocalPreviewDiscovery.candidate(text))
             }
             "turn/end" -> {
                 val reason = data.optJSONObject("reason")
@@ -975,6 +998,8 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
         val index = chunk.optInt("index", 0)
         val blockId = data.optInt("turn", 0) * 1_000_000L + data.optInt("step", 0) * 1_000L + index
         return when (chunk.optString("type")) {
+            "usage" -> chunk.optJSONObject("usage")?.let { parseUsage(data, it) }
+                ?.let { DshSdkProtocolEvent.UsageUpdated(it) } ?: DshSdkProtocolEvent.Ignored
             "text-delta" -> {
                 val delta = chunk.optString("text")
                 if (delta.isEmpty()) return DshSdkProtocolEvent.Ignored
@@ -1007,6 +1032,48 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
             }
             else -> DshSdkProtocolEvent.Ignored
         }
+    }
+
+    private fun parseUsage(data: JSONObject, usage: JSONObject): com.jarves.mh.model.SessionTokenMetrics? {
+        fun valid(key: String): Boolean {
+            val number = usage.opt(key) as? Number ?: return false
+            val value = number.toDouble()
+            return value.isFinite() && value >= 0 && value == kotlin.math.floor(value)
+        }
+        if (!valid("inputTokens") || !valid("outputTokens") ||
+            listOf("cacheReadTokens", "cacheWriteTokens").any { usage.has(it) && !valid(it) }) return null
+        fun count(key: String) = usage.optLong(key, 0).coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
+        val key = (data.optInt("turn").toLong() shl 32) or (data.optInt("step").toLong() and 0xffffffffL)
+        if (key !in usageByStep && usageByStep.size >= 4096) return null
+        val cached = count("cacheReadTokens")
+        val prompt = (count("inputTokens").toLong() + cached + count("cacheWriteTokens")).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        // Usage chunks and the assembled message repeat one step's accounting. Replace its bucket.
+        usageByStep[key] = com.jarves.mh.model.SessionTokenMetrics(prompt, count("outputTokens"), cached, reported = true)
+        fun total(get: (com.jarves.mh.model.SessionTokenMetrics) -> Int) = usageByStep.values.sumOf { get(it).toLong() }.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        return com.jarves.mh.model.SessionTokenMetrics(total { it.promptTokens }, total { it.completionTokens }, total { it.cachedTokens }, reported = true)
+    }
+
+    private fun parseChild(method: String, params: JSONObject): DshSdkProtocolEvent {
+        if (params.optString("parentSessionId") != expectedSessionId) return DshSdkProtocolEvent.Ignored
+        val id = params.optString("childSessionId")
+        if (id.isBlank() || id == "null" || id == expectedSessionId || id.length > 128) return DshSdkProtocolEvent.Ignored
+        val old = children[id]
+        if (old == null && children.size >= 256) return DshSdkProtocolEvent.Ignored
+        val state = when {
+            method == "subagent.started" -> com.jarves.mh.model.SubagentState.RUNNING
+            params.optString("status") == "ok" -> com.jarves.mh.model.SubagentState.DONE
+            params.optString("status") == "error" -> com.jarves.mh.model.SubagentState.ERRORED
+            else -> return DshSdkProtocolEvent.Ignored
+        }
+        val reason = params.optString("stopReason").take(180)
+        val child = (old ?: com.jarves.mh.model.SubagentInfo(id, "Subagent", "DeepSeek Harness", state)).copy(
+            state = state,
+            currentActivity = reason,
+            error = reason.takeIf { state == com.jarves.mh.model.SubagentState.ERRORED },
+            finishedAtMillis = if (state.isTerminal) old?.finishedAtMillis ?: System.currentTimeMillis() else null,
+        )
+        children[id] = child
+        return DshSdkProtocolEvent.ChildUpdated(child)
     }
 
     private fun displayToolName(rawName: String, arguments: String): String {

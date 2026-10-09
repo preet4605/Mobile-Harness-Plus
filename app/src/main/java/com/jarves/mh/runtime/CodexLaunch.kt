@@ -119,19 +119,25 @@ internal object CodexLaunchBuilder {
         lastMessageGuestPath: String,
         reasoningEffort: String? = null,
         imagePaths: List<String> = emptyList(),
+        resumeSessionId: String? = null,
+        persistSession: Boolean = false,
     ): List<String> =
         buildList {
             add(CODEX_GUEST_PATH)
             add("exec")
-            add("--json")
             add("--color")
             add("never")
-            add("--skip-git-repo-check")
-            add("--ephemeral")
+            if (!persistSession && resumeSessionId == null) add("--ephemeral")
             add("-s")
             add("danger-full-access")
             add("-C")
             add(guestWorkspacePath)
+            if (resumeSessionId != null) {
+                require(NativeConversationScope.validId(resumeSessionId) != null) { "Invalid Codex resume ID" }
+                add("resume")
+            }
+            add("--json")
+            add("--skip-git-repo-check")
             // `-i` is variadic: one flag per image keeps the trailing `-` (stdin prompt) out of the image list.
             imagePaths.forEach {
                 add("-i")
@@ -151,6 +157,7 @@ internal object CodexLaunchBuilder {
                 add("-c")
                 add("model_reasoning_effort=${tomlString(it)}")
             }
+            resumeSessionId?.let { add(it) }
             add("-")
         }
 

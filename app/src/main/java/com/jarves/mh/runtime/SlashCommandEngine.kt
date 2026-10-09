@@ -72,6 +72,22 @@ object SlashCommandEngine {
             parameterHint = "[level]",
         ),
         SlashCommand(
+            name = "turns",
+            description = "Show or set Claude's turn budget",
+            category = SlashCommandCategory.CONFIG,
+            isLocalOnly = true,
+            parameterHint = "[1–200]",
+            supportedAgents = setOf(AgentKind.CLAUDE_CODE),
+        ),
+        SlashCommand(
+            name = "approvals",
+            description = "Show or enable Claude's per-tool approvals",
+            category = SlashCommandCategory.CONFIG,
+            isLocalOnly = true,
+            parameterHint = "[on | off]",
+            supportedAgents = setOf(AgentKind.CLAUDE_CODE),
+        ),
+        SlashCommand(
             name = "skills",
             description = "View and manage active, linked, and global skills",
             category = SlashCommandCategory.CONFIG,

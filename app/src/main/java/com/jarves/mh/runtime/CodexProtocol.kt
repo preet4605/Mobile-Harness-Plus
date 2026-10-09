@@ -2,6 +2,10 @@ package com.jarves.mh.runtime
 
 import com.jarves.mh.model.RuntimeEvent
 import com.jarves.mh.model.SessionTokenMetrics
+import com.jarves.mh.model.SubagentInfo
+import com.jarves.mh.model.SubagentState
+import com.jarves.mh.model.BackgroundTaskInfo
+import com.jarves.mh.model.BackgroundTaskStatus
 import org.json.JSONObject
 
 /** Token counters reported by `codex exec --json` in `turn.completed`. */
@@ -20,8 +24,8 @@ internal data class CodexUsage(
 internal sealed interface CodexEvent {
     data class ThreadStarted(val threadId: String) : CodexEvent
     data object TurnStarted : CodexEvent
-    data class AgentMessage(val text: String) : CodexEvent
-    data class Reasoning(val text: String) : CodexEvent
+    data class AgentMessage(val text: String, val itemId: String = "", val completed: Boolean = true) : CodexEvent
+    data class Reasoning(val text: String, val itemId: String = "", val completed: Boolean = true) : CodexEvent
     data class CommandStarted(val itemId: String, val command: String) : CodexEvent
     data class CommandFinished(
         val itemId: String,
@@ -31,6 +35,16 @@ internal sealed interface CodexEvent {
         val failed: Boolean,
     ) : CodexEvent
     data class FileChange(val paths: List<String>) : CodexEvent
+    data class Collaboration(
+        val itemId: String,
+        val senderThreadId: String,
+        val tool: String,
+        val prompt: String,
+        val finished: Boolean,
+        val failed: Boolean,
+        val agents: List<ChildState>,
+    ) : CodexEvent
+    data class ChildState(val threadId: String, val status: String, val message: String)
     data class ToolCall(
         val itemId: String,
         val name: String,
@@ -103,14 +117,10 @@ internal object CodexJsonlParser {
         val itemId = item.text("id")
         val completed = phase == "completed"
         return when (item.optString("type")) {
-            "agent_message" ->
-                if (completed) item.text("text").takeIf { it.isNotBlank() }?.let { CodexEvent.AgentMessage(it) }
-                    ?: CodexEvent.Ignored
-                else CodexEvent.Ignored
-            "reasoning" ->
-                if (completed) item.text("text").takeIf { it.isNotBlank() }?.let { CodexEvent.Reasoning(it) }
-                    ?: CodexEvent.Ignored
-                else CodexEvent.Ignored
+            "agent_message" -> item.text("text").takeIf { it.isNotBlank() }
+                ?.let { CodexEvent.AgentMessage(it, itemId, completed) } ?: CodexEvent.Ignored
+            "reasoning" -> item.text("text").takeIf { it.isNotBlank() }
+                ?.let { CodexEvent.Reasoning(it, itemId, completed) } ?: CodexEvent.Ignored
             "command_execution" -> {
                 val command = item.text("command")
                 if (!completed) {
@@ -150,6 +160,19 @@ internal object CodexJsonlParser {
                     detail = item.optJSONObject("arguments")?.toString().orEmpty().take(MAX_DIAGNOSTIC_CHARS),
                     finished = completed,
                     failed = item.optString("status") == "failed",
+                )
+            }
+            "collab_tool_call" -> {
+                val states = item.optJSONObject("agents_states")
+                val agents = states?.keys()?.asSequence()?.take(256)?.mapNotNull { id ->
+                    val state = states.optJSONObject(id) ?: return@mapNotNull null
+                    if (id.isBlank() || id.length > 128) return@mapNotNull null
+                    CodexEvent.ChildState(id, state.text("status"), state.text("message").take(MAX_DIAGNOSTIC_CHARS))
+                }?.toList().orEmpty()
+                CodexEvent.Collaboration(
+                    itemId, item.text("sender_thread_id"), item.text("tool"),
+                    item.text("prompt").take(MAX_DIAGNOSTIC_CHARS), completed,
+                    item.text("status") == "failed", agents,
                 )
             }
             "web_search" -> CodexEvent.ToolCall(
@@ -240,32 +263,54 @@ internal class CodexLineAssembler(private val maxLineBytes: Int = 1 shl 20) {
  * Turns [CodexEvent]s into app [RuntimeEvent]s. Session start, completion and failure are not
  * mapped here; the bridge emits those exactly once.
  */
-internal class CodexEventMapper(private val sessionId: String) {
+internal class CodexEventMapper(private val sessionId: String, private val workspace: String = "") {
     private var reasoningBlock = 0L
     private var messageCount = 0
+    private val itemTexts = mutableMapOf<String, String>()
+    private val reasoningBlocks = mutableMapOf<String, Long>()
+    private var parentThreadId: String? = null
+    private val children = mutableMapOf<String, SubagentInfo>()
+    private val commands = mutableMapOf<String, BackgroundTaskInfo>()
 
     fun map(event: CodexEvent): List<RuntimeEvent> = when (event) {
         is CodexEvent.AgentMessage -> {
-            val text = if (messageCount++ == 0) event.text else "\n\n${event.text}"
-            listOf(RuntimeEvent.AssistantDelta(sessionId, text))
+            if (event.itemId.isBlank()) {
+                val text = if (messageCount++ == 0) event.text else "\n\n${event.text}"
+                listOf(RuntimeEvent.AssistantDelta(sessionId, text))
+            } else {
+                val previous = itemTexts[event.itemId].orEmpty()
+                // JSONL updates are cumulative snapshots. Ignore rewrites rather than duplicate text.
+                if (!event.text.startsWith(previous) || event.text == previous) emptyList()
+                else {
+                    check(itemTexts.size < 4096 || event.itemId in itemTexts) { "Too many Codex output items" }
+                    itemTexts[event.itemId] = event.text
+                    val prefix = if (previous.isEmpty() && messageCount++ > 0) "\n\n" else ""
+                    listOf(RuntimeEvent.AssistantDelta(sessionId, prefix + event.text.removePrefix(previous)))
+                }
+            }
         }
         is CodexEvent.Reasoning -> {
+            val key = event.itemId.ifBlank { "legacy-${reasoningBlock + 1}" }
+            val previous = itemTexts["reasoning:$key"]
             val summary = event.text.replace(Regex("\\s+"), " ").trim().take(MAX_REASONING_CHARS)
-            if (summary.isBlank()) emptyList()
-            else listOf(
-                RuntimeEvent.ReasoningSummary(
-                    sessionId = sessionId,
-                    summary = summary,
-                    blockId = ++reasoningBlock,
-                    startsNewBlock = true,
-                    isFinal = true,
-                ),
-            )
+            if (summary.isBlank() || previous == summary && !event.completed) emptyList()
+            else {
+                check(itemTexts.size < 4096 || "reasoning:$key" in itemTexts) { "Too many Codex output items" }
+                val newBlock = key !in reasoningBlocks
+                val block = reasoningBlocks.getOrPut(key) { ++reasoningBlock }
+                itemTexts["reasoning:$key"] = summary
+                listOf(RuntimeEvent.ReasoningSummary(sessionId, summary, block, newBlock, event.completed))
+            }
         }
-        is CodexEvent.CommandStarted ->
-            listOf(RuntimeEvent.ToolStarted(sessionId, "Bash", displayCommand(event.command)))
-        is CodexEvent.CommandFinished ->
-            listOf(RuntimeEvent.ToolCompleted(sessionId, "Bash", commandSummary(event)))
+        is CodexEvent.CommandStarted -> buildList {
+            add(RuntimeEvent.ToolStarted(sessionId, "Bash", displayCommand(event.command)))
+            commandTask(event.itemId, event.command, BackgroundTaskStatus.RUNNING)?.let(::add)
+        }
+        is CodexEvent.CommandFinished -> buildList {
+            add(RuntimeEvent.ToolCompleted(sessionId, "Bash", commandSummary(event), LocalPreviewDiscovery.candidate(event.output)))
+            commandTask(event.itemId, event.command, if (event.failed) BackgroundTaskStatus.FAILED else BackgroundTaskStatus.COMPLETED,
+                event.output, event.exitCode)?.let(::add)
+        }
         is CodexEvent.FileChange -> if (event.paths.isEmpty()) emptyList() else {
             val detail = event.paths.joinToString(", ").take(MAX_DETAIL_CHARS)
             listOf(
@@ -285,6 +330,34 @@ internal class CodexEventMapper(private val sessionId: String) {
             } else {
                 listOf(RuntimeEvent.ToolStarted(sessionId, event.name, event.detail.ifBlank { "Working in the project" }))
             }
+        is CodexEvent.Collaboration -> {
+            if (parentThreadId != null && event.senderThreadId != parentThreadId) emptyList()
+            else buildList {
+                val name = "Agent ${event.tool.replace('_', ' ')}"
+                if (event.finished) add(RuntimeEvent.ToolCompleted(sessionId, name, if (event.failed) "$name failed" else "$name completed"))
+                else add(RuntimeEvent.ToolStarted(sessionId, name, event.prompt))
+                for (agent in event.agents) {
+                    if (agent.threadId == parentThreadId) continue
+                    val state = when (agent.status) {
+                        "pending_init", "running" -> SubagentState.RUNNING
+                        "completed" -> SubagentState.DONE
+                        "errored" -> SubagentState.ERRORED
+                        "interrupted", "shutdown", "not_found" -> SubagentState.TERMINATED
+                        else -> continue
+                    }
+                    val old = children[agent.threadId]
+                    if (old == null && children.size >= 256) continue
+                    val child = (old ?: SubagentInfo(agent.threadId, "Subagent", "Codex", state)).copy(
+                        state = state,
+                        currentActivity = agent.message,
+                        error = agent.message.takeIf { state == SubagentState.ERRORED },
+                        finishedAtMillis = if (state.isTerminal) old?.finishedAtMillis ?: System.currentTimeMillis() else null,
+                    )
+                    children[agent.threadId] = child
+                    add(RuntimeEvent.SubagentUpdated(sessionId, child))
+                }
+            }
+        }
         is CodexEvent.TurnCompleted -> {
             val usage = event.usage
             if (usage.inputTokens > 0 || usage.outputTokens > 0) {
@@ -300,7 +373,7 @@ internal class CodexEventMapper(private val sessionId: String) {
                 )
             } else emptyList()
         }
-        is CodexEvent.ThreadStarted,
+        is CodexEvent.ThreadStarted -> { parentThreadId = event.threadId; emptyList() }
         CodexEvent.TurnStarted,
         is CodexEvent.Notice,
         is CodexEvent.StreamError,
@@ -308,6 +381,15 @@ internal class CodexEventMapper(private val sessionId: String) {
         is CodexEvent.Diagnostic,
         CodexEvent.Ignored,
         -> emptyList()
+    }
+
+    private fun commandTask(id: String, command: String, status: BackgroundTaskStatus, output: String = "", exitCode: Int? = null): RuntimeEvent.TaskUpdated? {
+        if (id.isBlank() || id !in commands && commands.size >= 256) return null
+        val task = (commands[id] ?: BackgroundTaskInfo(id, displayCommand(command), workspace, status)).copy(
+            status = status, exitCode = exitCode, liveOutputTail = output.takeLast(4_000),
+        )
+        commands[id] = task
+        return RuntimeEvent.TaskUpdated(sessionId, task)
     }
 
     private fun commandSummary(event: CodexEvent.CommandFinished): String {

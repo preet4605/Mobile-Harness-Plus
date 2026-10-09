@@ -812,9 +812,11 @@ internal fun WorkspaceScreen(
                 AgentKind.CLAUDE_CODE -> state.claudeThinkingLevel
                 AgentKind.ANTIGRAVITY -> state.antigravityEffort
                 AgentKind.CODEX -> state.codexReasoningEffort.ifBlank { CODEX_DEFAULT_EFFORT_ARG }
-                AgentKind.DEEPSEEK_HARNESS -> ""
+                AgentKind.DEEPSEEK_HARNESS -> state.dshReasoningEffort
             },
-            notice = if (state.agentKind == AgentKind.CODEX && codexLevels.isEmpty()) {
+            notice = if (state.agentKind == AgentKind.DEEPSEEK_HARNESS) {
+                "The provider validates this effort when the next run starts. Default keeps its own setting."
+            } else if (state.agentKind == AgentKind.CODEX && codexLevels.isEmpty()) {
                 "Discover models in Settings to see the levels this model supports."
             } else {
                 null

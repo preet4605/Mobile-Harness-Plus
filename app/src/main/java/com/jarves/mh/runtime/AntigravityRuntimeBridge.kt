@@ -402,7 +402,7 @@ class AntigravityRuntimeBridge(
                     process.outputStream.flush()
                     process.outputStream.close()
                     var offset = 0L
-                    val pending = StringBuilder()
+                    val pending = CodexLineAssembler()
                     var reply: String? = null
                     fun handleLine(line: String): Boolean {
                         when (val event = AntigravityEventParser.parse(line)) {
@@ -432,24 +432,16 @@ class AntigravityRuntimeBridge(
                         }
                         if (count <= 0) continue
                         offset += count
-                        pending.append(bytes.decodeToString(0, count))
-                        var newline = pending.indexOf("\n")
-                        while (newline >= 0) {
-                            val line = pending.substring(0, newline).trimEnd('\r')
-                            pending.delete(0, newline + 1)
-                            if (handleLine(line)) {
-                                done = true
-                                break
-                            }
-                            newline = pending.indexOf("\n")
+                        for (line in pending.feed(bytes, count)) {
+                            check(line != CodexLineAssembler.OVERSIZED) { "Runtime output line exceeded its safe limit" }
+                            if (handleLine(line)) { done = true; break }
                         }
                     }
-                    pending.toString().trim().takeIf(String::isNotEmpty)?.let { if (!done) done = handleLine(it) }
-                    // Drain process exit without hanging past the timeout.
-                    withContext(NonCancellable) {
-                        runCatching { process.waitFor() }
-                    }
-                    check(done) { friendlyError(pending.toString().takeLast(500).ifBlank { "Antigravity exited without answering" }) }
+                    pending.flush()?.let { if (!done) done = handleLine(it) }
+                    if (process.isAlive) process.destroy()
+                    if (!process.waitFor(1500, java.util.concurrent.TimeUnit.MILLISECONDS)) process.destroyForcibly()
+                    (process as? NativeSpawnProcess)?.checkCapture()
+                    check(done) { "Antigravity exited without answering" }
                     reply?.trim().takeUnless { it.isNullOrEmpty() } ?: "ok"
                 } finally {
                     runCatching { process.destroy() }
@@ -512,247 +504,281 @@ class AntigravityRuntimeBridge(
         }
         foregroundResultPosted = false
         finished.remove(sessionId)
-        eventBus.emit(RuntimeEvent.SessionStarted(sessionId))
-        if (!installer.isAgentInstalled(com.jarves.mh.model.AgentKind.ANTIGRAVITY)) {
-            val message = "Antigravity CLI is not installed. Open Settings → Coding agent to install it."
-            activeSessionId = null
-            emitFailure(sessionId, message)
-            throw IllegalStateException(message)
-        }
-
-        val attemptedAccountIds = mutableSetOf<String>()
-        val existingConvId = conversationId(projectId)
-        val initialStickyAccountId = if (!existingConvId.isNullOrBlank()) conversationAccount?.invoke(projectId) else null
-        var currentStickyAccountId = initialStickyAccountId
-        var sessionCompleted = false
-        var networkRetries = 0
-        val maxNetworkRetries = 2
-
-        while (!sessionCompleted && !userStopRequested) {
-            val account = accountManager?.selectAccountForTurn(
-                excludeAccountIds = attemptedAccountIds,
-                stickyAccountId = currentStickyAccountId,
-            )
-            val useAccount = account != null
-            if (useAccount) {
-                attemptedAccountIds.add(account!!.id)
-            } else if (attemptedAccountIds.isNotEmpty()) {
-                val msg = "All available Antigravity accounts are out of quota or unavailable."
-                activeSessionId = null
-                emitFailure(sessionId, msg)
-                finishForegroundRuntime(false, projectSlug, msg)
-                throw IllegalStateException(msg)
-            } else {
-                val msg = "No Antigravity accounts configured. Add an account in Settings."
-                activeSessionId = null
-                emitFailure(sessionId, msg)
-                finishForegroundRuntime(false, projectSlug, msg)
-                throw IllegalStateException(msg)
+        try {
+            eventBus.emit(RuntimeEvent.SessionStarted(sessionId))
+            if (!installer.isAgentInstalled(com.jarves.mh.model.AgentKind.ANTIGRAVITY)) {
+                val message = "Antigravity CLI is not installed. Open Settings → Coding agent to install it."
+                emitFailure(sessionId, message)
+                throw IllegalStateException(message)
             }
 
-            val guestHome = if (useAccount) {
-                accountManager!!.getAccountAccessToken(account!!.id)
-                accountManager.getAccountHomeGuestPath(account.id)
-            } else "/root"
-            val env = if (useAccount) mapOf("HOME" to guestHome) else emptyMap()
+            val attemptedAccountIds = mutableSetOf<String>()
+            val existingConvId = conversationId(projectId)
+            val initialStickyAccountId = if (!existingConvId.isNullOrBlank()) conversationAccount?.invoke(projectId) else null
+            var currentStickyAccountId = initialStickyAccountId
+            var sessionCompleted = false
+            var networkRetries = 0
+            val maxNetworkRetries = 2
 
-            val currentConvId = conversationId(projectId) ?: existingConvId
-            val isStickyTurn = (useAccount && account!!.id == currentStickyAccountId && !currentConvId.isNullOrBlank())
-            val targetConvId = if (isStickyTurn) currentConvId else null
-            val effectivePrompt = if (!isStickyTurn && conversationHistory.isNotEmpty()) {
-                buildFailoverPrompt(projectSlug, injectedPrompt, conversationHistory, memory)
-            } else {
-                antigravityWorkspacePrompt(projectSlug, injectedPrompt, memory)
-            }
-
-            val turnResult = runCatching {
-                RuntimeTaskController.stopAction = {
-                    userStopRequested = true
-                    activeProcess?.destroy()
-                }
-                startForegroundRuntime(projectSlug, taskId)
-                val installed = installer.installedRuntime()
-                val workspace = checkpoints.ensureWorkspace(projectId)
-                checkpoints.createCheckpoint(projectId, workspace)
-                val before = checkpoints.snapshot(workspace)
-                val command = antigravityCommand(model(), effort(), targetConvId)
-                val process = installer.process(
-                    installed.proot,
-                    installed.rootfs,
-                    workspace,
-                    env,
-                    command,
-                    guestWorkspacePath = "/workspace/$projectSlug",
-                    emulateHardLinks = false,
+            while (!sessionCompleted && !userStopRequested) {
+                val account = accountManager?.selectAccountForTurn(
+                    excludeAccountIds = attemptedAccountIds,
+                    stickyAccountId = currentStickyAccountId,
                 )
-                activeProcess = process
-                val nativePid = (process as? NativeSpawnProcess)?.processPid
-                val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
-                val bound = supervisor.bindProcess(
-                    taskId = taskId ?: sessionId,
-                    sessionId = sessionId,
-                    process = process,
-                    pid = nativePid
-                )
-                if (!bound) {
-                    Log.w("AntigravityBridge", "Process binding failed for task $taskId / session $sessionId (PID: $nativePid)")
+                val useAccount = account != null
+                if (useAccount) {
+                    attemptedAccountIds.add(account!!.id)
+                } else if (attemptedAccountIds.isNotEmpty()) {
+                    val msg = "All available Antigravity accounts are out of quota or unavailable."
+                    emitFailure(sessionId, msg)
+                    finishForegroundRuntime(false, projectSlug, msg)
+                    throw IllegalStateException(msg)
+                } else {
+                    val msg = "No Antigravity accounts configured. Add an account in Settings."
+                    emitFailure(sessionId, msg)
+                    finishForegroundRuntime(false, projectSlug, msg)
+                    throw IllegalStateException(msg)
                 }
-                if (userStopRequested) process.destroy()
-                val request = JSONObject()
-                    .put("event", "user")
-                    .put("message", JSONObject().put("content", effectivePrompt))
-                    .toString() + "\n"
-                process.outputStream.write(request.toByteArray())
-                process.outputStream.flush()
-                process.outputStream.close()
 
-                val native = process as? NativeSpawnProcess ?: error("Unsupported Antigravity process")
-                var offset = 0L
-                val pending = StringBuilder()
-                var resultSeen = false
-                var assistantTextSeen = false
-                suspend fun handleLine(line: String) {
-                    AntigravityEventParser.parseEvents(line).forEach { event ->
-                        when (event) {
-                            is AntigravityParsedEvent.Initialized -> {
-                                saveConversationId(projectId, event.conversationId)
-                                if (useAccount) saveConversationAccount?.invoke(projectId, account!!.id)
-                            }
-                            is AntigravityParsedEvent.Text -> {
-                                assistantTextSeen = true
-                                eventBus.emit(RuntimeEvent.AssistantDelta(sessionId, event.value))
-                            }
-                            is AntigravityParsedEvent.ToolStarted -> eventBus.emit(RuntimeEvent.ToolStarted(sessionId, event.name, event.detail))
-                            is AntigravityParsedEvent.ToolCompleted -> eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, event.name, event.detail))
-                            is AntigravityParsedEvent.Subagent -> eventBus.emit(RuntimeEvent.SubagentUpdated(sessionId, event.subagent))
-                            is AntigravityParsedEvent.Task -> eventBus.emit(RuntimeEvent.TaskUpdated(sessionId, event.task))
-                            is AntigravityParsedEvent.Artifact -> eventBus.emit(RuntimeEvent.ArtifactDiscovered(sessionId, event.artifact))
-                            is AntigravityParsedEvent.Timer -> eventBus.emit(RuntimeEvent.TimerUpdated(sessionId, event.timer))
-                            is AntigravityParsedEvent.TokenUsage -> eventBus.emit(RuntimeEvent.TokenUsageUpdated(sessionId, event.metrics))
-                            is AntigravityParsedEvent.Result -> {
-                                event.conversationId?.let {
-                                    saveConversationId(projectId, it)
+                val guestHome = if (useAccount) {
+                    accountManager!!.getAccountAccessToken(account!!.id)
+                    accountManager.getAccountHomeGuestPath(account.id)
+                } else "/root"
+                val env = if (useAccount) mapOf("HOME" to guestHome) else emptyMap()
+
+                val currentConvId = conversationId(projectId) ?: existingConvId
+                val isStickyTurn = (useAccount && account!!.id == currentStickyAccountId && !currentConvId.isNullOrBlank())
+                val targetConvId = if (isStickyTurn) currentConvId else null
+                val effectivePrompt = if (!isStickyTurn && conversationHistory.isNotEmpty()) {
+                    buildFailoverPrompt(projectSlug, injectedPrompt, conversationHistory, memory)
+                } else {
+                    antigravityWorkspacePrompt(projectSlug, injectedPrompt, memory)
+                }
+
+                var retryBlockedByChanges = false
+                var attemptHadTools = false
+                val turnResult = runCatching {
+                    RuntimeTaskController.stopAction = {
+                        userStopRequested = true
+                        activeProcess?.destroy()
+                    }
+                    startForegroundRuntime(projectSlug, taskId)
+                    val installed = installer.installedRuntime()
+                    val workspace = checkpoints.ensureWorkspace(projectId)
+                    checkpoints.createCheckpoint(projectId, workspace)
+                    val before = checkpoints.snapshot(workspace)
+                    try {
+                    val command = antigravityCommand(model(), effort(), targetConvId)
+                    val process = installer.process(
+                        installed.proot,
+                        installed.rootfs,
+                        workspace,
+                        env,
+                        command,
+                        guestWorkspacePath = "/workspace/$projectSlug",
+                        credentialHome = guestHome,
+                        emulateHardLinks = false,
+                    )
+                    activeProcess = process
+                    val nativePid = (process as? NativeSpawnProcess)?.processPid
+                    val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
+                    val bound = supervisor.bindProcess(
+                        taskId = taskId ?: sessionId,
+                        sessionId = sessionId,
+                        process = process,
+                        pid = nativePid
+                    )
+                    if (!bound) {
+                        Log.w("AntigravityBridge", "Process binding failed for task $taskId / session $sessionId (PID: $nativePid)")
+                    }
+                    if (userStopRequested) process.destroy()
+                    val request = JSONObject()
+                        .put("event", "user")
+                        .put("message", JSONObject().put("content", effectivePrompt))
+                        .toString() + "\n"
+                    process.outputStream.write(request.toByteArray())
+                    process.outputStream.flush()
+                    process.outputStream.close()
+
+                    val native = process as? NativeSpawnProcess ?: error("Unsupported Antigravity process")
+                    var offset = 0L
+                    val pending = CodexLineAssembler()
+                    var resultSeen = false
+                    var assistantTextSeen = false
+                    suspend fun handleLine(line: String) {
+                        AntigravityEventParser.parseEvents(line).forEach { event ->
+                            when (event) {
+                                is AntigravityParsedEvent.Initialized -> {
+                                    saveConversationId(projectId, event.conversationId)
                                     if (useAccount) saveConversationAccount?.invoke(projectId, account!!.id)
                                 }
-                                if (event.status.equals("SUCCESS", ignoreCase = true)) {
-                                    if (!assistantTextSeen && !event.response.isNullOrBlank()) {
-                                        assistantTextSeen = true
-                                        eventBus.emit(RuntimeEvent.AssistantDelta(sessionId, event.response))
+                                is AntigravityParsedEvent.Text -> {
+                                    assistantTextSeen = true
+                                    eventBus.emit(RuntimeEvent.AssistantDelta(sessionId, event.value))
+                                }
+                                is AntigravityParsedEvent.ToolStarted -> {
+                                    attemptHadTools = true
+                                    eventBus.emit(RuntimeEvent.ToolStarted(sessionId, event.name, event.detail))
+                                }
+                                is AntigravityParsedEvent.ToolCompleted -> eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, event.name, event.detail))
+                                is AntigravityParsedEvent.Subagent -> eventBus.emit(RuntimeEvent.SubagentUpdated(sessionId, event.subagent))
+                                is AntigravityParsedEvent.Task -> eventBus.emit(RuntimeEvent.TaskUpdated(sessionId, event.task))
+                                is AntigravityParsedEvent.Artifact -> eventBus.emit(RuntimeEvent.ArtifactDiscovered(sessionId, event.artifact))
+                                is AntigravityParsedEvent.Timer -> eventBus.emit(RuntimeEvent.TimerUpdated(sessionId, event.timer))
+                                is AntigravityParsedEvent.TokenUsage -> eventBus.emit(RuntimeEvent.TokenUsageUpdated(sessionId, event.metrics))
+                                is AntigravityParsedEvent.Result -> {
+                                    event.conversationId?.let {
+                                        saveConversationId(projectId, it)
+                                        if (useAccount) saveConversationAccount?.invoke(projectId, account!!.id)
                                     }
-                                    resultSeen = true
-                                } else throw AntigravitySessionException(friendlyError(event.error ?: event.status))
+                                    if (event.status.equals("SUCCESS", ignoreCase = true)) {
+                                        if (!assistantTextSeen && !event.response.isNullOrBlank()) {
+                                            assistantTextSeen = true
+                                            eventBus.emit(RuntimeEvent.AssistantDelta(sessionId, event.response))
+                                        }
+                                        resultSeen = true
+                                    } else throw AntigravitySessionException(friendlyError(event.error ?: event.status))
+                                }
                             }
                         }
                     }
-                }
-                var lastOutputTime = System.currentTimeMillis()
-                while (process.isAlive || native.outputFile.length() > offset) {
-                    val available = native.outputFile.length() - offset
-                    if (available <= 0) {
-                        // Watchdog: If result was observed and output drained, don't hang indefinitely on Node.js event loop
-                        if (resultSeen && (System.currentTimeMillis() - lastOutputTime >= 1500L)) {
-                            Log.i("AntigravityBridge", "Result observed and output drained; closing process gracefully")
-                            if (process.isAlive) process.destroy()
-                            break
+                    var lastOutputTime = System.currentTimeMillis()
+                    while (process.isAlive || native.outputFile.length() > offset) {
+                        val available = native.outputFile.length() - offset
+                        if (available <= 0) {
+                            // Watchdog: If result was observed and output drained, don't hang indefinitely on Node.js event loop
+                            if (resultSeen && (System.currentTimeMillis() - lastOutputTime >= 1500L)) {
+                                Log.i("AntigravityBridge", "Result observed and output drained; closing process gracefully")
+                                if (process.isAlive) {
+                                    process.destroy()
+                                    if (!process.waitFor(1500, java.util.concurrent.TimeUnit.MILLISECONDS)) process.destroyForcibly()
+                                }
+                                break
+                            }
+                            delay(50)
+                            continue
                         }
-                        delay(50)
-                        continue
+                        lastOutputTime = System.currentTimeMillis()
+                        val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
+                        val count = RandomAccessFile(native.outputFile, "r").use { file ->
+                            file.seek(offset)
+                            file.read(bytes)
+                        }
+                        if (count <= 0) continue
+                        offset += count
+                        for (line in pending.feed(bytes, count)) {
+                            check(line != CodexLineAssembler.OVERSIZED) { "Runtime output line exceeded its safe limit" }
+                            handleLine(line)
+                        }
                     }
-                    lastOutputTime = System.currentTimeMillis()
-                    val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
-                    val count = RandomAccessFile(native.outputFile, "r").use { file ->
-                        file.seek(offset)
-                        file.read(bytes)
+                    pending.flush()?.let {
+                        check(it != CodexLineAssembler.OVERSIZED) { "Runtime output line exceeded its safe limit" }
+                        handleLine(it)
                     }
-                    if (count <= 0) continue
-                    offset += count
-                    pending.append(bytes.decodeToString(0, count))
-                    var newline = pending.indexOf("\n")
-                    while (newline >= 0) {
-                        val line = pending.substring(0, newline).trimEnd('\r')
-                        pending.delete(0, newline + 1)
-                        handleLine(line)
-                        newline = pending.indexOf("\n")
+                    val exit = process.waitFor()
+                    native.checkCapture()
+                    val success = (exit == 0) && (resultSeen || assistantTextSeen)
+                    if (success) {
+                        if (useAccount) {
+                            accountManager!!.recordUsage(account!!.id)
+                            accountManager.resetStatus(account.id)
+                            saveConversationAccount?.invoke(projectId, account.id)
+                            runCatching { accountManager.refreshAccountQuota(account.id) }
+                        }
+                    } else {
+                        val errDetail = "Antigravity exited with code $exit"
+                        throw AntigravitySessionException(friendlyError(errDetail))
+                    }
+                    } finally {
+                        activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
+                        val paths = checkpoints.changedFiles(workspace, before)
+                        retryBlockedByChanges = paths.isNotEmpty() || attemptHadTools
+                        if (paths.isNotEmpty()) {
+                            checkpoints.saveChangedPaths(projectId, paths)
+                            eventBus.emit(RuntimeEvent.FilesChanged(sessionId, checkpoints.buildChangeDetails(projectId, workspace, paths)))
+                        }
+                        (activeProcess as? NativeSpawnProcess)?.outputFile?.delete()
                     }
                 }
-                pending.toString().trim().takeIf(String::isNotEmpty)?.let { handleLine(it) }
-                val exit = process.waitFor()
-                val success = (exit == 0) && (resultSeen || assistantTextSeen)
-                if (success) {
-                    val paths = checkpoints.changedFiles(workspace, before)
-                    checkpoints.saveChangedPaths(projectId, paths)
-                    if (paths.isNotEmpty()) {
-                        eventBus.emit(RuntimeEvent.FilesChanged(sessionId, checkpoints.buildChangeDetails(projectId, workspace, paths)))
-                    }
-                    if (useAccount) {
-                        accountManager!!.recordUsage(account!!.id)
-                        accountManager.resetStatus(account.id)
-                        saveConversationAccount?.invoke(projectId, account.id)
-                        runCatching { accountManager.refreshAccountQuota(account.id) }
-                    }
+
+                if (turnResult.isSuccess) {
                     emitCompleted(sessionId)
                     finishForegroundRuntime(true, projectSlug, "Antigravity finished the task in $projectSlug.")
                     sessionCompleted = true
-                } else {
-                    val errDetail = pending.toString().takeLast(1_000).ifBlank { "Antigravity exited with code $exit" }
-                    throw AntigravitySessionException(friendlyError(errDetail))
+                }
+                turnResult.onFailure { error ->
+                    val errorMsg = error.message.orEmpty()
+                    val isQuota = isQuotaError(errorMsg)
+                    val isAuth = isAuthError(errorMsg)
+                    val isNetwork = isNetworkError(errorMsg)
+
+                    if (useAccount) {
+                        if (isQuota) accountManager!!.markQuotaExhausted(account!!.id, modelId = model())
+                        if (isAuth) accountManager!!.markAuthError(account!!.id, friendlyError(errorMsg))
+                    }
+
+                    val hasMoreAccounts = useAccount &&
+                        accountManager?.selectAccountForTurn(excludeAccountIds = attemptedAccountIds) != null
+
+                    if (!userStopRequested && !retryBlockedByChanges && (isQuota || isAuth) && hasMoreAccounts) {
+                        currentStickyAccountId = null
+                        activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
+                        activeProcess = null
+                        eventBus.emit(
+                            RuntimeEvent.AssistantDelta(
+                                sessionId,
+                                "\n\n*[Notice: Account ${account?.displayTitle ?: ""} reached limit. Failing over to next available account…]*\n\n",
+                            ),
+                        )
+                    } else if (!userStopRequested && !retryBlockedByChanges && isNetwork && networkRetries < maxNetworkRetries) {
+                        account?.let {
+                            attemptedAccountIds.remove(it.id)
+                            currentStickyAccountId = it.id
+                        }
+                        networkRetries++
+                        activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
+                        activeProcess = null
+                        eventBus.emit(
+                            RuntimeEvent.AssistantDelta(
+                                sessionId,
+                                "\n\n*[Network connection interrupted (switching connection). Reconnecting (attempt $networkRetries/$maxNetworkRetries)…]*\n\n",
+                            ),
+                        )
+                        delay(2000L)
+                    } else {
+                        // Ensure active process is killed so no orphaned process runs concurrently
+                        activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
+                        val failure = if (!userStopRequested && attemptHadTools)
+                            AntigravitySessionException("REPLAY_UNSAFE: An interrupted attempt ran tools. Review its changes and external actions before trying again.") else error
+                        val message = if (userStopRequested) "Stopped by user" else friendlyError(failure.message.orEmpty())
+                        emitFailure(sessionId, message)
+                        if (userStopRequested) cancelForegroundRuntime()
+                        else finishForegroundRuntime(false, projectSlug, message)
+                        sessionCompleted = true
+                        throw failure
+                    }
                 }
             }
-
-            turnResult.onFailure { error ->
-                val errorMsg = error.message.orEmpty()
-                val isQuota = isQuotaError(errorMsg)
-                val isAuth = isAuthError(errorMsg)
-                val isNetwork = isNetworkError(errorMsg)
-
-                if (useAccount) {
-                    if (isQuota) accountManager!!.markQuotaExhausted(account!!.id, modelId = model())
-                    if (isAuth) accountManager!!.markAuthError(account!!.id, friendlyError(errorMsg))
+            sessionId
+        } catch (error: Throwable) {
+            val message = if (userStopRequested) "Stopped by user" else friendlyError(error.message.orEmpty())
+            emitFailure(sessionId, message)
+            if (userStopRequested) cancelForegroundRuntime()
+            else finishForegroundRuntime(false, projectSlug, message)
+            throw error
+        } finally {
+            if (activeSessionId == sessionId) {
+                activeProcess?.let { process ->
+                    if (process.isAlive) process.destroyForcibly()
+                    runCatching { process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) }
+                    (process as? NativeSpawnProcess)?.outputFile?.delete()
                 }
-
-                val hasMoreAccounts = useAccount &&
-                    accountManager?.selectAccountForTurn(excludeAccountIds = attemptedAccountIds) != null
-
-                if (!userStopRequested && (isQuota || isAuth) && hasMoreAccounts) {
-                    currentStickyAccountId = null
-                    activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
-                    activeProcess = null
-                    eventBus.emit(
-                        RuntimeEvent.AssistantDelta(
-                            sessionId,
-                            "\n\n*[Notice: Account ${account?.displayTitle ?: ""} reached limit. Failing over to next available account…]*\n\n",
-                        ),
-                    )
-                } else if (!userStopRequested && isNetwork && networkRetries < maxNetworkRetries) {
-                    networkRetries++
-                    activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
-                    activeProcess = null
-                    eventBus.emit(
-                        RuntimeEvent.AssistantDelta(
-                            sessionId,
-                            "\n\n*[Network connection interrupted (switching connection). Reconnecting (attempt $networkRetries/$maxNetworkRetries)…]*\n\n",
-                        ),
-                    )
-                    delay(2000L)
-                } else {
-                    // Ensure active process is killed so no orphaned process runs concurrently
-                    activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
-                    val message = if (userStopRequested) "Stopped by user" else friendlyError(errorMsg)
-                    emitFailure(sessionId, message)
-                    if (userStopRequested) cancelForegroundRuntime()
-                    else finishForegroundRuntime(false, projectSlug, message)
-                    sessionCompleted = true
-                    throw error
-                }
+                activeProcess = null
+                activeSessionId = null
+                activeTaskId = null
+                RuntimeTaskController.stopAction = null
             }
         }
-        if (activeSessionId == sessionId) {
-            activeProcess = null
-            activeSessionId = null
-            activeTaskId = null
-            RuntimeTaskController.stopAction = null
-        }
-        sessionId
     }
 
     override suspend fun respondToApproval(request: ToolRequest, approved: Boolean) {

@@ -12,9 +12,10 @@ class EffortChoiceTest {
     )
 
     @Test
-    fun deepSeekHarnessHasNoEffortSetting() {
-        assertNull(effortLevelsFor(AgentKind.DEEPSEEK_HARNESS, emptyList()))
-        assertNull(normalizeEffortChoice(AgentKind.DEEPSEEK_HARNESS, "high", emptyList()))
+    fun deepSeekHarnessOffersPinnedAdapterEfforts() {
+        assertEquals(listOf("default", "off", "low", "high", "max"), effortLevelsFor(AgentKind.DEEPSEEK_HARNESS, emptyList()))
+        assertEquals("high", normalizeEffortChoice(AgentKind.DEEPSEEK_HARNESS, "high", emptyList()))
+        assertNull(normalizeEffortChoice(AgentKind.DEEPSEEK_HARNESS, "medium", emptyList()))
     }
 
     @Test

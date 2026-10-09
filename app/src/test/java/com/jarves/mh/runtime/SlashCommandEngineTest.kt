@@ -75,6 +75,20 @@ class SlashCommandEngineTest {
     }
 
     @Test
+    fun claudeTurnBudgetIsLocalAndOnlyOfferedToClaude() {
+        val parsed = requireNotNull(SlashCommandEngine.parseCommand("/turns 40"))
+        assertTrue(parsed.first.isLocalOnly)
+        assertEquals("40", parsed.second)
+        assertTrue(SlashCommandEngine.filterCommands("/turns", AgentKind.CLAUDE_CODE).any { it.name == "turns" })
+        assertTrue(SlashCommandEngine.filterCommands("/turns", AgentKind.CODEX).none { it.name == "turns" })
+        val command = ClaudeRuntimeBridge.buildClaudeCommand("claude", "model", maxTurns = 40)
+        assertEquals("40", command[command.indexOf("--max-turns") + 1])
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            ClaudeRuntimeBridge.buildClaudeCommand("claude", "model", maxTurns = 0)
+        }
+    }
+
+    @Test
     fun effortIsOfferedToEveryAgent() {
         AgentKind.entries.forEach { agent ->
             assertTrue(SlashCommandEngine.filterCommands("/effort", agent).any { it.name == "effort" })

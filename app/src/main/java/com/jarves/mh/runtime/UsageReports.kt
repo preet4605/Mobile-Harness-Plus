@@ -94,7 +94,7 @@ internal object AntigravityUsageReport {
         }
         return AgentUsage(
             limits = limits,
-            note = if (limits.isEmpty()) "No model quotas reported yet." else null,
+            note = "Account: ${account.displayTitle}" + if (limits.isEmpty()) ". No model quotas reported yet." else "",
         )
     }
 }

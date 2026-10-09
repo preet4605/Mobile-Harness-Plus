@@ -27,8 +27,8 @@ import kotlinx.coroutines.withContext
  * `codex exec --json ... -` with the prompt on stdin.
  *
  * One process per turn. The process is confined by the PRoot guest, so Codex's own sandbox is
- * off and approvals are `never`. Conversation continuity comes from the prompt context (the CLI
- * runs `--ephemeral`), exactly like the DeepSeek harness. Parsing, the watchdogs and the outcome
+ * off and approvals are `never`. Successful native threads resume within the owning chat and route;
+ * uncertain runs invalidate their reusable reference. Parsing, the watchdogs and the outcome
  * decision live in [CodexTurnRunner]; this class owns the Android side: preflight, process
  * launch, event forwarding, workspace checkpoints and cleanup.
  *
@@ -143,20 +143,28 @@ class CodexRuntimeBridge(
                 val before = checkpoints.snapshot(workspace)
 
                 val guestWorkspacePath = "/workspace/$projectSlug"
-                val contextPrompt = buildContextPrompt(injectedPrompt, conversationHistory, guestWorkspacePath, projectKind, memory)
+                val prefs = AppPreferences(context)
+                val owner = taskId?.let { com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).stateStore.get(it) }
+                val identity = if (route is CodexRoute.ChatGptLogin) File(installed.rootfs, "root/.codex/auth.json").lastModified().toString()
+                    else com.jarves.mh.data.ApiKeyVault(context).credentials(provider.secretId).firstOrNull { it.isActive }?.id.orEmpty()
+                val conversationScope = owner?.chatId?.let { NativeConversationScope.key(it, workspace, provider, identity) }
+                val savedId = conversationScope?.let { prefs.consumeAgentConversation(AgentKind.CODEX, projectId, it) }
+                val resumeId = if (owner?.retryCount == 0 && conversationHistory.count { it.fromUser } > 1)
+                    NativeConversationScope.validId(savedId) else null
+                val contextPrompt = buildContextPrompt(injectedPrompt, if (resumeId == null) conversationHistory else emptyList(), guestWorkspacePath, projectKind, memory)
                 val lastFile = File(installed.rootfs, "tmp/$LAST_MESSAGE_PREFIX$sessionId.txt").also {
                     it.parentFile?.mkdirs()
                     lastMessageFile = it
                 }
                 val capture = File(context.cacheDir, "codex-output-$sessionId.log").also { outputFile = it }
-                val prefs = AppPreferences(context)
                 val reasoningEffort = com.jarves.mh.model.codexEffortToLaunch(
                     prefs.codexReasoningEffort,
                     route.model,
                     prefs.loadModelList(AgentKind.CODEX, provider.kind, provider.baseUrl),
                 )
                 val imagePaths = CodexLaunchBuilder.imagePaths(prompt, guestWorkspacePath)
-                val command = CodexLaunchBuilder.command(route, guestWorkspacePath, "/tmp/${lastFile.name}", reasoningEffort, imagePaths)
+                val command = CodexLaunchBuilder.command(route, guestWorkspacePath, "/tmp/${lastFile.name}", reasoningEffort, imagePaths,
+                    resumeSessionId = resumeId, persistSession = true)
                 val environment = CodexLaunchBuilder.environment(route, secret)
                 Log.d(TAG, "Route: ${route::class.simpleName}, Model: ${route.model.ifBlank { "default" }}")
                 val process = installer.process(
@@ -166,6 +174,7 @@ class CodexRuntimeBridge(
                     environment,
                     command,
                     guestWorkspacePath = guestWorkspacePath,
+                credentialHome = CodexLaunchBuilder.CODEX_HOME_GUEST_PATH,
                     // Same reason as the other one-shot harnesses: PRoot's hard-link emulation can turn
                     // an atomic temp-file rename into a dangling `.l2s` symlink.
                     emulateHardLinks = false,
@@ -183,7 +192,7 @@ class CodexRuntimeBridge(
                     Log.w(TAG, "Process binding failed for task $taskId / session $sessionId (PID: ${nativeProcess.processPid})")
                 }
 
-                val mapper = CodexEventMapper(sessionId)
+                val mapper = CodexEventMapper(sessionId, guestWorkspacePath)
                 val runner = CodexTurnRunner(
                     io = NativeCodexProcessIo(nativeProcess),
                     prompt = contextPrompt,
@@ -192,6 +201,7 @@ class CodexRuntimeBridge(
                     readLastMessage = { lastFile.takeIf { it.isFile }?.readText() },
                 )
                 val result = runner.run()
+                (process as? NativeSpawnProcess)?.checkCapture()
                 Log.d(TAG, "Codex exited with code ${result.exitCode}, completed=${result.completed}")
 
                 val changed = checkpoints.changedFiles(workspace, before)
@@ -205,6 +215,7 @@ class CodexRuntimeBridge(
                 }
                 if (userStopRequested) throw CodexSessionException("Stopped by user")
                 if (!result.completed) throw CodexSessionException(result.failure.ifBlank { "Codex stopped unexpectedly." })
+                conversationScope?.let { prefs.saveAgentConversation(AgentKind.CODEX, projectId, it, NativeConversationScope.validId(result.threadId)) }
                 emitCompletedOnce(sessionId)
                 finishForegroundRuntime(
                     completed = true,
