@@ -287,7 +287,8 @@ class AntigravityAccountManager(
             if (code !in 200..299) {
                 runCatching {
                     val errBody = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                    Log.w("AntigravityAccountMgr", "Failed to refresh token for account $accountId (HTTP $code): $errBody")
+                    val errorCode = oauthErrorCodeForLog(errBody)?.let { ", error=$it" }.orEmpty()
+                    Log.w("AntigravityAccountMgr", "Failed to refresh token for account $accountId (HTTP $code$errorCode)")
                 }
                 if (code == 400 || code == 401) {
                     markAuthError(accountId, "Google OAuth token expired or revoked. Please re-authenticate.")
@@ -556,5 +557,13 @@ class AntigravityAccountManager(
         const val GOOGLE_OAUTH_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
         const val ANTIGRAVITY_CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
         const val ANTIGRAVITY_CLIENT_SECRET = "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"
+
+        private val OAuthErrorCode = Regex(""""error"\s*:\s*"([a-z_]{1,40})"""")
+
+        /**
+         * The OAuth error code (for example "invalid_grant") from a token error body, or null. Only
+         * lowercase letters and underscores match, so no token or free text reaches the log.
+         */
+        internal fun oauthErrorCodeForLog(body: String): String? = OAuthErrorCode.find(body)?.groupValues?.get(1)
     }
 }

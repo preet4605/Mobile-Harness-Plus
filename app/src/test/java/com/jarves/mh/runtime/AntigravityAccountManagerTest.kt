@@ -330,5 +330,21 @@ class AntigravityAccountManagerTest {
         assertEquals("acc-2", second?.id)
         assertEquals("acc-1", third?.id)
     }
+
+    @Test
+    fun tokenRefreshFailureLogDoesNotCarryTheRawErrorBody() {
+        val root = if (File("src/main/java").isDirectory) File("..") else File(".")
+        val source = File(root, "app/src/main/java/com/jarves/mh/runtime/AntigravityAccountManager.kt").readText()
+        val logLine = source.lines().single { it.contains("Failed to refresh token for account") }
+        assertFalse("the raw error body must not be logged: $logLine", logLine.contains("\$errBody"))
+    }
+
+    @Test
+    fun oauthErrorCodeForLogKeepsOnlyTheCodeNeverTokenText() {
+        assertEquals("invalid_grant", AntigravityAccountManager.oauthErrorCodeForLog("""{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"""))
+        assertNull(AntigravityAccountManager.oauthErrorCodeForLog("""{"access_token":"ya29.SECRET"}"""))
+        assertNull(AntigravityAccountManager.oauthErrorCodeForLog("""{"error":"ya29.SECRET-value"}"""))
+        assertNull(AntigravityAccountManager.oauthErrorCodeForLog("<html>gateway</html>"))
+    }
 }
 
