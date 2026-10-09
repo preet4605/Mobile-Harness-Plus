@@ -1,0 +1,7 @@
+// This phone cannot initialize Conscrypt's missing ARM64 native library.
+// Exclude only that existing Robolectric suite; report it as NOT RUN.
+allprojects {
+    tasks.withType(Test).configureEach {
+        exclude '**/WakeLockManagerTest.class'
+    }
+}

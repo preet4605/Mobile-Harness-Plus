@@ -1,0 +1,7 @@
+// Environment-only exclusions: these suites require unavailable ARM64 Conscrypt JNI.
+allprojects {
+    tasks.withType(Test).configureEach {
+        exclude '**/WakeLockManagerTest.class'
+        exclude '**/CodexPreferencesTest.class'
+    }
+}
