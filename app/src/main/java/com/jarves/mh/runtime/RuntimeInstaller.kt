@@ -1548,15 +1548,17 @@ class RuntimeInstaller(private val context: Context) {
             guestCommand = listOf("/usr/bin/env", "bash", "-lc", command),
             emulateHardLinks = emulateHardLinks,
         )
-        withTimeout(60_000L) {
-            while (verify.isAlive) delay(50)
+        try {
+            withTimeout(60_000L) { while (verify.isAlive) delay(50) }
+            val exit = verify.waitFor()
+            (verify as? NativeSpawnProcess)?.checkCapture()
+            val output = (verify as? NativeSpawnProcess)?.outputFile?.let(::readProcessOutputSafely).orEmpty().trim()
+            check(exit == 0) { actionableProcessError(output, failureMessage) }
+        } finally {
+            if (verify.isAlive) verify.destroyForcibly()
+            runCatching { verify.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) }
+            (verify as? NativeSpawnProcess)?.outputFile?.delete()
         }
-        val exit = verify.waitFor()
-        val output = (verify as? NativeSpawnProcess)?.outputFile
-            ?.let(::readProcessOutputSafely)
-            .orEmpty()
-            .trim()
-        check(exit == 0) { actionableProcessError(output, failureMessage) }
     }
 
     /**
@@ -1647,6 +1649,7 @@ class RuntimeInstaller(private val context: Context) {
         pseudoTerminal: Boolean = false,
         ptyRows: Int = 40,
         ptyColumns: Int = 120,
+        credentialHome: String? = null,
     ): Process {
         check(ensureRootfsCompatibilityLinks()) { "Core runtime has an invalid Linux filesystem layout" }
         require(
@@ -1686,6 +1689,18 @@ class RuntimeInstaller(private val context: Context) {
             add("${workspace.absolutePath}:$guestWorkspacePath")
             add("-b")
             add("${bridge.absolutePath}:/pocket-bridge")
+            credentialHome?.let { activeHome ->
+                val mask = File(context.cacheDir, "credential-mask").apply { mkdirs() }
+                val hidden = CredentialMounts.hiddenHomes(activeHome)
+                hidden.forEach { guestPath ->
+                    add("-b")
+                    add("${mask.absolutePath}:$guestPath")
+                }
+                if (hidden.any { activeHome.startsWith("$it/") }) {
+                    add("-b")
+                    add("${File(rootfs, activeHome.removePrefix("/")).absolutePath}:$activeHome")
+                }
+            }
             add("-w")
             add(guestWorkspacePath)
             addAll(guestCommand)

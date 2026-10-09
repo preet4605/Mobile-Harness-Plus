@@ -13,6 +13,8 @@ internal class NativeSpawnProcess private constructor(
     internal val outputFile: File,
     private val stdin: OutputStream,
     private val outputPump: Thread? = null,
+    private val captureFailed: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(),
+    private val capturePipe: File? = null,
 ) : Process() {
     val processPid: Int get() = pid
     @Volatile private var result: Int? = null
@@ -27,16 +29,16 @@ internal class NativeSpawnProcess private constructor(
 
     override fun getErrorStream(): InputStream = ByteArrayInputStream(ByteArray(0))
 
-    @Synchronized
     override fun waitFor(): Int {
-        result?.let {
-            outputPump?.join(1_000)
-            return it
+        // Do not hold the exitValue monitor during a blocking JNI wait: Stop needs it too.
+        while (true) {
+            try { return exitValue() }
+            catch (_: IllegalThreadStateException) { Thread.sleep(25) }
         }
-        return NativeSpawn.waitFor(pid, false).also {
-            result = it
-            outputPump?.join(1_000)
-        }
+    }
+
+    internal fun checkCapture() {
+        check(!captureFailed.get()) { "Runtime output exceeded its safe capture budget or could not be captured" }
     }
 
     @Synchronized
@@ -45,6 +47,11 @@ internal class NativeSpawnProcess private constructor(
         val status = NativeSpawn.waitFor(pid, true)
         if (status == NativeSpawn.STILL_RUNNING) throw IllegalThreadStateException("Process is still running")
         outputPump?.join(1_000)
+        if (outputPump?.isAlive == true) {
+            captureFailed.set(true)
+            NativeSpawn.kill(pid, 9)
+            closeStreams()
+        }
         return status.also { result = it }
     }
 
@@ -67,6 +74,12 @@ internal class NativeSpawnProcess private constructor(
     private fun closeStreams() {
         runCatching { stdin.close() }
         runCatching { cachedInputStream?.close() }
+        // Unblock a FIFO reader if the child died before opening its output descriptor.
+        capturePipe?.let { pipe -> runCatching {
+            val fd = android.system.Os.open(pipe.absolutePath,
+                android.system.OsConstants.O_WRONLY or android.system.OsConstants.O_NONBLOCK, 0)
+            android.system.Os.close(fd)
+        } }
     }
 
     override fun isAlive(): Boolean = runCatching { exitValue(); false }.getOrDefault(true)
@@ -94,51 +107,38 @@ internal class NativeSpawnProcess private constructor(
         ): NativeSpawnProcess {
             validateArgv(argv)
             outputFile.parentFile?.mkdirs()
-            if (pseudoTerminal) outputFile.delete()
-            val spawned = NativeSpawn.spawn(
-                argv.toTypedArray(),
-                environment.map { "${it.key}=${it.value}" }.toTypedArray(),
-                cwd,
-                outputFile.absolutePath,
-                pseudoTerminal,
-                ptyRows,
-                ptyColumns,
-            )
-            check(spawned.size == 3 && spawned[0] > 0) { "Native runtime launch failed" }
-            val input = ParcelFileDescriptor.AutoCloseOutputStream(ParcelFileDescriptor.adoptFd(spawned[1]))
-            val pump = spawned[2].takeIf { it >= 0 }?.let { outputFd ->
-                Thread({
-                    runCatching {
-                        ParcelFileDescriptor.AutoCloseInputStream(ParcelFileDescriptor.adoptFd(outputFd)).use { source ->
-                            FileOutputStream(outputFile, false).use { destination ->
-                                val buffer = ByteArray(8192)
-                                var totalWritten = 0L
-                                var bytesRead: Int
-                                while (source.read(buffer).also { bytesRead = it } != -1) {
-                                    if (totalWritten < MAX_OUTPUT_BYTES) {
-                                        val toWrite = if (totalWritten + bytesRead > MAX_OUTPUT_BYTES) {
-                                            (MAX_OUTPUT_BYTES - totalWritten).toInt()
-                                        } else {
-                                            bytesRead
-                                        }
-                                        destination.write(buffer, 0, toWrite)
-                                        destination.flush()
-                                        totalWritten += toWrite
-                                        if (totalWritten >= MAX_OUTPUT_BYTES) {
-                                            destination.write("\n\n[Mobile-Harness: Process output truncated at 5MB limit]\n".toByteArray())
-                                            destination.flush()
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }, "pocket-pty-output").apply {
-                    isDaemon = true
-                    start()
-                }
+            outputFile.writeBytes(ByteArray(0))
+            val pipe = if (pseudoTerminal) null else File(outputFile.parentFile, "${outputFile.name}.pipe").also {
+                android.system.Os.mkfifo(it.absolutePath, 0b110000000)
             }
-            return NativeSpawnProcess(spawned[0], outputFile, input, pump)
+            val spawned = try {
+                NativeSpawn.spawn(
+                    argv.toTypedArray(), environment.map { "${it.key}=${it.value}" }.toTypedArray(), cwd,
+                    pipe?.absolutePath ?: outputFile.absolutePath, pseudoTerminal, ptyRows, ptyColumns,
+                ).also { check(it.size == 3 && it[0] > 0) { "Native runtime launch failed" } }
+            } catch (error: Throwable) {
+                pipe?.delete()
+                outputFile.delete()
+                throw error
+            }
+            val failed = java.util.concurrent.atomic.AtomicBoolean()
+            val input = ParcelFileDescriptor.AutoCloseOutputStream(ParcelFileDescriptor.adoptFd(spawned[1]))
+            val pump = Thread({
+                try {
+                    val source = if (pipe != null) FileInputStream(pipe) else
+                        ParcelFileDescriptor.AutoCloseInputStream(ParcelFileDescriptor.adoptFd(spawned[2]))
+                    source.use { stream -> FileOutputStream(outputFile, false).use { destination ->
+                        BoundedProcessCapture.copy(stream, destination, MAX_OUTPUT_BYTES) {
+                            failed.set(true)
+                            NativeSpawn.kill(spawned[0], 9)
+                        }
+                    } }
+                } catch (_: Throwable) {
+                    failed.set(true)
+                    runCatching { NativeSpawn.kill(spawned[0], 9) }
+                } finally { pipe?.delete() }
+            }, "pocket-runtime-output").apply { isDaemon = true; start() }
+            return NativeSpawnProcess(spawned[0], outputFile, input, pump, failed, pipe)
         }
 
         fun isPidAlive(targetPid: Int): Boolean {
