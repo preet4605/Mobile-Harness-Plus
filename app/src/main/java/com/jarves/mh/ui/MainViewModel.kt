@@ -450,6 +450,9 @@ class MainViewModel(
 
     /** Bumped whenever the viewer's file changes. A read that finds a newer value publishes nothing. */
     private var fileReadGeneration = 0L
+
+    /** Bumped by each file refresh. A refresh that is no longer the newest publishes nothing. */
+    private var projectFilesGeneration = 0L
     private var projectOpenGeneration = 0L
     private val initialAgentKind = AgentKind.fromStored(preferences.agentKind)
     private val initialPrimaryAgentKind = preferences.primaryAgentKind
@@ -3625,7 +3628,11 @@ class MainViewModel(
         }
     }
 
-    fun reloadCustomizations(project: Project) {
+    /**
+     * Reads the project's rules, skills and customization config from disk and returns the state change that
+     * shows them. The caller applies it, so the disk work can run off Main and the publish can be guarded.
+     */
+    private fun customizationUpdate(project: Project): (AppUiState) -> AppUiState {
         val rootfsDir = runCatching { installer.installedRuntime().rootfs }.getOrNull()
         val workspacesBase = File(getApplication<Application>().filesDir, "workspaces")
         val workspaceDir = projectWorkspaceRoot(project)
@@ -3641,8 +3648,8 @@ class MainViewModel(
         val activeSkills = skillManager.compileActiveProjectSkills(project, config, _state.value.projects, workspacesBase, rootfsDir)
         val legacyRules = skillManager.loadProjectRules(workspaceDir)
 
-        _state.update {
-            it.copy(
+        return { state ->
+            state.copy(
                 activeCustomizationConfig = config,
                 activeRules = activeRules,
                 projectRulesList = projectRulesList,
@@ -3655,24 +3662,37 @@ class MainViewModel(
         }
     }
 
+    fun reloadCustomizations(project: Project) {
+        _state.update(customizationUpdate(project))
+    }
+
+    /** True while [project] is still the active project at the same root, so a late result may be published. */
+    private fun isCurrentProjectRoot(project: Project): Boolean {
+        val active = _state.value.activeProject ?: return false
+        return active.id == project.id && active.rootPath == project.rootPath
+    }
+
     fun refreshProjectFiles() {
         val project = _state.value.activeProject ?: return
+        val generation = ++projectFilesGeneration
         _state.update { it.copy(filesLoading = true) }
         viewModelScope.launch {
             val workspaceDir = projectWorkspaceRoot(project)
             val entries = withContext(ioDispatcher) { readWorkspace(project) }
             val suggestedRoot = withContext(ioDispatcher) { if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null }
             val androidProjectDetected = withContext(ioDispatcher) { findAndroidGradleProjectRoot(workspaceDir) != null }
-            if (_state.value.activeProject?.id == project.id) {
-                withContext(ioDispatcher) { reloadCustomizations(project) }
-                _state.update {
+            val customizations = withContext(ioDispatcher) { customizationUpdate(project) }
+            // Publish only if this is still the newest refresh and the same project root is still active.
+            if (generation != projectFilesGeneration || !isCurrentProjectRoot(project)) return@launch
+            _state.update {
+                customizations(
                     it.copy(
                         workspaceFiles = entries,
                         filesLoading = false,
                         suggestedProjectRoot = suggestedRoot,
                         androidProjectDetected = androidProjectDetected,
-                    )
-                }
+                    ),
+                )
             }
         }
     }
