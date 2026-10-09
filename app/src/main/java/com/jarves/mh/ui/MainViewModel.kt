@@ -3500,9 +3500,13 @@ class MainViewModel(
         val visible = base.listFiles().orEmpty().filterNot { file ->
             file.name == ".claude" || file.name == ".claude.json"
         }
-        val onlyDirectory = visible.singleOrNull()?.takeIf(File::isDirectory) ?: return null
+        // A symlink is never a project root, and its target may lie outside the workspace.
+        val onlyDirectory = visible.singleOrNull()
+            ?.takeIf { it.isDirectory && !Files.isSymbolicLink(it.toPath()) }
+            ?: return null
         val containsProjectFiles = onlyDirectory.walkTopDown()
             .maxDepth(2)
+            .onEnter { !Files.isSymbolicLink(it.toPath()) }
             .any { it.isFile && it.name !in setOf(".DS_Store", ".claude.json") }
         return onlyDirectory.name.takeIf { containsProjectFiles && !it.contains("..") }
     }
