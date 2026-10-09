@@ -84,7 +84,7 @@ fun MarkdownText(
     color: Color = Color.Unspecified,
     onRunCode: ((String) -> Unit)? = null,
 ) {
-    val blocks = remember(markdown) { parseMarkdown(markdown) }
+    val blocks = remember(markdown) { MarkdownParseCache.blocksFor(markdown) }
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(PocketSpacing.sm)) {
         blocks.forEach { block ->
@@ -595,6 +595,26 @@ private fun LongCodeBlock(code: String) {
     }
 }
 
+private val OrderedListItem = Regex("^([0-9]+[.)])\\s+(.*)")
+
+/**
+ * Parsed blocks by exact text. A row that leaves the list and comes back reuses its parse instead of
+ * parsing again. A streaming message changes its text and so gets a fresh entry; old entries age out.
+ */
+internal object MarkdownParseCache {
+    internal const val MAX_ENTRIES = 128
+    private val cache = object : LinkedHashMap<String, List<MarkdownBlock>>(MAX_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<MarkdownBlock>>?): Boolean =
+            size > MAX_ENTRIES
+    }
+
+    @Synchronized
+    fun blocksFor(markdown: String): List<MarkdownBlock> = cache.getOrPut(markdown) { parseMarkdown(markdown) }
+
+    @Synchronized
+    internal fun entryCount(): Int = cache.size
+}
+
 internal fun parseMarkdown(raw: String): List<MarkdownBlock> {
     val lines = raw.lines()
     val blocks = mutableListOf<MarkdownBlock>()
@@ -676,7 +696,7 @@ internal fun parseMarkdown(raw: String): List<MarkdownBlock> {
         }
 
         // Ordered List (1. item, 2. item)
-        val orderedMatch = Regex("^([0-9]+[.)])\\s+(.*)").find(trimmed)
+        val orderedMatch = OrderedListItem.find(trimmed)
         if (orderedMatch != null) {
             flushParagraph()
             val num = orderedMatch.groupValues[1]
