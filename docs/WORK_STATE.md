@@ -135,3 +135,15 @@ User authorized completing all remaining phases, final verification and one fina
 - VERIFIED: online/offline signatures match the previously verified saved certificate; all seven embedded offline archives and the online Antigravity archive match pinned sizes/hashes. Evidence retained in docs/remaining-feature-embedded-verification.log and variant signature logs.
 - Supported repair implementation and build verification are complete. Protocol/platform limits and NOT RUN real-device/live-provider/fresh-install/performance checks remain in REPAIR_STATUS_2026-10-09.md. No claims of unsupported child controls, DSH native resume or strong PRoot isolation.
 - Final status/stat/check commands ran; prior full source review retained. No commits/pushes. STOP.
+
+
+## Selective UI ports — 2026-10-10
+- User authorized pushing only root-tab cancellation and read-only initial chat positioning/scroll-observer fixes to test-ui, and clearing redundant saved edits. Started from GitHub 4ba25db; keep paged history and existing runtime behavior. Split into two focused commits.
+- Baseline list fixture: six tests, three positioning assertion failures. Initial cancellation run hit missing ARM64 Conscrypt during setup; reran with optional Robolectric Conscrypt disabled and reproduced three missing-cancellation assertions. Runtime TLS configuration unchanged.
+- Initial verification: 30 tests, two failures. Corrected cancellation to retain a fully loaded project whose job still awaits pending changes; corrected the cross-project layout test to inspect its initial position before viewport clamping. Final verification results follow.
+- Unique older opening fixture and saved work notes preserved under .review/local-preserved-2026-10-10; original review reports and checkpoints remain local. Stash will be cleared only after successful verification and push.
+- VERIFIED final focused selection: 30 tests across eight suites, zero failures/errors/skips; lintOnlineDebug passed with 124 warnings and two hints, no errors. Final source is fixed; log docs/ui-port-final-verification-2026-10-10.log. The 2,000-item fixture begins at index 1999 and does not compose item zero. No device FPS claim.
+- VERIFIED assembleOnlineDebug and assembleOnlineRelease passed (4m 57s), including release lintVital. Source/root APK comparisons, signatures, IDs and debug flags passed; no offline APK generated.
+- VERIFIED mobile-harness-dev.apk: 118977768 bytes, MD5 e0eeda42774eabbe064dec000c97b07e, package com.jarves.mh.dev. Identical root copy: app-online-debug.apk. Logs: docs/ui-port-artifacts-2026-10-10.log and variant manifest/signature logs.
+- VERIFIED mobile-harness-stable.apk: 94530920 bytes, MD5 967064ea20c6e81ec30f3239615c146a, package com.jarves.mh. Identical root copy: app-online-release.apk. Logs: docs/ui-port-artifacts-2026-10-10.log and variant manifest/signature logs.
+- NOT RUN: real-device installation, frame timing and interaction profiling. Full diff/staged scope reviewed before the two commits; push and selective stash cleanup receipt will be retained in docs/ui-port-push-cleanup-2026-10-10.log.
