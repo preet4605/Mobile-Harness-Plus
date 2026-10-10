@@ -2575,6 +2575,7 @@ class MainViewModel(
     }
 
     fun openProject(project: Project) {
+        val openStartedAt = OpenPerf.nowMs()
         val current = _state.value
         if (current.activeProject?.id == project.id) {
             dismissReadOnlyLoad()
@@ -2662,6 +2663,10 @@ class MainViewModel(
                 pendingAttachments = emptyList(),
             )
         }
+        OpenPerf.log("open ${project.slug}: shell published +${OpenPerf.nowMs() - openStartedAt} ms")
+        OpenPerf.onNextFrame {
+            OpenPerf.log("open ${project.slug}: next frame +${OpenPerf.nowMs() - openStartedAt} ms")
+        }
         refreshProjectFiles()
         projectOpenJob = viewModelScope.launch {
             val opened = runCatching {
@@ -2673,10 +2678,14 @@ class MainViewModel(
                     }
                     val activeChat = chats.first()
                     ProjectOpened(
-                        chat = LoadedChat(chats, activeChat.id, preferences.loadMessages(project.id, activeChat.id)),
-                        terminal = loadProjectTerminal(project),
+                        chat = LoadedChat(
+                            chats,
+                            activeChat.id,
+                            OpenPerf.span("open.messages") { preferences.loadMessages(project.id, activeChat.id) },
+                        ),
+                        terminal = OpenPerf.span("open.terminal") { loadProjectTerminal(project) },
                         suggestedRoot = if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null,
-                        memory = memoryStore.load(project.id),
+                        memory = OpenPerf.span("open.memory") { memoryStore.load(project.id) },
                     )
                 }
             }.getOrNull()
@@ -2685,6 +2694,7 @@ class MainViewModel(
                 _state.update { it.copy(chatLoading = false, toastMessage = "Could not load this project's chat history.") }
                 return@launch
             }
+            OpenPerf.log("open ${project.slug}: io done +${OpenPerf.nowMs() - openStartedAt} ms, ${opened.chat.messages.size} messages")
             // One update publishes the chat, its messages and the terminal together, so nothing renders half-loaded.
             _state.update {
                 it.copy(

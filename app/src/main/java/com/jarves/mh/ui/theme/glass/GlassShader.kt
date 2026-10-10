@@ -3,6 +3,7 @@ package com.jarves.mh.ui.theme.glass
 import android.graphics.RuntimeShader
 import android.os.Build
 import androidx.annotation.RequiresApi
+import com.jarves.mh.ui.OpenPerf
 
 /**
  * The glass lens, written in AGSL (Android 13+). It runs after the backdrop blur, on the
@@ -138,7 +139,10 @@ internal object GlassShaders {
     fun create(): RuntimeShader? {
         if (broken) return null
         return try {
-            RuntimeShader(GlassShaderSource)
+            val started = OpenPerf.nowMs()
+            RuntimeShader(GlassShaderSource).also {
+                OpenPerf.log("AGSL lens shader created in ${OpenPerf.nowMs() - started} ms")
+            }
         } catch (t: Throwable) {
             // A driver or test environment without AGSL: fall back to blur-only glass for good.
             broken = true

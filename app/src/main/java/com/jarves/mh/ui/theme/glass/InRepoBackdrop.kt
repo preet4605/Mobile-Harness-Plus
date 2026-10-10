@@ -67,6 +67,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toIntSize
+import com.jarves.mh.ui.OpenPerf
 import com.jarves.mh.ui.theme.PocketPalette
 
 /*
@@ -225,6 +226,7 @@ class BackdropState internal constructor(
 
     internal fun addConsumer() {
         consumers++
+        OpenPerf.log("glass consumer added, $consumers live")
         // A shape that appears after captures were skipped needs a fresh frame.
         requestCapture()
     }
@@ -451,11 +453,15 @@ internal class BackdropSourceNode(
 
         try {
             // Record the complete source subtree into the fresh capture layer
-            freshLayer.record(scaledSize) {
-                scale(scale, scale, pivot = Offset.Zero) {
-                    this@draw.drawContent()
+            val recordStart = OpenPerf.nowMs()
+            OpenPerf.span("glass.capture") {
+                freshLayer.record(scaledSize) {
+                    scale(scale, scale, pivot = Offset.Zero) {
+                        this@draw.drawContent()
+                    }
                 }
             }
+            OpenPerf.log("glass capture recorded in ${OpenPerf.nowMs() - recordStart} ms")
             lastCapturedInvalidator = invalidator
             lastCapturedSize = intSize
             lastCaptureAtMs = now
