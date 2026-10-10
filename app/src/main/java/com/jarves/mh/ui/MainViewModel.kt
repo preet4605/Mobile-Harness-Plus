@@ -2767,6 +2767,37 @@ class MainViewModel(
         }
     }
 
+    /** Dismiss an unfinished open when the user chooses another root tab. */
+    fun cancelProjectOpening() {
+        if (projectOpenJob?.isActive != true) return
+        val current = _state.value
+        if (!current.chatLoading) return
+        if (current.readOnlyProject != null) {
+            closeReadOnlyProject()
+            return
+        }
+        if (current.isRunning || current.projectTerminalRunning) return
+        projectOpenGeneration++
+        projectOpenJob?.cancel()
+        projectOpenJob = null
+        projectFilesGeneration++
+        cancelFileRead()
+        // A shell is not a loaded project. Drop it so reopening cannot take the same-project shortcut.
+        _state.update {
+            it.copy(
+                activeProject = null,
+                workspaceVisible = false,
+                projectChats = emptyList(),
+                activeChatId = null,
+                messages = emptyList(),
+                olderMessageCount = 0,
+                messageWindowKey = null,
+                chatLoading = false,
+                filesLoading = false,
+            )
+        }
+    }
+
     fun closeProject() {
         val active = _state.value.activeProject
         // A write that is queued or still flushing is not on disk yet, so the emptiness check must not trust the disk.

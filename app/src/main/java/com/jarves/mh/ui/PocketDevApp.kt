@@ -386,7 +386,13 @@ private fun RootScreenHost(
                     FloatingTabBar(
                         tabs = RootScreen.entries.map { TabItem(it.label, it.icon, it.selectedIcon) },
                         selectedIndex = screen.ordinal,
-                        onSelect = { screen = RootScreen.entries[it] },
+                        onSelect = {
+                            val next = RootScreen.entries[it]
+                            if (next != screen) {
+                                viewModel.cancelProjectOpening()
+                                screen = next
+                            }
+                        },
                         minimized = minimize.minimized,
                         onExpand = minimize::expand,
                         accessory = {
