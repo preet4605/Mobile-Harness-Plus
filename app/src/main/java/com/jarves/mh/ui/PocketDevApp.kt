@@ -287,6 +287,7 @@ private fun AppScreen(
             onKeepFileChange = viewModel::keepFileChange,
             onCreateChat = viewModel::createChat,
             onSwitchChat = viewModel::switchChat,
+            onLoadOlderMessages = viewModel::loadOlderMessages,
             onTerminalRun = viewModel::requestProjectTerminalCommand,
             onTerminalInput = viewModel::sendProjectTerminalInput,
             onTerminalInterrupt = viewModel::interruptProjectTerminalCommand,

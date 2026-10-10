@@ -115,6 +115,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -563,6 +564,7 @@ internal fun WorkspaceScreen(
     onKeepFileChange: (String) -> Unit,
     onCreateChat: () -> Unit,
     onSwitchChat: (String) -> Unit,
+    onLoadOlderMessages: () -> Unit = {},
     onTerminalRun: (String) -> Unit,
     onTerminalInput: (String) -> Unit,
     onTerminalInterrupt: () -> Unit,
@@ -929,6 +931,8 @@ internal fun WorkspaceScreen(
                                     topClearance = top,
                                     bottomBarClearance = bottomBar,
                                     loading = state.chatLoading,
+                                    hasOlderMessages = state.olderMessageCount > 0,
+                                    onLoadOlderMessages = onLoadOlderMessages,
                                 )
                                 WorkspaceTab.FILES -> FilesTab(
                                     files = state.workspaceFiles,
@@ -1448,6 +1452,9 @@ private fun ChatLoadingPlaceholder() {
     }
 }
 
+/** Older messages start loading when the first visible row is this close to the top of what is loaded. */
+private const val OLDER_MESSAGES_PREFETCH_ROWS = 5
+
 internal fun sanitizeChatTabMessages(messages: List<ChatMessage>): List<ChatMessage> {
     if (messages.isEmpty()) return messages
     val seen = HashSet<String>(messages.size)
@@ -1502,6 +1509,8 @@ private fun ChatTab(
     activeChatId: String? = null,
     topClearance: Dp = 0.dp,
     bottomBarClearance: Dp = 0.dp,
+    hasOlderMessages: Boolean = false,
+    onLoadOlderMessages: () -> Unit = {},
 ) {
     val view = LocalView.current
     // Keep the screen on while the selected agent is working in this chat. Released automatically
@@ -1534,6 +1543,14 @@ private fun ChatTab(
         if (backdrop == null) return@LaunchedEffect
         snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
             .collect { backdrop.requestCapture() }
+    }
+    // Older messages stay on disk until the reader nears the top. Rows are keyed, so the list keeps the row on screen
+    // in place as older ones arrive above it. Restarting on each new row asks again if the reader is still near the top.
+    val loadOlder by rememberUpdatedState(onLoadOlderMessages)
+    LaunchedEffect(listState, hasOlderMessages, safeMessages.size) {
+        if (!hasOlderMessages) return@LaunchedEffect
+        snapshotFlow { listState.firstVisibleItemIndex < OLDER_MESSAGES_PREFETCH_ROWS }
+            .collect { nearTop -> if (nearTop) loadOlder() }
     }
     // Height of everything floating at the bottom: the composer stack plus the keyboard, tab bar or
     // navigation bar below it. Measured, so the last message always scrolls clear of the chrome.
