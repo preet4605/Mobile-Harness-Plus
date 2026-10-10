@@ -195,19 +195,31 @@ private data class RuntimeRetryRequest(
     val fallbackProfiles: List<com.jarves.mh.provider.CustomProviderProfile> = emptyList(),
     /** Redacted record of every failure that caused a key or provider switch. */
     val failureChain: List<String> = emptyList(),
+    /** Messages of the chat that were not loaded when the task started; read for the prompt when the session starts. */
+    val olderHistory: OlderHistory? = null,
 )
 
+/** The first [endIndex] messages of a chat, still on disk. */
+private data class OlderHistory(
+    val projectId: String,
+    val chatId: String,
+    val endIndex: Int,
+)
+
+/** A chat transcript to save: [messages] are the chat's messages from [startIndex] on. */
 private data class TranscriptWrite(
     val projectId: String,
     val chatId: String,
     val messages: List<ChatMessage>,
+    val startIndex: Int,
 )
 
-/** Chat history read off the main thread when a project opens. */
+/** Chat history read off the main thread when a project opens: the newest messages, from [startIndex] on. */
 private data class LoadedChat(
     val chats: List<ProjectChat>,
     val chatId: String,
     val messages: List<ChatMessage>,
+    val startIndex: Int,
 )
 
 private data class ProjectDetails(
@@ -269,6 +281,10 @@ data class AppUiState(
     val messages: List<ChatMessage> = listOf(
         ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change."),
     ),
+    /** Messages of the active chat that are saved but not loaded. They all come before [messages]. */
+    val olderMessageCount: Int = 0,
+    /** The "projectId/chatId" [olderMessageCount] belongs to. A save for any other chat starts at its first message. */
+    val messageWindowKey: String? = null,
     val pendingAttachments: List<ChatAttachment> = emptyList(),
     val pendingApproval: ToolRequest? = null,
     val changes: List<ChangeItem> = emptyList(),
@@ -444,6 +460,12 @@ class MainViewModel(
     private val previewDiscoveryJobs = mutableMapOf<String, Job>()
     /** The project open in flight. A newer open or a close cancels it; [projectOpenGeneration] drops late results. */
     private var projectOpenJob: Job? = null
+
+    /** The chat switch in flight. [projectOpenGeneration] drops its result if the chat changes again first. */
+    private var chatSwitchJob: Job? = null
+
+    /** The older-messages read in flight. Its result publishes only if the chat and its window are unchanged. */
+    private var olderMessagesJob: Job? = null
 
     /** The file read in flight. Selecting or closing a file, or switching project, cancels it. */
     private var fileReadJob: Job? = null
@@ -2608,7 +2630,7 @@ class MainViewModel(
                             listOf(ProjectChat(title = "Main chat"))
                         }
                         val chat = chats.first()
-                        LoadedChat(chats, chat.id, preferences.loadMessages(project.id, chat.id))
+                        LoadedChat(chats, chat.id, preferences.loadMessages(project.id, chat.id), startIndex = 0)
                     }
                 }.getOrNull()
                 if (generation != projectOpenGeneration) return@launch
@@ -2640,6 +2662,8 @@ class MainViewModel(
                 activeChatId = null,
                 contextMemory = ContextMemory(""),
                 messages = emptyList(),
+                olderMessageCount = 0,
+                messageWindowKey = null,
                 chatLoading = true,
                 liveProcess = emptyList(),
                 liveThinking = false,
@@ -2677,11 +2701,11 @@ class MainViewModel(
                         listOf(ProjectChat(title = "Main chat")).also { preferences.saveProjectChats(project.id, it) }
                     }
                     val activeChat = chats.first()
-                    LoadedChat(
-                        chats,
-                        activeChat.id,
-                        OpenPerf.span("open.messages") { preferences.loadMessages(project.id, activeChat.id) },
-                    )
+                    // Only the newest messages: older ones load as the user scrolls up.
+                    val window = OpenPerf.span("open.messages") {
+                        preferences.loadMessageWindow(project.id, activeChat.id, CHAT_WINDOW_MIN_MESSAGES)
+                    }
+                    LoadedChat(chats, activeChat.id, window.messages, window.startIndex)
                 }
             }.getOrNull()
             if (generation != projectOpenGeneration) return@launch
@@ -2689,7 +2713,10 @@ class MainViewModel(
                 _state.update { it.copy(chatLoading = false, toastMessage = "Could not load this project's chat history.") }
                 return@launch
             }
-            OpenPerf.log("open ${project.slug}: chat ready +${OpenPerf.nowMs() - openStartedAt} ms, ${chat.messages.size} messages")
+            OpenPerf.log(
+                "open ${project.slug}: chat ready +${OpenPerf.nowMs() - openStartedAt} ms, " +
+                    "${chat.messages.size} messages loaded, ${chat.startIndex} older on disk",
+            )
             // chatLoading stays true until phase 2 publishes memory, so sending and new chats wait for it.
             _state.update {
                 it.copy(
@@ -2698,6 +2725,8 @@ class MainViewModel(
                     messages = chat.messages.ifEmpty {
                         listOf(ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change."))
                     },
+                    olderMessageCount = chat.startIndex,
+                    messageWindowKey = messageWindowKey(project.id, chat.chatId),
                 )
             }
             // Phase 2: the terminal, nested root and memory. These can take longer than the chat.
@@ -2784,6 +2813,7 @@ class MainViewModel(
 
         projectOpenGeneration++
         projectOpenJob?.cancel()
+        chatSwitchJob?.cancel()
         cancelFileRead()
         _state.update {
             it.copy(
@@ -2886,6 +2916,8 @@ class MainViewModel(
                 workspaceVisible = true,
                 contextMemory = ContextMemory(project.id),
                 messages = listOf(ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change.")),
+                olderMessageCount = 0,
+                messageWindowKey = null,
                 liveProcess = emptyList(),
                 liveThinking = false,
                 taskStartedAtMillis = null,
@@ -3636,6 +3668,8 @@ class MainViewModel(
                 projectChats = chats,
                 activeChatId = chat.id,
                 messages = listOf(ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change.")),
+                olderMessageCount = 0,
+                messageWindowKey = null,
                 liveProcess = emptyList(),
                 liveThinking = false,
                 taskStartedAtMillis = null,
@@ -3651,12 +3685,21 @@ class MainViewModel(
         val project = current.activeProject ?: return
         if (current.isRunning || current.activeChatId == chatId) return
         val chat = current.projectChats.firstOrNull { it.id == chatId } ?: return
+        // A switch would drop the open's second phase, which ends the loading state; wait for it instead.
+        if (current.chatLoading) {
+            _state.update { it.copy(toastMessage = "Chat history has not loaded yet.") }
+            return
+        }
         persistMessages()
-        val saved = preferences.loadMessages(project.id, chat.id)
+        val generation = ++projectOpenGeneration
+        // No chat is active until its messages load, so nothing is saved over it in the meantime.
         _state.update {
             it.copy(
-                activeChatId = chat.id,
-                messages = saved.ifEmpty { listOf(ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change.")) },
+                activeChatId = null,
+                messages = emptyList(),
+                olderMessageCount = 0,
+                messageWindowKey = null,
+                chatLoading = true,
                 liveProcess = emptyList(),
                 liveThinking = false,
                 taskStartedAtMillis = null,
@@ -3665,6 +3708,68 @@ class MainViewModel(
                 pendingAttachments = emptyList(),
             )
         }
+        chatSwitchJob = viewModelScope.launch {
+            val window = runCatching {
+                withContext(ioDispatcher) { preferences.loadMessageWindow(project.id, chat.id, CHAT_WINDOW_MIN_MESSAGES) }
+            }.getOrNull()
+            if (generation != projectOpenGeneration) return@launch
+            if (window == null) {
+                _state.update { it.copy(chatLoading = false, toastMessage = "Could not load this chat.") }
+                return@launch
+            }
+            _state.update {
+                it.copy(
+                    activeChatId = chat.id,
+                    messages = window.messages.ifEmpty {
+                        listOf(ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change."))
+                    },
+                    olderMessageCount = window.startIndex,
+                    messageWindowKey = messageWindowKey(project.id, chat.id),
+                    chatLoading = false,
+                )
+            }
+        }
+    }
+
+    /**
+     * Loads saved messages older than the ones shown, a few pages at a time, when the user scrolls near the top.
+     * The result is dropped if the chat or its loaded window changed meanwhile.
+     */
+    fun loadOlderMessages() {
+        val current = _state.value
+        val project = current.activeProject ?: return
+        val chatId = current.activeChatId ?: return
+        val key = messageWindowKey(project.id, chatId)
+        val before = current.olderMessageCount
+        if (before <= 0 || current.messageWindowKey != key || current.chatLoading) return
+        if (olderMessagesJob?.isActive == true) return
+        olderMessagesJob = viewModelScope.launch {
+            val older = runCatching {
+                withContext(ioDispatcher) { preferences.loadOlderMessages(project.id, chatId, before, OLDER_MESSAGES_MIN) }
+            }.getOrNull() ?: return@launch
+            if (older.messages.isEmpty()) return@launch
+            _state.update {
+                if (it.activeProject?.id != project.id || it.activeChatId != chatId ||
+                    it.messageWindowKey != key || it.olderMessageCount != before
+                ) {
+                    it
+                } else {
+                    it.copy(messages = older.messages + it.messages, olderMessageCount = older.startIndex)
+                }
+            }
+        }
+    }
+
+    private fun messageWindowKey(projectId: String, chatId: String): String = "$projectId/$chatId"
+
+    /**
+     * The conversation history a session starts with: the messages loaded when the task started, preceded by what the
+     * prompt's history budget needs from the older messages still on disk. Runs on the task's thread, not Main.
+     */
+    private fun promptHistory(request: RuntimeRetryRequest): List<ChatMessage> {
+        val older = request.olderHistory ?: return request.history
+        val saved = runCatching { preferences.loadPromptHistory(older.projectId, older.chatId, older.endIndex) }.getOrDefault(emptyList())
+        return saved + request.history
     }
 
     /**
@@ -3932,8 +4037,9 @@ class MainViewModel(
             val (added, errors) = result
             var acceptedIds = emptySet<String>()
             _state.update { state ->
+                // The newest message tells whether the conversation moved on; older messages loading above it do not count.
                 if (state.activeProject?.id != project.id || state.activeChatId != chatId ||
-                    state.isRunning || state.messages !== importMessages) return@update state
+                    state.isRunning || state.messages.lastOrNull() !== importMessages.lastOrNull()) return@update state
                 val capacity = (MAX_ATTACHMENTS_PER_MESSAGE - state.pendingAttachments.size).coerceAtLeast(0)
                 val accepted = added.take(capacity)
                 acceptedIds = accepted.map { it.id }.toSet()
@@ -4415,6 +4521,9 @@ class MainViewModel(
                 _state.update {
                     it.copy(
                         messages = listOf(ChatMessage(fromUser = false, text = "Conversation history cleared. Workspace files are preserved.")),
+                        // The cleared chat starts over at its first message, so the save drops the older pages too.
+                        olderMessageCount = 0,
+                        messageWindowKey = null,
                         subagents = emptyList(),
                         backgroundTasks = emptyList(),
                         artifacts = emptyList(),
@@ -4892,7 +5001,16 @@ class MainViewModel(
         }
         touchProject(project.id)
         persistMessages()
-        val history = state.value.messages // includes all messages up to now
+        val history = state.value.messages // the loaded messages, up to and including this prompt
+        // Older messages stay on disk; the session reads what the prompt's history needs when it starts.
+        val olderHistory = state.value.let { current ->
+            val chatId = current.activeChatId
+            if (chatId != null && current.olderMessageCount > 0 && current.messageWindowKey == messageWindowKey(project.id, chatId)) {
+                OlderHistory(project.id, chatId, current.olderMessageCount)
+            } else {
+                null
+            }
+        }
 
         // Inject active rules and skills progressive disclosure index
         val rulesBlock = skillManager.buildRulesBlock(_state.value.activeRules)
@@ -4942,6 +5060,7 @@ class MainViewModel(
             project = project,
             prompt = runtimePrompt,
             history = history,
+            olderHistory = olderHistory,
             provider = state.value.provider,
             memory = state.value.contextMemory,
             taskId = taskRecord.taskId,
@@ -4986,7 +5105,7 @@ class MainViewModel(
                     request.project.slug,
                     request.project.kind,
                     request.prompt,
-                    request.history,
+                    promptHistory(request),
                     request.provider,
                     request.memory,
                     task.taskId,
@@ -5718,7 +5837,9 @@ class MainViewModel(
             val startedAt = current.workSegmentStartedAtMillis ?: current.taskStartedAtMillis ?: System.currentTimeMillis()
             current.messages + createInterruptedMessage(startedAt, liveItems)
         }
-        val write = TranscriptWrite(project.id, chatId, messages)
+        // Messages before the loaded window stay on disk; the save starts where the window starts.
+        val startIndex = if (current.messageWindowKey == messageWindowKey(project.id, chatId)) current.olderMessageCount else 0
+        val write = TranscriptWrite(project.id, chatId, messages, startIndex)
         pendingTranscriptWrite = write
         if (immediate) {
             transcriptDebounceJob?.cancel()
@@ -5737,7 +5858,7 @@ class MainViewModel(
         val write = pendingTranscriptWrite ?: return
         pendingTranscriptWrite = null
         runCatching {
-            preferences.saveMessages(write.projectId, write.chatId, write.messages)
+            preferences.saveMessages(write.projectId, write.chatId, write.messages, write.startIndex)
         }
     }
 
@@ -5820,6 +5941,10 @@ class MainViewModel(
         private const val MAX_PROJECT_TERMINAL_HISTORY = 100
         private const val MAX_PROJECT_TERMINAL_OUTPUT = 200_000
         private const val MAX_ATTACHMENTS_PER_MESSAGE = 5
+        /** Opening a chat loads at least this many of its newest messages; older ones load as the user scrolls up. */
+        private const val CHAT_WINDOW_MIN_MESSAGES = 15
+        /** Each scroll-up load adds at least this many older messages. */
+        private const val OLDER_MESSAGES_MIN = 30
         private const val MAX_IMPORTED_PROJECT_BYTES = 8L * 1024L * 1024L * 1024L
         private const val MAX_IMPORTED_ZIP_ENTRIES = 100_000
         private const val AUTO_OPEN_DEDUPE_MS = 15_000L
