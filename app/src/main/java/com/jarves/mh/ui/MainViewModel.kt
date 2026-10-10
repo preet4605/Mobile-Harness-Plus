@@ -210,8 +210,7 @@ private data class LoadedChat(
     val messages: List<ChatMessage>,
 )
 
-private data class ProjectOpened(
-    val chat: LoadedChat,
+private data class ProjectDetails(
     val terminal: ProjectTerminalSnapshot,
     val suggestedRoot: String?,
     val memory: ContextMemory,
@@ -2669,7 +2668,8 @@ class MainViewModel(
         }
         refreshProjectFiles()
         projectOpenJob = viewModelScope.launch {
-            val opened = runCatching {
+            // Phase 1: the chat list and its messages, so the chat body appears without waiting for the terminal or memory.
+            val chat = runCatching {
                 withContext(ioDispatcher) {
                     // Bridge roots are configured off Main, before anything in this project reads them.
                     configureBridgeRoots(project.id, project.rootPath)
@@ -2677,12 +2677,33 @@ class MainViewModel(
                         listOf(ProjectChat(title = "Main chat")).also { preferences.saveProjectChats(project.id, it) }
                     }
                     val activeChat = chats.first()
-                    ProjectOpened(
-                        chat = LoadedChat(
-                            chats,
-                            activeChat.id,
-                            OpenPerf.span("open.messages") { preferences.loadMessages(project.id, activeChat.id) },
-                        ),
+                    LoadedChat(
+                        chats,
+                        activeChat.id,
+                        OpenPerf.span("open.messages") { preferences.loadMessages(project.id, activeChat.id) },
+                    )
+                }
+            }.getOrNull()
+            if (generation != projectOpenGeneration) return@launch
+            if (chat == null) {
+                _state.update { it.copy(chatLoading = false, toastMessage = "Could not load this project's chat history.") }
+                return@launch
+            }
+            OpenPerf.log("open ${project.slug}: chat ready +${OpenPerf.nowMs() - openStartedAt} ms, ${chat.messages.size} messages")
+            // chatLoading stays true until phase 2 publishes memory, so sending and new chats wait for it.
+            _state.update {
+                it.copy(
+                    projectChats = chat.chats,
+                    activeChatId = chat.chatId,
+                    messages = chat.messages.ifEmpty {
+                        listOf(ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change."))
+                    },
+                )
+            }
+            // Phase 2: the terminal, nested root and memory. These can take longer than the chat.
+            val details = runCatching {
+                withContext(ioDispatcher) {
+                    ProjectDetails(
                         terminal = OpenPerf.span("open.terminal") { loadProjectTerminal(project) },
                         suggestedRoot = if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null,
                         memory = OpenPerf.span("open.memory") { memoryStore.load(project.id) },
@@ -2690,24 +2711,18 @@ class MainViewModel(
                 }
             }.getOrNull()
             if (generation != projectOpenGeneration) return@launch
-            if (opened == null) {
-                _state.update { it.copy(chatLoading = false, toastMessage = "Could not load this project's chat history.") }
+            if (details == null) {
+                _state.update { it.copy(chatLoading = false, toastMessage = "Could not load this project's terminal and memory.") }
                 return@launch
             }
-            OpenPerf.log("open ${project.slug}: io done +${OpenPerf.nowMs() - openStartedAt} ms, ${opened.chat.messages.size} messages")
-            // One update publishes the chat, its messages and the terminal together, so nothing renders half-loaded.
+            OpenPerf.log("open ${project.slug}: details ready +${OpenPerf.nowMs() - openStartedAt} ms")
             _state.update {
                 it.copy(
-                    projectChats = opened.chat.chats,
-                    activeChatId = opened.chat.chatId,
-                    contextMemory = opened.memory,
-                    messages = opened.chat.messages.ifEmpty {
-                        listOf(ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change."))
-                    },
+                    contextMemory = details.memory,
                     chatLoading = false,
-                    projectTerminalLines = opened.terminal.lines,
-                    projectTerminalCwd = opened.terminal.cwd,
-                    suggestedProjectRoot = opened.suggestedRoot,
+                    projectTerminalLines = details.terminal.lines,
+                    projectTerminalCwd = details.terminal.cwd,
+                    suggestedProjectRoot = details.suggestedRoot,
                 )
             }
             // Pending changes read the bridge root, so they load only after it is configured above.
