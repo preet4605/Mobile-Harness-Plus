@@ -479,14 +479,10 @@ internal fun ReadOnlyProjectScreen(
     BackHandler(onBack = onBack)
     val project = state.readOnlyProject ?: return
     val activeChat = state.readOnlyProjectChats.firstOrNull { it.id == state.readOnlyChatId }
-    val listState = rememberLazyListState()
+    val listState = rememberChatListState(state.readOnlyChatId, state.readOnlyMessages.size, project.id)
     var showChats by rememberSaveable { mutableStateOf(false) }
     val chatsAnchor = rememberOverlayAnchor()
     val (barHeight, onBarSize) = rememberBarHeight()
-
-    LaunchedEffect(state.readOnlyChatId) {
-        if (state.readOnlyMessages.isNotEmpty()) listState.scrollToItem(state.readOnlyMessages.lastIndex)
-    }
 
     ChatsSheet(
         visible = showChats,
@@ -628,9 +624,7 @@ internal fun WorkspaceScreen(
         (if (state.liveProcess.isNotEmpty() || state.liveThinking) 1 else 0) +
         (if (state.pendingApproval != null) 1 else 0)
     // Keyed by project and chat, so a chat opens on its newest message rather than on the first one.
-    val chatListState = key(state.activeProject?.id, state.activeChatId) {
-        rememberLazyListState(initialFirstVisibleItemIndex = (chatItemCount - 1).coerceAtLeast(0))
-    }
+    val chatListState = rememberChatListState(state.activeChatId, chatItemCount, state.activeProject?.id)
     val filesListState = rememberLazyListState()
     var userScrolledUp by rememberSaveable { mutableStateOf(false) }
 
@@ -640,7 +634,7 @@ internal fun WorkspaceScreen(
     }
 
     // When the user actively scrolls/touches the screen, detect if they scrolled up to read thinking/messages.
-    LaunchedEffect(chatListState.isScrollInProgress) {
+    LaunchedEffect(chatListState, chatListState.isScrollInProgress) {
         if (chatListState.isScrollInProgress) {
             if (chatListState.canScrollForward) {
                 userScrolledUp = true
@@ -655,6 +649,7 @@ internal fun WorkspaceScreen(
 
     // Follow new tokens/updates only when user is at the bottom and has not scrolled up to read.
     LaunchedEffect(
+        chatListState,
         state.messages.size,
         state.messages.lastOrNull()?.text?.length,
         state.liveProcess.size,
@@ -1528,7 +1523,7 @@ private fun ChatTab(
     }
     val chatScope = rememberCoroutineScope()
     // True while the newest item (message, live panel, or approval card) is on screen.
-    val readerAtBottom by remember {
+    val readerAtBottom by remember(listState) {
         derivedStateOf {
             !listState.canScrollForward
         }
