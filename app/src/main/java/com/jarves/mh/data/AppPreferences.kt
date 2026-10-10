@@ -27,6 +27,9 @@ import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
+/** Part of a chat: [messages] are the chat's messages from index [startIndex] on, in order. */
+class ChatMessageWindow(val startIndex: Int, val messages: List<ChatMessage>)
+
 class AppPreferences(
     private val context: Context? = null,
     baseChatsDir: File? = null,
@@ -790,11 +793,246 @@ class AppPreferences(
         }
     }
 
+    /**
+     * Saves a chat's messages from [startIndex] on. Messages before [startIndex] stay as they are on disk, so a caller
+     * holding only the newest messages never drops the older ones. [startIndex] must be a page boundary within the
+     * saved chat; 0 replaces the whole chat. Only pages whose messages changed are rewritten.
+     */
     @Synchronized
-    fun saveMessages(projectId: String, chatId: String, messages: List<ChatMessage>) {
+    fun saveMessages(projectId: String, chatId: String, messages: List<ChatMessage>, startIndex: Int = 0) {
         val (repairedMessages, _) = repairDuplicateMessageIds(messages)
+        val dir = chatPagesDir(projectId, chatId)
+        val legacy = legacyChatFile(projectId, chatId)
+        val committed = readChatPagesMeta(dir) ?: if (legacy.exists()) null else recoverChatPagesMeta(dir)
+        val pageSize = committed?.pageSize ?: CHAT_PAGE_SIZE
+        if (startIndex < 0 || startIndex % pageSize != 0 || startIndex > (committed?.count ?: 0)) {
+            logChatFileProblem(dir, "refused a save from message $startIndex; it would leave a gap")
+            throw IllegalArgumentException("Chat save must start on a saved page boundary, not at $startIndex")
+        }
+        // Before the first paged save, the single-file chat is still the source: keep a copy if it is damaged.
+        val supersedesLegacy = committed == null && legacy.exists()
+        if (supersedesLegacy) backupUnverifiedChatFile(legacy)
+        writeChatPages(dir, repairedMessages, startIndex, pageSize)
+        if (supersedesLegacy) {
+            verifiedChatFiles.remove(legacy.path)
+            if (!legacy.delete()) logChatFileProblem(legacy, "replaced by pages; the old file could not be removed")
+        }
+    }
+
+    /**
+     * The chat's newest messages: whole pages from the end until at least [minMessages] are loaded, or the chat's
+     * start is reached. A chat in the old single-file format is moved to pages first.
+     */
+    @Synchronized
+    fun loadMessageWindow(projectId: String, chatId: String, minMessages: Int): ChatMessageWindow =
+        when (val source = openChatSource(projectId, chatId)) {
+            is ChatSource.Whole -> ChatMessageWindow(0, source.messages)
+            is ChatSource.Pages -> readPagesBackward(chatPagesDir(projectId, chatId), source.meta, source.meta.count, minMessages).window
+        }
+
+    /** Whole pages before [beforeIndex], newest first, until at least [minMessages] are loaded or the chat's start is reached. */
+    @Synchronized
+    fun loadOlderMessages(projectId: String, chatId: String, beforeIndex: Int, minMessages: Int): ChatMessageWindow {
+        val meta = (openChatSource(projectId, chatId) as? ChatSource.Pages)?.meta
+            ?: return ChatMessageWindow(beforeIndex, emptyList())
+        if (beforeIndex <= 0 || beforeIndex % meta.pageSize != 0 || beforeIndex > meta.count) {
+            return ChatMessageWindow(beforeIndex, emptyList())
+        }
+        return readPagesBackward(chatPagesDir(projectId, chatId), meta, beforeIndex, minMessages).window
+    }
+
+    /**
+     * Messages before [endIndex] for a prompt's conversation history, without reading the whole chat: the newest pages
+     * until their text covers [budgetChars], plus the first page, which holds the conversation's opening goal. Pages in
+     * between would not fit the history budget.
+     */
+    @Synchronized
+    fun loadPromptHistory(
+        projectId: String,
+        chatId: String,
+        endIndex: Int,
+        budgetChars: Int = PromptContextSupport.HISTORY_MAX_CHARS,
+    ): List<ChatMessage> {
+        val meta = when (val source = openChatSource(projectId, chatId)) {
+            is ChatSource.Whole -> return source.messages.take(endIndex)
+            is ChatSource.Pages -> source.meta
+        }
+        val dir = chatPagesDir(projectId, chatId)
+        val end = endIndex.coerceAtMost(meta.count)
+        val pages = ArrayDeque<List<ChatMessage>>()
+        var chars = 0
+        var page = (end - 1) / meta.pageSize
+        while (end > 0 && page >= 0 && chars < budgetChars) {
+            val messages = readChatPage(dir, page, meta).messages.take(end - page * meta.pageSize)
+            pages.addFirst(messages)
+            chars += messages.sumOf { message ->
+                if (PromptContextSupport.isHistoryNoise(message)) 0 else minOf(message.text.length, PromptContextSupport.HISTORY_MAX_MESSAGE_CHARS)
+            }
+            page--
+        }
+        if (page >= 0) pages.addFirst(readChatPage(dir, 0, meta).messages)
+        return pages.flatten()
+    }
+
+    /** Where a chat's messages are: committed pages, or a whole list read from the old single-file format. */
+    private sealed interface ChatSource {
+        class Pages(val meta: ChatPagesMeta) : ChatSource
+        class Whole(val messages: List<ChatMessage>) : ChatSource
+    }
+
+    /** A chat's page size and message count, from its `meta.json`. */
+    private class ChatPagesMeta(val pageSize: Int, val count: Int)
+
+    private class PagesRead(val window: ChatMessageWindow, val clean: Boolean)
+
+    private class PageRead(val messages: List<ChatMessage>, val clean: Boolean)
+
+    private fun chatPagesDir(projectId: String, chatId: String): File = File(File(chatsDir, projectId), "$chatId$CHAT_PAGES_SUFFIX")
+
+    /** The single-file chat format used before pages. Still read, and moved to pages on first load. */
+    private fun legacyChatFile(projectId: String, chatId: String): File = File(File(chatsDir, projectId), "$chatId.json")
+
+    private fun chatPageFile(dir: File, page: Int): File = File(dir, String.format(java.util.Locale.ROOT, "%08d.json", page))
+
+    private fun readChatPagesMeta(dir: File): ChatPagesMeta? = runCatching {
+        val obj = JSONObject(File(dir, CHAT_PAGES_META).readText())
+        val pageSize = obj.getInt("pageSize")
+        val count = obj.getInt("count")
+        require(pageSize > 0 && count >= 0)
+        ChatPagesMeta(pageSize, count)
+    }.getOrNull()
+
+    /** The chat as pages, moving an old single-file chat to pages first. */
+    private fun openChatSource(projectId: String, chatId: String): ChatSource {
+        val dir = chatPagesDir(projectId, chatId)
+        readChatPagesMeta(dir)?.let { return ChatSource.Pages(it) }
+        val legacy = legacyChatFile(projectId, chatId)
+        if (legacy.exists()) return migrateLegacyChat(legacy, dir)
+        return ChatSource.Pages(recoverChatPagesMeta(dir))
+    }
+
+    /**
+     * Moves a single-file chat to pages. A file that is not a chat list is left exactly as it is; the first save backs
+     * it up and replaces it. A file with unreadable entries is copied aside first. If the pages cannot be written, the
+     * messages are served from the old file, which stays the source.
+     */
+    private fun migrateLegacyChat(legacy: File, dir: File): ChatSource {
+        val decoded = decodeChatFile(legacy)
+        if (decoded.unreadable) {
+            verifiedChatFiles.remove(legacy.path)
+            return ChatSource.Whole(emptyList())
+        }
+        val messages = repairDuplicateMessageIds(decoded.messages).first
+        val migrated = runCatching {
+            if (!decoded.isClean) legacy.copyTo(corruptBackupTarget(legacy), overwrite = true)
+            writeChatPages(dir, messages, startIndex = 0, pageSize = CHAT_PAGE_SIZE)
+        }
+        if (migrated.isFailure) {
+            logChatFileProblem(legacy, "could not move to pages: ${migrated.exceptionOrNull()?.javaClass?.simpleName}")
+            return ChatSource.Whole(messages)
+        }
+        // The pages and their meta are committed. If the delete fails, the meta still wins on the next load.
+        verifiedChatFiles.remove(legacy.path)
+        if (!legacy.delete()) logChatFileProblem(legacy, "moved to pages; the old file could not be removed")
+        return ChatSource.Pages(ChatPagesMeta(CHAT_PAGE_SIZE, messages.size))
+    }
+
+    /** A pages folder without a readable meta: a first save stopped before its meta. The pages from 0 that exist are the chat. */
+    private fun recoverChatPagesMeta(dir: File): ChatPagesMeta {
+        var pages = 0
+        while (chatPageFile(dir, pages).isFile) pages++
+        if (pages == 0) return ChatPagesMeta(CHAT_PAGE_SIZE, 0)
+        val last = decodeChatFile(chatPageFile(dir, pages - 1)).messages.size
+        logChatFileProblem(dir, "no readable meta; using $pages page(s) found on disk")
+        return ChatPagesMeta(CHAT_PAGE_SIZE, (pages - 1) * CHAT_PAGE_SIZE + last)
+    }
+
+    /** Reads whole pages backwards from the page holding message [endIndex] - 1 until [minMessages] are loaded. */
+    private fun readPagesBackward(dir: File, meta: ChatPagesMeta, endIndex: Int, minMessages: Int): PagesRead {
+        val pages = ArrayDeque<List<ChatMessage>>()
+        var loaded = 0
+        var clean = true
+        var page = (endIndex - 1) / meta.pageSize
+        while (endIndex > 0 && page >= 0 && loaded < minMessages) {
+            val read = readChatPage(dir, page, meta)
+            pages.addFirst(read.messages)
+            loaded += read.messages.size
+            clean = clean && read.clean
+            page--
+        }
+        val start = if (endIndex > 0) (page + 1) * meta.pageSize else 0
+        return PagesRead(ChatMessageWindow(start, pages.flatten()), clean)
+    }
+
+    /** One page, cut to the chat's count. A damaged page gives the entries it can, like a chat file. */
+    private fun readChatPage(dir: File, page: Int, meta: ChatPagesMeta): PageRead {
+        val file = chatPageFile(dir, page)
+        val stamp = chatFileStamp(file)
+        val decoded = decodeChatFile(file)
+        val messages = decoded.messages.take((meta.count - page * meta.pageSize).coerceIn(0, meta.pageSize))
+        if (decoded.isClean) {
+            verifiedChatFiles[file.path] = stamp
+            rememberPage(dir, page, messages)
+        } else {
+            // Damaged: stop trusting it, so a later save backs it up before it is overwritten.
+            verifiedChatFiles.remove(file.path)
+        }
+        return PageRead(messages, decoded.isClean)
+    }
+
+    /**
+     * Writes [messages] as the pages from [startIndex] on, then the meta, then removes pages past the new end. Each file
+     * is replaced by rename, and the meta goes last, so a crash leaves the previous count and readers ignore the rest.
+     */
+    private fun writeChatPages(dir: File, messages: List<ChatMessage>, startIndex: Int, pageSize: Int) {
+        dir.mkdirs()
+        val firstPage = startIndex / pageSize
+        messages.chunked(pageSize).forEachIndexed { offset, chunk -> writeChatPage(dir, firstPage + offset, chunk) }
+        val count = startIndex + messages.size
+        writeReplacing(
+            File(dir, CHAT_PAGES_META),
+            JSONObject().put("format", CHAT_PAGES_FORMAT).put("pageSize", pageSize).put("count", count).toString(),
+        )
+        // Pages past the new end hold a longer earlier version, or a save that stopped before its meta.
+        val pageCount = (count + pageSize - 1) / pageSize
+        dir.listFiles().orEmpty().forEach { file ->
+            val page = CHAT_PAGE_FILE.matchEntire(file.name)?.groupValues?.get(1)?.toIntOrNull() ?: return@forEach
+            if (page >= pageCount) {
+                verifiedChatFiles.remove(file.path)
+                if (snapshotDir == dir.path) pageSnapshots.remove(page)
+                file.delete()
+            }
+        }
+    }
+
+    /** Rewrites one page unless it still holds exactly [messages] as this instance last read or wrote it. */
+    private fun writeChatPage(dir: File, page: Int, messages: List<ChatMessage>) {
+        val file = chatPageFile(dir, page)
+        val unchanged = snapshotDir == dir.path && pageSnapshots[page] == messages &&
+            verifiedChatFiles[file.path] == chatFileStamp(file)
+        if (unchanged) return
+        backupUnverifiedChatFile(file)
+        verifiedChatFiles.remove(file.path)
+        writeReplacing(file, encodeChatMessages(messages))
+        verifiedChatFiles[file.path] = chatFileStamp(file)
+        rememberPage(dir, page, messages)
+    }
+
+    /** Messages this instance last read from or wrote to each page of one chat, so a save rewrites only changed pages. */
+    private var snapshotDir: String? = null
+    private val pageSnapshots = HashMap<Int, List<ChatMessage>>()
+
+    private fun rememberPage(dir: File, page: Int, messages: List<ChatMessage>) {
+        if (snapshotDir != dir.path) {
+            snapshotDir = dir.path
+            pageSnapshots.clear()
+        }
+        pageSnapshots[page] = messages
+    }
+
+    private fun encodeChatMessages(messages: List<ChatMessage>): String {
         val arr = JSONArray()
-        repairedMessages.forEach { m ->
+        messages.forEach { m ->
             arr.put(JSONObject().apply {
                 put("id", m.id)
                 put("fromUser", m.fromUser)
@@ -827,12 +1065,7 @@ class AppPreferences(
                 })
             })
         }
-        val projectDir = File(chatsDir, projectId).also { it.mkdirs() }
-        val destination = File(projectDir, "$chatId.json")
-        backupUnverifiedChatFile(destination)
-        verifiedChatFiles.remove(destination.path)
-        writeReplacing(destination, arr.toString())
-        verifiedChatFiles[destination.path] = chatFileStamp(destination)
+        return arr.toString()
     }
 
     /** Copies a chat file that is not verified as it is now, and fails verification, to `<name>.corrupt-<ts>` before it is overwritten. */
@@ -850,20 +1083,16 @@ class AppPreferences(
     /** Size and modification time of [file], compared with the stamp recorded when the file was last verified. */
     private fun chatFileStamp(file: File): Pair<Long, Long> = file.length() to file.lastModified()
 
+    /** The whole chat. Opening a chat uses [loadMessageWindow]; this is for views that show every message at once. */
+    @Synchronized
     fun loadMessages(projectId: String, chatId: String): List<ChatMessage> {
-        val file = File(File(chatsDir, projectId), "$chatId.json")
-        if (!file.exists()) return emptyList()
-        val stamp = chatFileStamp(file)
-        val decoded = decodeChatFile(file)
-        if (decoded.isClean) {
-            verifiedChatFiles[file.path] = stamp
-        } else {
-            // Damaged: stop trusting it, so the next save backs it up before it is overwritten.
-            verifiedChatFiles.remove(file.path)
+        val read = when (val source = openChatSource(projectId, chatId)) {
+            is ChatSource.Whole -> return source.messages
+            is ChatSource.Pages -> readPagesBackward(chatPagesDir(projectId, chatId), source.meta, source.meta.count, Int.MAX_VALUE)
         }
-        val (repaired, wasRepaired) = repairDuplicateMessageIds(decoded.messages)
-        // A file with unreadable parts is not rewritten here; the next save keeps a backup of it first.
-        if (wasRepaired && decoded.isClean) {
+        val (repaired, wasRepaired) = repairDuplicateMessageIds(read.window.messages)
+        // A chat with unreadable parts is not rewritten here; the next save keeps a backup of each damaged page first.
+        if (wasRepaired && read.clean) {
             runCatching {
                 saveMessages(projectId, chatId, repaired)
             }
@@ -875,14 +1104,18 @@ class AppPreferences(
     fun deleteProjectChats(projectId: String) {
         val projectDir = File(chatsDir, projectId)
         verifiedChatFiles.keys.removeAll { it.startsWith(projectDir.path + File.separator) }
+        if (snapshotDir?.startsWith(projectDir.path + File.separator) == true) {
+            snapshotDir = null
+            pageSnapshots.clear()
+        }
         projectDir.deleteRecursively()
         File(chatsDir, "$projectId.json").delete()
     }
 
     /**
-     * True only when every file in the project's chat folder, and any legacy chat file, is an empty chat list.
-     * Reads file sizes on disk, not the index, so a crash between a message write and an index update cannot make a chat look empty.
-     * Returns false when the folder cannot be listed, so the project is kept.
+     * True only when every chat in the project's chat folder, and any legacy chat file, is empty.
+     * Reads the files on disk, not the index, so a crash between a message write and an index update cannot make a chat look empty.
+     * Returns false when a folder cannot be listed, so the project is kept.
      */
     fun hasNoChatMessages(projectId: String): Boolean {
         val projectDir = File(chatsDir, projectId)
@@ -890,12 +1123,18 @@ class AppPreferences(
         if (projectDir.exists() && listed == null) return false
         val legacy = File(chatsDir, "$projectId.json")
         val candidates = listed.orEmpty().filter { it.name != "index.json" } + listOf(legacy).filter { it.exists() }
-        return candidates.all(::isEmptyChatFile)
+        return candidates.all { if (it.isDirectory) isEmptyChatPages(it) else isEmptyChatFile(it) }
     }
 
     /** An empty chat list is written as exactly "[]", so any other size or content counts as messages or as unknown. */
     private fun isEmptyChatFile(file: File): Boolean =
         file.isFile && file.length() == 2L && runCatching { file.readText() == "[]" }.getOrDefault(false)
+
+    /** A pages folder is empty only when it holds nothing but a meta that counts no messages. */
+    private fun isEmptyChatPages(dir: File): Boolean {
+        val files = dir.listFiles() ?: return false
+        return files.all { it.name == CHAT_PAGES_META } && readChatPagesMeta(dir)?.count == 0
+    }
 
     private fun loadLegacyMessages(file: File): List<ChatMessage> {
         val raw = readRawLegacyMessages(file)
@@ -1063,6 +1302,13 @@ class AppPreferences(
     companion object {
         private const val CHAT_STORE_TAG = "ChatStore"
         private const val MOVED_ASIDE_INDEX_PREFIX = "index.json.corrupt-"
+
+        /** Messages per page file. Opening a chat reads whole pages from the end. */
+        internal const val CHAT_PAGE_SIZE = 15
+        private const val CHAT_PAGES_SUFFIX = ".pages"
+        private const val CHAT_PAGES_META = "meta.json"
+        private const val CHAT_PAGES_FORMAT = 2
+        private val CHAT_PAGE_FILE = Regex("(\\d{8})\\.json")
 
         /**
          * Chat files this process read or wrote cleanly, with the size and modification time they had then. A save trusts

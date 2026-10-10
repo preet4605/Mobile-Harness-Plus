@@ -30,6 +30,10 @@ class ChatFileRecoveryTest {
     private fun chatFile(root: File, projectId: String, chatId: String): File =
         File(File(root, projectId), "$chatId.json")
 
+    /** The first page of a chat saved in the paged format. */
+    private fun firstPage(root: File, projectId: String, chatId: String): File =
+        File(File(File(root, projectId), "$chatId.pages"), "00000000.json")
+
     private fun writeRaw(file: File, content: String) {
         file.parentFile?.mkdirs()
         file.writeText(content)
@@ -215,7 +219,7 @@ class ChatFileRecoveryTest {
     fun verifiedFileDamagedLaterIsBackedUpOnTheNextSave() {
         val root = tmp.newFolder("chats")
         val prefs = AppPreferences(baseChatsDir = root)
-        val file = chatFile(root, "p", "c")
+        val file = firstPage(root, "p", "c")
         prefs.saveMessages("p", "c", listOf(ChatMessage(id = "a", fromUser = true, text = "one")))
 
         val damaged = "{\"damaged\":"
@@ -230,7 +234,7 @@ class ChatFileRecoveryTest {
     fun damageSeenOnLoadIsBackedUpOnTheNextSave() {
         val root = tmp.newFolder("chats")
         val prefs = AppPreferences(baseChatsDir = root)
-        val file = chatFile(root, "p", "c")
+        val file = firstPage(root, "p", "c")
         prefs.saveMessages("p", "c", listOf(ChatMessage(id = "a", fromUser = true, text = "one")))
         val damaged = "not json at all"
         writeRaw(file, damaged)
@@ -245,7 +249,7 @@ class ChatFileRecoveryTest {
     fun fileRecreatedAfterDeleteDoesNotInheritVerifiedTrust() {
         val root = tmp.newFolder("chats")
         val prefs = AppPreferences(baseChatsDir = root)
-        val file = chatFile(root, "p", "c")
+        val file = firstPage(root, "p", "c")
         prefs.saveMessages("p", "c", listOf(ChatMessage(id = "a", fromUser = true, text = "one")))
         prefs.deleteProjectChats("p")
         val damaged = "not json at all"
@@ -260,7 +264,7 @@ class ChatFileRecoveryTest {
     fun eachDamageEventIsBackedUpSeparately() {
         val root = tmp.newFolder("chats")
         val prefs = AppPreferences(baseChatsDir = root)
-        val file = chatFile(root, "p", "c")
+        val file = firstPage(root, "p", "c")
         prefs.saveMessages("p", "c", listOf(ChatMessage(id = "a", fromUser = true, text = "one")))
         writeRaw(file, "{\"first\":")
         prefs.saveMessages("p", "c", listOf(ChatMessage(id = "b", fromUser = true, text = "two")))

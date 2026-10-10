@@ -269,10 +269,14 @@ class ChatMessageIdentityRegressionTest {
             loadedSecond.map { it.id },
         )
 
-        // Third load: verify raw messages from file have no duplicates
-        val rawFromFile = preferences.readRawLegacyMessages(chatFile)
+        // Third load: verify raw messages in the chat's pages on disk have no duplicates
+        val pagesDir = File(projectFolder, "$chatId.pages")
+        val rawFromFile = pagesDir.listFiles().orEmpty()
+            .filter { it.name != "meta.json" }
+            .sortedBy { it.name }
+            .flatMap { preferences.readRawLegacyMessages(it) }
         assertEquals(
-            "Persisted file on disk must now contain repaired unique IDs",
+            "Persisted pages on disk must now contain repaired unique IDs",
             loadedFirst.map { it.id },
             rawFromFile.map { it.id },
         )
