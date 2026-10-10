@@ -227,8 +227,9 @@ class BackdropState internal constructor(
     internal fun addConsumer() {
         consumers++
         OpenPerf.log("glass consumer added, $consumers live")
-        // A shape that appears after captures were skipped needs a fresh frame.
-        requestCapture()
+        // Consumers sample one shared capture. Only the first consumer, or one arriving before any capture
+        // exists, asks for a fresh frame: captures are skipped with no consumers, so the first one always gets one.
+        if (consumers == 1 || currentResult == null) requestCapture()
     }
 
     internal fun removeConsumer() {
