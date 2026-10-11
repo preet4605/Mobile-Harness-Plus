@@ -291,6 +291,10 @@ data class AppUiState(
     val openedFilePath: String? = null,
     val openedFileContent: String? = null,
     val fileContentLoading: Boolean = false,
+    /** Why the open file can't be edited; null when it can. */
+    val openedFileReadOnlyReason: FileReadOnlyReason? = null,
+    /** The open file's edit session; null while it is only viewed. */
+    val openedFileEdit: FileEditState? = null,
     val messages: List<ChatMessage> = listOf(
         ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change."),
     ),
@@ -509,6 +513,9 @@ class MainViewModel(
 
     /** Bumped whenever the viewer's file changes. A read that finds a newer value publishes nothing. */
     private var fileReadGeneration = 0L
+
+    /** SHA-256 of the open file as read; null unless it can be edited. Saving compares it to catch outside changes. */
+    private var openedFileFingerprint: String? = null
 
     /** Bumped by each file refresh. A refresh that is no longer the newest publishes nothing. */
     private var projectFilesGeneration = 0L
@@ -3117,6 +3124,8 @@ class MainViewModel(
                 openedFilePath = null,
                 openedFileContent = null,
                 fileContentLoading = false,
+                openedFileReadOnlyReason = null,
+                openedFileEdit = null,
                 readOnlyProject = null,
                 readOnlyProjectChats = emptyList(),
                 readOnlyChatId = null,
@@ -3289,6 +3298,8 @@ class MainViewModel(
                 openedFilePath = null,
                 openedFileContent = null,
                 fileContentLoading = false,
+                openedFileReadOnlyReason = null,
+                openedFileEdit = null,
                 workspaceVisible = false,
                 projectChats = emptyList(),
                 activeChatId = null,
@@ -4382,36 +4393,169 @@ class MainViewModel(
         val project = _state.value.activeProject ?: return
         cancelFileRead()
         val request = fileReadGeneration
-        _state.update { it.copy(openedFilePath = entry.path, openedFileContent = null, fileContentLoading = true) }
+        _state.update {
+            it.copy(
+                openedFilePath = entry.path,
+                openedFileContent = null,
+                fileContentLoading = true,
+                openedFileReadOnlyReason = null,
+                openedFileEdit = null,
+            )
+        }
         fileReadJob = viewModelScope.launch {
-            val content = withContext(ioDispatcher) {
+            val loaded = withContext(ioDispatcher) {
                 runRequest {
-                    val file = File(projectWorkspaceRoot(project), entry.path)
-                    if (file.length() > 512_000L) {
-                        file.inputStream().use { stream ->
-                            val buf = ByteArray(512_000)
-                            val read = stream.read(buf)
-                            String(buf, 0, read)
-                        } + "\n\n[File truncated — too large to display fully]"
+                    val file = resolveWorkspacePath(projectWorkspaceRoot(project), entry.path)?.takeIf { it.isFile }
+                    if (file == null) {
+                        OpenedFileRead(null, FileReadOnlyReason.UNSAFE)
                     } else {
-                        file.readText()
+                        val (bytes, truncated) = readFilePrefix(file, MAX_EDITABLE_FILE_BYTES)
+                        val decoded = decodeFileForViewer(bytes, truncated)
+                        OpenedFileRead(
+                            content = decoded.text?.let {
+                                if (truncated) "$it\n\n[File truncated — too large to display fully]" else it
+                            },
+                            readOnlyReason = decoded.readOnlyReason,
+                            fingerprint = if (decoded.readOnlyReason == null) sha256(bytes) else null,
+                        )
                     }
-                }.getOrElse { "Could not read file: ${it.message}" }
+                }.getOrElse { OpenedFileRead("Could not read file: ${it.message}", FileReadOnlyReason.READ_ERROR) }
             }
             // A newer selection or a close happened while this file was read.
             if (request != fileReadGeneration) return@launch
-            _state.update { it.copy(openedFileContent = content, fileContentLoading = false) }
+            openedFileFingerprint = loaded.fingerprint
+            _state.update {
+                it.copy(
+                    openedFileContent = loaded.content,
+                    openedFileReadOnlyReason = loaded.readOnlyReason,
+                    fileContentLoading = false,
+                )
+            }
         }
     }
 
+    private class OpenedFileRead(val content: String?, val readOnlyReason: FileReadOnlyReason?, val fingerprint: String? = null)
+
     fun closeFile() {
         cancelFileRead()
-        _state.update { it.copy(openedFilePath = null, openedFileContent = null, fileContentLoading = false) }
+        _state.update {
+            it.copy(
+                openedFilePath = null,
+                openedFileContent = null,
+                fileContentLoading = false,
+                openedFileReadOnlyReason = null,
+                openedFileEdit = null,
+            )
+        }
+    }
+
+    /** Starts editing the open file. Only complete, valid UTF-8 text files read without error can be edited. */
+    fun beginFileEdit() {
+        val current = _state.value
+        val content = current.openedFileContent ?: return
+        if (current.fileContentLoading || current.openedFileReadOnlyReason != null || openedFileFingerprint == null) return
+        if (current.openedFileEdit != null) return
+        if (workspaceFilesBusy(current)) {
+            _state.update { it.copy(toastMessage = WORKSPACE_BUSY_MESSAGE) }
+            return
+        }
+        _state.update { it.copy(openedFileEdit = FileEditState(draft = editableText(content))) }
+    }
+
+    fun updateFileDraft(value: String) {
+        val current = _state.value
+        val edit = current.openedFileEdit ?: return
+        if (edit.saving) return
+        val original = editableText(current.openedFileContent.orEmpty())
+        _state.update { it.copy(openedFileEdit = edit.copy(draft = value, dirty = value != original)) }
+    }
+
+    /** Leaves edit mode and drops the draft. */
+    fun cancelFileEdit() {
+        val edit = _state.value.openedFileEdit ?: return
+        if (edit.saving) return
+        _state.update { it.copy(openedFileEdit = null) }
+    }
+
+    /** Keeps the draft after a conflict; saving stays refused until the file is reloaded. */
+    fun dismissFileConflict() {
+        val edit = _state.value.openedFileEdit ?: return
+        _state.update { it.copy(openedFileEdit = edit.copy(conflict = false)) }
+    }
+
+    /** Re-reads the open file from disk, dropping the draft. */
+    fun reloadOpenedFile() {
+        val current = _state.value
+        val path = current.openedFilePath ?: return
+        if (current.openedFileEdit?.saving == true) return
+        openFile(WorkspaceEntry(path = path, name = path.substringAfterLast('/'), isDirectory = false, depth = path.count { it == '/' }))
+    }
+
+    /**
+     * Saves the draft. Refused when the file changed on disk since it was read (a conflict the user
+     * resolves by reloading). The new text keeps the file's line breaks and final newline and
+     * replaces the file atomically.
+     */
+    fun saveOpenedFile() {
+        val current = _state.value
+        val project = current.activeProject ?: return
+        val path = current.openedFilePath ?: return
+        val original = current.openedFileContent ?: return
+        val edit = current.openedFileEdit ?: return
+        val fingerprint = openedFileFingerprint ?: return
+        if (edit.saving || !edit.dirty) return
+        if (workspaceFilesBusy(current)) {
+            _state.update { it.copy(toastMessage = WORKSPACE_BUSY_MESSAGE) }
+            return
+        }
+        val request = fileReadGeneration
+        val name = path.substringAfterLast('/')
+        _state.update { it.copy(openedFileEdit = edit.copy(saving = true, conflict = false)) }
+        viewModelScope.launch {
+            val text = textForSave(edit.draft, original)
+            val result = withContext(ioDispatcher) {
+                runRequest {
+                    val file = resolveWorkspacePath(projectWorkspaceRoot(project), path)?.takeIf { it.isFile }
+                        ?: error("This file can no longer be changed")
+                    // Null: the file changed on disk since it was read.
+                    if (sha256(file) != fingerprint) {
+                        null
+                    } else {
+                        val bytes = text.toByteArray(Charsets.UTF_8)
+                        writeFileAtomically(file, bytes)
+                        sha256(bytes)
+                    }
+                }
+            }
+            val savedFingerprint = result.getOrNull()
+            // The viewer moved to another file or closed while saving; the save itself still happened.
+            if (request != fileReadGeneration || _state.value.openedFilePath != path) {
+                if (savedFingerprint != null) _state.update { it.copy(toastMessage = "$name saved") }
+                return@launch
+            }
+            when {
+                savedFingerprint != null -> {
+                    openedFileFingerprint = savedFingerprint
+                    _state.update { it.copy(openedFileContent = text, openedFileEdit = null, toastMessage = "$name saved") }
+                    if (isCurrentProjectRoot(project)) refreshProjectFiles()
+                }
+                result.isSuccess -> _state.update {
+                    it.copy(openedFileEdit = it.openedFileEdit?.copy(saving = false, conflict = true))
+                }
+                else -> _state.update {
+                    it.copy(
+                        openedFileEdit = it.openedFileEdit?.copy(saving = false),
+                        toastMessage = "Could not save $name: ${result.exceptionOrNull()?.message ?: "Unknown error"}",
+                    )
+                }
+            }
+        }
     }
 
     /** Cancels the file read in flight. The generation bump keeps a read that is already running from publishing. */
     private fun cancelFileRead() {
         fileReadGeneration++
+        openedFileFingerprint = null
         fileReadJob?.cancel()
         fileReadJob = null
     }

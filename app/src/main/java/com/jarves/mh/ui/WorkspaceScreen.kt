@@ -50,6 +50,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -60,6 +61,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -74,6 +76,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.Redo
+import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Android
 import androidx.compose.material.icons.outlined.ArrowBackIosNew
@@ -151,6 +155,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -574,6 +579,12 @@ internal fun WorkspaceScreen(
     onCancelAndroidBuild: () -> Unit = {},
     onOpenAndroidBuildIssue: (AndroidBuildIssue) -> Unit = {},
     onCloseFile: () -> Unit,
+    onBeginFileEdit: () -> Unit = {},
+    onUpdateFileDraft: (String) -> Unit = {},
+    onCancelFileEdit: () -> Unit = {},
+    onSaveFile: () -> Unit = {},
+    onReloadFile: () -> Unit = {},
+    onDismissFileConflict: () -> Unit = {},
     onUndoChanges: () -> Unit,
     onKeepChanges: () -> Unit,
     onUndoFileChange: (String) -> Unit,
@@ -902,6 +913,15 @@ internal fun WorkspaceScreen(
                     content = held.openedFileContent,
                     loading = held.fileContentLoading,
                     onClose = closeFile,
+                    readOnlyReason = held.openedFileReadOnlyReason,
+                    edit = held.openedFileEdit,
+                    editingAllowed = !workspaceFilesBusy(state),
+                    onBeginEdit = onBeginFileEdit,
+                    onDraftChange = onUpdateFileDraft,
+                    onCancelEdit = onCancelFileEdit,
+                    onSave = onSaveFile,
+                    onReload = onReloadFile,
+                    onDismissConflict = onDismissFileConflict,
                 )
             } else {
                 Box(Modifier.fillMaxSize()) {
@@ -1166,13 +1186,25 @@ private fun ChatsSheet(
     }
 }
 
-/** A file pushed over the workspace: Markdown rendered, anything else as numbered code lines. */
+/**
+ * A file pushed over the workspace: Markdown rendered, anything else as numbered code lines. Text
+ * files that can be edited switch to a monospaced editor; leaving it with unsaved changes asks first.
+ */
 @Composable
 private fun FileViewerScreen(
     filePath: String,
     content: String?,
     loading: Boolean,
     onClose: () -> Unit,
+    readOnlyReason: FileReadOnlyReason? = null,
+    edit: FileEditState? = null,
+    editingAllowed: Boolean = true,
+    onBeginEdit: () -> Unit = {},
+    onDraftChange: (String) -> Unit = {},
+    onCancelEdit: () -> Unit = {},
+    onSave: () -> Unit = {},
+    onReload: () -> Unit = {},
+    onDismissConflict: () -> Unit = {},
 ) {
     val fileName = filePath.substringAfterLast('/')
     val isMarkdown = fileName.substringAfterLast('.', "") == "md"
@@ -1183,7 +1215,53 @@ private fun FileViewerScreen(
     val (barHeight, onBarSize) = rememberBarHeight()
     val top = (barHeight ?: (largeTitleBarPadding() + PocketSpacing.sm)) + PocketSpacing.sm
     val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + PocketSpacing.xxl
-    val showsCode = !loading && content != null && !isMarkdown
+    val editing = edit != null
+    val showsCode = !loading && content != null && (!isMarkdown || editing)
+    val editorScroll = rememberScrollState()
+
+    // The editor keeps its own cursor and history; the draft text goes to the ViewModel.
+    var editorValue by remember(filePath, editing) { mutableStateOf(TextFieldValue(edit?.draft.orEmpty())) }
+    var undoHistory by remember(filePath, editing) { mutableStateOf(emptyList<TextFieldValue>()) }
+    var redoHistory by remember(filePath, editing) { mutableStateOf(emptyList<TextFieldValue>()) }
+    var confirmLeave by remember { mutableStateOf(false) }
+    fun applyEditorValue(next: TextFieldValue) {
+        editorValue = next
+        onDraftChange(next.text)
+    }
+    fun leaveEditor() {
+        if (edit?.dirty == true) confirmLeave = true else onCancelEdit()
+    }
+    BackHandler(enabled = editing) { leaveEditor() }
+
+    if (confirmLeave && edit != null) {
+        PocketAlert(
+            onDismiss = { confirmLeave = false },
+            title = "Unsaved changes",
+            message = "Save your changes to $fileName before leaving the editor?",
+            actions = listOf(
+                AlertAction("Save", enabled = editingAllowed && !edit.saving) {
+                    confirmLeave = false
+                    onSave()
+                },
+                AlertAction("Discard changes", AlertRole.Destructive) {
+                    confirmLeave = false
+                    onCancelEdit()
+                },
+                AlertAction("Keep editing", AlertRole.Cancel) { confirmLeave = false },
+            ),
+        )
+    }
+    if (edit?.conflict == true) {
+        PocketAlert(
+            onDismiss = onDismissConflict,
+            title = "File changed",
+            message = "$fileName changed outside the editor since you opened it. Reload it to see the newer version; your edits will be lost.",
+            actions = listOf(
+                AlertAction("Keep editing", AlertRole.Cancel, onClick = onDismissConflict),
+                AlertAction("Reload", AlertRole.Destructive, onClick = onReload),
+            ),
+        )
+    }
 
     Box(Modifier.fillMaxSize().background(if (showsCode) colors.codeSurface else MaterialTheme.colorScheme.background)) {
         when {
@@ -1191,13 +1269,64 @@ private fun FileViewerScreen(
                 ProgressRing(progress = null)
             }
             content == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                EmptyState(Icons.Outlined.Description, "No content", message = "The file could not be read.")
+                EmptyState(
+                    Icons.Outlined.Description,
+                    "No content",
+                    message = when (readOnlyReason) {
+                        FileReadOnlyReason.BINARY -> "Binary files can't be shown or edited."
+                        FileReadOnlyReason.UNSAFE -> "This file is protected or outside the project."
+                        else -> "The file could not be read."
+                    },
+                )
+            }
+            editing -> {
+                val lineCount = remember(editorValue.text) { editorValue.text.count { it == '\n' } + 1 }
+                val lineNumbers = remember(lineCount) { (1..lineCount).joinToString("\n") }
+                val horizontal = rememberScrollState()
+                Row(
+                    Modifier
+                        .fillMaxSize()
+                        .hostBackdropSource()
+                        .imePadding()
+                        .verticalScroll(editorScroll)
+                        .padding(top = top, bottom = bottom),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Text(
+                        lineNumbers,
+                        modifier = Modifier.width(42.dp).padding(start = PocketSpacing.sm, end = 6.dp),
+                        style = PocketType.code,
+                        color = colors.tertiaryLabel,
+                        textAlign = TextAlign.End,
+                    )
+                    Box(Modifier.weight(1f).horizontalScroll(horizontal)) {
+                        BasicTextField(
+                            value = editorValue,
+                            onValueChange = { next ->
+                                if (next.text != editorValue.text) {
+                                    undoHistory = boundedEditHistory(undoHistory + editorValue)
+                                    redoHistory = emptyList()
+                                }
+                                applyEditorValue(next)
+                            },
+                            enabled = !edit.saving,
+                            textStyle = PocketType.code.copy(color = MaterialTheme.colorScheme.onSurface),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+                            modifier = Modifier
+                                .widthIn(min = 600.dp)
+                                .padding(end = PocketSpacing.md)
+                                .semantics { contentDescription = "Contents of $fileName" },
+                        )
+                    }
+                }
             }
             isMarkdown -> LazyColumn(
                 modifier = Modifier.fillMaxSize().hostBackdropSource(),
                 state = listState,
                 contentPadding = PaddingValues(start = PocketSpacing.lg, top = top, end = PocketSpacing.lg, bottom = bottom),
             ) {
+                readOnlyNote(readOnlyReason)
                 item { MarkdownText(markdown = content, color = MaterialTheme.colorScheme.onSurface) }
             }
             else -> {
@@ -1207,6 +1336,7 @@ private fun FileViewerScreen(
                     state = listState,
                     contentPadding = PaddingValues(top = top, bottom = bottom),
                 ) {
+                    readOnlyNote(readOnlyReason, Modifier.padding(horizontal = PocketSpacing.lg))
                     items(lines.size) { idx ->
                         Row(Modifier.fillMaxWidth().padding(vertical = 1.dp), verticalAlignment = Alignment.Top) {
                             Text(
@@ -1230,24 +1360,104 @@ private fun FileViewerScreen(
         WorkspaceBar(
             title = fileName,
             subtitle = filePath,
-            onBack = onClose,
-            backLabel = "Close file",
-            scrolled = { if (listState.canScrollBackward) 1f else 0f },
+            onBack = { if (editing) leaveEditor() else onClose() },
+            backLabel = if (editing) "Stop editing" else "Close file",
+            scrolled = {
+                val scrolled = if (editing) editorScroll.value > 0 else listState.canScrollBackward
+                if (scrolled) 1f else 0f
+            },
             modifier = Modifier.onSizeChanged(onBarSize),
             actions = {
-                if (!content.isNullOrEmpty()) {
-                    GlassToolbarButton(
-                        Icons.Outlined.ContentCopy,
-                        "Copy file contents",
-                        {
-                            clipboard.setText(AnnotatedString(content))
-                            banner("Copied $fileName", BannerKind.Success)
-                        },
-                    )
+                if (edit != null) {
+                    GlassToolbarGroup {
+                        GlassToolbarItem(
+                            Icons.AutoMirrored.Outlined.Undo,
+                            "Undo",
+                            {
+                                undoHistory.lastOrNull()?.let { previous ->
+                                    undoHistory = undoHistory.dropLast(1)
+                                    redoHistory = boundedEditHistory(redoHistory + editorValue)
+                                    applyEditorValue(previous)
+                                }
+                            },
+                            enabled = undoHistory.isNotEmpty() && !edit.saving,
+                        )
+                        GlassToolbarItem(
+                            Icons.AutoMirrored.Outlined.Redo,
+                            "Redo",
+                            {
+                                redoHistory.lastOrNull()?.let { next ->
+                                    redoHistory = redoHistory.dropLast(1)
+                                    undoHistory = boundedEditHistory(undoHistory + editorValue)
+                                    applyEditorValue(next)
+                                }
+                            },
+                            enabled = redoHistory.isNotEmpty() && !edit.saving,
+                        )
+                    }
+                    if (edit.saving) {
+                        Box(Modifier.size(LiquidGlassTokens.MinTouchTarget), contentAlignment = Alignment.Center) {
+                            ProgressRing(progress = null, size = 20.dp, strokeWidth = 2.dp)
+                        }
+                    } else {
+                        GlassToolbarButton(
+                            Icons.Outlined.Check,
+                            "Save file",
+                            onSave,
+                            enabled = edit.dirty && editingAllowed,
+                            prominent = edit.dirty && editingAllowed,
+                        )
+                    }
+                } else {
+                    if (!content.isNullOrEmpty()) {
+                        GlassToolbarButton(
+                            Icons.Outlined.ContentCopy,
+                            "Copy file contents",
+                            {
+                                clipboard.setText(AnnotatedString(content))
+                                banner("Copied $fileName", BannerKind.Success)
+                            },
+                        )
+                    }
+                    if (!loading && content != null && readOnlyReason == null) {
+                        GlassToolbarButton(
+                            Icons.Outlined.Edit,
+                            "Edit file",
+                            onBeginEdit,
+                            enabled = editingAllowed,
+                        )
+                    }
                 }
             },
         )
     }
+}
+
+/** A footnote above a file that is shown but can't be edited, saying why. */
+private fun LazyListScope.readOnlyNote(reason: FileReadOnlyReason?, modifier: Modifier = Modifier) {
+    val text = when (reason) {
+        FileReadOnlyReason.TOO_LARGE -> "Files larger than 512 KB are shown in part and can't be edited."
+        FileReadOnlyReason.INVALID_UTF8 -> "This file isn't valid UTF-8 text, so it can't be edited."
+        else -> return
+    }
+    item(key = "read-only-note") {
+        Text(
+            text,
+            modifier = modifier.padding(bottom = PocketSpacing.sm),
+            style = PocketType.footnote,
+            color = PocketColors.current.secondaryLabel,
+        )
+    }
+}
+
+/** Undo steps kept by the editor: the newest ones, up to about two million characters in all. */
+private fun boundedEditHistory(history: List<TextFieldValue>): List<TextFieldValue> {
+    var total = 0L
+    val kept = history.asReversed().takeWhile { value ->
+        total += value.text.length
+        total <= 2_000_000L
+    }
+    return kept.asReversed().takeLast(100)
 }
 
 /** The project tree as a grouped list, with built APKs and a detected project folder above it. */
