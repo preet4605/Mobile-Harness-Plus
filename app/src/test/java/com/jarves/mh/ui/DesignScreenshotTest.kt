@@ -285,7 +285,7 @@ class DesignScreenshotTest {
                 onCreateChat = {}, onSwitchChat = {}, onTerminalRun = {}, onTerminalInput = {}, onTerminalInterrupt = {},
                 onTerminalPrepare = {}, onTerminalDraftConsumed = {}, onTerminalOpened = {}, onTerminalStop = {},
                 onTerminalClear = {}, onTerminalConfirm = {}, onTerminalCancel = {}, onUseSuggestedProjectRoot = {},
-                onExportProject = {}, onAddAttachments = {}, onRemoveAttachment = {}, onOpenAttachment = {},
+                onExportProject = { _, _ -> }, onAddAttachments = {}, onRemoveAttachment = {}, onOpenAttachment = {},
                 initialTab = tab,
             )
         }

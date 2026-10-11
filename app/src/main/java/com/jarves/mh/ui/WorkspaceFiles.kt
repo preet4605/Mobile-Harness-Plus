@@ -1,5 +1,7 @@
 package com.jarves.mh.ui
 
+import com.jarves.mh.model.WorkspaceEntry
+import com.jarves.mh.model.isAttachmentStoragePath
 import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
@@ -225,4 +227,95 @@ internal fun resolveWorkspacePath(root: File, relativePath: String, allowRoot: B
     }
     val canonical = runCatching { cursor.canonicalFile }.getOrNull() ?: return null
     return canonical.takeIf { it != canonicalRoot && it.toPath().startsWith(canonicalRoot.toPath()) }
+}
+
+/** Folders that are usually build output or caches: exported only when chosen explicitly. */
+private val BUILD_OUTPUT_NAMES = setOf("build", ".next", ".cache", "venv")
+
+/** Never exported, and never listed in the Files tab: version control, tool caches and the agent's metadata. */
+private val EXPORT_EXCLUDED_NAMES = setOf(".git", ".claude", ".gradle", ".idea", "node_modules", ".venv", "__pycache__")
+
+/** True for paths no export includes, whatever is selected. */
+internal fun isAlwaysExcludedFromExport(relativePath: String): Boolean =
+    relativePath.split('/').any { it in EXPORT_EXCLUDED_NAMES } ||
+        isProtectedWorkspacePath(relativePath) ||
+        isAttachmentStoragePath(relativePath)
+
+/**
+ * Which project paths a ZIP export includes. A rule in [overrides] applies to its path and
+ * everything below it; the longest matching rule wins. Without a rule a path is included when
+ * [defaultIncluded] is set, except inside build-output folders while [skipBuildOutput] is set (the
+ * paths the one-tap export always left out). Paths are project-relative with "/".
+ */
+data class ExportSelection(
+    val overrides: Map<String, Boolean> = emptyMap(),
+    val defaultIncluded: Boolean = true,
+    val skipBuildOutput: Boolean = true,
+) {
+    fun includes(path: String): Boolean {
+        val clean = path.trim('/')
+        val rule = overrides.entries
+            .filter { (prefix, _) -> clean == prefix || clean.startsWith("$prefix/") }
+            .maxByOrNull { it.key.length }
+        if (rule != null) return rule.value
+        if (!defaultIncluded) return false
+        return !(skipBuildOutput && clean.split('/').any { it in BUILD_OUTPUT_NAMES })
+    }
+
+    /** True when [directory] or anything below it can be included, so an export has to look inside it. */
+    fun canContainIncluded(directory: String): Boolean {
+        val clean = directory.trim('/')
+        return includes(clean) || overrides.any { (prefix, included) -> included && prefix.startsWith("$clean/") }
+    }
+
+    /** Flips [path]; for a folder, everything below it follows and rules below it are dropped. */
+    fun toggled(path: String, isDirectory: Boolean): ExportSelection {
+        val clean = path.trim('/')
+        val value = !includes(clean)
+        val next = overrides.toMutableMap()
+        if (isDirectory) next.keys.removeAll { it.startsWith("$clean/") }
+        next[clean] = value
+        return copy(overrides = next)
+    }
+
+    companion object {
+        /** Everything the Files tab lists, build output included. */
+        val All = ExportSelection(skipBuildOutput = false)
+        val None = ExportSelection(defaultIncluded = false)
+    }
+}
+
+/** How much of a folder (or whether a file) is selected for export. */
+enum class SelectionMark { ALL, SOME, NONE }
+
+/**
+ * The selection mark of every entry in [entries]. A folder is ALL when every listed file below it
+ * is included, SOME when only part is, and follows its own rule when it lists no files.
+ */
+internal fun exportSelectionMarks(entries: List<WorkspaceEntry>, selection: ExportSelection): Map<String, SelectionMark> {
+    val totals = HashMap<String, Int>()
+    val selected = HashMap<String, Int>()
+    val marks = HashMap<String, SelectionMark>(entries.size)
+    entries.forEach { entry ->
+        if (entry.isDirectory) return@forEach
+        val included = selection.includes(entry.path)
+        marks[entry.path] = if (included) SelectionMark.ALL else SelectionMark.NONE
+        var parent = entry.path.substringBeforeLast('/', "")
+        while (parent.isNotEmpty()) {
+            totals[parent] = (totals[parent] ?: 0) + 1
+            if (included) selected[parent] = (selected[parent] ?: 0) + 1
+            parent = parent.substringBeforeLast('/', "")
+        }
+    }
+    entries.filter { it.isDirectory }.forEach { folder ->
+        val total = totals[folder.path] ?: 0
+        val chosen = selected[folder.path] ?: 0
+        marks[folder.path] = when {
+            total == 0 -> if (selection.includes(folder.path)) SelectionMark.ALL else SelectionMark.NONE
+            chosen == total -> SelectionMark.ALL
+            chosen == 0 -> SelectionMark.NONE
+            else -> SelectionMark.SOME
+        }
+    }
+    return marks
 }

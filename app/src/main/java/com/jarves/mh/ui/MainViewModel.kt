@@ -32,7 +32,6 @@ import com.jarves.mh.model.MAX_ATTACHMENT_BYTES
 import com.jarves.mh.model.attachmentExtension
 import com.jarves.mh.model.attachmentTooLargeMessage
 import com.jarves.mh.model.cleanAttachmentName
-import com.jarves.mh.model.isAttachmentStoragePath
 import com.jarves.mh.model.resolveAttachmentMimeType
 import com.jarves.mh.model.splitAttachmentName
 import com.jarves.mh.model.storedAttachmentName
@@ -300,6 +299,8 @@ data class AppUiState(
     val openedFileEdit: FileEditState? = null,
     /** True while the project is being exported as a ZIP. */
     val projectExportRunning: Boolean = false,
+    /** When the last export finished successfully; the Files tab leaves selection mode on a change. */
+    val projectExportSucceededAtMillis: Long? = null,
     /** True while a file is being created, renamed, deleted or uploaded from the Files tab. */
     val fileOperationRunning: Boolean = false,
     val messages: List<ChatMessage> = listOf(
@@ -4087,7 +4088,8 @@ class MainViewModel(
         refreshProjectFiles()
     }
 
-    fun exportActiveProject(uri: Uri) {
+    /** Writes the project as a ZIP to [uri]: the files [selection] includes, never caches or the agent's metadata. */
+    fun exportActiveProject(uri: Uri, selection: ExportSelection = ExportSelection()) {
         val current = _state.value
         val project = current.activeProject ?: return
         if (workspaceFilesBusy(current) || current.openedFileEdit?.saving == true) {
@@ -4096,7 +4098,7 @@ class MainViewModel(
         }
         _state.update { it.copy(projectExportRunning = true) }
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
+            val result = withContext(ioDispatcher) {
                 runCatching {
                     val root = projectWorkspaceRoot(project)
                     val rootPath = root.canonicalFile.toPath()
@@ -4112,16 +4114,19 @@ class MainViewModel(
                                         true
                                     } else {
                                         val relative = directory.relativeTo(root).invariantSeparatorsPath
-                                        !isExportExcludedPath(relative) &&
+                                        !isAlwaysExcludedFromExport(relative) &&
+                                            selection.canContainIncluded(relative) &&
                                             !Files.isSymbolicLink(directory.toPath()) &&
                                             runCatching { directory.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
                                     }
                                 }
                                 .drop(1)
                                 .filter { file ->
+                                    val relative = file.relativeTo(root).invariantSeparatorsPath
                                     !Files.isSymbolicLink(file.toPath()) &&
                                         runCatching { file.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false) &&
-                                        !isExportExcludedPath(file.relativeTo(root).invariantSeparatorsPath)
+                                        !isAlwaysExcludedFromExport(relative) &&
+                                        selection.includes(relative)
                                 }
                                 .forEach { file ->
                                     val relative = file.relativeTo(root).invariantSeparatorsPath
@@ -4137,6 +4142,7 @@ class MainViewModel(
             _state.update {
                 it.copy(
                     projectExportRunning = false,
+                    projectExportSucceededAtMillis = if (result.isSuccess) System.currentTimeMillis() else it.projectExportSucceededAtMillis,
                     toastMessage = result.fold(
                         onSuccess = { "${project.slug}.zip exported" },
                         onFailure = { error -> "Export failed: ${error.message ?: "Unknown error"}" },
@@ -4813,16 +4819,6 @@ class MainViewModel(
         return relativePath == ".claude" ||
             relativePath == ".claude.json" ||
             relativePath.startsWith(".claude/")
-    }
-
-    private fun isExportExcludedPath(relativePath: String): Boolean {
-        val excludedNames = setOf(
-            ".git", ".claude", ".gradle", ".idea", ".next", ".cache",
-            "node_modules", ".venv", "venv", "__pycache__", "build",
-        )
-        return relativePath.split('/').any { it in excludedNames } ||
-            isClaudeRuntimeMetadata(relativePath) ||
-            isAttachmentStoragePath(relativePath)
     }
 
     fun addChatAttachments(uris: List<Uri>) {

@@ -93,6 +93,7 @@ import com.jarves.mh.runtime.formatBuildDuration
 import com.jarves.mh.runtime.typicalAndroidBuildMillis
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.CreateNewFolder
@@ -121,6 +122,8 @@ import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material.icons.rounded.Cancel
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.RemoveCircle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -135,6 +138,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
@@ -617,7 +621,7 @@ internal fun WorkspaceScreen(
     onTerminalConfirm: () -> Unit,
     onTerminalCancel: () -> Unit,
     onUseSuggestedProjectRoot: () -> Unit,
-    onExportProject: (Uri) -> Unit,
+    onExportProject: (Uri, ExportSelection) -> Unit,
     onAddAttachments: (List<Uri>) -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onOpenAttachment: (ChatAttachment) -> Unit,
@@ -657,9 +661,23 @@ internal fun WorkspaceScreen(
 ) {
     BackHandler(onBack = onBack)
     val banner = rememberBanner()
+    // Selection mode and the chosen files survive process death while the save picker is open,
+    // so the export that follows writes what was picked.
+    val projectKey = state.activeProject?.id
+    var exportSelectionMode by rememberSaveable(projectKey) { mutableStateOf(false) }
+    var exportSelection by rememberSaveable(projectKey, stateSaver = ExportSelectionSaver) { mutableStateOf(ExportSelection()) }
+    // A finished export ends selection mode; one that finished before this screen appeared does not.
+    var seenExport by rememberSaveable { mutableStateOf(state.projectExportSucceededAtMillis) }
+    LaunchedEffect(state.projectExportSucceededAtMillis) {
+        if (state.projectExportSucceededAtMillis != seenExport) {
+            seenExport = state.projectExportSucceededAtMillis
+            exportSelectionMode = false
+            exportSelection = ExportSelection()
+        }
+    }
     val exportProjectLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip"),
-        onResult = { uri -> if (uri != null) onExportProject(uri) },
+        onResult = { uri -> if (uri != null) onExportProject(uri, exportSelection) },
     )
     val attachmentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
@@ -1049,8 +1067,22 @@ internal fun WorkspaceScreen(
                                     onCancelAndroidBuild = onCancelAndroidBuild,
                                     onOpenAndroidBuildIssue = onOpenAndroidBuildIssue,
                                     onUseSuggestedProjectRoot = onUseSuggestedProjectRoot,
+                                    selectionMode = exportSelectionMode,
+                                    exportSelection = exportSelection,
+                                    exportRunning = state.projectExportRunning,
+                                    onEnterSelection = {
+                                        exportSelection = ExportSelection()
+                                        exportSelectionMode = true
+                                    },
+                                    onCancelSelection = {
+                                        exportSelectionMode = false
+                                        exportSelection = ExportSelection()
+                                    },
+                                    onSelectionChange = { exportSelection = it },
                                     onExport = {
-                                        exportProjectLauncher.launch("${state.activeProject?.slug ?: "project"}.zip")
+                                        runCatching {
+                                            exportProjectLauncher.launch("${state.activeProject?.slug ?: "project"}.zip")
+                                        }.onFailure { banner("No app can save the ZIP", BannerKind.Error) }
                                     },
                                     listState = filesListState,
                                     topClearance = top,
@@ -1541,9 +1573,20 @@ private fun FilesTab(
     onUploadInto: (parentPath: String) -> Unit = {},
     onShareFile: (path: String) -> Unit = {},
     onSaveFileCopy: (path: String) -> Unit = {},
+    selectionMode: Boolean = false,
+    exportSelection: ExportSelection = ExportSelection(),
+    exportRunning: Boolean = false,
+    onEnterSelection: () -> Unit = {},
+    onCancelSelection: () -> Unit = {},
+    onSelectionChange: (ExportSelection) -> Unit = {},
 ) {
     val colors = PocketColors.current
     val accent = MaterialTheme.colorScheme.primary
+    val selectionMarks = remember(files, exportSelection, selectionMode) {
+        if (selectionMode) exportSelectionMarks(files, exportSelection) else emptyMap()
+    }
+    val anySelected = selectionMarks.values.any { it != SelectionMark.NONE }
+    val allSelected = files.isNotEmpty() && selectionMarks.values.all { it == SelectionMark.ALL }
     var nameDialog by remember { mutableStateOf<EntryNameDialog?>(null) }
     var deleteTarget by remember { mutableStateOf<WorkspaceEntry?>(null) }
     var rootMenuOpen by remember { mutableStateOf(false) }
@@ -1641,6 +1684,16 @@ private fun FilesTab(
                 Modifier.fillMaxWidth().padding(start = ListInset, end = ListInset - PocketSpacing.sm),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (selectionMode) {
+                    SectionHeader("Select files to export", Modifier.weight(1f))
+                    SheetTextButton(
+                        if (allSelected) "Deselect all" else "Select all",
+                        { onSelectionChange(if (allSelected) ExportSelection.None else ExportSelection.All) },
+                        enabled = !exportRunning,
+                    )
+                    SheetTextButton("Cancel", onCancelSelection, enabled = !exportRunning)
+                    return@Row
+                }
                 SectionHeader("Files", Modifier.weight(1f))
                 if (expandedDirectories.isNotEmpty()) {
                     SheetTextButton("Collapse all", { expandedDirectories = emptyList() })
@@ -1656,7 +1709,7 @@ private fun FilesTab(
                     FolderMenuItems(parentPath = "", actions = entryActions)
                 }
                 if (!loading && files.any { !it.isDirectory }) {
-                    PocketIconButton(Icons.Outlined.Download, "Export project as ZIP", onExport)
+                    PocketIconButton(Icons.Outlined.Download, "Export project as ZIP", onEnterSelection, enabled = fileOpsEnabled)
                 }
                 if (loading) {
                     Box(Modifier.size(LiquidGlassTokens.MinTouchTarget), contentAlignment = Alignment.Center) {
@@ -1683,29 +1736,48 @@ private fun FilesTab(
                 ),
                 separatorStart = ListInset + (entry.depth * 16).dp + 52.dp,
             ) {
+                val toggleExpanded = {
+                    expandedDirectories = if (entry.path in expandedSet) {
+                        expandedDirectories.filterNot { it == entry.path || it.startsWith("${entry.path}/") }
+                    } else {
+                        expandedDirectories + entry.path
+                    }
+                }
                 FileRow(
                     entry = entry,
                     expanded = entry.path in expandedSet,
                     childCount = directChildCounts[entry.path] ?: 0,
                     onClick = {
                         val isApk = !entry.isDirectory && entry.name.endsWith(".apk", ignoreCase = true)
-                        if (entry.isDirectory) {
-                            expandedDirectories = if (entry.path in expandedSet) {
-                                expandedDirectories.filterNot { it == entry.path || it.startsWith("${entry.path}/") }
-                            } else {
-                                expandedDirectories + entry.path
-                            }
+                        if (selectionMode) {
+                            if (!exportRunning) onSelectionChange(exportSelection.toggled(entry.path, entry.isDirectory))
+                        } else if (entry.isDirectory) {
+                            toggleExpanded()
                         } else if (isApk) {
                             onInstallApk(entry)
                         } else {
                             onOpenFile(entry)
                         }
                     },
-                    actions = entryActions,
+                    actions = if (selectionMode) null else entryActions,
+                    selection = if (selectionMode) selectionMarks[entry.path] ?: SelectionMark.NONE else null,
+                    onToggleExpanded = toggleExpanded,
+                )
+            }
+        }
+        if (selectionMode) {
+            item(key = "download-selection") {
+                PocketButton(
+                    if (exportRunning) "Creating ZIP…" else "Download ZIP",
+                    onExport,
+                    modifier = Modifier.padding(horizontal = ListInset).padding(top = PocketSpacing.lg),
+                    enabled = anySelected && !exportRunning && fileOpsEnabled,
+                    fullWidth = true,
                 )
             }
         }
     }
+    BackHandler(enabled = selectionMode && !exportRunning, onBack = onCancelSelection)
 
     nameDialog?.let { dialog ->
         EntryNameAlert(
@@ -1739,6 +1811,28 @@ private fun FilesTab(
         )
     }
 }
+
+/** Keeps an [ExportSelection] in saved instance state. */
+private val ExportSelectionSaver = listSaver<ExportSelection, Any>(
+    save = { selection ->
+        listOf(
+            selection.defaultIncluded,
+            selection.skipBuildOutput,
+            ArrayList(selection.overrides.keys),
+            selection.overrides.values.toBooleanArray(),
+        )
+    },
+    restore = { saved ->
+        @Suppress("UNCHECKED_CAST")
+        val keys = saved[2] as List<String>
+        val values = saved[3] as BooleanArray
+        ExportSelection(
+            overrides = keys.zip(values.toList()).toMap(),
+            defaultIncluded = saved[0] as Boolean,
+            skipBuildOutput = saved[1] as Boolean,
+        )
+    },
+)
 
 /** What the Files tab's menus can do. Changes are disabled (not hidden) while [enabled] is false. */
 private class EntryActions(
@@ -1941,6 +2035,8 @@ private fun FileRow(
     childCount: Int,
     onClick: () -> Unit,
     actions: EntryActions? = null,
+    selection: SelectionMark? = null,
+    onToggleExpanded: () -> Unit = {},
 ) {
     val colors = PocketColors.current
     val isApk = !entry.isDirectory && entry.name.endsWith(".apk", ignoreCase = true)
@@ -1963,6 +2059,7 @@ private fun FileRow(
                 indication = null,
                 role = Role.Button,
                 onClickLabel = when {
+                    selection != null -> if (selection == SelectionMark.ALL) "Leave out of the export" else "Include in the export"
                     entry.isDirectory -> if (expanded) "Collapse folder" else "Expand folder"
                     isApk -> "Install"
                     else -> "Open"
@@ -1980,15 +2077,42 @@ private fun FileRow(
             ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (selection != null) {
+            Icon(
+                when (selection) {
+                    SelectionMark.ALL -> Icons.Rounded.CheckCircle
+                    SelectionMark.SOME -> Icons.Rounded.RemoveCircle
+                    SelectionMark.NONE -> Icons.Outlined.Circle
+                },
+                contentDescription = when (selection) {
+                    SelectionMark.ALL -> "Selected"
+                    SelectionMark.SOME -> "Partly selected"
+                    SelectionMark.NONE -> "Not selected"
+                },
+                tint = if (selection == SelectionMark.NONE) colors.tertiaryLabel else MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp),
+            )
+            Spacer(Modifier.width(PocketSpacing.sm))
+        }
         if (entry.isDirectory) {
             Icon(
                 Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                contentDescription = null,
+                contentDescription = if (selection != null) (if (expanded) "Collapse folder" else "Expand folder") else null,
                 tint = colors.tertiaryLabel,
-                modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = chevron },
+                modifier = Modifier
+                    .then(
+                        // While selecting, a tap on the row selects; the chevron still opens the folder.
+                        if (selection != null) {
+                            Modifier.clip(CircleShape).clickable(role = Role.Button, onClick = onToggleExpanded).padding(PocketSpacing.xs)
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .size(18.dp)
+                    .graphicsLayer { rotationZ = chevron },
             )
         } else {
-            Spacer(Modifier.width(18.dp))
+            Spacer(Modifier.width(if (selection != null) 18.dp + PocketSpacing.xs * 2 else 18.dp))
         }
         Spacer(Modifier.width(PocketSpacing.xs))
         Icon(
@@ -2022,7 +2146,7 @@ private fun FileRow(
             if (isApk) {
                 Spacer(Modifier.width(PocketSpacing.sm))
                 Text("Install", style = PocketType.footnote.emphasized, color = colors.green)
-            } else if (actions == null) {
+            } else if (actions == null && selection == null) {
                 Icon(
                     Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                     contentDescription = null,
