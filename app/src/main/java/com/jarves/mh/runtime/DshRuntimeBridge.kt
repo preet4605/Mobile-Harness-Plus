@@ -227,7 +227,10 @@ class DshRuntimeBridge(
             } else if (!File(checkpoints.checkpointDir(projectId), "changes.json").isFile) {
                 acceptLastChanges(projectId)
             }
-            if (exit == 0 && sdkResult.completed && !userStopRequested) {
+            // `turn/end` is the authoritative result. Some Android/PRoot builds keep
+            // the SDK wrapper alive after acknowledging shutdown, so cleanup may end
+            // it with SIGKILL and produce 137 even though the turn completed normally.
+            if (sdkResult.completed && sdkResult.failure.isBlank() && !userStopRequested) {
                 emitCompletedOnce(sessionId)
                 finishForegroundRuntime(
                     completed = true,
@@ -295,6 +298,7 @@ class DshRuntimeBridge(
         var sawActivity = false
         var shutdownSent = false
         var shutdownSentAt = 0L
+        var forcedShutdown = false
         var inputClosed = false
         var failure = ""
 
@@ -396,10 +400,13 @@ class DshRuntimeBridge(
         while (process.isAlive || nativeProcess.outputFile.length() > outputOffset) {
             if (
                 process.isAlive &&
+                !forcedShutdown &&
                 shutdownSentAt > 0L &&
                 android.os.SystemClock.elapsedRealtime() - shutdownSentAt >= SDK_SHUTDOWN_TIMEOUT_MS
             ) {
                 closeInput()
+                forcedShutdown = true
+                Log.w("DshBridge", "SDK acknowledged completion but did not exit; stopping its runtime wrapper")
                 process.destroyForcibly()
             }
             val available = nativeProcess.outputFile.length() - outputOffset
