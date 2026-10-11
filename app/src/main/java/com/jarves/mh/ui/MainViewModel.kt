@@ -107,7 +107,12 @@ import com.jarves.mh.runtime.supportsArm64Runtime
 import com.jarves.mh.runtime.AndroidAppInstaller
 import com.jarves.mh.runtime.RuntimeExecutionService
 import com.jarves.mh.runtime.RuntimeTaskController
+import com.jarves.mh.runtime.AndroidBuildIssue
+import com.jarves.mh.runtime.AndroidBuildStage
+import com.jarves.mh.runtime.androidBuildFailureSummary
 import com.jarves.mh.runtime.androidGradleCommand
+import com.jarves.mh.runtime.inferAndroidBuildStage
+import com.jarves.mh.runtime.parseAndroidBuildIssues
 import com.jarves.mh.runtime.findDebugApk
 import com.jarves.mh.runtime.findReusableDebugApk
 import com.jarves.mh.update.AppUpdateInfo
@@ -368,6 +373,14 @@ data class AppUiState(
     val androidBuildCancelling: Boolean = false,
     /** True when the last Android build or install attempt failed, so its message reads as an error. */
     val androidBuildFailed: Boolean = false,
+    /** Furthest Gradle stage seen in the running build's output. */
+    val androidBuildStage: AndroidBuildStage? = null,
+    /** When the running Gradle build started, for the elapsed time and estimate. */
+    val androidBuildStartedAtMillis: Long? = null,
+    /** Problems parsed from the last failed build's output. */
+    val androidBuildIssues: List<AndroidBuildIssue> = emptyList(),
+    /** Durations of this project's recent successful Gradle builds, persisted per project. */
+    val androidBuildRecentDurationsMillis: List<Long> = emptyList(),
     val appUpdate: AppUpdateInfo? = null,
     val appUpdateStatus: AppUpdateStatus? = null,
     val appUpdateDownloadedBytes: Long = 0L,
@@ -1382,6 +1395,9 @@ class MainViewModel(
                 androidBuildCancelling = false,
                 androidBuildFailed = false,
                 androidBuildMessage = if (force) "Starting a full rebuild…" else "Checking for changes…",
+                androidBuildStage = null,
+                androidBuildStartedAtMillis = null,
+                androidBuildIssues = emptyList(),
                 toastMessage = null,
             )
         }
@@ -1401,7 +1417,14 @@ class MainViewModel(
                 } else {
                     RuntimeTaskController.stopAction = stopAction
                     foreground.set(startAndroidBuildForeground(project, buildTaskId))
-                    _state.update { it.copy(androidBuildMessage = "Building debug APK…") }
+                    val gradleStartedAt = System.currentTimeMillis()
+                    _state.update {
+                        it.copy(
+                            androidBuildMessage = "${AndroidBuildStage.PREPARING.label}…",
+                            androidBuildStage = AndroidBuildStage.PREPARING,
+                            androidBuildStartedAtMillis = gradleStartedAt,
+                        )
+                    }
                     val installed = installer.installedRuntime()
                     val log = File(getApplication<Application>().cacheDir, "android-build-${System.nanoTime()}.log")
                     outputFile = log
@@ -1414,21 +1437,30 @@ class MainViewModel(
                     androidBuildProcess = process
                     // Cancel may have arrived between the spawn and the assignment above.
                     if (androidBuildStopRequested) process.destroyForcibly()
-                    // Replaces the old blocking waitFor(); wakes once a second so a cleared ViewModel stops the build.
+                    // Replaces the old blocking waitFor(): it wakes once a second, only to read the output
+                    // appended since the last wake for the stage, and so a cleared ViewModel stops the build.
+                    var readOffset = 0L
                     while (!process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)) {
                         ensureActive()
+                        readOffset = publishAndroidBuildStage(log, readOffset)
                     }
                     val exitCode = process.exitValue()
                     when {
                         androidBuildStopRequested -> AndroidBuildOutcome.Cancelled
                         exitCode != 0 -> {
-                            val buildOutput = log.readTailText(MAX_PROCESS_OUTPUT_BYTES)
+                            val buildOutput = sanitizeTerminalOutput(log.readTailText(MAX_PROCESS_OUTPUT_BYTES))
+                            val prefix = workspace.relativeTo(projectWorkspaceRoot(project)).invariantSeparatorsPath
                             AndroidBuildOutcome.Failed(
-                                buildOutput.trim().takeLast(2_000).ifBlank { "Gradle build failed (exit code $exitCode)" },
+                                androidBuildFailureSummary(buildOutput, exitCode),
+                                parseAndroidBuildIssues(buildOutput, projectGuestRoot(project), exitCode).map { issue ->
+                                    // Issue paths are Gradle-root relative; the Files tab is project-root relative.
+                                    issue.copy(filePath = issue.filePath?.let { if (prefix.isEmpty()) it else "$prefix/$it" })
+                                },
                             )
                         }
                         else -> {
                             val apk = findDebugApk(workspace) ?: error("Gradle finished but no debug APK was found")
+                            recordAndroidBuildDuration(project.id, System.currentTimeMillis() - gradleStartedAt)
                             if (androidBuildStopRequested) AndroidBuildOutcome.Cancelled
                             else AndroidBuildOutcome.Done(deliverAndroidApk(apk, installAfterBuild, reused = false))
                         }
@@ -1459,6 +1491,9 @@ class MainViewModel(
                         androidBuildCancelling = false,
                         androidBuildFailed = failed,
                         androidBuildMessage = message,
+                        androidBuildStage = null,
+                        androidBuildStartedAtMillis = null,
+                        androidBuildIssues = (outcome as? AndroidBuildOutcome.Failed)?.issues.orEmpty(),
                         toastMessage = if (failed) "Android build failed" else message,
                     )
                 }
@@ -1489,6 +1524,78 @@ class MainViewModel(
             if (!process.waitFor(ANDROID_BUILD_STOP_GRACE_SECONDS, java.util.concurrent.TimeUnit.SECONDS)) {
                 process.destroyForcibly()
             }
+        }
+    }
+
+    /** Reads the build output appended after [offset] (bounded) and publishes a later stage; returns the new offset. */
+    private fun publishAndroidBuildStage(log: File, offset: Long): Long {
+        val length = log.length()
+        if (length <= offset) return offset
+        // Only the newest text matters for the stage, so a large burst is read from its tail.
+        val start = maxOf(offset, length - ANDROID_BUILD_STAGE_READ_BYTES)
+        val chunk = runCatching {
+            RandomAccessFile(log, "r").use { file ->
+                val bytes = ByteArray((length - start).toInt())
+                file.seek(start)
+                file.readFully(bytes)
+                bytes.decodeToString()
+            }
+        }.getOrElse { return offset }
+        _state.update { current ->
+            val stage = current.androidBuildStage ?: return@update current
+            val next = inferAndroidBuildStage(chunk, stage)
+            if (next == stage || current.androidBuildCancelling) current
+            else current.copy(androidBuildStage = next, androidBuildMessage = "${next.label}…")
+        }
+        return length
+    }
+
+    private fun androidBuildRecordFile(projectId: String): File =
+        File(getApplication<Application>().filesDir, "android-builds/$projectId.json")
+
+    private fun loadAndroidBuildDurations(projectId: String): List<Long> = runCatching {
+        val array = JSONObject(androidBuildRecordFile(projectId).readText()).optJSONArray("recentDurationsMillis")
+            ?: return emptyList()
+        (0 until array.length()).mapNotNull { index -> array.optLong(index).takeIf { it > 0L } }
+            .takeLast(MAX_ANDROID_BUILD_DURATIONS)
+    }.getOrDefault(emptyList())
+
+    /** Remembers a successful Gradle build's duration in app data (never the user's workspace). */
+    private fun recordAndroidBuildDuration(projectId: String, durationMillis: Long) {
+        if (durationMillis <= 0L) return
+        val durations = (loadAndroidBuildDurations(projectId) + durationMillis).takeLast(MAX_ANDROID_BUILD_DURATIONS)
+        runCatching {
+            val file = androidBuildRecordFile(projectId)
+            file.parentFile?.mkdirs()
+            val temp = File(file.parentFile, "${file.name}.tmp")
+            temp.writeText(JSONObject().put("recentDurationsMillis", JSONArray(durations)).toString())
+            if (!temp.renameTo(file)) {
+                file.writeText(temp.readText())
+                temp.delete()
+            }
+        }
+        _state.update { current ->
+            if (current.activeProject?.id == projectId) current.copy(androidBuildRecentDurationsMillis = durations) else current
+        }
+    }
+
+    /** Opens the file a build issue points at, when it is inside the project. */
+    fun openAndroidBuildIssue(issue: AndroidBuildIssue) {
+        val project = _state.value.activeProject ?: return
+        val path = issue.filePath ?: return
+        viewModelScope.launch {
+            val exists = withContext(ioDispatcher) {
+                runCatching {
+                    val root = projectWorkspaceRoot(project)
+                    val file = File(root, path).canonicalFile
+                    file.toPath().startsWith(root.toPath()) && file.isFile
+                }.getOrDefault(false)
+            }
+            if (!exists || !isCurrentProjectRoot(project)) {
+                _state.update { it.copy(toastMessage = "Could not find $path in this project") }
+                return@launch
+            }
+            openFile(WorkspaceEntry(path = path, name = path.substringAfterLast('/'), isDirectory = false, depth = path.count { it == '/' }))
         }
     }
 
@@ -1537,7 +1644,7 @@ class MainViewModel(
 
     private sealed interface AndroidBuildOutcome {
         data class Done(val message: String) : AndroidBuildOutcome
-        data class Failed(val message: String) : AndroidBuildOutcome
+        data class Failed(val message: String, val issues: List<AndroidBuildIssue> = emptyList()) : AndroidBuildOutcome
         data object Cancelled : AndroidBuildOutcome
     }
 
@@ -3030,6 +3137,8 @@ class MainViewModel(
                 androidProjectDetected = false,
                 androidBuildMessage = null,
                 androidBuildFailed = false,
+                androidBuildIssues = emptyList(),
+                androidBuildRecentDurationsMillis = emptyList(),
                 filesLoading = true,
                 projectTerminalLines = emptyList(),
                 projectTerminalLiveOutput = "",
@@ -3189,6 +3298,8 @@ class MainViewModel(
                 androidProjectDetected = false,
                 androidBuildMessage = null,
                 androidBuildFailed = false,
+                androidBuildIssues = emptyList(),
+                androidBuildRecentDurationsMillis = emptyList(),
                 filesLoading = false,
                 isRunning = false,
                 activeSessionId = null,
@@ -3289,6 +3400,8 @@ class MainViewModel(
                 androidProjectDetected = false,
                 androidBuildMessage = null,
                 androidBuildFailed = false,
+                androidBuildIssues = emptyList(),
+                androidBuildRecentDurationsMillis = emptyList(),
                 filesLoading = true,
                 projectTerminalLines = emptyList(),
                 projectTerminalLiveOutput = "",
@@ -4215,6 +4328,9 @@ class MainViewModel(
                 val entries = withContext(ioDispatcher) { readWorkspace(project) }
                 val suggestedRoot = withContext(ioDispatcher) { if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null }
                 val androidProjectDetected = withContext(ioDispatcher) { findAndroidGradleProjectRoot(workspaceDir) != null }
+                val androidBuildDurations = if (androidProjectDetected) {
+                    withContext(ioDispatcher) { loadAndroidBuildDurations(project.id) }
+                } else emptyList()
                 // Publish only if this is still the newest refresh and the same project root is still active.
                 if (generation == projectFilesGeneration && isCurrentProjectRoot(project)) {
                     _state.update {
@@ -4223,6 +4339,7 @@ class MainViewModel(
                             filesLoading = false,
                             suggestedProjectRoot = suggestedRoot,
                             androidProjectDetected = androidProjectDetected,
+                            androidBuildRecentDurationsMillis = androidBuildDurations,
                         )
                     }
                     // Customizations reload under their own generation rather than riding along with these files.
@@ -6441,6 +6558,8 @@ class MainViewModel(
         private const val MAX_ATTACHMENTS_PER_MESSAGE = 5
         private const val MAX_PROCESS_OUTPUT_BYTES = 512 * 1024
         private const val ANDROID_BUILD_STOP_GRACE_SECONDS = 3L
+        private const val ANDROID_BUILD_STAGE_READ_BYTES = 64L * 1024
+        private const val MAX_ANDROID_BUILD_DURATIONS = 5
         /** Opening a chat loads at least this many of its newest messages; older ones load as the user scrolls up. */
         private const val CHAT_WINDOW_MIN_MESSAGES = 15
         /** Each scroll-up load adds at least this many older messages. */

@@ -82,6 +82,10 @@ import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Build
+import com.jarves.mh.runtime.AndroidBuildIssue
+import com.jarves.mh.runtime.androidBuildEstimateText
+import com.jarves.mh.runtime.formatBuildDuration
+import com.jarves.mh.runtime.typicalAndroidBuildMillis
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Check
@@ -112,6 +116,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -567,6 +572,7 @@ internal fun WorkspaceScreen(
     onInstallApk: (WorkspaceEntry) -> Unit = {},
     onAndroidBuild: (AndroidBuildRequest) -> Unit = {},
     onCancelAndroidBuild: () -> Unit = {},
+    onOpenAndroidBuildIssue: (AndroidBuildIssue) -> Unit = {},
     onCloseFile: () -> Unit,
     onUndoChanges: () -> Unit,
     onKeepChanges: () -> Unit,
@@ -981,10 +987,14 @@ internal fun WorkspaceScreen(
                                             cancelling = state.androidBuildCancelling,
                                             message = state.androidBuildMessage,
                                             failed = state.androidBuildFailed,
+                                            startedAtMillis = state.androidBuildStartedAtMillis,
+                                            typicalMillis = typicalAndroidBuildMillis(state.androidBuildRecentDurationsMillis),
+                                            issues = state.androidBuildIssues,
                                         )
                                     } else null,
                                     onAndroidBuild = onAndroidBuild,
                                     onCancelAndroidBuild = onCancelAndroidBuild,
+                                    onOpenAndroidBuildIssue = onOpenAndroidBuildIssue,
                                     onUseSuggestedProjectRoot = onUseSuggestedProjectRoot,
                                     onExport = {
                                         exportProjectLauncher.launch("${state.activeProject?.slug ?: "project"}.zip")
@@ -1252,6 +1262,7 @@ private fun FilesTab(
     androidBuild: AndroidBuildUi? = null,
     onAndroidBuild: (AndroidBuildRequest) -> Unit = {},
     onCancelAndroidBuild: () -> Unit = {},
+    onOpenAndroidBuildIssue: (AndroidBuildIssue) -> Unit = {},
     onUseSuggestedProjectRoot: () -> Unit,
     onExport: () -> Unit,
     listState: LazyListState,
@@ -1321,7 +1332,7 @@ private fun FilesTab(
         }
         if (androidBuild != null) {
             item(key = "android-build") {
-                AndroidBuildSection(androidBuild, onAndroidBuild, onCancelAndroidBuild)
+                AndroidBuildSection(androidBuild, onAndroidBuild, onCancelAndroidBuild, onOpenAndroidBuildIssue)
             }
         }
         if (apkFiles.isNotEmpty()) {
@@ -1409,9 +1420,14 @@ internal data class AndroidBuildUi(
     val cancelling: Boolean,
     val message: String?,
     val failed: Boolean,
+    val startedAtMillis: Long? = null,
+    val typicalMillis: Long? = null,
+    val issues: List<AndroidBuildIssue> = emptyList(),
 )
 
 internal enum class AndroidBuildRequest { BUILD_AND_RUN, BUILD_ONLY, FORCE_REBUILD }
+
+private const val MAX_VISIBLE_BUILD_ISSUES = 8
 
 /** Build & run, Build only and Force rebuild for an Android Gradle project, with live progress and Cancel. */
 @Composable
@@ -1419,16 +1435,38 @@ private fun AndroidBuildSection(
     build: AndroidBuildUi,
     onBuild: (AndroidBuildRequest) -> Unit,
     onCancel: () -> Unit,
+    onOpenIssue: (AndroidBuildIssue) -> Unit,
 ) {
     val colors = PocketColors.current
+    // A one-second clock only while a Gradle build is running and this section is on screen.
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(build.running, build.startedAtMillis) {
+        while (build.running && build.startedAtMillis != null) {
+            now = System.currentTimeMillis()
+            kotlinx.coroutines.delay(1_000L)
+        }
+    }
+    val elapsed = build.startedAtMillis?.let { (now - it).coerceAtLeast(0L) }
+    val progressText = when {
+        build.running && elapsed != null -> listOfNotNull(
+            "${formatBuildDuration(elapsed)} elapsed",
+            androidBuildEstimateText(running = true, elapsedMillis = elapsed, typicalMillis = build.typicalMillis),
+        ).joinToString(" · ")
+        else -> null
+    }
+    val usualText = androidBuildEstimateText(running = false, elapsedMillis = 0L, typicalMillis = build.typicalMillis)
     ListSection(
         modifier = Modifier.padding(bottom = PocketSpacing.lg),
         header = "Android app",
-        footer = if (build.running) null else "Unchanged projects reuse the last APK. Force rebuild always runs Gradle.",
+        footer = if (build.running) null else listOfNotNull(
+            usualText?.let { "$it per build." },
+            "Unchanged projects reuse the last APK. Force rebuild always runs Gradle.",
+        ).joinToString(" "),
     ) {
         if (build.running) {
             ListRow(
                 build.message ?: "Building debug APK…",
+                subtitle = progressText,
                 leading = { ProgressRing(progress = null, size = 22.dp, strokeWidth = 2.5.dp) },
                 trailing = {
                     PocketButton(
@@ -1451,6 +1489,23 @@ private fun AndroidBuildSection(
                     icon = if (build.failed) Icons.Outlined.Warning else Icons.Outlined.Check,
                     iconTile = if (build.failed) colors.red else colors.green,
                 )
+            }
+            build.issues.take(MAX_VISIBLE_BUILD_ISSUES).forEach { issue ->
+                val location = issue.filePath?.let { path ->
+                    listOfNotNull(path, issue.line?.toString(), issue.column?.toString()).joinToString(":")
+                }
+                ListRow(
+                    location ?: issue.title,
+                    subtitle = if (location != null) "${issue.title}: ${issue.detail}" else issue.detail,
+                    subtitleMaxLines = 4,
+                    icon = Icons.Outlined.Description,
+                    iconTile = colors.orange,
+                    accessory = if (issue.filePath != null) ListRowAccessory.Chevron else ListRowAccessory.None,
+                    onClick = issue.filePath?.let { { onOpenIssue(issue) } },
+                )
+            }
+            if (build.issues.size > MAX_VISIBLE_BUILD_ISSUES) {
+                ListRow("${build.issues.size - MAX_VISIBLE_BUILD_ISSUES} more issues not shown", enabled = false)
             }
             ListRow(
                 "Build & run",

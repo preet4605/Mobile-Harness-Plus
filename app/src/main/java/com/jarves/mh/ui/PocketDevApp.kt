@@ -290,6 +290,7 @@ private fun AppScreen(
                 }
             },
             onCancelAndroidBuild = viewModel::cancelAndroidBuild,
+            onOpenAndroidBuildIssue = viewModel::openAndroidBuildIssue,
             onCloseFile = viewModel::closeFile,
             onUndoChanges = viewModel::undoLastChanges,
             onKeepChanges = viewModel::keepLastChanges,
