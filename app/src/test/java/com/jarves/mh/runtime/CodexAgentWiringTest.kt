@@ -352,6 +352,15 @@ class CodexInstallLayoutTest {
     }
 
     @Test
+    fun emptyExecutablesAndWrongVersionMarkersAreNotReady() {
+        val root = rootfs(binary = true, helper = true)
+        assertFalse(CodexInstallLayout.isComplete(root, "0.160.0"))
+        CodexInstallLayout.helper(root).writeBytes(byteArrayOf())
+        assertFalse(CodexInstallLayout.isComplete(root, CodexInstallSpec.VERSION))
+        CodexInstallLayout.binary(root).writeBytes(byteArrayOf())
+        assertFalse(CodexInstallLayout.binaryUsable(root, CodexInstallSpec.VERSION))
+    }
+    @Test
     fun aBinaryFromAnotherVersionIsReplaced() {
         val root = rootfs(binary = true, helper = true)
         assertFalse(CodexInstallLayout.binaryUsable(root, "0.160.0"))

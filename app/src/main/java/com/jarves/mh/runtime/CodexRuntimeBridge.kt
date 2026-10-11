@@ -164,7 +164,7 @@ class CodexRuntimeBridge(
                 )
                 val imagePaths = CodexLaunchBuilder.imagePaths(prompt, guestWorkspacePath)
                 val command = CodexLaunchBuilder.command(route, guestWorkspacePath, "/tmp/${lastFile.name}", reasoningEffort, imagePaths,
-                    resumeSessionId = resumeId, persistSession = true)
+                    resumeSessionId = resumeId, persistSession = true, inspectionTools = installer.ensureInspectionTools(installed.rootfs))
                 val environment = CodexLaunchBuilder.environment(route, secret)
                 Log.d(TAG, "Route: ${route::class.simpleName}, Model: ${route.model.ifBlank { "default" }}")
                 val process = installer.process(
@@ -174,6 +174,7 @@ class CodexRuntimeBridge(
                     environment,
                     command,
                     guestWorkspacePath = guestWorkspacePath,
+                    inspectionAllowed = { activeSessionId == sessionId && activeTaskId == taskId && !userStopRequested },
                 credentialHome = CodexLaunchBuilder.CODEX_HOME_GUEST_PATH,
                     // Same reason as the other one-shot harnesses: PRoot's hard-link emulation can turn
                     // an atomic temp-file rename into a dangling `.l2s` symlink.

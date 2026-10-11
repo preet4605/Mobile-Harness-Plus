@@ -52,11 +52,13 @@ internal object CodexInstallLayout {
 
     /** The pinned main binary is installed and marked; it is kept when only the helper is missing. */
     fun binaryUsable(rootfs: File, marker: String?): Boolean =
-        marker?.trim() == CodexInstallSpec.VERSION && binary(rootfs).canExecute()
+        marker?.trim() == CodexInstallSpec.VERSION && usable(binary(rootfs))
 
     /** Everything Codex needs: main binary, helper and a version marker. */
     fun isComplete(rootfs: File, marker: String?): Boolean =
-        !marker.isNullOrBlank() && binary(rootfs).canExecute() && helper(rootfs).canExecute()
+        marker?.trim() == CodexInstallSpec.VERSION && usable(binary(rootfs)) && usable(helper(rootfs))
+
+    private fun usable(file: File) = file.isFile && file.length() > 0 && file.canExecute()
 }
 
 /** One tar member to pull out of a Codex archive. */

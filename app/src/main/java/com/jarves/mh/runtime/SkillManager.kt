@@ -740,8 +740,9 @@ class SkillManager(
      * Builds the progressive disclosure index table for injection into the system prompt.
      */
     fun buildProgressiveDisclosureIndex(skills: List<SkillInfo>): String {
-        val enabled = skills.filter { it.isEnabled }
-        if (enabled.isEmpty()) return ""
+        val enabled = skills.filter { it.isEnabled && it.guestFilePath != null }
+        val unavailable = skills.filter { it.isEnabled && it.guestFilePath == null }
+        if (enabled.isEmpty() && unavailable.isEmpty()) return ""
         fun escapeXml(text: String): String = text
             .replace("&", "&amp;")
             .replace("<", "&lt;")
@@ -749,17 +750,16 @@ class SkillManager(
 
         return buildString {
             appendLine("<skills>")
-            appendLine("You can use specialized 'skills' to help you with complex tasks.")
-            appendLine("Each skill folder contains a SKILL.md file with detailed instructions and runbooks.")
-            appendLine("If a skill seems relevant to your current task, view its SKILL.md file using view_file before proceeding.")
-            appendLine()
+            appendLine("Read relevant SKILL.md with a file/terminal tool before acting; resolve its resources relative to its folder.")
             appendLine("Available skills:")
             enabled.forEach { skill ->
                 val safeName = escapeXml(skill.name)
-                val safePath = escapeXml(skill.filePath)
+                val safePath = escapeXml(skill.guestFilePath!!)
                 val safeDesc = escapeXml(skill.description)
                 appendLine("- $safeName ($safePath): $safeDesc")
             }
+            if (unavailable.isNotEmpty()) appendLine("Unavailable skills (missing/unsafe/over limit): " +
+                unavailable.joinToString { escapeXml(it.name) } + ". Do not use host-only paths.")
             appendLine("</skills>")
         }
     }

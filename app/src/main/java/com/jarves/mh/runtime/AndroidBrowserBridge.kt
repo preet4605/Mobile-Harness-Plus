@@ -8,7 +8,6 @@ import android.util.Log
 import java.io.File
 import java.net.URI
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
 /**
@@ -52,18 +51,19 @@ exec /pocket-bridge/open-url.sh "${'$'}@"
 
     suspend fun watch(scope: CoroutineScope) {
         bridgeDir.mkdirs()
-        while (scope.isActive) {
+        watchRuntimeDirectory(bridgeDir) {
+            if (!scope.isActive) return@watchRuntimeDirectory
             val urlFiles = bridgeDir.listFiles { file ->
                 file.name.startsWith("open-url-") && file.name.endsWith(".url")
             }.orEmpty()
             for (file in urlFiles) {
-                val url = runCatching { file.readText().trim() }.getOrNull()
+                val url = if (file.length() <= 8_192 && !java.nio.file.Files.isSymbolicLink(file.toPath()))
+                    runCatching { file.readText().trim() }.getOrNull() else null
                 file.delete()
                 if (!url.isNullOrBlank() && (url.startsWith("http://") || url.startsWith("https://"))) {
                     openBrowser(url)
                 }
             }
-            delay(150)
         }
     }
 
@@ -87,6 +87,13 @@ exec /pocket-bridge/open-url.sh "${'$'}@"
 
     companion object {
         const val BROWSER_ENV_PATH = "/pocket-bridge/open-url.sh"
+
+        /** Startup cleanup must preserve the browser script and watched inspection directory. */
+        internal fun clearPendingRequests(directory: File) {
+            directory.mkdirs()
+            directory.listFiles { file -> file.isFile && file.name.startsWith("open-url-") && file.name.endsWith(".url") }
+                ?.forEach { it.delete() }
+        }
 
         /**
          * Scheme, host and path only. A browser URL can carry OAuth codes or state in its query or

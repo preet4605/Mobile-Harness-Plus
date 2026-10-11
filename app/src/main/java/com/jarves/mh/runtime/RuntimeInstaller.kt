@@ -237,6 +237,7 @@ class RuntimeInstaller(private val context: Context) {
             com.jarves.mh.model.AgentKind.ANTIGRAVITY -> ensureAgyInstalled(proot, 0.985f, onProgress)
             com.jarves.mh.model.AgentKind.CODEX -> ensureCodexInstalled(proot, 0.985f, onProgress)
         }
+        RuntimeCertificates.repair(rootfs)
         onProgress(RuntimeInstallProgress("Setup complete", 1f))
         return InstalledRuntime(proot, rootfs)
     }
@@ -1664,7 +1665,8 @@ class RuntimeInstaller(private val context: Context) {
         onProgress(RuntimeInstallProgress("Checking private runtime files", 0.15f))
         writeResolver()
         ensureSettingsAndHooks()
-        File(context.filesDir, "runtime-bridge").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
+        RuntimeCertificates.repair(rootfs)
+        AndroidBrowserBridge.clearPendingRequests(File(context.filesDir, "runtime-bridge"))
         onProgress(RuntimeInstallProgress("Preparing the Android runtime bridge", 0.42f))
         check(File(rootfs, "usr/local/bin/node").canExecute()) { "Core runtime is missing Node.js" }
         check(File(rootfs, "usr/bin/git").canExecute()) { "Core runtime is missing Git" }
@@ -1685,13 +1687,20 @@ class RuntimeInstaller(private val context: Context) {
         ptyRows: Int = 40,
         ptyColumns: Int = 120,
         credentialHome: String? = null,
+        inspectionAllowed: (() -> Boolean)? = null,
     ): Process {
         check(ensureRootfsCompatibilityLinks()) { "Core runtime has an invalid Linux filesystem layout" }
+        RuntimeCertificates.repair(rootfs)
         require(
             guestWorkspacePath == "/workspace" ||
                 Regex("^/workspace/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$").matches(guestWorkspacePath),
         ) { "Invalid project workspace path" }
         workspace.mkdirs()
+        val inspectionToken = java.util.UUID.randomUUID().toString()
+        val inspectionDirectory = File(context.filesDir, "runtime-inspection/$inspectionToken")
+        val inspectionReady = ensureInspectionTools(rootfs) && runCatching {
+            inspectionDirectory.mkdirs() && File(rootfs, "pocket-inspection").let { it.isDirectory || it.mkdirs() }
+        }.getOrDefault(false)
         File(rootfs, guestWorkspacePath.removePrefix("/")).mkdirs()
         // Self-heal devices whose Android tools were installed by an older app
         // version before the global AAPT2 override was persisted.
@@ -1724,6 +1733,16 @@ class RuntimeInstaller(private val context: Context) {
             add("${workspace.absolutePath}:$guestWorkspacePath")
             add("-b")
             add("${bridge.absolutePath}:/pocket-bridge")
+            if (inspectionReady) {
+                add("-b")
+                add("${inspectionDirectory.absolutePath}:/pocket-inspection")
+            }
+            val skillSnapshots = GuestSkillAccess.linkedDirectory(context.filesDir, workspace)
+            if (skillSnapshots.isDirectory && skillSnapshots.canonicalFile.toPath().startsWith(context.filesDir.canonicalFile.toPath())) {
+                File(rootfs, "opt/pocket/skills/linked").mkdirs()
+                add("-b")
+                add("${skillSnapshots.absolutePath}:/opt/pocket/skills/linked")
+            }
             credentialHome?.let { activeHome ->
                 val mask = File(context.cacheDir, "credential-mask").apply { mkdirs() }
                 val hidden = CredentialMounts.hiddenHomes(activeHome)
@@ -1741,13 +1760,15 @@ class RuntimeInstaller(private val context: Context) {
             addAll(guestCommand)
         }
         val prootTemp = File(context.cacheDir, "proot-tmp").apply { mkdirs() }
-        return NativeSpawnProcess.start(
+        val process = NativeSpawnProcess.start(
             argv = args,
             environment = buildMap {
                 put("HOME", "/root")
                 put("BROWSER", AndroidBrowserBridge.BROWSER_ENV_PATH)
                 val androidReady = File(rootfs, "root/.pocket-android-tools-version").readTextOrNull() == ANDROID_TOOLS_VERSION
-                val basePath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                val javaHome = "/opt/jdk-17.0.20.1+1"
+                val javaPath = if (File(rootfs, "$javaHome/bin/javap").isFile) ":$javaHome/bin" else ""
+                val basePath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/pocket/tools$javaPath"
                 if (androidReady) {
                     put("ANDROID_HOME", "/root/android-sdk")
                     put("ANDROID_SDK_ROOT", "/root/android-sdk")
@@ -1767,6 +1788,10 @@ class RuntimeInstaller(private val context: Context) {
                 // Also protects any glibc helper Claude starts later.
                 put("GLIBC_TUNABLES", "glibc.pthread.rseq=0")
                 putAll(environment)
+                if (inspectionReady) {
+                    put("POCKET_INSPECTION_TOKEN", inspectionToken)
+                    put("POCKET_WORKSPACE", guestWorkspacePath)
+                }
             },
             cwd = context.filesDir.absolutePath,
             outputFile = outputFile,
@@ -1774,7 +1799,32 @@ class RuntimeInstaller(private val context: Context) {
             ptyRows = ptyRows,
             ptyColumns = ptyColumns,
         )
+        if (inspectionReady) InspectionSessions.shared.register(inspectionToken, workspace, guestWorkspacePath) {
+            process.isAlive && inspectionAllowed?.invoke() != false
+        }
+        return process
     }
+
+    /** Optional inspection failures must not disable existing agent/build commands. */
+    internal fun ensureInspectionTools(rootfs: File): Boolean = runCatching {
+        val script = File(rootfs, "opt/pocket/harness/harness-tools.cjs")
+        val content = context.assets.open("harness/harness-tools.cjs").use { it.readBytes() }
+        fun install(file: File, bytes: ByteArray, executable: Boolean = false) {
+            check(file.parentFile!!.canonicalFile.toPath().startsWith(rootfs.canonicalFile.toPath()))
+            if (!file.isFile || file.length() != bytes.size.toLong() || !file.readBytes().contentEquals(bytes)) {
+                file.parentFile!!.mkdirs()
+                val staging = File(file.parentFile, ".${file.name}-${java.util.UUID.randomUUID()}")
+                try { staging.writeBytes(bytes); check(staging.renameTo(file)) } finally { staging.delete() }
+            }
+            if (executable) Os.chmod(file.absolutePath, 0b111101101)
+        }
+        install(script, content)
+        install(File(rootfs, "usr/local/bin/harness-tools"),
+            "#!/bin/sh\nexec /usr/local/bin/node /opt/pocket/harness/harness-tools.cjs \"${'$'}@\"\n".toByteArray(), true)
+        // Search is optional: a storage/asset failure must leave core commands and MCP working.
+        RuntimeSearchTool.ensure(rootfs) { context.assets.open("harness/rg-arm64.bin") }
+        true
+    }.getOrDefault(false)
 
     fun ensureSettingsAndHooks(interactiveApprovals: Boolean = com.jarves.mh.data.AppPreferences(context).claudeInteractiveApprovals) {
         val hook = File(rootfs, "opt/pocket/permission-hook.sh")

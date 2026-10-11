@@ -121,6 +121,7 @@ internal object CodexLaunchBuilder {
         imagePaths: List<String> = emptyList(),
         resumeSessionId: String? = null,
         persistSession: Boolean = false,
+        inspectionTools: Boolean = false,
     ): List<String> =
         buildList {
             add(CODEX_GUEST_PATH)
@@ -156,6 +157,10 @@ internal object CodexLaunchBuilder {
             reasoningEffort?.let {
                 add("-c")
                 add("model_reasoning_effort=${tomlString(it)}")
+            }
+            if (inspectionTools) {
+                add("-c")
+                add("mcp_servers.pocket_native_inspection={command=\"/usr/local/bin/node\",args=[\"/opt/pocket/harness/harness-tools.cjs\",\"--mcp\"],env_vars=[\"POCKET_INSPECTION_TOKEN\",\"POCKET_WORKSPACE\",\"PATH\"],startup_timeout_sec=10,tool_timeout_sec=40,required=false}")
             }
             resumeSessionId?.let { add(it) }
             add("-")
@@ -224,12 +229,11 @@ internal object CodexLaunchBuilder {
 internal object CodexPromptNotes {
     internal const val PHONE_ENVIRONMENT =
         "<phone_environment>\n" +
-            "You are running on an Android phone inside a PRoot Ubuntu guest. Process tools such as ps, top, " +
-            "free and uptime may not work here, so do not rely on them to tell whether a command is still running.\n" +
-            "The user sees a command's output only after it finishes. For a long build or install, send its " +
-            "output to a log file (for example: gradle assembleDebug --console=plain > build.log 2>&1) and read " +
-            "the log with tail, and say in one line what you are waiting for. A first Gradle build on a phone " +
-            "can take many minutes.\n" +
+            "Android phone, PRoot Ubuntu. ps/top/free/uptime may fail; do not use them to check running commands.\n" +
+            "Command output appears on completion. Log long builds/installs (`> build.log 2>&1`), read with " +
+            "tail and send a one-line wait update; first Gradle builds may take minutes.\n" +
+            "Use harness-tools doctor for bounded checks. MCP provides Brain search and local Preview inspection; " +
+            "shell: harness-tools preview with dom, console or screenshot. Keep Preview open; tool errors mean failure.\n" +
             "</phone_environment>\n"
 
     fun withPhoneEnvironment(prompt: String): String = PHONE_ENVIRONMENT + "\n" + prompt
