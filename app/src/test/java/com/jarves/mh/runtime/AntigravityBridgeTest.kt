@@ -129,6 +129,17 @@ class AntigravityBridgeTest {
     }
 
     @Test
+    fun `workspace prompt gives Android builds an offline fast path and an online first build`() {
+        val prompt = antigravityWorkspacePrompt("bold-kalam", "Build the app")
+        assertTrue("timeout 15m" in prompt)
+        assertTrue("timeout 5m" in prompt)
+        assertTrue("--offline" in prompt)
+        assertTrue("no existing debug APK" in prompt)
+        assertTrue("existing debug APK" in prompt)
+        assertTrue("assembleDebug" in prompt)
+    }
+
+    @Test
     fun `quota error detection identifies rate limits and exhausted resource errors`() {
         assertTrue(isQuotaError("Resource has been exhausted (e.g. check quota)"))
         assertTrue(isQuotaError("HTTP 429: Too Many Requests"))
