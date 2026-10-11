@@ -282,6 +282,14 @@ private fun AppScreen(
             onRefreshFiles = viewModel::refreshProjectFiles,
             onOpenFile = viewModel::openFile,
             onInstallApk = viewModel::installApk,
+            onAndroidBuild = { request ->
+                when (request) {
+                    AndroidBuildRequest.BUILD_AND_RUN -> viewModel.buildAndRunAndroidApp()
+                    AndroidBuildRequest.BUILD_ONLY -> viewModel.buildAndroidApp()
+                    AndroidBuildRequest.FORCE_REBUILD -> viewModel.forceRebuildAndroidApp()
+                }
+            },
+            onCancelAndroidBuild = viewModel::cancelAndroidBuild,
             onCloseFile = viewModel::closeFile,
             onUndoChanges = viewModel::undoLastChanges,
             onKeepChanges = viewModel::keepLastChanges,

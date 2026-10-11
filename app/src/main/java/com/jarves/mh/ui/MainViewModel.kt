@@ -105,6 +105,11 @@ import com.jarves.mh.runtime.RuntimeSetupStatus
 import com.jarves.mh.runtime.readTailText
 import com.jarves.mh.runtime.supportsArm64Runtime
 import com.jarves.mh.runtime.AndroidAppInstaller
+import com.jarves.mh.runtime.RuntimeExecutionService
+import com.jarves.mh.runtime.RuntimeTaskController
+import com.jarves.mh.runtime.androidGradleCommand
+import com.jarves.mh.runtime.findDebugApk
+import com.jarves.mh.runtime.findReusableDebugApk
 import com.jarves.mh.update.AppUpdateInfo
 import com.jarves.mh.update.AppUpdater
 import com.jarves.mh.model.ArtifactInfo
@@ -141,6 +146,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -358,6 +364,10 @@ data class AppUiState(
     val claudeThinkingPickerVisible: Boolean = false,
     val androidBuildRunning: Boolean = false,
     val androidBuildMessage: String? = null,
+    /** True after Cancel until the Gradle process group has exited. */
+    val androidBuildCancelling: Boolean = false,
+    /** True when the last Android build or install attempt failed, so its message reads as an error. */
+    val androidBuildFailed: Boolean = false,
     val appUpdate: AppUpdateInfo? = null,
     val appUpdateStatus: AppUpdateStatus? = null,
     val appUpdateDownloadedBytes: Long = 0L,
@@ -1002,6 +1012,10 @@ class MainViewModel(
     fun requestProjectTerminalCommand(command: String) {
         val normalized = command.trim()
         if (normalized.isBlank() || _state.value.projectTerminalRunning || projectTerminalProcess?.isAlive == true) return
+        if (requiresAndroidToolchain(normalized) && _state.value.androidBuildRunning) {
+            _state.update { it.copy(toastMessage = "Wait for the Android build to finish, or cancel it, before running Gradle.") }
+            return
+        }
         if (requiresAndroidToolchain(normalized) && !installer.isStackInstalled(DevStack.ANDROID)) {
             _state.update {
                 it.copy(toastMessage = "Android build tools are not installed. Add Android in Settings → Development stacks.")
@@ -1329,9 +1343,22 @@ class MainViewModel(
         return selected.apply { mkdirs() }
     }
 
-    fun buildAndRunAndroidApp() {
+    private val androidBuildActive = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var androidBuildProcess: Process? = null
+    @Volatile private var androidBuildStopRequested = false
+
+    /** Builds the debug APK, then installs and opens it. An unchanged project reuses its last APK. */
+    fun buildAndRunAndroidApp() = startAndroidBuild(installAfterBuild = true, force = false)
+
+    /** Builds the debug APK without installing it. An unchanged project reuses its last APK. */
+    fun buildAndroidApp() = startAndroidBuild(installAfterBuild = false, force = false)
+
+    /** Runs Gradle even when the last debug APK looks current. */
+    fun forceRebuildAndroidApp() = startAndroidBuild(installAfterBuild = false, force = true)
+
+    private fun startAndroidBuild(installAfterBuild: Boolean, force: Boolean) {
         val project = _state.value.activeProject ?: return
-        if (_state.value.androidBuildRunning) return
+        if (_state.value.androidBuildRunning || androidBuildActive.get()) return
         if (!installer.isStackInstalled(DevStack.ANDROID)) {
             _state.update {
                 it.copy(toastMessage = "Android build tools are not installed. Add Android in Settings → Development stacks.")
@@ -1346,53 +1373,172 @@ class MainViewModel(
             _state.update { it.copy(toastMessage = "Wait for the project terminal command to finish before building.") }
             return
         }
-        _state.update { it.copy(androidBuildRunning = true, androidBuildMessage = "Building debug APK…", toastMessage = null) }
+        // One build at a time, even if two taps arrive before the state flow publishes.
+        if (!androidBuildActive.compareAndSet(false, true)) return
+        androidBuildStopRequested = false
+        _state.update {
+            it.copy(
+                androidBuildRunning = true,
+                androidBuildCancelling = false,
+                androidBuildFailed = false,
+                androidBuildMessage = if (force) "Starting a full rebuild…" else "Checking for changes…",
+                toastMessage = null,
+            )
+        }
+        // A fresh id per build: the foreground service keys its wake lock by it. It is not a TaskSupervisor task.
+        val buildTaskId = "android-build-${UUID.randomUUID()}"
+        val stopAction: () -> Unit = ::cancelAndroidBuild
+        val foreground = java.util.concurrent.atomic.AtomicBoolean(false)
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                val installed = installer.installedRuntime()
+            var outputFile: File? = null
+            val outcome: AndroidBuildOutcome = try {
                 val workspace = findAndroidGradleProjectRoot(projectWorkspaceRoot(project))
                     ?: error("No Android Gradle project found yet. Ask Claude to create it, then wait for the task to finish.")
-                val process = installer.process(
-                    installed.proot, installed.rootfs, workspace, emptyMap(),
-                    listOf(
-                        "/usr/bin/bash", "-lc",
-                        // Same bounded, no-daemon invocation the agents are told to use (upstream 6440f40):
-                        // a daemon can stay attached to deleted PRoot paths after an interrupted build.
-                        "gradle -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 " +
-                            "--init-script /root/.gradle/init.d/pocketdev-android.gradle " +
-                            "-Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 " +
-                            "assembleDebug --console=plain --stacktrace",
-                    ),
-                    projectGuestRoot(project),
-                )
-                val exitCode = process.waitFor()
-                val buildOutput = (process as? NativeSpawnProcess)?.outputFile?.readTailText(MAX_PROCESS_OUTPUT_BYTES).orEmpty()
-                check(exitCode == 0) {
-                    buildOutput.trim().takeLast(2_000).ifBlank { "Gradle build failed (exit code $exitCode)" }
-                }
-                val apk = workspace.walkTopDown()
-                    .filter { it.isFile && it.extension.equals("apk", ignoreCase = true) && it.path.contains("/outputs/apk/debug/") }
-                    .maxByOrNull(File::lastModified)
-                    ?: error("Gradle finished but no debug APK was found")
-                AndroidAppInstaller.install(getApplication(), apk)
-            }.onSuccess {
-                withContext(Dispatchers.Main) {
-                    _state.update {
-                        it.copy(
-                            androidBuildRunning = false,
-                            androidBuildMessage = "APK sent to Android installer",
-                            toastMessage = "APK built. Complete Android's install prompt.",
-                        )
+                val reusable = if (force) null else findReusableDebugApk(workspace)
+                if (reusable != null) {
+                    if (androidBuildStopRequested) AndroidBuildOutcome.Cancelled
+                    else AndroidBuildOutcome.Done(deliverAndroidApk(reusable, installAfterBuild, reused = true))
+                } else {
+                    RuntimeTaskController.stopAction = stopAction
+                    foreground.set(startAndroidBuildForeground(project, buildTaskId))
+                    _state.update { it.copy(androidBuildMessage = "Building debug APK…") }
+                    val installed = installer.installedRuntime()
+                    val log = File(getApplication<Application>().cacheDir, "android-build-${System.nanoTime()}.log")
+                    outputFile = log
+                    val process = installer.process(
+                        installed.proot, installed.rootfs, workspace, emptyMap(),
+                        listOf("/usr/bin/bash", "-lc", androidGradleCommand(workspace, "assembleDebug")),
+                        projectGuestRoot(project),
+                        outputFile = log,
+                    )
+                    androidBuildProcess = process
+                    // Cancel may have arrived between the spawn and the assignment above.
+                    if (androidBuildStopRequested) process.destroyForcibly()
+                    // Replaces the old blocking waitFor(); wakes once a second so a cleared ViewModel stops the build.
+                    while (!process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)) {
+                        ensureActive()
                     }
-                    refreshProjectFiles()
+                    val exitCode = process.exitValue()
+                    when {
+                        androidBuildStopRequested -> AndroidBuildOutcome.Cancelled
+                        exitCode != 0 -> {
+                            val buildOutput = log.readTailText(MAX_PROCESS_OUTPUT_BYTES)
+                            AndroidBuildOutcome.Failed(
+                                buildOutput.trim().takeLast(2_000).ifBlank { "Gradle build failed (exit code $exitCode)" },
+                            )
+                        }
+                        else -> {
+                            val apk = findDebugApk(workspace) ?: error("Gradle finished but no debug APK was found")
+                            if (androidBuildStopRequested) AndroidBuildOutcome.Cancelled
+                            else AndroidBuildOutcome.Done(deliverAndroidApk(apk, installAfterBuild, reused = false))
+                        }
+                    }
                 }
-            }.onFailure { error ->
-                withContext(Dispatchers.Main) {
-                    _state.update { it.copy(androidBuildRunning = false, androidBuildMessage = null, toastMessage = error.message ?: "Could not build APK") }
-                    refreshProjectFiles()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (androidBuildStopRequested) AndroidBuildOutcome.Cancelled
+                else AndroidBuildOutcome.Failed(error.message ?: "Could not build APK")
+            } finally {
+                // Never leave Gradle running behind a finished, failed or cancelled build.
+                androidBuildProcess?.let { if (it.isAlive) it.destroyForcibly() }
+                androidBuildProcess = null
+                outputFile?.delete()
+                if (RuntimeTaskController.stopAction === stopAction) RuntimeTaskController.stopAction = null
+            }
+            withContext(Dispatchers.Main) {
+                val message = when (val result = outcome) {
+                    is AndroidBuildOutcome.Done -> result.message
+                    is AndroidBuildOutcome.Failed -> result.message
+                    AndroidBuildOutcome.Cancelled -> "Build cancelled"
                 }
+                val failed = outcome is AndroidBuildOutcome.Failed
+                _state.update {
+                    it.copy(
+                        androidBuildRunning = false,
+                        androidBuildCancelling = false,
+                        androidBuildFailed = failed,
+                        androidBuildMessage = message,
+                        toastMessage = if (failed) "Android build failed" else message,
+                    )
+                }
+                if (foreground.getAndSet(false)) finishAndroidBuildForeground(project, message, outcome)
+                androidBuildStopRequested = false
+                androidBuildActive.set(false)
+                refreshProjectFiles()
+            }
+        }.invokeOnCompletion { error ->
+            // A cancelled scope (ViewModel cleared) skips the Main block above; release the build slot and service.
+            if (error != null) {
+                androidBuildActive.set(false)
+                if (foreground.getAndSet(false)) RuntimeExecutionService.cancel(getApplication())
             }
         }
+    }
+
+    /** Stops the running Gradle build: SIGTERM to its whole process group, then SIGKILL if it lingers. */
+    fun cancelAndroidBuild() {
+        if (!androidBuildActive.get() || androidBuildStopRequested) return
+        androidBuildStopRequested = true
+        _state.update { it.copy(androidBuildCancelling = true, androidBuildMessage = "Stopping Gradle…") }
+        viewModelScope.launch(Dispatchers.IO) {
+            // Not spawned yet: the build checks the flag right after it spawns Gradle.
+            val process = androidBuildProcess ?: return@launch
+            // NativeSpawnProcess signals the negative pid, so Gradle's JVM and its workers get it too.
+            process.destroy()
+            if (!process.waitFor(ANDROID_BUILD_STOP_GRACE_SECONDS, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+            }
+        }
+    }
+
+    /** Hands [apk] to the user: launches an identical installed copy, installs it, or only reports it. */
+    private fun deliverAndroidApk(apk: File, install: Boolean, reused: Boolean): String {
+        if (!install) {
+            return if (reused) "No changes since the last build. ${apk.name} is up to date." else "Debug APK built: ${apk.name}"
+        }
+        val app = getApplication<Application>()
+        val fingerprint = AndroidAppInstaller.fingerprint(apk)
+        if (AndroidAppInstaller.openIfAlreadyInstalled(app, apk, fingerprint)) {
+            return if (reused) "No changes. Opened the installed app." else "The installed app already matches this build. Opened it."
+        }
+        AndroidAppInstaller.install(app, apk, fingerprint)
+        return if (reused) "No changes. Sent the existing APK to the Android installer." else "APK sent to Android installer"
+    }
+
+    private fun startAndroidBuildForeground(project: Project, taskId: String): Boolean = runCatching {
+        ContextCompat.startForegroundService(
+            getApplication(),
+            Intent(getApplication(), RuntimeExecutionService::class.java)
+                .setAction(RuntimeExecutionService.ACTION_START)
+                .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, project.name)
+                .putExtra(RuntimeExecutionService.EXTRA_TITLE, "Building Android app")
+                .putExtra(RuntimeExecutionService.EXTRA_TASK_ID, taskId)
+                .putExtra(RuntimeExecutionService.EXTRA_CAN_STOP, true),
+        )
+    }.isSuccess
+
+    private fun finishAndroidBuildForeground(project: Project, detail: String, outcome: AndroidBuildOutcome) {
+        runCatching {
+            getApplication<Application>().startService(
+                Intent(getApplication(), RuntimeExecutionService::class.java)
+                    .setAction(
+                        when (outcome) {
+                            AndroidBuildOutcome.Cancelled -> RuntimeExecutionService.ACTION_CANCELLED
+                            is AndroidBuildOutcome.Failed -> RuntimeExecutionService.ACTION_FAILED
+                            is AndroidBuildOutcome.Done -> RuntimeExecutionService.ACTION_COMPLETE
+                        },
+                    )
+                    .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, project.name)
+                    .putExtra(RuntimeExecutionService.EXTRA_DETAIL, detail.take(300)),
+            )
+        }.onFailure { RuntimeExecutionService.cancel(getApplication()) }
+    }
+
+    private sealed interface AndroidBuildOutcome {
+        data class Done(val message: String) : AndroidBuildOutcome
+        data class Failed(val message: String) : AndroidBuildOutcome
+        data object Cancelled : AndroidBuildOutcome
     }
 
     private fun findAndroidGradleProjectRoot(workspace: File): File? {
@@ -2540,7 +2686,7 @@ class MainViewModel(
     /** Removes an optional toolchain after the Settings confirmation dialog. */
     fun removeDevStack(stack: DevStack) {
         if (_state.value.devStackInstalling != null || stack == DevStack.WEB) return
-        if (_state.value.isRunning || _state.value.projectTerminalRunning) {
+        if (_state.value.isRunning || _state.value.projectTerminalRunning || _state.value.androidBuildRunning) {
             _state.update { it.copy(toastMessage = "Stop running tasks and terminal commands before removing tools") }
             return
         }
@@ -2822,7 +2968,7 @@ class MainViewModel(
         }
         val generation = ++projectOpenGeneration
         projectOpenJob?.cancel()
-        if (current.isRunning || current.projectTerminalRunning) {
+        if (current.isRunning || current.projectTerminalRunning || current.androidBuildRunning) {
             _state.update {
                 it.copy(
                     readOnlyProject = project,
@@ -2882,6 +3028,8 @@ class MainViewModel(
                 changes = emptyList(),
                 workspaceFiles = emptyList(),
                 androidProjectDetected = false,
+                androidBuildMessage = null,
+                androidBuildFailed = false,
                 filesLoading = true,
                 projectTerminalLines = emptyList(),
                 projectTerminalLiveOutput = "",
@@ -2982,14 +3130,14 @@ class MainViewModel(
         // A write that is queued or still flushing is not on disk yet, so the emptiness check must not trust the disk.
         val writeInFlight = pendingTranscriptWrite != null || transcriptDebounceJob?.isActive == true
         persistMessages()
-        if (_state.value.isRunning || _state.value.projectTerminalRunning) {
+        if (_state.value.isRunning || _state.value.projectTerminalRunning || _state.value.androidBuildRunning) {
             _state.update {
                 it.copy(
                     workspaceVisible = false,
-                    toastMessage = if (it.isRunning) {
-                        "Task continues in the background"
-                    } else {
-                        "Terminal command continues in the background"
+                    toastMessage = when {
+                        it.isRunning -> "Task continues in the background"
+                        it.projectTerminalRunning -> "Terminal command continues in the background"
+                        else -> "Android build continues in the background"
                     },
                 )
             }
@@ -3039,6 +3187,8 @@ class MainViewModel(
                 changes = emptyList(),
                 workspaceFiles = emptyList(),
                 androidProjectDetected = false,
+                androidBuildMessage = null,
+                androidBuildFailed = false,
                 filesLoading = false,
                 isRunning = false,
                 activeSessionId = null,
@@ -3093,7 +3243,7 @@ class MainViewModel(
     }
 
     fun activateReadOnlyProject() {
-        if (_state.value.isRunning || _state.value.projectTerminalRunning) return
+        if (_state.value.isRunning || _state.value.projectTerminalRunning || _state.value.androidBuildRunning) return
         val project = _state.value.readOnlyProject ?: return
         closeReadOnlyProject()
         openProject(project)
@@ -3103,7 +3253,7 @@ class MainViewModel(
 
     fun createProject(name: String) {
         if (name.isBlank()) return
-        if (_state.value.isRunning || _state.value.projectTerminalRunning) {
+        if (_state.value.isRunning || _state.value.projectTerminalRunning || _state.value.androidBuildRunning) {
             _state.update { it.copy(toastMessage = "Stop the background task before creating another project") }
             return
         }
@@ -3137,6 +3287,8 @@ class MainViewModel(
                 changes = emptyList(),
                 workspaceFiles = emptyList(),
                 androidProjectDetected = false,
+                androidBuildMessage = null,
+                androidBuildFailed = false,
                 filesLoading = true,
                 projectTerminalLines = emptyList(),
                 projectTerminalLiveOutput = "",
@@ -3159,7 +3311,7 @@ class MainViewModel(
     }
 
     fun createQuickProject() {
-        if (_state.value.isRunning || _state.value.projectTerminalRunning) {
+        if (_state.value.isRunning || _state.value.projectTerminalRunning || _state.value.androidBuildRunning) {
             _state.update { it.copy(toastMessage = "Stop the background task before creating another project") }
             return
         }
@@ -3180,7 +3332,7 @@ class MainViewModel(
     }
 
     fun importZipProject(uri: Uri) {
-        if (_state.value.projectImporting || _state.value.isRunning || _state.value.projectTerminalRunning) return
+        if (_state.value.projectImporting || _state.value.isRunning || _state.value.projectTerminalRunning || _state.value.androidBuildRunning) return
         _state.update { it.copy(projectImporting = true, projectImportMessage = "Reading project archive…") }
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching { extractImportedProject(uri) } }
@@ -3343,7 +3495,7 @@ class MainViewModel(
     }
 
     private fun cloneGitRepository(url: String, repositoryName: String?, branch: String?, useGitHubCli: Boolean) {
-        if (_state.value.gitCloneRunning || _state.value.projectImporting || _state.value.isRunning || _state.value.projectTerminalRunning) return
+        if (_state.value.gitCloneRunning || _state.value.projectImporting || _state.value.isRunning || _state.value.projectTerminalRunning || _state.value.androidBuildRunning) return
         val normalized = runCatching { validateGitUrl(url) }.getOrElse { error ->
             _state.update { it.copy(toastMessage = error.message ?: "Enter a valid public HTTPS Git URL") }
             return
@@ -3752,7 +3904,7 @@ class MainViewModel(
 
     fun deleteProject(projectId: String) {
         val project = _state.value.projects.firstOrNull { it.id == projectId } ?: return
-        if (_state.value.activeProject?.id == projectId || _state.value.isRunning || _state.value.projectTerminalRunning) return
+        if (_state.value.activeProject?.id == projectId || _state.value.isRunning || _state.value.projectTerminalRunning || _state.value.androidBuildRunning) return
         _state.update { current -> current.copy(projects = current.projects.filterNot { it.id == projectId }) }
         preferences.saveProjects(_state.value.projects)
         viewModelScope.launch(Dispatchers.IO) {
@@ -3784,7 +3936,7 @@ class MainViewModel(
         val current = _state.value
         val project = current.activeProject ?: return
         val root = current.suggestedProjectRoot ?: return
-        if (current.isRunning || current.projectTerminalRunning) return
+        if (current.isRunning || current.projectTerminalRunning || current.androidBuildRunning) return
         val updated = project.copy(rootPath = root)
         configureBridgeRoots(updated.id, updated.rootPath)
         val projects = current.projects.map { if (it.id == updated.id) updated else it }
@@ -5139,6 +5291,11 @@ class MainViewModel(
             return
         }
         if (state.value.isRunning || state.value.chatLoading) return
+        if (state.value.androidBuildRunning) {
+            // The build owns the foreground service and its wake lock until it finishes.
+            _state.update { it.copy(toastMessage = "Wait for the Android build to finish, or cancel it, before starting a task.") }
+            return
+        }
 
         // Check if input is a slash command
         val parsedCmd = SlashCommandEngine.parseCommand(trimmed)
@@ -6283,6 +6440,7 @@ class MainViewModel(
         private const val MAX_PROJECT_TERMINAL_OUTPUT = 200_000
         private const val MAX_ATTACHMENTS_PER_MESSAGE = 5
         private const val MAX_PROCESS_OUTPUT_BYTES = 512 * 1024
+        private const val ANDROID_BUILD_STOP_GRACE_SECONDS = 3L
         /** Opening a chat loads at least this many of its newest messages; older ones load as the user scrolls up. */
         private const val CHAT_WINDOW_MIN_MESSAGES = 15
         /** Each scroll-up load adds at least this many older messages. */

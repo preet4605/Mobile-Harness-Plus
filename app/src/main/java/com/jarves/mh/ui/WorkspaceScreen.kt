@@ -81,6 +81,8 @@ import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Code
@@ -563,6 +565,8 @@ internal fun WorkspaceScreen(
     onRefreshFiles: () -> Unit,
     onOpenFile: (WorkspaceEntry) -> Unit,
     onInstallApk: (WorkspaceEntry) -> Unit = {},
+    onAndroidBuild: (AndroidBuildRequest) -> Unit = {},
+    onCancelAndroidBuild: () -> Unit = {},
     onCloseFile: () -> Unit,
     onUndoChanges: () -> Unit,
     onKeepChanges: () -> Unit,
@@ -971,6 +975,16 @@ internal fun WorkspaceScreen(
                                     onRefresh = onRefreshFiles,
                                     onOpenFile = onOpenFile,
                                     onInstallApk = onInstallApk,
+                                    androidBuild = if (state.androidProjectDetected || state.androidBuildRunning) {
+                                        AndroidBuildUi(
+                                            running = state.androidBuildRunning,
+                                            cancelling = state.androidBuildCancelling,
+                                            message = state.androidBuildMessage,
+                                            failed = state.androidBuildFailed,
+                                        )
+                                    } else null,
+                                    onAndroidBuild = onAndroidBuild,
+                                    onCancelAndroidBuild = onCancelAndroidBuild,
                                     onUseSuggestedProjectRoot = onUseSuggestedProjectRoot,
                                     onExport = {
                                         exportProjectLauncher.launch("${state.activeProject?.slug ?: "project"}.zip")
@@ -1235,6 +1249,9 @@ private fun FilesTab(
     onRefresh: () -> Unit,
     onOpenFile: (WorkspaceEntry) -> Unit,
     onInstallApk: (WorkspaceEntry) -> Unit = {},
+    androidBuild: AndroidBuildUi? = null,
+    onAndroidBuild: (AndroidBuildRequest) -> Unit = {},
+    onCancelAndroidBuild: () -> Unit = {},
     onUseSuggestedProjectRoot: () -> Unit,
     onExport: () -> Unit,
     listState: LazyListState,
@@ -1300,6 +1317,11 @@ private fun FilesTab(
                         onClick = onUseSuggestedProjectRoot,
                     )
                 }
+            }
+        }
+        if (androidBuild != null) {
+            item(key = "android-build") {
+                AndroidBuildSection(androidBuild, onAndroidBuild, onCancelAndroidBuild)
             }
         }
         if (apkFiles.isNotEmpty()) {
@@ -1377,6 +1399,80 @@ private fun FilesTab(
                     },
                 )
             }
+        }
+    }
+}
+
+/** What the Files tab shows about the project's one-tap Android build. */
+internal data class AndroidBuildUi(
+    val running: Boolean,
+    val cancelling: Boolean,
+    val message: String?,
+    val failed: Boolean,
+)
+
+internal enum class AndroidBuildRequest { BUILD_AND_RUN, BUILD_ONLY, FORCE_REBUILD }
+
+/** Build & run, Build only and Force rebuild for an Android Gradle project, with live progress and Cancel. */
+@Composable
+private fun AndroidBuildSection(
+    build: AndroidBuildUi,
+    onBuild: (AndroidBuildRequest) -> Unit,
+    onCancel: () -> Unit,
+) {
+    val colors = PocketColors.current
+    ListSection(
+        modifier = Modifier.padding(bottom = PocketSpacing.lg),
+        header = "Android app",
+        footer = if (build.running) null else "Unchanged projects reuse the last APK. Force rebuild always runs Gradle.",
+    ) {
+        if (build.running) {
+            ListRow(
+                build.message ?: "Building debug APK…",
+                leading = { ProgressRing(progress = null, size = 22.dp, strokeWidth = 2.5.dp) },
+                trailing = {
+                    PocketButton(
+                        if (build.cancelling) "Stopping…" else "Cancel",
+                        onCancel,
+                        style = PocketButtonStyle.Tinted,
+                        size = PocketButtonSize.Small,
+                        destructive = true,
+                        enabled = !build.cancelling,
+                    )
+                },
+            )
+        } else {
+            build.message?.let { message ->
+                ListRow(
+                    if (build.failed) "Build failed" else "Last build",
+                    subtitle = message,
+                    subtitleMaxLines = 6,
+                    subtitleColor = if (build.failed) colors.red else null,
+                    icon = if (build.failed) Icons.Outlined.Warning else Icons.Outlined.Check,
+                    iconTile = if (build.failed) colors.red else colors.green,
+                )
+            }
+            ListRow(
+                "Build & run",
+                subtitle = "Build the debug APK, then install and open it",
+                icon = Icons.Outlined.PlayArrow,
+                iconTile = colors.green,
+                onClick = { onBuild(AndroidBuildRequest.BUILD_AND_RUN) },
+            )
+            ListRow(
+                "Build only",
+                subtitle = "Build the debug APK without installing it",
+                icon = Icons.Outlined.Build,
+                iconTile = colors.blue,
+                onClick = { onBuild(AndroidBuildRequest.BUILD_ONLY) },
+            )
+            ListRow(
+                "Force rebuild",
+                subtitle = "Run Gradle even if nothing changed",
+                icon = Icons.Outlined.Refresh,
+                iconTile = colors.orange,
+                onClick = { onBuild(AndroidBuildRequest.FORCE_REBUILD) },
+            )
         }
     }
 }
