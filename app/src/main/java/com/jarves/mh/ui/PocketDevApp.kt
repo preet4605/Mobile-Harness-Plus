@@ -276,6 +276,8 @@ private fun AppScreen(
             onBack = viewModel::closeProject,
             onSend = viewModel::sendPrompt,
             onStop = viewModel::stopTask,
+            onSteerFollowUp = viewModel::steerQueuedFollowUp,
+            onRemoveFollowUp = viewModel::removeQueuedFollowUp,
             onApproval = viewModel::answerApproval,
             onRefreshFiles = viewModel::refreshProjectFiles,
             onOpenFile = viewModel::openFile,

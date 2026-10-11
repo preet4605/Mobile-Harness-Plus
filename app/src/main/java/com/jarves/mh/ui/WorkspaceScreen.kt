@@ -65,6 +65,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -97,6 +98,7 @@ import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Preview
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Terminal
@@ -555,6 +557,8 @@ internal fun WorkspaceScreen(
     onBack: () -> Unit,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
+    onSteerFollowUp: (String) -> Unit = {},
+    onRemoveFollowUp: (String) -> Unit = {},
     onApproval: (Boolean) -> Unit,
     onRefreshFiles: () -> Unit,
     onOpenFile: (WorkspaceEntry) -> Unit,
@@ -956,6 +960,9 @@ internal fun WorkspaceScreen(
                                     loading = state.chatLoading,
                                     hasOlderMessages = state.olderMessageCount > 0,
                                     onLoadOlderMessages = onLoadOlderMessages,
+                                    queuedFollowUps = state.queuedFollowUps,
+                                    onSteerFollowUp = onSteerFollowUp,
+                                    onRemoveFollowUp = onRemoveFollowUp,
                                 )
                                 WorkspaceTab.FILES -> FilesTab(
                                     files = state.workspaceFiles,
@@ -1537,6 +1544,9 @@ private fun ChatTab(
     bottomBarClearance: Dp = 0.dp,
     hasOlderMessages: Boolean = false,
     onLoadOlderMessages: () -> Unit = {},
+    queuedFollowUps: List<QueuedFollowUp> = emptyList(),
+    onSteerFollowUp: (String) -> Unit = {},
+    onRemoveFollowUp: (String) -> Unit = {},
 ) {
     val view = LocalView.current
     // Keep the screen on while the selected agent is working in this chat. Released automatically
@@ -1715,6 +1725,25 @@ private fun ChatTab(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 if (activeCount > 0) ActivityCapsule(activeCount, onOpenInspector)
+                if (queuedFollowUps.isNotEmpty()) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 180.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(PocketSpacing.xs),
+                    ) {
+                        queuedFollowUps.forEach { followUp ->
+                            key(followUp.id) {
+                                QueuedFollowUpCard(
+                                    followUp = followUp,
+                                    onSteer = { onSteerFollowUp(followUp.id) },
+                                    onRemove = { onRemoveFollowUp(followUp.id) },
+                                )
+                            }
+                        }
+                    }
+                }
                 if (pendingAttachments.isNotEmpty()) {
                     Row(
                         Modifier
@@ -1815,7 +1844,7 @@ private fun ChatTab(
                     isRunning = isRunning,
                     isStopping = isStopping,
                     canSend = inputState.text.isNotBlank() || pendingAttachments.isNotEmpty(),
-                    attachEnabled = !isRunning && pendingAttachments.size < 5,
+                    attachEnabled = pendingAttachments.size < 5,
                     hasAttachments = pendingAttachments.isNotEmpty(),
                     activeCount = activeCount,
                     onSend = {
@@ -1925,7 +1954,7 @@ private fun Composer(
                     },
                 )
                 Spacer(Modifier.width(PocketSpacing.xs))
-                Box(Modifier.padding(vertical = PocketSpacing.xs)) {
+                Row(Modifier.padding(vertical = PocketSpacing.xs)) {
                     if (isRunning) {
                         ComposerActionButton(
                             contentDescription = "Stop AI task",
@@ -1938,9 +1967,11 @@ private fun Composer(
                                 Icon(Icons.Outlined.Stop, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                             }
                         }
-                    } else {
+                    }
+                    // While a task runs, Send appears beside Stop once there is something to queue.
+                    if (!isRunning || canSend) {
                         ComposerActionButton(
-                            contentDescription = "Send",
+                            contentDescription = if (isRunning) "Queue follow-up" else "Send",
                             container = if (canSend) accent else colors.secondaryFill,
                             enabled = canSend,
                             onClick = onSend,
@@ -2005,6 +2036,52 @@ private fun ComposerActionButton(
                 .clearAndSetSemantics { },
             contentAlignment = Alignment.Center,
         ) { content() }
+    }
+}
+
+/** A follow-up waiting for the running task: Steer runs it next (stopping the task), the cross removes it. */
+@Composable
+private fun QueuedFollowUpCard(
+    followUp: QueuedFollowUp,
+    onSteer: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    val colors = PocketColors.current
+    LiquidGlassSurface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = PocketShape.lg,
+        layerSource = LiquidGlassLayers.Background,
+        role = GlassRoles.Composer,
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = LiquidGlassTokens.MinTouchTarget)
+                .padding(start = PocketSpacing.md, end = PocketSpacing.xs, top = PocketSpacing.xs, bottom = PocketSpacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
+        ) {
+            SymbolTile(Icons.Outlined.Schedule, colors.gray, size = 28.dp)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    followUp.prompt.ifBlank { "Attached files" },
+                    style = PocketType.subheadline,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (followUp.attachments.isNotEmpty()) {
+                    val count = followUp.attachments.size
+                    Text(
+                        "$count attachment${if (count == 1) "" else "s"}",
+                        style = PocketType.caption2,
+                        color = colors.secondaryLabel,
+                    )
+                }
+            }
+            PocketButton("Steer", onSteer, style = PocketButtonStyle.Tinted, size = PocketButtonSize.Small)
+            PocketIconButton(Icons.Rounded.Cancel, "Remove queued follow-up", onRemove, tint = colors.tertiaryLabel, iconSize = 18.dp)
+        }
     }
 }
 

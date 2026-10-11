@@ -145,6 +145,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -287,6 +288,8 @@ data class AppUiState(
     /** The "projectId/chatId" [olderMessageCount] belongs to. A save for any other chat starts at its first message. */
     val messageWindowKey: String? = null,
     val pendingAttachments: List<ChatAttachment> = emptyList(),
+    /** Messages sent while a task ran, oldest first. In memory only: lost if the process dies. */
+    val queuedFollowUps: List<QueuedFollowUp> = emptyList(),
     val pendingApproval: ToolRequest? = null,
     val changes: List<ChangeItem> = emptyList(),
     val activity: List<ActivityItem> = emptyList(),
@@ -455,6 +458,14 @@ class MainViewModel(
     private var activeRuntimeRequest: RuntimeRetryRequest? = null
     /** Task whose sessions the chat follows; set by sendPrompt, read from supervisor threads. */
     @Volatile private var activeUiTaskId: String? = null
+    /** Waits until the next queued follow-up may start, then sends it. At most one runs. */
+    private var followUpDrainJob: Job? = null
+    /** The last task whose end released the follow-up queue, so a replayed end never sends twice. */
+    private var followUpReleasedForTaskId: String? = null
+    /** The task Steer stopped; its cancellation must keep, not drop, the queue. */
+    private var followUpSteerTaskId: String? = null
+    /** Counts composer sends, so an attachment import that finishes after a send does not attach to the next one. */
+    private var composerSends = 0L
     private val failedApiKeyIds = mutableSetOf<String>()
     private val attemptedProfileIds = mutableSetOf<String>()
     @Volatile private var pendingTranscriptWrite: TranscriptWrite? = null
@@ -2845,6 +2856,7 @@ class MainViewModel(
         }
         // Shell first: the project shows at once with a placeholder, and its chat history loads off the main thread.
         cancelFileRead()
+        clearFollowUps()
         _state.update {
             it.copy(
                 activeProject = project,
@@ -3013,6 +3025,7 @@ class MainViewModel(
         projectOpenJob?.cancel()
         chatSwitchJob?.cancel()
         cancelFileRead()
+        clearFollowUps()
         _state.update {
             it.copy(
                 activeProject = null,
@@ -3107,6 +3120,7 @@ class MainViewModel(
         )
         configureBridgeRoots(project.id, project.rootPath)
         val guestRoot = projectGuestRoot(project)
+        clearFollowUps()
         _state.update {
             it.copy(
                 projects = listOf(project) + it.projects,
@@ -3856,6 +3870,7 @@ class MainViewModel(
             return
         }
         persistMessages()
+        clearFollowUps()
         // An open still in flight must not publish over the chat created here.
         projectOpenGeneration++
         val chat = ProjectChat()
@@ -3889,6 +3904,7 @@ class MainViewModel(
             return
         }
         persistMessages()
+        clearFollowUps()
         val generation = ++projectOpenGeneration
         // No chat is active until its messages load, so nothing is saved over it in the meantime.
         _state.update {
@@ -4210,8 +4226,9 @@ class MainViewModel(
         val current = _state.value
         val project = current.activeProject ?: return
         val chatId = current.activeChatId ?: return
-        if (current.isRunning || uris.isEmpty()) return
-        val importMessages = current.messages
+        // Attachments may be added while a task runs; they go with the follow-up that is queued.
+        if (uris.isEmpty()) return
+        val sendsAtImport = composerSends
         val remaining = (MAX_ATTACHMENTS_PER_MESSAGE - current.pendingAttachments.size).coerceAtLeast(0)
         if (remaining == 0) {
             _state.update { it.copy(toastMessage = "You can attach up to $MAX_ATTACHMENTS_PER_MESSAGE files per message") }
@@ -4231,9 +4248,10 @@ class MainViewModel(
             val (added, errors) = result
             var acceptedIds = emptySet<String>()
             _state.update { state ->
-                // The newest message tells whether the conversation moved on; older messages loading above it do not count.
+                // A send while the files copied took the composer's attachments; these must not join the next message.
+                // Messages streaming in from a running task do not count.
                 if (state.activeProject?.id != project.id || state.activeChatId != chatId ||
-                    state.isRunning || state.messages.lastOrNull() !== importMessages.lastOrNull()) return@update state
+                    composerSends != sendsAtImport) return@update state
                 val capacity = (MAX_ATTACHMENTS_PER_MESSAGE - state.pendingAttachments.size).coerceAtLeast(0)
                 val accepted = added.take(capacity)
                 acceptedIds = accepted.map { it.id }.toSet()
@@ -5097,6 +5115,12 @@ class MainViewModel(
     }
 
     fun sendPrompt(prompt: String) {
+        composerSends++
+        sendPrompt(prompt, state.value.pendingAttachments, fromQueue = false)
+    }
+
+    /** [fromQueue]: a queued follow-up being sent; it carries its own attachments and leaves the composer's alone. */
+    private fun sendPrompt(prompt: String, attachments: List<ChatAttachment>, fromQueue: Boolean) {
         val project = state.value.activeProject ?: return
         if (_state.value.agentKind == AgentKind.ANTIGRAVITY &&
             _state.value.antigravityAuth.status != AntigravityAuthStatus.SIGNED_IN) {
@@ -5107,9 +5131,14 @@ class MainViewModel(
             _state.update { it.copy(toastMessage = "Claude subscription login is not supported by DeepSeek Harness — pick a key-based provider in Settings.") }
             return
         }
-        val attachments = state.value.pendingAttachments
         val trimmed = prompt.trim()
-        if ((trimmed.isBlank() && attachments.isEmpty()) || state.value.isRunning || state.value.chatLoading) return
+        if (trimmed.isBlank() && attachments.isEmpty()) return
+        // While a task runs, or earlier follow-ups still wait, the message joins the queue in order.
+        if (!fromQueue && (state.value.isRunning || state.value.queuedFollowUps.isNotEmpty())) {
+            queueFollowUp(project, prompt, attachments)
+            return
+        }
+        if (state.value.isRunning || state.value.chatLoading) return
 
         // Check if input is a slash command
         val parsedCmd = SlashCommandEngine.parseCommand(trimmed)
@@ -5169,7 +5198,7 @@ class MainViewModel(
                     attachments = attachments,
                     activeSkill = skillName,
                 ),
-                pendingAttachments = emptyList(),
+                pendingAttachments = if (fromQueue) it.pendingAttachments else emptyList(),
                 isRunning = true,
                 slashCommandsVisible = false,
                 filteredSkills = emptyList(),
@@ -5375,6 +5404,93 @@ class MainViewModel(
         touchProject(record.projectId)
         refreshProjectFiles()
         persistMessages(includeLiveProcess = true, immediate = true)
+        // A stop the user asked for elsewhere (the notification) drops the queue like Stop does; Steer keeps it.
+        if (cancelled && followUpSteerTaskId != taskId) clearFollowUps() else releaseFollowUpsAfter(taskId)
+    }
+
+    private fun queueFollowUp(project: Project, prompt: String, attachments: List<ChatAttachment>) {
+        val item = QueuedFollowUp(
+            projectId = project.id,
+            chatId = FollowUpQueue.chatKey(_state.value.activeChatId),
+            prompt = prompt.trim(),
+            attachments = attachments,
+        )
+        _state.update {
+            it.copy(
+                queuedFollowUps = FollowUpQueue.enqueue(it.queuedFollowUps, item),
+                pendingAttachments = emptyList(),
+                slashCommandsVisible = false,
+                filteredSkills = emptyList(),
+                toastMessage = "Follow-up queued",
+            )
+        }
+        // Sent after Stop was pressed: it should run once the stop lands, not be dropped with the stopped task.
+        if (_state.value.isStopping && followUpSteerTaskId == null) followUpSteerTaskId = activeUiTaskId
+        // Nothing runs while earlier follow-ups wait for the chat or terminal: make sure the queue drains.
+        if (!_state.value.isRunning) scheduleFollowUpDrain()
+    }
+
+    /** Moves a queued follow-up to the front and stops the running task, so that follow-up runs next. */
+    fun steerQueuedFollowUp(id: String) {
+        if (_state.value.queuedFollowUps.none { it.id == id }) return
+        _state.update { it.copy(queuedFollowUps = FollowUpQueue.steerToFront(it.queuedFollowUps, id)) }
+        val current = _state.value
+        when {
+            current.isStopping -> Unit // Already stopping; the task's end sends the front follow-up.
+            current.isRunning -> {
+                followUpSteerTaskId = activeUiTaskId
+                stopActiveTask()
+            }
+            else -> scheduleFollowUpDrain()
+        }
+    }
+
+    fun removeQueuedFollowUp(id: String) {
+        _state.update { it.copy(queuedFollowUps = FollowUpQueue.remove(it.queuedFollowUps, id)) }
+        if (_state.value.queuedFollowUps.isEmpty()) {
+            followUpDrainJob?.cancel()
+            followUpDrainJob = null
+        }
+    }
+
+    private fun clearFollowUps() {
+        followUpDrainJob?.cancel()
+        followUpDrainJob = null
+        followUpSteerTaskId = null
+        if (_state.value.queuedFollowUps.isNotEmpty()) _state.update { it.copy(queuedFollowUps = emptyList()) }
+    }
+
+    /** The tracked task [taskId] ended. Only its first end releases the queue; replayed ends are ignored. */
+    private fun releaseFollowUpsAfter(taskId: String) {
+        if (followUpReleasedForTaskId == taskId) return
+        followUpReleasedForTaskId = taskId
+        if (followUpSteerTaskId == taskId) followUpSteerTaskId = null
+        scheduleFollowUpDrain()
+    }
+
+    /**
+     * Sends queued follow-ups one at a time once the chat is free: no task running or stopping,
+     * history loaded and no terminal command running. Waits on state changes rather than polling.
+     */
+    private fun scheduleFollowUpDrain() {
+        if (_state.value.queuedFollowUps.isEmpty() || followUpDrainJob?.isActive == true) return
+        followUpDrainJob = viewModelScope.launch {
+            while (true) {
+                val ready = _state.first { it.queuedFollowUps.isEmpty() || FollowUpQueue.canStartNext(it) }
+                val project = ready.activeProject ?: break
+                if (ready.queuedFollowUps.isEmpty()) break
+                var next: QueuedFollowUp? = null
+                _state.update {
+                    val (item, rest) = FollowUpQueue.popFor(it.queuedFollowUps, project.id, FollowUpQueue.chatKey(it.activeChatId))
+                    next = item
+                    it.copy(queuedFollowUps = rest)
+                }
+                val item = next ?: break
+                sendPrompt(item.prompt, item.attachments, fromQueue = true)
+                // A local command or a rejected prompt starts no task; go on to the next follow-up.
+                if (_state.value.isRunning) break
+            }
+        }
     }
 
     fun answerApproval(approved: Boolean) {
@@ -5391,6 +5507,14 @@ class MainViewModel(
      * process has not exited after 1500ms, [forceKillTask] is called immediately.
      */
     fun stopTask() {
+        if (!_state.value.isRunning && !_state.value.isStopping) return
+        // Stop means stop: queued follow-ups are dropped, not started.
+        clearFollowUps()
+        stopActiveTask()
+    }
+
+    /** Stops the running task without touching queued follow-ups (Stop and Steer share it). */
+    private fun stopActiveTask() {
         if (!_state.value.isRunning && !_state.value.isStopping) return
         if (_state.value.isStopping) {
             forceKillTask()
@@ -5422,12 +5546,16 @@ class MainViewModel(
     fun forceKillTask() {
         if (!_state.value.isRunning && !_state.value.isStopping) return
         val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
+        val killedTaskId = activeUiTaskId
         viewModelScope.launch {
             // Pass force=true to skip any remaining grace period and immediately kill
             supervisor.requestStopActive(force = true)
             runCatching { activeRuntime().stopActiveSession(force = true) }
             // If the bridge still hasn't emitted SessionFailed, force-clear UI state.
             delay(500)
+            // The killed task already ended and a queued follow-up started: leave the new task's state alone.
+            val tracked = activeUiTaskId
+            if (tracked != null && tracked != killedTaskId) return@launch
             _state.update {
                 it.copy(
                     isRunning = false,
@@ -5439,6 +5567,8 @@ class MainViewModel(
                     currentTaskRequest = null,
                 )
             }
+            // A steered stop that needed force still sends the steered follow-up next.
+            if (killedTaskId != null && followUpSteerTaskId == killedTaskId) releaseFollowUpsAfter(killedTaskId)
         }
     }
 
