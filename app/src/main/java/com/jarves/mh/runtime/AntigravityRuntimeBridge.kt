@@ -726,7 +726,9 @@ class AntigravityRuntimeBridge(
                     }
                     val exit = process.waitFor()
                     native.checkCapture()
-                    val success = (exit == 0) && (resultSeen || assistantTextSeen)
+                    // A SUCCESS result event is terminal. The watchdog above stops agy when it keeps
+                    // running afterwards, so the signal exit code (143/137) must not fail the task.
+                    val success = resultSeen || (exit == 0 && assistantTextSeen)
                     if (success) {
                         if (useAccount) {
                             accountManager!!.recordUsage(account!!.id)
