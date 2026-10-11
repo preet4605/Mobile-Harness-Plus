@@ -576,7 +576,7 @@ class DshRuntimeBridge(
     private fun friendlyError(error: Throwable): String {
         val message = error.message.orEmpty()
         return when {
-            error is DshSessionException -> message
+            error is DshSessionException && message.isMeaningfulDshText() -> message
             message.contains("authentication", true) ||
                 message.contains("invalid api key", true) ||
                 message.contains("autherror", true) ||
@@ -597,7 +597,7 @@ class DshRuntimeBridge(
                 message.contains("connection reset", true) ->
                 "Network connection interrupted. Please check your internet connection."
             message.contains("not installed", true) -> message.take(300)
-            message.isBlank() -> "DeepSeek Harness could not start."
+            !message.isMeaningfulDshText() -> "DeepSeek Harness could not start."
             else -> message.take(500)
         }
     }
@@ -898,6 +898,10 @@ internal sealed interface DshSdkProtocolEvent {
     data object Ignored : DshSdkProtocolEvent
 }
 
+/** The SDK sometimes reports a JSON null as the literal text "null"; treat that as no message. */
+private fun String.isMeaningfulDshText(): Boolean =
+    isNotBlank() && !trim().equals("null", ignoreCase = true)
+
 /** Stateful parser for the pinned dsh SDK's newline-delimited JSON-RPC stream. */
 internal class DshSdkProtocolParser(private val expectedSessionId: String) {
     private val reasoningByBlock = mutableMapOf<Long, StringBuilder>()
@@ -910,7 +914,11 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
     fun parseLine(line: String): DshSdkProtocolEvent {
         val frame = runCatching { JSONObject(line) }.getOrNull()
             ?: return if (line.startsWith("dsh:", ignoreCase = true)) {
-                DshSdkProtocolEvent.Failed(line.removePrefix("dsh:").trim())
+                DshSdkProtocolEvent.Failed(
+                    line.removePrefix("dsh:").trim().meaningfulDshText(
+                        "DeepSeek Harness reported an unspecified error",
+                    ),
+                )
             } else {
                 DshSdkProtocolEvent.Ignored
             }
@@ -919,7 +927,7 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
             val id = frame.optInt("id", -1)
             frame.optJSONObject("error")?.let { error ->
                 return DshSdkProtocolEvent.Failed(
-                    error.optString("message").ifBlank { "DeepSeek Harness SDK request $id failed" },
+                    error.optString("message").meaningfulDshText("DeepSeek Harness SDK request $id failed"),
                 )
             }
             return when (id) {
@@ -979,7 +987,7 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
                 val error = data.optJSONObject("error")
                 val text = contentText(resultBlock?.optJSONArray("content"))
                 val summary = compactDshText(
-                    error?.optString("message").orEmpty().ifBlank { text },
+                    error?.optString("message").orEmpty().meaningfulDshText(text),
                     MAX_DSH_TOOL_RAW_TEXT,
                     180,
                 ).ifBlank { "$name completed" }
@@ -990,7 +998,7 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
                 when (reason?.optString("kind")) {
                     "error" -> DshSdkProtocolEvent.Failed(
                         reason.optJSONObject("error")?.optString("message").orEmpty()
-                            .ifBlank { "DeepSeek Harness turn failed" },
+                            .meaningfulDshText("DeepSeek Harness turn failed"),
                     )
                     "blocked" -> DshSdkProtocolEvent.Failed("DeepSeek Harness was blocked from completing the task")
                     else -> DshSdkProtocolEvent.TurnCompleted
@@ -999,6 +1007,9 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
             else -> DshSdkProtocolEvent.Ignored
         }
     }
+
+    private fun String.meaningfulDshText(fallback: String): String =
+        if (isMeaningfulDshText()) trim() else fallback
 
     private fun parseAssistantChunk(data: JSONObject): DshSdkProtocolEvent {
         val chunk = data.optJSONObject("chunk") ?: return DshSdkProtocolEvent.Ignored
