@@ -102,6 +102,7 @@ import com.jarves.mh.runtime.RuntimeSetupController
 import com.jarves.mh.runtime.RuntimeSetupService
 import com.jarves.mh.runtime.RuntimeSetupSnapshot
 import com.jarves.mh.runtime.RuntimeSetupStatus
+import com.jarves.mh.runtime.readTailText
 import com.jarves.mh.runtime.supportsArm64Runtime
 import com.jarves.mh.runtime.AndroidAppInstaller
 import com.jarves.mh.update.AppUpdateInfo
@@ -1207,7 +1208,7 @@ class MainViewModel(
                     projectGuestRoot(project),
                 )
                 val exitCode = process.waitFor()
-                val buildOutput = (process as? NativeSpawnProcess)?.outputFile?.readText().orEmpty()
+                val buildOutput = (process as? NativeSpawnProcess)?.outputFile?.readTailText(MAX_PROCESS_OUTPUT_BYTES).orEmpty()
                 check(exitCode == 0) {
                     buildOutput.trim().takeLast(2_000).ifBlank { "Gradle build failed (exit code $exitCode)" }
                 }
@@ -3176,7 +3177,7 @@ class MainViewModel(
                             outputFile = output,
                         )
                         val exit = process.waitFor()
-                        val details = output.readText().trim()
+                        val details = output.readTailText(MAX_PROCESS_OUTPUT_BYTES).trim()
                         check(exit == 0) { details.takeLast(600).ifBlank { "Git clone failed with exit code $exit" } }
                         val metadata = detectImportedProjectMetadata(workspace)
                         Project(
@@ -3442,7 +3443,7 @@ class MainViewModel(
                 outputFile = outputFile,
             )
             val exit = process.waitFor()
-            exit to sanitizeTerminalOutput(outputFile.takeIf(File::isFile)?.readText().orEmpty()).trim()
+            exit to sanitizeTerminalOutput(outputFile.readTailText(MAX_PROCESS_OUTPUT_BYTES)).trim()
         } finally {
             outputFile.delete()
         }
@@ -5941,6 +5942,7 @@ class MainViewModel(
         private const val MAX_PROJECT_TERMINAL_HISTORY = 100
         private const val MAX_PROJECT_TERMINAL_OUTPUT = 200_000
         private const val MAX_ATTACHMENTS_PER_MESSAGE = 5
+        private const val MAX_PROCESS_OUTPUT_BYTES = 512 * 1024
         /** Opening a chat loads at least this many of its newest messages; older ones load as the user scrolls up. */
         private const val CHAT_WINDOW_MIN_MESSAGES = 15
         /** Each scroll-up load adds at least this many older messages. */
