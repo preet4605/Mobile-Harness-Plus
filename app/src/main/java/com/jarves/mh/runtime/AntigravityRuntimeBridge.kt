@@ -85,9 +85,17 @@ internal object AntigravityEventParser {
                     }.ifBlank { type.ifBlank { "Tool" } }
                     val name = antigravityToolDisplayName(rawName)
                     val detail = antigravityToolDetail(step, rawName).ifBlank { name }
-                    val isDone = step.optString("state") == "DONE"
+                    val isDone = step.optString("state") in setOf("DONE", "ERROR")
                     if (isDone) {
-                        results.add(AntigravityParsedEvent.ToolCompleted(name, detail))
+                        val info = step.optJSONObject("tool_info")
+                        val output = info?.optString("output")
+                            ?.takeIf(String::isNotBlank)
+                            ?.let(::antigravityToolOutput)
+                        val error = info?.optJSONObject("error")
+                            ?.optString("message")
+                            ?.takeIf(String::isNotBlank)
+                            ?.let(::redactToolDetail)
+                        results.add(AntigravityParsedEvent.ToolCompleted(name, output ?: error ?: detail))
                     } else {
                         results.add(AntigravityParsedEvent.ToolStarted(name, detail))
                     }
@@ -325,6 +333,17 @@ private fun redactToolDetail(value: String): String = value
     .replace(Regex("\\s+"), " ")
     .trim()
     .take(500)
+
+/** Command output keeps its line breaks, so it is redacted without collapsing whitespace. */
+private fun antigravityToolOutput(value: String): String {
+    val redacted = value
+        .replace(Regex("(?i)(api[_-]?key|token|secret|password)(\\s*[=:]\\s*)([^\\s'\"]+)"), "$1$2••••")
+        .replace(Regex("(?i)(authorization:\\s*bearer\\s+)[^\\s'\"]+"), "$1••••")
+        .replace("\r\n", "\n")
+        .replace('\r', '\n')
+        .trim()
+    return if (redacted.length <= 6_000) redacted else "…\n" + redacted.takeLast(6_000)
+}
 
 /** Official Antigravity CLI bridge. OAuth and credentials remain owned by agy. */
 private const val HELLO_TIMEOUT_MILLIS = 90_000L

@@ -140,6 +140,28 @@ class AntigravityBridgeTest {
     }
 
     @Test
+    fun `shows completed command output instead of repeating command`() {
+        val parsed = AntigravityEventParser.parse(
+            """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"gradle assembleDebug"},"output":"Preparing\r\nBUILD SUCCESSFUL\r\n"}}}""",
+        )
+        assertEquals(
+            AntigravityParsedEvent.ToolCompleted("Bash", "Preparing\nBUILD SUCCESSFUL"),
+            parsed,
+        )
+    }
+
+    @Test
+    fun `shows tool errors as completed activity`() {
+        val parsed = AntigravityEventParser.parse(
+            """{"event":"step_update","step_update":{"state":"ERROR","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"gradle assembleDebug"},"error":{"type":"TOOL_ERROR","message":"context canceled"}}}}""",
+        )
+        assertEquals(
+            AntigravityParsedEvent.ToolCompleted("Bash", "context canceled"),
+            parsed,
+        )
+    }
+
+    @Test
     fun `quota error detection identifies rate limits and exhausted resource errors`() {
         assertTrue(isQuotaError("Resource has been exhausted (e.g. check quota)"))
         assertTrue(isQuotaError("HTTP 429: Too Many Requests"))
