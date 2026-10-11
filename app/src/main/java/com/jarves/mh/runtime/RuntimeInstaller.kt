@@ -937,8 +937,7 @@ class RuntimeInstaller(private val context: Context) {
     private fun removeAndroidGradleProperty() {
         val properties = File(rootfs, "root/.gradle/gradle.properties")
         if (!properties.isFile) return
-        val propertyPattern = Regex("^\\s*${Regex.escape(ANDROID_AAPT2_PROPERTY)}\\s*[:=].*$")
-        val remaining = properties.readLines().filterNot { propertyPattern.matches(it) }
+        val remaining = properties.readLines().filterNot(::isManagedAndroidGradleProperty)
         if (remaining.isEmpty()) {
             properties.delete()
         } else {
@@ -1281,10 +1280,8 @@ class RuntimeInstaller(private val context: Context) {
         writeAndroidGradleInitScript(runtimeRootfs)
         val gradleDir = File(runtimeRootfs, "root/.gradle").apply { mkdirs() }
         val properties = File(gradleDir, "gradle.properties")
-        val propertyPattern = Regex("^\\s*${Regex.escape(ANDROID_AAPT2_PROPERTY)}\\s*[:=].*$")
         val existingLines = properties.readTextOrNull()?.lineSequence()?.toList().orEmpty()
-        val expectedLine = "$ANDROID_AAPT2_PROPERTY=$ANDROID_AAPT2_GUEST_PATH"
-        val updatedLines = existingLines.filterNot { propertyPattern.matches(it) } + expectedLine
+        val updatedLines = mergeManagedAndroidGradleProperties(existingLines, ANDROID_AAPT2_GUEST_PATH)
         if (existingLines == updatedLines) return
 
         val temporary = File(gradleDir, "gradle.properties.pocketdev.tmp")
@@ -2183,7 +2180,6 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         private const val ANDROID_GRADLE_SHA256 = "8e228b640319a7c739c0a93d002facdeb08e8f3ba394d57d74ee355a5e93072c"
         private const val ANDROID_MAVEN_URL = "$ANDROID_ASSET_BASE/localMvnRepository.zip"
         private const val ANDROID_MAVEN_SHA256 = "3ba89892b43377d60743568d1b9004f172c2eab75dac059064f82dec497819f9"
-        private const val ANDROID_AAPT2_PROPERTY = "android.aapt2FromMavenOverride"
         private const val ANDROID_AAPT2_GUEST_PATH = "/root/android-sdk/build-tools/35.0.0/aapt2"
         private const val ANDROID_AAPT2_HOST_PATH = "root/android-sdk/build-tools/35.0.0/aapt2"
         private val CLAUDE_VERSION_PATTERN = Regex("[0-9]+\\.[0-9]+\\.[0-9]+")
@@ -2236,3 +2232,31 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         const val NARB_DISABLE_NATIVE_CACHE_VALUE = "1"
     }
 }
+
+private const val ANDROID_AAPT2_GRADLE_PROPERTY = "android.aapt2FromMavenOverride"
+private val MANAGED_ANDROID_GRADLE_PROPERTIES = listOf(
+    ANDROID_AAPT2_GRADLE_PROPERTY,
+    "org.gradle.jvmargs",
+    "org.gradle.workers.max",
+    "org.gradle.parallel",
+    "kotlin.compiler.execution.strategy",
+)
+
+internal fun isManagedAndroidGradleProperty(line: String): Boolean =
+    MANAGED_ANDROID_GRADLE_PROPERTIES.any { key ->
+        Regex("^\\s*${Regex.escape(key)}\\s*[:=].*$").matches(line)
+    }
+
+/**
+ * Keeps the user's own lines in the guest's global gradle.properties and replaces only the keys
+ * the app manages. Bounded heap, two workers, no parallel projects and in-process Kotlin keep
+ * Android builds inside a phone's memory instead of forking extra JVMs (upstream a4ab2b7).
+ */
+internal fun mergeManagedAndroidGradleProperties(existingLines: List<String>, aapt2GuestPath: String): List<String> =
+    existingLines.filterNot(::isManagedAndroidGradleProperty) + listOf(
+        "$ANDROID_AAPT2_GRADLE_PROPERTY=$aapt2GuestPath",
+        "org.gradle.jvmargs=-Xmx512m -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8",
+        "org.gradle.workers.max=2",
+        "org.gradle.parallel=false",
+        "kotlin.compiler.execution.strategy=in-process",
+    )
