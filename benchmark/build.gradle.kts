@@ -6,7 +6,7 @@ plugins {
 // Frame-timing benchmark for the glass and motion work. Test-only: it is never part of the app.
 // Run on a phone with: ./gradlew :benchmark:connectedBenchmarkAndroidTest
 //   -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true
-// See docs/BENCHMARK.md.
+// See docs/architecture.md#verification-and-distribution.
 android {
     namespace = "com.jarves.mh.benchmark"
     compileSdk = 36

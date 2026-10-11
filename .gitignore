@@ -73,3 +73,13 @@ dist/runtime-bundles/sources/
 
 # Generated local in-app update test artifacts.
 dist/update-test/
+
+# Preserve historical project docs locally; maintain only the six canonical docs.
+/.review/docs-before-consolidation-2026-10-11/
+/docs/*
+!/docs/prd.md
+!/docs/architecture.md
+!/docs/rules.md
+!/docs/design.md
+!/docs/tasks.md
+!/docs/memory.md
