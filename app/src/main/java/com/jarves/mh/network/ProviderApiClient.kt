@@ -268,7 +268,7 @@ class ProviderApiClient(
             .toString()
         else -> JSONObject()
             .put("model", model)
-            .put("max_tokens", 1)
+            .put("max_tokens", 8)
             .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "Reply OK")))
             .toString()
     }
