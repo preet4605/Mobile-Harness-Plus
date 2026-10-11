@@ -1537,7 +1537,7 @@ class MainViewModel(
                     installedAgentVersions = installer.installedAgentVersions(),
                 )
             }
-            pingApi()
+            autoPingApi()
             checkForAppUpdate()
         } else {
             showStartupError(result.exceptionOrNull() ?: IllegalStateException("Claude Code initialization failed"))
@@ -1662,7 +1662,7 @@ class MainViewModel(
         preferences.onboardingComplete = true
         _state.update { it.copy(onboardingComplete = true, provider = saved, startupStage = StartupStage.READY) }
         refreshActiveApiKey(profile.kind)
-        pingApi()
+        autoPingApi()
     }
 
     fun finishClaudeOnboarding() {
@@ -2502,9 +2502,27 @@ class MainViewModel(
         )
     }
 
+    /**
+     * Background check at startup and after setup. Skips the Claude setup-token test: it boots
+     * Claude Code (about a minute of heavy work on older phones), so it only runs on Test.
+     */
+    private fun autoPingApi() {
+        if (isClaudeSetupTokenTest(_state.value.provider)) return
+        pingApi()
+    }
+
+    private fun isClaudeSetupTokenTest(profile: ProviderProfile): Boolean =
+        _state.value.agentKind == AgentKind.CLAUDE_CODE &&
+            profile.kind == ProviderKind.CLAUDE &&
+            profile.claudeAuthMode == ClaudeAuthMode.SETUP_TOKEN_LEGACY
+
     fun pingApi() {
         if (_state.value.agentKind == AgentKind.ANTIGRAVITY) {
             testAntigravityConnection()
+            return
+        }
+        if (isClaudeSetupTokenTest(_state.value.provider)) {
+            testClaudeSubscription(_state.value.provider)
             return
         }
         val profile = _state.value.provider
@@ -2550,6 +2568,27 @@ class MainViewModel(
                     it.copy(apiPingStatus = ApiPingStatus.FAILED, apiPingMessage = result.message)
                 }
             }
+        }
+    }
+
+    /** Claude setup tokens have no HTTP endpoint to ping, so ask Claude Code itself for a one-word reply. */
+    private fun testClaudeSubscription(profile: ProviderProfile) {
+        if (_state.value.apiPingStatus == ApiPingStatus.PINGING) return
+        _state.update { it.copy(apiPingStatus = ApiPingStatus.PINGING, apiPingMessage = "Asking Claude Code to reply…") }
+        viewModelScope.launch {
+            runCatching { claudeRuntime.hello(profile) }
+                .onSuccess {
+                    _state.update { it.copy(apiPingStatus = ApiPingStatus.OK, apiPingMessage = "Claude subscription works!") }
+                }
+                .onFailure { error ->
+                    _state.update {
+                        it.copy(
+                            apiPingStatus = ApiPingStatus.FAILED,
+                            apiPingMessage = error.message?.replace(Regex("\\s+"), " ")?.trim()?.take(240)
+                                ?: "Claude Code could not answer.",
+                        )
+                    }
+                }
         }
     }
 

@@ -49,7 +49,14 @@ internal fun localServerPlaceholderKey(profile: ProviderProfile): String =
 
 object RuntimeLaunchConfigBuilder {
     fun build(profile: ProviderProfile, authToken: String? = null, localGatewayUrl: String? = null): RuntimeLaunchConfig {
-        val environment = linkedMapOf("DISABLE_AUTOUPDATER" to "1")
+        val environment = linkedMapOf(
+            "DISABLE_AUTOUPDATER" to "1",
+            // Skip telemetry, error reporting and other background network calls. Each one costs
+            // noticeable startup time inside PRoot, and none are needed on device.
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" to "1",
+            "DISABLE_TELEMETRY" to "1",
+            "DISABLE_ERROR_REPORTING" to "1",
+        )
         when (com.jarves.mh.model.providerProtocolForAgent(profile, com.jarves.mh.model.AgentKind.CLAUDE_CODE)) {
             com.jarves.mh.model.ProviderProtocol.CLAUDE_LOGIN -> {
                 if (profile.claudeAuthMode == com.jarves.mh.model.ClaudeAuthMode.SETUP_TOKEN_LEGACY) {

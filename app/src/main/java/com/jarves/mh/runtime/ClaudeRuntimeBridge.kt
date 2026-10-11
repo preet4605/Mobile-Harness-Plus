@@ -28,6 +28,8 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -477,6 +479,65 @@ class ClaudeRuntimeBridge(
             RuntimeTaskController.stopAction = null
         }
         sessionId
+    }
+
+    /**
+     * Runs a one-turn "reply ok" prompt with the saved setup token to prove Claude Code can
+     * authenticate. Claude subscriptions have no HTTP endpoint the app could ping directly.
+     * Returns the reply, or throws with Claude Code's error text.
+     */
+    suspend fun hello(provider: ProviderProfile, timeoutMillis: Long = 90_000L): String = withContext(Dispatchers.IO) {
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        val secret = secretFor(provider).orEmpty()
+        check(secret.isNotBlank()) { "No Claude subscription token is saved." }
+        val installed = installer.installedRuntime()
+        val probeDir = File(context.cacheDir, "claude-hello").apply { mkdirs() }
+        val outputFile = File(context.cacheDir, "claude-hello-${System.nanoTime()}.log")
+        val launch = RuntimeLaunchConfigBuilder.build(provider, authToken = secret)
+        val command = listOf(
+            launch.executable,
+            "-p", "Reply with exactly: ok",
+            "--output-format", "json",
+            "--max-turns", "1",
+            "--model", launch.environment["ANTHROPIC_MODEL"] ?: provider.model,
+        )
+        val process = installer.process(
+            installed.proot,
+            installed.rootfs,
+            probeDir,
+            launch.environment,
+            command,
+            guestWorkspacePath = "/workspace/claude-hello",
+            emulateHardLinks = false,
+            outputFile = outputFile,
+            credentialHome = "/root/.claude",
+        )
+        try {
+            // Close stdin so Claude Code doesn't wait for piped input.
+            runCatching { process.outputStream.close() }
+            withTimeout(timeoutMillis) {
+                while (process.isAlive) delay(200)
+            }
+            val output = outputFile.readTailText(64 * 1024)
+            val result = output.lineSequence()
+                .map(String::trim)
+                .filter { it.startsWith("{") }
+                .mapNotNull { runCatching { JSONObject(it) }.getOrNull() }
+                .lastOrNull { it.optString("type") == "result" }
+            when {
+                result == null -> error(output.trim().takeLast(300).ifBlank { "Claude Code did not answer." })
+                result.optBoolean("is_error") -> error(result.optString("result").ifBlank { result.optString("subtype") })
+                else -> result.optString("result").trim().ifBlank { "ok" }
+            }
+        } catch (e: TimeoutCancellationException) {
+            error("Claude Code did not answer in time. Check your connection and try again.")
+        } finally {
+            runCatching { process.destroy() }
+            runCatching { if (process.isAlive) process.destroyForcibly() }
+            runCatching { outputFile.delete() }
+            runCatching { probeDir.deleteRecursively() }
+            Log.d("ClaudeBridge", "Connection test took ${android.os.SystemClock.elapsedRealtime() - startedAt} ms")
+        }
     }
 
     override suspend fun respondToApproval(request: ToolRequest, approved: Boolean) = withContext(Dispatchers.IO) {

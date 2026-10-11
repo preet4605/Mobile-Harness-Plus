@@ -252,6 +252,10 @@ fun AgentScreen(
     var status by remember { mutableStateOf<String?>(null) }
     var statusOk by remember { mutableStateOf(false) }
     var statusProviderMessage by remember { mutableStateOf<String?>(null) }
+    // Claude setup-token test: 0 idle, 1 requested, 2 running. The result is read only after the
+    // test was seen running, so a stale result from an earlier check is never shown.
+    var claudeTestPhase by remember { mutableStateOf(0) }
+    var claudeTestKeyId by remember { mutableStateOf<String?>(null) }
     var keyConnectionStatuses by remember(selectedKind) {
         mutableStateOf<Map<String, KeyConnectionStatus>>(emptyMap())
     }
@@ -354,6 +358,21 @@ fun AgentScreen(
     // Shown only if the selected model accepts it; with no catalog data the stored level is what gets sent.
     val shownCodexEffort = state.codexReasoningEffort.takeIf { codexLevels.isEmpty() || it in codexLevels }.orEmpty()
 
+    LaunchedEffect(state.apiPingStatus, claudeTestPhase) {
+        when {
+            claudeTestPhase == 1 && state.apiPingStatus == ApiPingStatus.PINGING -> claudeTestPhase = 2
+            claudeTestPhase == 2 && (state.apiPingStatus == ApiPingStatus.OK || state.apiPingStatus == ApiPingStatus.FAILED) -> {
+                val ok = state.apiPingStatus == ApiPingStatus.OK
+                val message = state.apiPingMessage ?: if (ok) "Claude subscription works!" else "Claude Code could not answer."
+                status = message
+                statusOk = ok
+                claudeTestKeyId?.let {
+                    keyConnectionStatuses = keyConnectionStatuses + (it to KeyConnectionStatus(message, ok))
+                }
+                claudeTestPhase = 0
+            }
+        }
+    }
     LaunchedEffect(selectedKind) {
         if (selectedKind == ProviderKind.ANTIGRAVITY_SERVER) {
             val url = selectedKind.defaultBaseUrl
@@ -448,11 +467,23 @@ fun AgentScreen(
             val profile = ProviderProfile(kind, url, model.trim(), dshApi = dshApi, claudeAuthMode = authMode)
             if (kind == ProviderKind.CLAUDE) {
                 onSaveProvider(profile, apiKey.trim())
-                status = "Claude subscription token saved securely. Send a message to verify your subscription."
-                statusOk = true
-                activeKeyId?.let {
-                    keyConnectionStatuses = keyConnectionStatuses +
-                        (it to KeyConnectionStatus("Subscription token saved", true, label = "Saved"))
+                if (authMode == ClaudeAuthMode.SETUP_TOKEN_LEGACY) {
+                    status = "Token saved. Testing it with Claude Code…"
+                    statusOk = true
+                    activeKeyId?.let {
+                        keyConnectionStatuses = keyConnectionStatuses +
+                            (it to KeyConnectionStatus("Testing with Claude Code…"))
+                    }
+                    claudeTestKeyId = activeKeyId
+                    claudeTestPhase = 1
+                    onPing()
+                } else {
+                    status = "Claude subscription token saved securely. Send a message to verify your subscription."
+                    statusOk = true
+                    activeKeyId?.let {
+                        keyConnectionStatuses = keyConnectionStatuses +
+                            (it to KeyConnectionStatus("Subscription token saved", true, label = "Saved"))
+                    }
                 }
             } else when (val result = onValidateProvider(profile, apiKey.trim(), models)) {
                 is ConnectionValidation.Success -> {
