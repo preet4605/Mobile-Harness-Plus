@@ -162,6 +162,15 @@ class AntigravityBridgeTest {
     }
 
     @Test
+    fun `Gradle heartbeat reports elapsed time before command output arrives`() {
+        val detail = antigravityGradleProgress("gradle assembleDebug", 42_900L)
+
+        assertTrue(detail.startsWith("Gradle is running · 42s"))
+        assertTrue("gradle assembleDebug" in detail)
+        assertTrue("Full output will appear" in detail)
+    }
+
+    @Test
     fun `quota error detection identifies rate limits and exhausted resource errors`() {
         assertTrue(isQuotaError("Resource has been exhausted (e.g. check quota)"))
         assertTrue(isQuotaError("HTTP 429: Too Many Requests"))

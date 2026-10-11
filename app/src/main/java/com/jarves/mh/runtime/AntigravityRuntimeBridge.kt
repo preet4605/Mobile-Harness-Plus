@@ -334,6 +334,11 @@ private fun redactToolDetail(value: String): String = value
     .trim()
     .take(500)
 
+internal fun antigravityGradleProgress(command: String, elapsedMillis: Long): String {
+    val elapsedSeconds = (elapsedMillis.coerceAtLeast(0L) / 1_000L)
+    return "Gradle is running · ${elapsedSeconds}s\n$command\nFull output will appear when the command completes."
+}
+
 /** Command output keeps its line breaks, so it is redacted without collapsing whitespace. */
 private fun antigravityToolOutput(value: String): String {
     val redacted = value
@@ -624,6 +629,10 @@ class AntigravityRuntimeBridge(
                     val pending = CodexLineAssembler()
                     var resultSeen = false
                     var assistantTextSeen = false
+                    var activeToolName: String? = null
+                    var activeToolDetail = ""
+                    var activeToolStartedAtMillis = 0L
+                    var lastToolProgressAtMillis = 0L
                     suspend fun handleLine(line: String) {
                         AntigravityEventParser.parseEvents(line).forEach { event ->
                             when (event) {
@@ -637,9 +646,16 @@ class AntigravityRuntimeBridge(
                                 }
                                 is AntigravityParsedEvent.ToolStarted -> {
                                     attemptHadTools = true
+                                    activeToolName = event.name
+                                    activeToolDetail = event.detail
+                                    activeToolStartedAtMillis = System.currentTimeMillis()
+                                    lastToolProgressAtMillis = activeToolStartedAtMillis
                                     eventBus.emit(RuntimeEvent.ToolStarted(sessionId, event.name, event.detail))
                                 }
-                                is AntigravityParsedEvent.ToolCompleted -> eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, event.name, event.detail))
+                                is AntigravityParsedEvent.ToolCompleted -> {
+                                    if (activeToolName == event.name) activeToolName = null
+                                    eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, event.name, event.detail))
+                                }
                                 is AntigravityParsedEvent.Subagent -> eventBus.emit(RuntimeEvent.SubagentUpdated(sessionId, event.subagent))
                                 is AntigravityParsedEvent.Task -> eventBus.emit(RuntimeEvent.TaskUpdated(sessionId, event.task))
                                 is AntigravityParsedEvent.Artifact -> eventBus.emit(RuntimeEvent.ArtifactDiscovered(sessionId, event.artifact))
@@ -665,6 +681,19 @@ class AntigravityRuntimeBridge(
                     while (process.isAlive || native.outputFile.length() > offset) {
                         val available = native.outputFile.length() - offset
                         if (available <= 0) {
+                            val now = System.currentTimeMillis()
+                            if (activeToolName == "Bash" && activeToolDetail.contains("gradle", ignoreCase = true) &&
+                                now - activeToolStartedAtMillis >= 10_000L && now - lastToolProgressAtMillis >= 10_000L
+                            ) {
+                                lastToolProgressAtMillis = now
+                                eventBus.emit(
+                                    RuntimeEvent.ToolProgress(
+                                        sessionId,
+                                        "Bash",
+                                        antigravityGradleProgress(activeToolDetail, now - activeToolStartedAtMillis),
+                                    ),
+                                )
+                            }
                             // Watchdog: If result was observed and output drained, don't hang indefinitely on Node.js event loop
                             if (resultSeen && (System.currentTimeMillis() - lastOutputTime >= 1500L)) {
                                 Log.i("AntigravityBridge", "Result observed and output drained; closing process gracefully")
