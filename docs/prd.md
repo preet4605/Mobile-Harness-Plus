@@ -1,0 +1,89 @@
+# Product requirements
+
+Mobile Harness Plus is an Android workspace for developing projects through local coding agents and Linux commands, reading files, reviewing changes and previewing local web applications. It extends Tech Jarves' Mobile Harness; preserve upstream attribution and licenses.
+
+## Users and scope
+
+Support developers using ARM64 Android 9+ devices with a private PRoot Linux runtime. Projects, conversations and project context are persisted for use across app restarts. AI requests use the user's configured provider or account. Online setup downloads required components; offline delivery uses verified bundled archives. The offline flavor bundles installation inputs; it does not supply an offline AI model.
+
+## Current feature inventory
+
+This inventory describes features wired in the current checkout, including local uncommitted repairs. Source inspection establishes implementation and wiring; it does not establish successful live-provider or device operation. [tasks.md](tasks.md) records that distinction.
+
+| Surface | Current behavior and source |
+| --- | --- |
+| Startup and permissions | Check device compatibility; guide notification permission, battery settings and task protection; choose engine/toolchains; show installation progress and copyable setup logs; offer startup retry and network settings. [OnboardingScreens](../app/src/main/java/com/jarves/mh/ui/OnboardingScreens.kt). |
+| Navigation | Projects, Agent and Settings root tabs; quick Terminal sheet. A project has Chat, Files, Terminal and Preview views, with chats, changes and customization sheets. [PocketDevApp](../app/src/main/java/com/jarves/mh/ui/PocketDevApp.kt), [WorkspaceScreen](../app/src/main/java/com/jarves/mh/ui/WorkspaceScreen.kt). |
+| Projects | Create a named project or quick chat workspace; search, rename and delete registered projects; open and switch projects. [ProjectsScreen](../app/src/main/java/com/jarves/mh/ui/ProjectsScreen.kt). |
+| Import and export | Import ZIP files; clone public HTTPS Git repositories; connect GitHub by device code, search/refresh repositories and clone authenticated public/private repositories; disconnect GitHub. Use a detected nested project root and export the selected workspace as ZIP through Android's document picker. [MainViewModel](../app/src/main/java/com/jarves/mh/ui/MainViewModel.kt), [GitHubClient](../app/src/main/java/com/jarves/mh/network/GitHubClient.kt). |
+| Chats and history | Create/switch saved chats, load older message pages and jump to the latest message. Browse another project's saved chats in read-only mode while a task or project Terminal owns the active workspace; continue there when it is safe to activate. [WorkspaceScreen](../app/src/main/java/com/jarves/mh/ui/WorkspaceScreen.kt), [AppPreferences](../app/src/main/java/com/jarves/mh/data/AppPreferences.kt). |
+| Composer and messages | Multiline input, cursor-aware command/skill suggestions and file mentions; attach files/images, remove pending attachments and open saved attachments with Android apps. Render Markdown/code, copy messages/code and send supported code snippets to the project Terminal. [WorkspaceScreen](../app/src/main/java/com/jarves/mh/ui/WorkspaceScreen.kt). |
+| Agent configuration | Select/install an engine, inspect installed versions, check/apply engine updates; configure supported providers, endpoint/protocol, saved API keys, model discovery/selection and supported reasoning effort. Connect, refresh, cancel or sign out of supported account flows. [AgentScreen](../app/src/main/java/com/jarves/mh/ui/AgentScreen.kt). |
+| Google account routing | Antigravity account management exposes primary/enabled accounts, model quotas, least-recently-used/round-robin/primary-only routing and quota failover. Distinguish native Antigravity CLI login from the Antigravity Server provider gateway. [AgentScreen](../app/src/main/java/com/jarves/mh/ui/AgentScreen.kt), [AntigravityAccountManager](../app/src/main/java/com/jarves/mh/runtime/AntigravityAccountManager.kt). |
+| Task execution | Stream available answer/reasoning/tool events and work summaries; display progress, completion/failure and foreground notifications. Stop cancels the full task, escalating to forced cleanup when needed. Supervision persists task/step state and supports bounded verification, recovery and eligible fallback. [TaskSupervisor](../app/src/main/java/com/jarves/mh/runtime/task/TaskSupervisor.kt). |
+| Approvals | Claude can request per-tool approval with Reject/Allow once when interactive approvals are enabled. Current Codex, DSH and Antigravity headless drivers have no interactive approval channel. [ClaudeApprovalProtocol](../app/src/main/java/com/jarves/mh/runtime/ClaudeApprovalProtocol.kt), engine bridges in [architecture.md](architecture.md#execution-and-ownership). |
+| Files and APKs | Refresh/browse the file tree; view line-numbered text and copy contents; display discovered APKs and send them to Android's package installer. File edits and broader search are performed by agents or Terminal; the built-in file viewer is read-only. [WorkspaceScreen](../app/src/main/java/com/jarves/mh/ui/WorkspaceScreen.kt), [AndroidAppInstaller](../app/src/main/java/com/jarves/mh/runtime/AndroidAppInstaller.kt). |
+| Change review | View additions/deletions and binary-change notices; Keep/Undo all pending changes or individual files using workspace checkpoints. Manual checkpoint/rollback commands are described below. [ChangesReview](../app/src/main/java/com/jarves/mh/ui/ChangesReview.kt), [WorkspaceCheckpoints](../app/src/main/java/com/jarves/mh/runtime/WorkspaceCheckpoints.kt). |
+| Terminal | Quick runtime Terminal and project Terminal, command/output history, input, cursor/history controls, interrupt/Stop and output clearing. Project command confirmation and code-block handoff use the existing execution path. Build project APKs with Linux commands, then install them from Files. [TerminalScreen](../app/src/main/java/com/jarves/mh/ui/TerminalScreen.kt), [MainViewModel](../app/src/main/java/com/jarves/mh/ui/MainViewModel.kt). |
+| Preview | Enter/open/refresh a loopback web URL; use a JavaScript/DOM-storage WebView with loading/empty states. External navigation and external resource requests are blocked. Console messages feed the inspection host. [WorkspaceScreen](../app/src/main/java/com/jarves/mh/ui/WorkspaceScreen.kt), [PreviewInspectionHost](../app/src/main/java/com/jarves/mh/runtime/PreviewInspectionHost.kt). |
+| Activity and usage | Inspect emitted subagents, background tasks, logs/transcripts, artifacts and timers; clear finished entries and copy artifact paths. Display reported token/cache/context/cost metrics and available provider balance/quota reports. Availability and estimates vary by engine/provider. [CliParityComponents](../app/src/main/java/com/jarves/mh/ui/CliParityComponents.kt), [UsageReports](../app/src/main/java/com/jarves/mh/runtime/UsageReports.kt). |
+| Rules and skills | Scope selection, entry toggles, project rule editing, global personas/rules and promotion; create global skills, discover project/global/bundled skills, link/unlink or import other-project skills and promote local skills. Show a prompt preview and invoke enabled skills by slash name. [SkillManager](../app/src/main/java/com/jarves/mh/runtime/SkillManager.kt), [CliParityComponents](../app/src/main/java/com/jarves/mh/ui/CliParityComponents.kt). |
+| Project memory and Brain | View/add/delete user facts, inspect automatically extracted facts, clear automatic facts or all project memory with confirmation. Assemble bounded task/knowledge context and learn from task outcomes. UI memory facts and canonical Brain/task records are separate stores. [MemoryViewerSheet](../app/src/main/java/com/jarves/mh/ui/MemoryViewerSheet.kt), [ContextMemoryStore](../app/src/main/java/com/jarves/mh/data/ContextMemoryStore.kt), [BrainContextAssembler](../app/src/main/java/com/jarves/mh/data/BrainContextAssembler.kt). |
+| Native inspection | Local repairs provide CLI/MCP `harness_doctor`, `harness_preview` and `harness_brain_search`; Preview supports DOM, console and viewport capture for the owning project's open WebView. Requests are scoped, bounded and cancellable. [NativeInspectionBridge](../app/src/main/java/com/jarves/mh/runtime/NativeInspectionBridge.kt), [adapter](../app/src/main/assets/harness/harness-tools.cjs). |
+| Settings and updates | System/light/dark theme, Reduce transparency, optional toolchain install/removal, verified runtime/agent versions, terminal-history clearing, Android developer-settings shortcut, app version/What's new/privacy/upstream links. Project-list update banner/sheet downloads a checked APK and opens the installer; debug builds expose an update-manifest override. [SettingsScreenModern](../app/src/main/java/com/jarves/mh/ui/SettingsScreenModern.kt), [AppUpdater](../app/src/main/java/com/jarves/mh/update/AppUpdater.kt). |
+
+## Engines, providers and toolchains
+
+Provider choices come from [Models.kt](../app/src/main/java/com/jarves/mh/model/Models.kt); the table describes current selection/routing, not a guarantee that every external service accepts every model.
+
+| Engine | Provider and account boundary |
+| --- | --- |
+| Claude Code | Claude subscription via CLI-owned browser sign-in, with advanced legacy setup-token support; Anthropic API, OpenRouter, DeepSeek, Kimi, NVIDIA NIM, Antigravity Server and Custom API choices. Gateway conversion follows the configured supported protocol. |
+| DeepSeek Harness | DeepSeek, Anthropic API, OpenRouter, Kimi, OpenCode Zen, NVIDIA NIM, Antigravity Server and Custom API. Uses API/gateway access rather than Claude/ChatGPT subscription login; configurable gateway protocols apply only where enabled. Current conversation continuity uses history replay. |
+| Antigravity CLI | Official CLI Google-account sign-in with browser/code flow and its own model/effort selection; no generic provider picker for this engine. |
+| Codex | ChatGPT device sign-in or Custom API; the pinned driver uses OpenAI Responses, including custom endpoints. Model and allowed reasoning levels follow its catalog; it does not use the other engines' provider menu. |
+
+Core runtime includes Ubuntu PRoot, Node.js/npm and Git. Optional developer stacks are Python (pip/venv/build tools), Android (JDK/ARM64 SDK/Gradle/offline Maven cache), C/C++ (compiler/make/CMake/gdb) and PHP (CLI/extensions/Composer). Web development uses the included Node.js stack. Toolchain removal preserves project workspaces.
+
+## Slash commands
+
+[SlashCommandEngine](../app/src/main/java/com/jarves/mh/runtime/SlashCommandEngine.kt) registers 25 commands. Local commands are handled by MainViewModel; workflow commands become prompts for the selected agent.
+
+| Command | Implemented meaning |
+| --- | --- |
+| `/help` | Local commands/skills help. |
+| `/clear` | Clear the current conversation and its provider conversation references; keep workspace files. |
+| `/cost`, `/status`, `/doctor`, `/usage` | Local metrics/status, system diagnostics and available provider usage. Estimated cost is not a billing receipt. |
+| `/model`, `/effort` | Open a picker or apply a value for the active engine; unsupported effort is reported. |
+| `/thinking`, `/turns`, `/approvals` | Claude menu controls for thinking effort, next-run turn budget (1–200) and interactive tool approvals. |
+| `/skills` | List active skills; `link`, `unlink`, `import` and `promote` actions. Use the registered plural command; the singular spelling printed in some help text is not registered. |
+| `/rules` | List active rules or set scope: `inherit`, `project`, `global`, `custom`. Project definitions take precedence in merge mode; custom mode uses individual selections. |
+| `/memory` | View memory, `add <key> <value>` or `clear` automatic facts while preserving user facts. The memory sheet also supports deleting facts and clearing all. |
+| `/checkpoint`, `/rollback` | Create a workspace checkpoint; rollback calls the existing Undo-last-changes path. A checkpoint argument is used in the confirmation text, not a named snapshot selector. |
+| `/plan`, `/goal`, `/review`, `/init`, `/grill-me`, `/boost`, `/learn` | Prompt templates for planning, goal execution, review, rule initialization, interview, deeper analysis and rule learning. Outcomes depend on the agent executing those instructions. |
+| `/compact` | Ask the agent for a summary. This handler does not itself delete history or guarantee native context compaction. |
+| `/browser` | Research prompt offered in the Antigravity menu; distinct from local Preview inspection. |
+
+Enabled skills also support `/skill-name [arguments]`. There is no registered `/schedule` command or app-wide scheduling editor. Timers are displayed when an engine emits timer events.
+
+## Safety and experience requirements
+
+- Keep credentials out of source, logs, prompts and screenshots. Use the existing vault and preserve project/provider isolation.
+- Validate external paths and cross-process input; reject traversal and symlink escapes. PRoot is not an OS security sandbox.
+- Assume Android process death. Bound streams, caches, requests and retries; retain task/session ownership and clean up owned children.
+- Preserve the existing mobile design, accessibility settings, composer behavior and responsive layouts. Follow [design.md](design.md).
+- Preserve one-tap chat copying and contextual command/skill menus; expose configuration controls only for supported engine features.
+- Bound import/attachment size and traversal, confine export and diffs, and preserve checkpoint provenance. Missing backups must never authorize deletion of originals.
+- Read project context selectively. Generated instructions must stay concise without dropping user rules or task content.
+
+## Supported limits
+
+Individual subagent/background-task termination is unavailable in the current ViewModel; use full-task Stop. Event detail, interactive approvals, native resume, timers and artifacts depend on the engine interface. A saved chat or task record does not mean a killed process can be resumed automatically.
+
+Named multi-profile provider persistence and an Android build-and-install helper exist internally, but the root/workspace screens do not wire dedicated controls for them. Do not list them as delivered UI features. This app has no built-in editable text editor, general remote WebView browser, universal child-control API or standalone timer scheduler.
+
+Device debugging, live-provider compatibility, process-death behavior and performance require separate device evidence. Current known risks and validation gaps are in [tasks.md](tasks.md).
+
+## Acceptance
+
+Use focused regressions for affected behavior, relevant shared-provider checks and required APK delivery. Revalidate distribution declarations against the exact release. Track results and unresolved work in [tasks.md](tasks.md); implementation boundaries are in [architecture.md](architecture.md).

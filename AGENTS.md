@@ -1,124 +1,13 @@
 Mobile Harness
 
-workspace/curious-curie
+Use the current harness workspace. Source of truth: task requirements > current code > verified Brain > assumptions.
 
-Rules
+Before edits, read docs/rules.md. Consult docs/prd.md for requirements, docs/architecture.md for implementation, docs/design.md for UI, docs/tasks.md for progress and docs/memory.md for context. Read only relevant docs.
 
-- Follow explicit task requirements.
-- Preserve existing behavior outside requested changes.
-- Stay within scope.
-- Inspect before editing; fix root causes, not symptoms.
-- Reuse existing architecture, components, utilities, dependencies, and design tokens.
-- Make the smallest complete change.
-- Never invent results, observations, hashes, sizes, commits, or test status.
-- Never overwrite, revert, reset, or discard unrelated user changes.
-- Never commit or push unless explicitly requested.
-- Never expose or hard-code secrets.
-- When building or modifying code, always generate the APK and move it to the project root folder.
-- When complete and verified, STOP.
-
-Source of Truth
-
-"TASK REQUIREMENTS > CURRENT CODE > VERIFIED BRAIN > ASSUMPTIONS"
-
-Use relevant Project Brain knowledge before non-trivial discovery. Verify Brain knowledge against current code when it matters. Do not repeatedly retrieve the same context.
-
-Workflow
-
-"BRAIN → TARGETED DISCOVERY → BATCH READ → PLAN → EDIT → VERIFY → BUILD → REPORT → STOP"
-
-- Search before creating new abstractions.
-- Prefer batch reads and targeted inspection.
-- Reuse already-read context.
-- Stop exploring once the relevant implementation and call sites are understood.
-- Do not reread unchanged code or run unrelated tests.
-
-Scope
-
-UI work must not alter runtime, persistence, recovery, process supervision, retry logic, execution locks, wake locks, terminal execution, or subagent lifecycle unless required.
-
-Runtime work must not redesign UI unless required.
-
-Do not change dependencies or build-tool versions unless necessary.
-
-Runtime
-
-Assume Android process death.
-
-For runtime changes, verify relevant:
-
-- cancellation/timeouts
-- retry/duplicate execution
-- stale state
-- "taskId" / "sessionId"
-- child-process cleanup
-- CPU/memory usage
-- battery impact
-
-"taskId" ≠ "sessionId".
-
-Do not treat provider stream events such as "end_turn" as process/session termination unless the provider contract guarantees it.
-
-Safety
-
-Keep persistent project output inside "/workspace/curious-curie".
-
-Avoid destructive Git/filesystem operations.
-
-Preserve schema/data compatibility and use existing migrations.
-
-Keep engine-specific protocol logic inside existing runtime bridges.
-
-When normalizing provider base URLs ending with "/v1", prioritize "$base/models" directly and avoid duplicate "/v1/v1/*" paths.
-
-Performance
-
-Prefer event-driven, lifecycle-aware, cancellable work.
-
-Avoid busy loops, unnecessary polling, duplicate processes/workers, excessive I/O, and unnecessary wake locks.
-
-Verification
-
-Run the narrowest relevant verification first; expand according to blast radius.
-
-Only report commands that actually ran.
-
-Use:
-
-"VERIFIED | NOT RUN | FAILED | BLOCKED"
-
-Before finishing:
-
-git status --short
-git diff --stat
-
-Inspect the full diff when changes were made.
-
-Build & APK Distribution
-
-Always generate the APK and copy it to the project root folder:
-- Assemble debug APK:
-  `./gradlew assembleOnlineDebug`
-- Copy to project root:
-  `cp -f app/build/outputs/apk/online/debug/app-online-debug.apk app-online-debug.apk`
-  `cp -f app-online-debug.apk mobile-harness-dev.apk`
-- Verify and report actual size and checksums:
-  `stat -c "%s %n" *.apk`
-  `md5sum *.apk`
-
-State
-
-For long investigations, use "docs/WORK_STATE.md".
-
-Keep detailed audits, history, architecture notes, and procedures in "docs/", not here.
-
-Final
-
-Report only:
-
-- what changed
-- why
-- verification
-- remaining risks
-
-Then STOP.
+- Stay within scope. Inspect before editing; fix causes, reuse existing code/tokens and make the smallest complete change. Prefer direct, readable solutions; add files, layers, dependencies or abstractions only for a concrete current need. Preserve unrelated behavior and user edits.
+- Never discard unrelated work, expose secrets or hard-code them. Avoid destructive Git/filesystem operations; commit/push only when explicitly requested. Keep output in this workspace.
+- Preserve data compatibility. For runtime changes, handle Android process death, cancellation and cleanup; taskId ≠ sessionId; end_turn alone does not prove process termination.
+- Verify narrowly; expand for risk/failures. Report only observed results. Review the full task diff; run git status --short and git diff --stat.
+- For code/build changes, generate both online APKs and root copies per docs/rules.md unless the user requests otherwise.
+- Maintain only the six canonical docs; update them in place and preserve historical evidence locally.
+- Report what changed, why, verification (VERIFIED/NOT RUN/FAILED/BLOCKED) and remaining risks. Stop when complete and verified.
