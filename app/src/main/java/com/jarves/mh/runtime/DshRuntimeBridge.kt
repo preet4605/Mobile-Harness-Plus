@@ -127,7 +127,7 @@ class DshRuntimeBridge(
         val secret = if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER) {
             secretFor(provider)?.ifBlank { "antigravity-local-token" } ?: "antigravity-local-token"
         } else {
-            secretFor(provider).orEmpty()
+            secretFor(provider).orEmpty().ifBlank { localServerPlaceholderKey(provider) }
         }
         if (secret.isBlank()) {
             val message = "No API key is saved for ${provider.kind.title}."

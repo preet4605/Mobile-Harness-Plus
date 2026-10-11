@@ -307,6 +307,7 @@ fun AgentScreen(
         val supportsPublicDiscovery = selectedKind == ProviderKind.LLM_ROUTER ||
             selectedKind == ProviderKind.OPENCODE_ZEN ||
             selectedKind == ProviderKind.CHATGPT ||
+            selectedKind == ProviderKind.CUSTOM ||
             isAntigravityServer
         if (effectiveKey.isBlank() && !supportsPublicDiscovery) {
             status = "Add an API key first to discover models."
@@ -764,7 +765,7 @@ fun AgentScreen(
                                 state.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN
                             val canValidate = !isDiscovering && !isValidating && (
                                 (isAntigravityServer && hasAntigravityAuth && model.isNotBlank()) ||
-                                    (!isAntigravityServer && apiKey.isNotBlank() && (selectedKind == ProviderKind.CLAUDE || (baseUrl.isNotBlank() && model.isNotBlank())))
+                                    (!isAntigravityServer && (apiKey.isNotBlank() || selectedKind == ProviderKind.CUSTOM) && (selectedKind == ProviderKind.CLAUDE || (baseUrl.isNotBlank() && model.isNotBlank())))
                                 )
                             val footer = status?.let { s -> statusProviderMessage?.let { "$s\nProvider: $it" } ?: s }
                             ListSection(footer = footer) {

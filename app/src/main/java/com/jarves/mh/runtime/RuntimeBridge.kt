@@ -40,6 +40,13 @@ interface RuntimeBridge {
     suspend fun acceptFileChange(projectId: String, path: String): Boolean
 }
 
+/**
+ * Self-hosted Custom API servers (llama.cpp, LM Studio, Strata…) often need no key, but the agent
+ * CLIs refuse to start without one. Send a harmless placeholder that such servers ignore.
+ */
+internal fun localServerPlaceholderKey(profile: ProviderProfile): String =
+    if (profile.kind == com.jarves.mh.model.ProviderKind.CUSTOM) "no-key-required" else ""
+
 object RuntimeLaunchConfigBuilder {
     fun build(profile: ProviderProfile, authToken: String? = null, localGatewayUrl: String? = null): RuntimeLaunchConfig {
         val environment = linkedMapOf("DISABLE_AUTOUPDATER" to "1")
@@ -71,7 +78,9 @@ object RuntimeLaunchConfigBuilder {
                     environment["ANTHROPIC_BASE_URL"] = (localGatewayUrl ?: profile.baseUrl).trimEnd('/')
                     environment["ANTHROPIC_MODEL"] = profile.model.ifBlank { "gemini-3.8-pro" }
                 } else {
-                    environment["ANTHROPIC_BASE_URL"] = profile.baseUrl.trimEnd('/')
+                    // Claude Code appends /v1/messages itself; accept base URLs entered with or
+                    // without /v1 so the agent hits the same endpoint as Test connection.
+                    environment["ANTHROPIC_BASE_URL"] = profile.baseUrl.trim().trimEnd('/').removeSuffix("/v1")
                     environment["ANTHROPIC_MODEL"] = profile.model
                 }
             }

@@ -87,8 +87,8 @@ class ProviderApiClient(
         protocol: ProviderProtocol,
         discoveredModels: List<DiscoveredModel>,
     ): ConnectionValidation = withContext(Dispatchers.IO) {
-        if (baseUrl.isBlank() || model.isBlank() || apiKey.isBlank()) {
-            return@withContext ConnectionValidation.Failure("Base URL, model, and API key are required.")
+        if (baseUrl.isBlank() || model.isBlank()) {
+            return@withContext ConnectionValidation.Failure("Base URL and model are required.")
         }
         if (com.jarves.mh.provider.isRevokedProvider(baseUrl) || com.jarves.mh.provider.isRevokedProvider(model)) {
             return@withContext ConnectionValidation.Failure(
@@ -163,6 +163,9 @@ class ProviderApiClient(
     ): HttpResult {
         if (com.jarves.mh.provider.isRevokedProvider(endpoint)) {
             return HttpResult(403, "Blocked: revoked phishing provider", "Connection blocked: revoked phishing provider")
+        }
+        if (!LocalNetwork.isPlainHttpAllowed(endpoint)) {
+            return HttpResult(0, "", "Plain http:// is only allowed for local network addresses. Use https:// for this server.")
         }
         return runCatching {
             val connection = openConnection(endpoint).apply {

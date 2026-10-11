@@ -238,7 +238,7 @@ class ClaudeRuntimeBridge(
         } else if (isNativeSubscription) {
             null
         } else {
-            secretFor(provider).orEmpty()
+            secretFor(provider).orEmpty().ifBlank { localServerPlaceholderKey(provider) }
         }
         if (!isNativeSubscription && secret.isNullOrBlank()) {
             val message = if (provider.kind == ProviderKind.CLAUDE) {

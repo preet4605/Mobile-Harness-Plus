@@ -275,6 +275,9 @@ internal class LocalFormatGateway(
         }
         val endpoint = com.jarves.mh.provider.ProviderEndpointNormalizer.normalize(profile.baseUrl, profile.dshApi).baseUrl +
             if (responses) "/responses" else "/chat/completions"
+        if (!com.jarves.mh.network.LocalNetwork.isPlainHttpAllowed(endpoint)) {
+            return 400 to errorJson("invalid_request_error", "Plain http:// is only allowed for local network addresses")
+        }
         val connection = URL(endpoint).openConnection() as HttpURLConnection
         upstreamConnections.add(connection)
         return try {
