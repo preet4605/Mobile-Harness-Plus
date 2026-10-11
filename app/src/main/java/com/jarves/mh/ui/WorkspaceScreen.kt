@@ -1,5 +1,6 @@
 package com.jarves.mh.ui
 
+import android.content.Context
 import android.net.Uri
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -77,6 +78,7 @@ import androidx.compose.material.icons.outlined.Android
 import androidx.compose.material.icons.outlined.ArrowBackIosNew
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Check
@@ -624,6 +626,17 @@ internal fun WorkspaceScreen(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
         onResult = onAddAttachments,
     )
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // Saved so the capture survives Android killing the app while the camera app is open.
+    var pendingPhotoUri by rememberSaveable { mutableStateOf<String?>(null) }
+    val takePhotoLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture(),
+        onResult = { saved ->
+            val uri = pendingPhotoUri?.let(Uri::parse)
+            pendingPhotoUri = null
+            if (saved && uri != null) onAddAttachments(listOf(uri))
+        },
+    )
     val chatItemCount = state.messages.size +
         (if (state.liveProcess.isNotEmpty() || state.liveThinking) 1 else 0) +
         (if (state.pendingApproval != null) 1 else 0)
@@ -908,6 +921,16 @@ internal fun WorkspaceScreen(
                                     pendingAttachments = state.pendingAttachments,
                                     onAttach = {
                                         attachmentLauncher.launch(arrayOf("*/*"))
+                                    },
+                                    onTakePhoto = {
+                                        runCatching {
+                                            val uri = createCameraPhotoUri(context)
+                                            pendingPhotoUri = uri.toString()
+                                            takePhotoLauncher.launch(uri)
+                                        }.onFailure {
+                                            pendingPhotoUri = null
+                                            banner("No camera app is available", BannerKind.Error)
+                                        }
                                     },
                                     onRemoveAttachment = onRemoveAttachment,
                                     onOpenAttachment = onOpenAttachment,
@@ -1491,6 +1514,7 @@ private fun ChatTab(
     onRemoveAttachment: (String) -> Unit,
     onOpenAttachment: (ChatAttachment) -> Unit,
     onRunInTerminal: (String) -> Unit,
+    onTakePhoto: () -> Unit = {},
     readOnly: Boolean = false,
     readOnlyBlocked: Boolean = false,
     loading: Boolean = false,
@@ -1798,6 +1822,7 @@ private fun ChatTab(
                     },
                     onStop = onStop,
                     onAttach = onAttach,
+                    onTakePhoto = onTakePhoto,
                     onToggleCommands = {
                         val newText = if (inputState.text.startsWith("/")) "" else "/"
                         setInput(TextFieldValue(newText, TextRange(newText.length)))
@@ -1828,6 +1853,7 @@ private fun Composer(
     onSend: () -> Unit,
     onStop: () -> Unit,
     onAttach: () -> Unit,
+    onTakePhoto: () -> Unit,
     onToggleCommands: () -> Unit,
     onOpenSkills: () -> Unit,
     onOpenInspector: () -> Unit,
@@ -1930,6 +1956,7 @@ private fun Composer(
         }
     }
     GlassMenu(expanded = toolsOpen, onDismiss = { toolsOpen = false }, anchor = toolsAnchor) {
+        GlassMenuItem("Take photo", onTakePhoto, icon = Icons.Outlined.PhotoCamera, enabled = attachEnabled)
         GlassMenuItem("Attach files", onAttach, icon = Icons.Outlined.AttachFile, enabled = attachEnabled)
         GlassMenuItem("Commands", onToggleCommands, icon = Icons.Outlined.Code)
         GlassMenuItem("Skills", onOpenSkills, icon = Icons.Outlined.AutoAwesome)
@@ -2706,3 +2733,14 @@ private fun Uri.isLoopbackPreviewUrl(): Boolean =
 
 private fun blockedPreviewResponse(): WebResourceResponse =
     WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+
+/** Creates an empty cache file for the camera app to write into, shared through our FileProvider. */
+private fun createCameraPhotoUri(context: Context): Uri {
+    val folder = java.io.File(context.cacheDir, "camera").apply { mkdirs() }
+    // Photos are copied into the project as attachments, so older captures are no longer needed.
+    val staleBefore = System.currentTimeMillis() - 60 * 60 * 1000L
+    folder.listFiles()?.filter { it.lastModified() < staleBefore }?.forEach { it.delete() }
+    val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+    val file = java.io.File(folder, "photo-$stamp.jpg")
+    return androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+}
