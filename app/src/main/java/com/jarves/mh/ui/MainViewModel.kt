@@ -139,7 +139,10 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.net.UnknownHostException
 import java.net.URI
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.StandardOpenOption
 import java.util.Locale
 import java.util.UUID
 import java.util.zip.ZipEntry
@@ -295,6 +298,10 @@ data class AppUiState(
     val openedFileReadOnlyReason: FileReadOnlyReason? = null,
     /** The open file's edit session; null while it is only viewed. */
     val openedFileEdit: FileEditState? = null,
+    /** True while the project is being exported as a ZIP. */
+    val projectExportRunning: Boolean = false,
+    /** True while a file is being created, renamed, deleted or uploaded from the Files tab. */
+    val fileOperationRunning: Boolean = false,
     val messages: List<ChatMessage> = listOf(
         ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change."),
     ),
@@ -4083,10 +4090,11 @@ class MainViewModel(
     fun exportActiveProject(uri: Uri) {
         val current = _state.value
         val project = current.activeProject ?: return
-        if (current.isRunning || current.projectTerminalRunning) {
-            _state.update { it.copy(toastMessage = "Stop the running task before exporting") }
+        if (workspaceFilesBusy(current) || current.openedFileEdit?.saving == true) {
+            _state.update { it.copy(toastMessage = WORKSPACE_BUSY_MESSAGE) }
             return
         }
+        _state.update { it.copy(projectExportRunning = true) }
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
@@ -4128,6 +4136,7 @@ class MainViewModel(
             }
             _state.update {
                 it.copy(
+                    projectExportRunning = false,
                     toastMessage = result.fold(
                         onSuccess = { "${project.slug}.zip exported" },
                         onFailure = { error -> "Export failed: ${error.message ?: "Unknown error"}" },
@@ -4548,6 +4557,187 @@ class MainViewModel(
                         toastMessage = "Could not save $name: ${result.exceptionOrNull()?.message ?: "Unknown error"}",
                     )
                 }
+            }
+        }
+    }
+
+    // ---- Manual file management (Files tab) ----
+
+    /**
+     * Runs one change to the project's files off the main thread. Refused while anything else could
+     * be writing the project; one operation at a time. The listing refreshes afterwards either way.
+     * [operation] gets the project root and returns the message to show.
+     */
+    private fun runWorkspaceFileOperation(operation: (root: File) -> String) {
+        val current = _state.value
+        val project = current.activeProject ?: return
+        if (workspaceFilesBusy(current)) {
+            _state.update { it.copy(toastMessage = WORKSPACE_BUSY_MESSAGE) }
+            return
+        }
+        _state.update { it.copy(fileOperationRunning = true) }
+        viewModelScope.launch {
+            val result = withContext(ioDispatcher) { runRequest { operation(projectWorkspaceRoot(project)) } }
+            _state.update {
+                it.copy(
+                    fileOperationRunning = false,
+                    toastMessage = result.getOrElse { error -> error.message ?: "The file operation failed" },
+                )
+            }
+            if (isCurrentProjectRoot(project)) refreshProjectFiles()
+        }
+    }
+
+    private fun showEntryNameProblem(name: String): Boolean {
+        val problem = entryNameProblem(name) ?: return false
+        _state.update { it.copy(toastMessage = problem) }
+        return true
+    }
+
+    /** Creates an empty file or folder named [name] in the folder at [parentPath] ("" for the project root). */
+    fun createWorkspaceEntry(parentPath: String, name: String, isDirectory: Boolean) {
+        if (showEntryNameProblem(name)) return
+        runWorkspaceFileOperation { root ->
+            resolveWorkspacePath(root, parentPath, allowRoot = true)?.takeIf { it.isDirectory } ?: error(PROTECTED_ENTRY_MESSAGE)
+            val target = resolveWorkspacePath(root, workspaceChildPath(parentPath, name)) ?: error(PROTECTED_ENTRY_MESSAGE)
+            try {
+                if (isDirectory) Files.createDirectory(target.toPath()) else Files.createFile(target.toPath())
+            } catch (_: FileAlreadyExistsException) {
+                error("$name already exists")
+            }
+            "$name created"
+        }
+    }
+
+    /** Renames the file or folder at [path] to [newName] in the same folder. Never replaces an existing entry. */
+    fun renameWorkspaceEntry(path: String, newName: String) {
+        if (showEntryNameProblem(newName)) return
+        if (newName == path.substringAfterLast('/')) return
+        runWorkspaceFileOperation { root ->
+            val source = resolveWorkspacePath(root, path)
+                ?.takeIf { Files.exists(it.toPath(), LinkOption.NOFOLLOW_LINKS) } ?: error(PROTECTED_ENTRY_MESSAGE)
+            val target = resolveWorkspacePath(root, workspaceChildPath(path.trim('/').substringBeforeLast('/', ""), newName))
+                ?: error(PROTECTED_ENTRY_MESSAGE)
+            try {
+                Files.move(source.toPath(), target.toPath())
+            } catch (_: FileAlreadyExistsException) {
+                error("$newName already exists")
+            }
+            "Renamed to $newName"
+        }
+    }
+
+    /** Deletes the file or folder at [path] and everything in it. Symbolic links inside are removed, never followed. */
+    fun deleteWorkspaceEntry(path: String) {
+        val name = path.trim('/').substringAfterLast('/')
+        runWorkspaceFileOperation { root ->
+            val target = resolveWorkspacePath(root, path)
+                ?.takeIf { Files.exists(it.toPath(), LinkOption.NOFOLLOW_LINKS) } ?: error(PROTECTED_ENTRY_MESSAGE)
+            deleteWorkspaceTree(target)
+            "$name deleted"
+        }
+    }
+
+    /** Copies the picked documents into the folder at [parentPath], renaming on a name clash. */
+    fun uploadToWorkspace(parentPath: String, uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        val resolver = getApplication<Application>().contentResolver
+        runWorkspaceFileOperation { root ->
+            val folder = resolveWorkspacePath(root, parentPath, allowRoot = true)?.takeIf { it.isDirectory }
+                ?: error(PROTECTED_ENTRY_MESSAGE)
+            var uploaded = 0
+            val problems = mutableListOf<String>()
+            uris.forEach { uri ->
+                var reported: String? = null
+                runCatching {
+                    resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { reported = cursor.getString(it) }
+                        }
+                    }
+                }
+                val name = storedAttachmentName(cleanAttachmentName(reported ?: uri.lastPathSegment).ifBlank { "upload" })
+                val destination = uniqueChild(folder, name)
+                if (entryNameProblem(destination.name) != null ||
+                    resolveWorkspacePath(root, workspaceChildPath(parentPath, destination.name)) == null
+                ) {
+                    problems += "$name can't be added here"
+                    return@forEach
+                }
+                var created = false
+                try {
+                    val input = resolver.openInputStream(uri) ?: error("Could not read $name")
+                    input.buffered().use { source ->
+                        val stream = Files.newOutputStream(destination.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
+                        created = true
+                        stream.buffered().use { output ->
+                            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                            var copied = 0L
+                            while (true) {
+                                val count = source.read(buffer)
+                                if (count < 0) break
+                                copied += count
+                                check(copied <= MAX_UPLOAD_BYTES) { "$name is larger than ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB" }
+                                output.write(buffer, 0, count)
+                            }
+                        }
+                    }
+                    uploaded++
+                } catch (failure: Exception) {
+                    // Remove the partial copy. Only a file this upload created (CREATE_NEW) is ever removed.
+                    if (created) destination.delete()
+                    if (failure is CancellationException) throw failure
+                    problems += when (failure) {
+                        is FileAlreadyExistsException -> "$name already exists"
+                        else -> failure.message ?: "Could not upload $name"
+                    }
+                }
+            }
+            val summary = if (uploaded == 1) "1 file uploaded" else "$uploaded files uploaded"
+            if (problems.isEmpty()) summary else if (uploaded == 0) problems.first() else "$summary; ${problems.first()}"
+        }
+    }
+
+    /** Opens the share sheet for one file of the project. */
+    fun shareWorkspaceFile(path: String) {
+        val project = _state.value.activeProject ?: return
+        runCatching {
+            val file = resolveWorkspacePath(projectWorkspaceRoot(project), path)?.takeIf { it.isFile } ?: error(PROTECTED_ENTRY_MESSAGE)
+            val app = getApplication<Application>()
+            val uri = FileProvider.getUriForFile(app, "${app.packageName}.files", file)
+            val mimeType = resolveAttachmentMimeType(null, file.extension) { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it) }
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = mimeType
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            app.startActivity(Intent.createChooser(send, "Share ${file.name}").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.onFailure { error ->
+            _state.update { it.copy(toastMessage = error.message ?: "Could not share the file") }
+        }
+    }
+
+    /** Writes a copy of one project file to a document the user picked. */
+    fun saveWorkspaceFileCopy(path: String, destination: Uri) {
+        val project = _state.value.activeProject ?: return
+        val resolver = getApplication<Application>().contentResolver
+        viewModelScope.launch {
+            val result = withContext(ioDispatcher) {
+                runRequest {
+                    val file = resolveWorkspacePath(projectWorkspaceRoot(project), path)?.takeIf { it.isFile }
+                        ?: error(PROTECTED_ENTRY_MESSAGE)
+                    val output = resolver.openOutputStream(destination, "wt") ?: error("The selected location could not be opened")
+                    output.use { stream -> file.inputStream().buffered().use { it.copyTo(stream) } }
+                    file.name
+                }
+            }
+            _state.update {
+                it.copy(
+                    toastMessage = result.fold(
+                        onSuccess = { name -> "Saved a copy of $name" },
+                        onFailure = { error -> "Could not save a copy: ${error.message ?: "Unknown error"}" },
+                    ),
+                )
             }
         }
     }

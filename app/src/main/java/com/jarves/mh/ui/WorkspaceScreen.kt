@@ -76,6 +76,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.NoteAdd
 import androidx.compose.material.icons.automirrored.outlined.Redo
 import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.Add
@@ -94,9 +95,12 @@ import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Forum
@@ -105,13 +109,16 @@ import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Preview
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material.icons.rounded.Cancel
 import androidx.compose.material3.Icon
@@ -136,6 +143,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -585,6 +593,12 @@ internal fun WorkspaceScreen(
     onSaveFile: () -> Unit = {},
     onReloadFile: () -> Unit = {},
     onDismissFileConflict: () -> Unit = {},
+    onCreateWorkspaceEntry: (String, String, Boolean) -> Unit = { _, _, _ -> },
+    onRenameWorkspaceEntry: (String, String) -> Unit = { _, _ -> },
+    onDeleteWorkspaceEntry: (String) -> Unit = {},
+    onUploadToWorkspace: (String, List<Uri>) -> Unit = { _, _ -> },
+    onShareWorkspaceFile: (String) -> Unit = {},
+    onSaveWorkspaceFileCopy: (String, Uri) -> Unit = { _, _ -> },
     onUndoChanges: () -> Unit,
     onKeepChanges: () -> Unit,
     onUndoFileChange: (String) -> Unit,
@@ -650,6 +664,25 @@ internal fun WorkspaceScreen(
     val attachmentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
         onResult = onAddAttachments,
+    )
+    // The folder an upload goes into and the file a copy is made of, saved across process death
+    // while the system picker is open.
+    var pendingUploadFolder by rememberSaveable { mutableStateOf<String?>(null) }
+    val uploadLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+        onResult = { uris ->
+            pendingUploadFolder?.let { folder -> if (uris.isNotEmpty()) onUploadToWorkspace(folder, uris) }
+            pendingUploadFolder = null
+        },
+    )
+    var pendingCopyPath by rememberSaveable { mutableStateOf<String?>(null) }
+    val saveCopyLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
+        onResult = { uri ->
+            val path = pendingCopyPath
+            if (uri != null && path != null) onSaveWorkspaceFileCopy(path, uri)
+            pendingCopyPath = null
+        },
     )
     val context = androidx.compose.ui.platform.LocalContext.current
     // Saved so the capture survives Android killing the app while the camera app is open.
@@ -1026,6 +1059,25 @@ internal fun WorkspaceScreen(
                                     onReviewChanges = { showChanges = true },
                                     onUndoChanges = onUndoChanges,
                                     onKeepChanges = onKeepChanges,
+                                    fileOpsEnabled = !workspaceFilesBusy(state),
+                                    onCreateEntry = onCreateWorkspaceEntry,
+                                    onRenameEntry = onRenameWorkspaceEntry,
+                                    onDeleteEntry = onDeleteWorkspaceEntry,
+                                    onUploadInto = { folder ->
+                                        pendingUploadFolder = folder
+                                        runCatching { uploadLauncher.launch(arrayOf("*/*")) }.onFailure {
+                                            pendingUploadFolder = null
+                                            banner("No app can pick files to upload", BannerKind.Error)
+                                        }
+                                    },
+                                    onShareFile = onShareWorkspaceFile,
+                                    onSaveFileCopy = { path ->
+                                        pendingCopyPath = path
+                                        runCatching { saveCopyLauncher.launch(path.substringAfterLast('/')) }.onFailure {
+                                            pendingCopyPath = null
+                                            banner("No app can save a copy", BannerKind.Error)
+                                        }
+                                    },
                                 )
                                 WorkspaceTab.TERMINAL -> Box(
                                     Modifier
@@ -1482,9 +1534,30 @@ private fun FilesTab(
     onReviewChanges: () -> Unit,
     onUndoChanges: () -> Unit,
     onKeepChanges: () -> Unit,
+    fileOpsEnabled: Boolean = true,
+    onCreateEntry: (parentPath: String, name: String, isDirectory: Boolean) -> Unit = { _, _, _ -> },
+    onRenameEntry: (path: String, newName: String) -> Unit = { _, _ -> },
+    onDeleteEntry: (path: String) -> Unit = {},
+    onUploadInto: (parentPath: String) -> Unit = {},
+    onShareFile: (path: String) -> Unit = {},
+    onSaveFileCopy: (path: String) -> Unit = {},
 ) {
     val colors = PocketColors.current
     val accent = MaterialTheme.colorScheme.primary
+    var nameDialog by remember { mutableStateOf<EntryNameDialog?>(null) }
+    var deleteTarget by remember { mutableStateOf<WorkspaceEntry?>(null) }
+    var rootMenuOpen by remember { mutableStateOf(false) }
+    val rootMenuAnchor = rememberOverlayAnchor()
+    val entryActions = EntryActions(
+        enabled = fileOpsEnabled,
+        onNewFile = { parent -> nameDialog = EntryNameDialog.Create(parent, isDirectory = false) },
+        onNewFolder = { parent -> nameDialog = EntryNameDialog.Create(parent, isDirectory = true) },
+        onUpload = onUploadInto,
+        onRename = { entry -> nameDialog = EntryNameDialog.Rename(entry.path, entry.name) },
+        onDelete = { entry -> deleteTarget = entry },
+        onShare = { entry -> onShareFile(entry.path) },
+        onSaveCopy = { entry -> onSaveFileCopy(entry.path) },
+    )
     val apkFiles = remember(files) {
         files.filter { !it.isDirectory && it.name.endsWith(".apk", ignoreCase = true) }
             .sortedByDescending { it.sizeBytes }
@@ -1572,6 +1645,16 @@ private fun FilesTab(
                 if (expandedDirectories.isNotEmpty()) {
                     SheetTextButton("Collapse all", { expandedDirectories = emptyList() })
                 }
+                PocketIconButton(
+                    Icons.Outlined.Add,
+                    "New file or folder",
+                    { rootMenuOpen = true },
+                    modifier = Modifier.overlayAnchor(rootMenuAnchor),
+                    enabled = fileOpsEnabled,
+                )
+                GlassMenu(expanded = rootMenuOpen, onDismiss = { rootMenuOpen = false }, anchor = rootMenuAnchor) {
+                    FolderMenuItems(parentPath = "", actions = entryActions)
+                }
                 if (!loading && files.any { !it.isDirectory }) {
                     PocketIconButton(Icons.Outlined.Download, "Export project as ZIP", onExport)
                 }
@@ -1618,10 +1701,60 @@ private fun FilesTab(
                             onOpenFile(entry)
                         }
                     },
+                    actions = entryActions,
                 )
             }
         }
     }
+
+    nameDialog?.let { dialog ->
+        EntryNameAlert(
+            dialog = dialog,
+            onDismiss = { nameDialog = null },
+            onConfirm = { name ->
+                nameDialog = null
+                when (dialog) {
+                    is EntryNameDialog.Create -> onCreateEntry(dialog.parentPath, name, dialog.isDirectory)
+                    is EntryNameDialog.Rename -> onRenameEntry(dialog.path, name)
+                }
+            },
+        )
+    }
+    deleteTarget?.let { entry ->
+        PocketAlert(
+            onDismiss = { deleteTarget = null },
+            title = "Delete ${entry.name}?",
+            message = if (entry.isDirectory) {
+                "This folder and everything in it will be permanently deleted."
+            } else {
+                "This file will be permanently deleted."
+            },
+            actions = listOf(
+                AlertAction("Cancel", AlertRole.Cancel) { deleteTarget = null },
+                AlertAction("Delete", AlertRole.Destructive) {
+                    deleteTarget = null
+                    onDeleteEntry(entry.path)
+                },
+            ),
+        )
+    }
+}
+
+/** What the Files tab's menus can do. Changes are disabled (not hidden) while [enabled] is false. */
+private class EntryActions(
+    val enabled: Boolean,
+    val onNewFile: (parentPath: String) -> Unit,
+    val onNewFolder: (parentPath: String) -> Unit,
+    val onUpload: (parentPath: String) -> Unit,
+    val onRename: (WorkspaceEntry) -> Unit,
+    val onDelete: (WorkspaceEntry) -> Unit,
+    val onShare: (WorkspaceEntry) -> Unit,
+    val onSaveCopy: (WorkspaceEntry) -> Unit,
+)
+
+private sealed interface EntryNameDialog {
+    data class Create(val parentPath: String, val isDirectory: Boolean) : EntryNameDialog
+    data class Rename(val path: String, val currentName: String) : EntryNameDialog
 }
 
 /** What the Files tab shows about the project's one-tap Android build. */
@@ -1742,11 +1875,77 @@ private fun AndroidBuildSection(
     }
 }
 
-/** One entry of the tree: a disclosure chevron for folders, indented by depth. */
 @Composable
-private fun FileRow(entry: WorkspaceEntry, expanded: Boolean, childCount: Int, onClick: () -> Unit) {
+private fun FolderMenuItems(parentPath: String, actions: EntryActions) {
+    GlassMenuItem("New file", { actions.onNewFile(parentPath) }, icon = Icons.AutoMirrored.Outlined.NoteAdd, enabled = actions.enabled)
+    GlassMenuItem("New folder", { actions.onNewFolder(parentPath) }, icon = Icons.Outlined.CreateNewFolder, enabled = actions.enabled)
+    GlassMenuItem("Upload here", { actions.onUpload(parentPath) }, icon = Icons.Outlined.Upload, enabled = actions.enabled)
+}
+
+/** The actions for one entry of the tree, from its "…" button or a long press. */
+@Composable
+private fun EntryMenuItems(entry: WorkspaceEntry, actions: EntryActions) {
+    if (entry.isDirectory) {
+        FolderMenuItems(entry.path, actions)
+    } else {
+        GlassMenuItem("Share", { actions.onShare(entry) }, icon = Icons.Outlined.Share)
+        GlassMenuItem("Save a copy", { actions.onSaveCopy(entry) }, icon = Icons.Outlined.Download)
+    }
+    GlassMenuDivider()
+    GlassMenuItem("Rename", { actions.onRename(entry) }, icon = Icons.Outlined.DriveFileRenameOutline, enabled = actions.enabled)
+    GlassMenuItem("Delete", { actions.onDelete(entry) }, icon = Icons.Outlined.Delete, destructive = true, enabled = actions.enabled)
+}
+
+/** Asks for the name of a new file or folder, or a new name for an entry. Problems show under the field. */
+@Composable
+private fun EntryNameAlert(dialog: EntryNameDialog, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    val initial = (dialog as? EntryNameDialog.Rename)?.currentName.orEmpty()
+    var name by remember(dialog) { mutableStateOf(initial) }
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(dialog) { runCatching { focusRequester.requestFocus() } }
+    val problem = if (name.isEmpty()) null else entryNameProblem(name)
+    val canConfirm = name.isNotEmpty() && problem == null && name != initial
+    val folder = when (dialog) {
+        is EntryNameDialog.Create -> dialog.parentPath
+        is EntryNameDialog.Rename -> dialog.path.substringBeforeLast('/', "")
+    }
+    PocketAlert(
+        onDismiss = onDismiss,
+        title = when (dialog) {
+            is EntryNameDialog.Create -> if (dialog.isDirectory) "New folder" else "New file"
+            is EntryNameDialog.Rename -> "Rename"
+        },
+        message = "In /$folder",
+        actions = listOf(
+            AlertAction("Cancel", AlertRole.Cancel, onClick = onDismiss),
+            AlertAction(if (dialog is EntryNameDialog.Rename) "Rename" else "Create", enabled = canConfirm) { onConfirm(name) },
+        ),
+    ) {
+        PocketTextField(
+            value = name,
+            onValueChange = { name = it },
+            placeholder = "Name",
+            error = problem,
+            keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { if (canConfirm) onConfirm(name) }),
+            focusRequester = focusRequester,
+        )
+    }
+}
+
+/** One entry of the tree: a disclosure chevron for folders, indented by depth, and a menu of actions. */
+@Composable
+private fun FileRow(
+    entry: WorkspaceEntry,
+    expanded: Boolean,
+    childCount: Int,
+    onClick: () -> Unit,
+    actions: EntryActions? = null,
+) {
     val colors = PocketColors.current
     val isApk = !entry.isDirectory && entry.name.endsWith(".apk", ignoreCase = true)
+    var menuOpen by remember { mutableStateOf(false) }
+    val menuAnchor = rememberOverlayAnchor()
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val highlight by animateColorAsState(
@@ -1759,7 +1958,7 @@ private fun FileRow(entry: WorkspaceEntry, expanded: Boolean, childCount: Int, o
         Modifier
             .fillMaxWidth()
             .background(highlight)
-            .clickable(
+            .combinedClickable(
                 interactionSource = interaction,
                 indication = null,
                 role = Role.Button,
@@ -1768,10 +1967,17 @@ private fun FileRow(entry: WorkspaceEntry, expanded: Boolean, childCount: Int, o
                     isApk -> "Install"
                     else -> "Open"
                 },
+                onLongClickLabel = if (actions != null) "More actions" else null,
+                onLongClick = if (actions != null) ({ menuOpen = true }) else null,
                 onClick = onClick,
             )
             .heightIn(min = LiquidGlassTokens.MinTouchTarget)
-            .padding(start = ListInset + (entry.depth * 16).dp, end = ListInset - 2.dp, top = 10.dp, bottom = 10.dp),
+            .padding(
+                start = ListInset + (entry.depth * 16).dp,
+                end = if (actions != null) PocketSpacing.xs else ListInset - 2.dp,
+                top = if (actions != null) 6.dp else 10.dp,
+                bottom = if (actions != null) 6.dp else 10.dp,
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (entry.isDirectory) {
@@ -1816,13 +2022,33 @@ private fun FileRow(entry: WorkspaceEntry, expanded: Boolean, childCount: Int, o
             if (isApk) {
                 Spacer(Modifier.width(PocketSpacing.sm))
                 Text("Install", style = PocketType.footnote.emphasized, color = colors.green)
-            } else {
+            } else if (actions == null) {
                 Icon(
                     Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                     contentDescription = null,
                     tint = colors.tertiaryLabel,
                     modifier = Modifier.size(18.dp),
                 )
+            }
+        }
+        if (actions != null) {
+            Box(
+                Modifier
+                    .overlayAnchor(menuAnchor)
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .clickable(role = Role.Button, onClickLabel = "More actions for ${entry.name}") { menuOpen = true },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.MoreHoriz,
+                    contentDescription = "More actions for ${entry.name}",
+                    tint = colors.secondaryLabel,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            GlassMenu(expanded = menuOpen, onDismiss = { menuOpen = false }, anchor = menuAnchor) {
+                EntryMenuItems(entry, actions)
             }
         }
     }

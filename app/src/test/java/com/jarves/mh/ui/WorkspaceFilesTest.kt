@@ -156,6 +156,61 @@ class WorkspaceFilesTest {
         assertNull(resolveWorkspacePath(root, "file-link"))
     }
 
+    // ---- Names ----
+
+    @Test
+    fun ordinaryNamesAreAccepted() {
+        listOf("a.txt", ".env", "My File (2).md", "ünïcødé", "x".repeat(255)).forEach { name ->
+            assertNull(name, entryNameProblem(name))
+        }
+    }
+
+    @Test
+    fun unusableNamesAreRefused() {
+        listOf("", "   ", ".", "..", "a/b", "a\\b", "../x", "a\u0000b", "a\nb", " lead", "trail ", "x".repeat(256), "é".repeat(128))
+            .forEach { name -> assertNotNull(name, entryNameProblem(name)) }
+    }
+
+    @Test
+    fun uniqueChildAddsASuffixOnAClash() {
+        val folder = temp.newFolder("u")
+        File(folder, "a.txt").writeText("1")
+        File(folder, "a-2.txt").writeText("2")
+        Files.createSymbolicLink(File(folder, "dangling").toPath(), File(folder, "missing").toPath())
+        assertEquals("a-3.txt", uniqueChild(folder, "a.txt").name)
+        assertEquals("b.txt", uniqueChild(folder, "b.txt").name)
+        assertEquals("dangling-2", uniqueChild(folder, "dangling").name)
+        assertEquals(".env", uniqueChild(folder, ".env").name)
+    }
+
+    // ---- Deleting ----
+
+    @Test
+    fun deletingAFolderRemovesLinksButNotWhatTheyPointTo() {
+        val root = project()
+        val outside = temp.newFolder("outside")
+        val secret = File(outside, "secret.txt").apply { writeText("keep") }
+        val doomed = File(root, "doomed").apply { mkdirs() }
+        File(doomed, "inner/file.txt").apply { parentFile!!.mkdirs(); writeText("x") }
+        Files.createSymbolicLink(File(doomed, "dir-link").toPath(), outside.toPath())
+        Files.createSymbolicLink(File(doomed, "file-link").toPath(), secret.toPath())
+
+        deleteWorkspaceTree(doomed)
+
+        assertFalse(doomed.exists())
+        assertTrue(secret.exists())
+        assertEquals("keep", secret.readText())
+    }
+
+    @Test
+    fun deletingASingleFile() {
+        val root = project()
+        val file = File(root, "src/main/A.kt")
+        deleteWorkspaceTree(file)
+        assertFalse(file.exists())
+        assertTrue(File(root, "src/main").isDirectory)
+    }
+
     @Test
     fun guardWorksWhenTheRootIsReachedThroughASymlink() {
         val real = project()

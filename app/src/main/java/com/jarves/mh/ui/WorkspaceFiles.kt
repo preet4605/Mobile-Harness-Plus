@@ -1,11 +1,17 @@
 package com.jarves.mh.ui
 
 import java.io.File
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.UUID
 
@@ -14,9 +20,74 @@ internal const val MAX_EDITABLE_FILE_BYTES = 512_000
 
 internal const val WORKSPACE_BUSY_MESSAGE = "Wait for the running task, terminal command, build or export to finish"
 
-/** True while a task, terminal command or build could be writing to the project, so files are not changed by hand. */
+internal const val PROTECTED_ENTRY_MESSAGE = "This item is protected or outside the project"
+
+/** Largest single file the Files tab uploads. */
+internal const val MAX_UPLOAD_BYTES = 100L * 1024L * 1024L
+
+/** The project-relative path of [name] inside the folder at [parentPath] ("" for the root). */
+internal fun workspaceChildPath(parentPath: String, name: String): String =
+    parentPath.trim('/').let { if (it.isEmpty()) name else "$it/$name" }
+
+/**
+ * True while a task, terminal command, build, export or another file operation could be reading or
+ * writing the project, so files are not changed by hand.
+ */
 internal fun workspaceFilesBusy(state: AppUiState): Boolean =
-    state.isRunning || state.projectTerminalRunning || state.androidBuildRunning
+    state.isRunning || state.projectTerminalRunning || state.androidBuildRunning ||
+        state.projectExportRunning || state.fileOperationRunning
+
+/**
+ * Why [name] can't be used for a new or renamed file or folder, or null when it can. Names are
+ * one path segment: no separators, NUL or control characters, not "." or "..", at most 255 bytes.
+ * Leading or trailing spaces are refused rather than silently trimmed.
+ */
+internal fun entryNameProblem(name: String): String? = when {
+    name.isBlank() -> "Enter a name"
+    name != name.trim() -> "Names can't start or end with a space"
+    name == "." || name == ".." -> "\"$name\" can't be used as a name"
+    name.any { it == '/' || it == '\\' } -> "Names can't contain / or \\"
+    name.any { it.isISOControl() } -> "Names can't contain control characters"
+    name.toByteArray(Charsets.UTF_8).size > 255 -> "That name is too long"
+    else -> null
+}
+
+/** [name] in [folder], or "stem-2.ext", "stem-3.ext"… when something (even a dangling link) already has that name. */
+internal fun uniqueChild(folder: File, name: String): File {
+    val dot = name.lastIndexOf('.')
+    val (stem, extension) = if (dot > 0) name.substring(0, dot) to name.substring(dot) else name to ""
+    var candidate = File(folder, name)
+    var suffix = 2
+    while (Files.exists(candidate.toPath(), LinkOption.NOFOLLOW_LINKS)) candidate = File(folder, "$stem-${suffix++}$extension")
+    return candidate
+}
+
+/**
+ * Deletes [target] and everything below it without following symbolic links: a link is removed
+ * itself, never what it points to, so nothing outside the folder can be deleted.
+ */
+internal fun deleteWorkspaceTree(target: File) {
+    val path = target.toPath()
+    if (!Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+        Files.delete(path)
+        return
+    }
+    Files.walkFileTree(
+        path,
+        object : SimpleFileVisitor<Path>() {
+            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                Files.delete(file)
+                return FileVisitResult.CONTINUE
+            }
+
+            override fun postVisitDirectory(dir: Path, exc: IOException?): FileVisitResult {
+                if (exc != null) throw exc
+                Files.delete(dir)
+                return FileVisitResult.CONTINUE
+            }
+        },
+    )
+}
 
 /** Why an open file is shown read-only. */
 enum class FileReadOnlyReason { TOO_LARGE, BINARY, INVALID_UTF8, UNSAFE, READ_ERROR }
