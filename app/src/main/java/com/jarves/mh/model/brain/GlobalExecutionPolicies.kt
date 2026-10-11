@@ -9,24 +9,15 @@ object GlobalExecutionPolicies {
     const val REASONING_BUDGET_POLICY_NAME = "REASONING BUDGET POLICY"
     val REASONING_BUDGET_POLICY = """
 REASONING BUDGET POLICY: Use deep reasoning only when task complexity requires it.
-For straightforward implementation, bug fixes, tests, or known changes:
-plan briefly → edit → targeted test → finish.
-
-Do not perform redundant planning, repeated verification,
-or unnecessary alternative implementations.
+For routine changes: plan briefly → edit → targeted test → finish.
+Avoid redundant planning, checks and alternative implementations.
 """.trimIndent()
 
     const val EXECUTION_EFFICIENCY_POLICY_NAME = "EXECUTION EFFICIENCY POLICY"
     val EXECUTION_EFFICIENCY_POLICY = """
-EXECUTION EFFICIENCY POLICY: Work efficiently without sacrificing correctness.
-
-1. Inspect only files relevant to the current task.
-2. Reuse existing architecture, APIs, tests and previous findings before exploring alternatives.
-3. Do not repeatedly reread unchanged files or rediscover established facts.
-4. Prefer one targeted tool call over many exploratory calls.
-5. Make a concise plan, then execute it directly.
-6. Avoid speculative refactors and unrelated improvements.
-7. After modifying code, run the smallest relevant verification.
+EXECUTION EFFICIENCY POLICY: Preserve correctness. Inspect relevant files; reuse architecture, APIs, tests and findings.
+Batch targeted tool calls; avoid rereading unchanged code, rediscovering facts, speculative refactors and unrelated work.
+Execute a concise plan and run the smallest relevant verification.
 """.trimIndent()
 
     val DEFAULT_POLICIES: List<String> = listOf(

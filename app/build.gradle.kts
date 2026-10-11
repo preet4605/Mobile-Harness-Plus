@@ -237,6 +237,8 @@ android {
 
 // Screenshot tests are opt-in: ./gradlew :app:testOnlineDebugUnitTest -Pscreenshots
 tasks.withType<Test>().configureEach {
+    // Phone JVMs lack Conscrypt's optional ARM64 native provider. Opt in for non-TLS tests only.
+    if (project.hasProperty("phoneTests")) systemProperty("robolectric.conscryptMode", "OFF")
     if (!project.hasProperty("screenshots")) {
         exclude("**/*ScreenshotTest*")
     } else {

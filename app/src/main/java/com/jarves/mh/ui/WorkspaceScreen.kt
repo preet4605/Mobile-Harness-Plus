@@ -988,7 +988,9 @@ internal fun WorkspaceScreen(
                                         .windowInsetsPadding(bottomInsets)
                                         .clipToBounds(),
                                 ) {
-                                    PreviewTab(state.previewReady, state.previewUrl)
+                                    key(state.activeProject?.id, state.activeProject?.rootPath) {
+                                        PreviewTab(state.previewReady, state.previewUrl, state.activeProject)
+                                    }
                                 }
                             }
                         }
@@ -2547,7 +2549,7 @@ private fun formatFileSize(bytes: Long): String = when {
 
 /** A local web preview: an address field for loopback URLs over a sandboxed WebView. */
 @Composable
-private fun PreviewTab(ready: Boolean, url: String?) {
+private fun PreviewTab(ready: Boolean, url: String?, project: com.jarves.mh.model.Project?) {
     var address by rememberSaveable(url) { mutableStateOf(if (ready) url.orEmpty() else "") }
     var activeUrl by rememberSaveable(url) { mutableStateOf(if (ready) url else null) }
     var addressError by remember { mutableStateOf<String?>(null) }
@@ -2626,11 +2628,21 @@ private fun PreviewTab(ready: Boolean, url: String?) {
                 factory = { context ->
                     WebView(context).apply {
                         webView = this
+                        project?.let { owner ->
+                            val base = java.io.File(context.filesDir, "workspaces/${owner.id}").canonicalFile
+                            val root = if (owner.rootPath.isBlank()) base else java.io.File(base, owner.rootPath).canonicalFile
+                            if (root.toPath().startsWith(base.toPath()))
+                                com.jarves.mh.runtime.PreviewInspectionHost.attach(this, root, "/workspace/${owner.slug}")
+                        }
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         webChromeClient = object : WebChromeClient() {
                             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                                 loading = newProgress < 100
+                            }
+                            override fun onConsoleMessage(message: android.webkit.ConsoleMessage?): Boolean {
+                                if (message != null) com.jarves.mh.runtime.PreviewInspectionHost.console(this@apply, message)
+                                return true
                             }
                         }
                         webViewClient = object : WebViewClient() {
@@ -2645,6 +2657,7 @@ private fun PreviewTab(ready: Boolean, url: String?) {
                             }
 
                             override fun onPageStarted(view: WebView?, pageUrl: String?, favicon: android.graphics.Bitmap?) {
+                                if (view != null) com.jarves.mh.runtime.PreviewInspectionHost.navigation(view)
                                 pageUrl?.takeIf { normalizePreviewUrl(it) != null }?.let { address = it }
                             }
 
@@ -2666,6 +2679,7 @@ private fun PreviewTab(ready: Boolean, url: String?) {
                     }
                 },
                 onRelease = { current ->
+                    com.jarves.mh.runtime.PreviewInspectionHost.detach(current)
                     current.stopLoading()
                     current.webChromeClient = null
                     current.destroy()

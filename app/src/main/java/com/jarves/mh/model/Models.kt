@@ -733,6 +733,7 @@ data class SkillInfo(
     val sourceProjectName: String? = null,
     val isReadOnly: Boolean = false,
     val isMissingSource: Boolean = false,
+    val guestFilePath: String? = null,
 )
 
 data class ProjectRule(

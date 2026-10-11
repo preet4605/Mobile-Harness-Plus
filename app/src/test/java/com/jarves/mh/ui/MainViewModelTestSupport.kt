@@ -39,7 +39,11 @@ internal class ManualDispatcher : CoroutineDispatcher() {
     }
 }
 
-internal fun robolectricApplication(): Application = RuntimeEnvironment.getApplication()
+internal fun robolectricApplication(): Application {
+    // DriverManager's service discovery runs once, while Robolectric uses isolated classloaders.
+    Class.forName("org.sqlite.JDBC")
+    return RuntimeEnvironment.getApplication()
+}
 
 internal fun testProject(name: String, rootPath: String = ""): Project =
     Project(name = name, description = "", language = "Kotlin", rootPath = rootPath)

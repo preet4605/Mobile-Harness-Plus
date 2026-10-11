@@ -631,6 +631,9 @@ class MainViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             browserBridge.watch(this)
         }
+        viewModelScope.launch(Dispatchers.IO) {
+            com.jarves.mh.runtime.NativeInspectionBridge(application).watch()
+        }
         viewModelScope.launch {
             claudeAuthController.state.collect { auth ->
                 _state.update { it.copy(claudeAuth = auth) }
@@ -3820,7 +3823,10 @@ class MainViewModel(
 
         val otherSkills = skillManager.discoverAllProjectsSkills(_state.value.projects, project.id, workspacesBase)
         val globalSkills = skillManager.discoverGlobalAndLinuxSkills(rootfsDir) + skillManager.discoverBundledSkills()
-        val activeSkills = skillManager.compileActiveProjectSkills(project, config, _state.value.projects, workspacesBase, rootfsDir)
+        val activeSkills = com.jarves.mh.runtime.GuestSkillAccess(getApplication<Application>().filesDir).prepare(
+            skillManager.compileActiveProjectSkills(project, config, _state.value.projects, workspacesBase, rootfsDir),
+            workspaceDir, rootfsDir, projectGuestRoot(project),
+        )
         val legacyRules = skillManager.loadProjectRules(workspaceDir)
 
         return { state ->
