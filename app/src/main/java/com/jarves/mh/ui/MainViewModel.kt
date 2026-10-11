@@ -741,15 +741,8 @@ class MainViewModel(
 
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
-    private val _terminalLines = MutableStateFlow<List<TerminalOutputLine>>(
-        listOf(
-            TerminalOutputLine(
-                command = "uname -a",
-                output = "Linux pocket-dev 6.1.0-arm64 #1 SMP aarch64 GNU/Linux (PRoot Sandbox)",
-                exitCode = 0,
-            ),
-        ),
-    )
+    // Starts empty: a hard-coded `uname -a` line here was fake output, not from the runtime.
+    private val _terminalLines = MutableStateFlow<List<TerminalOutputLine>>(emptyList())
     val terminalLines: StateFlow<List<TerminalOutputLine>> = _terminalLines.asStateFlow()
 
     private val _isTerminalRunning = MutableStateFlow(false)
@@ -1460,16 +1453,21 @@ class MainViewModel(
                 if (setupCompletionHandled) return
                 setupCompletionHandled = true
                 preferences.runtimeSetupComplete = true
-                if (preferences.onboardingComplete) {
-                    viewModelScope.launch { initializeRuntime() }
-                } else {
-                    _state.update {
-                        it.copy(
-                            startupStage = StartupStage.MODEL_SETUP,
-                            startupProgress = 1f,
-                            startupBytes = null,
-                            startupIndeterminate = false,
-                        )
+                viewModelScope.launch {
+                    // Setup just installed the selected toolchains; show them without a restart.
+                    val installedStacks = withContext(Dispatchers.IO) { installer.installedStacks() }
+                    _state.update { it.copy(installedDevStacks = installedStacks) }
+                    if (preferences.onboardingComplete) {
+                        initializeRuntime()
+                    } else {
+                        _state.update {
+                            it.copy(
+                                startupStage = StartupStage.MODEL_SETUP,
+                                startupProgress = 1f,
+                                startupBytes = null,
+                                startupIndeterminate = false,
+                            )
+                        }
                     }
                 }
             }
@@ -1530,10 +1528,12 @@ class MainViewModel(
             // Keep the successful loading state visible long enough to be understandable.
             val remaining = MINIMUM_INITIALIZATION_SCREEN_MS - (SystemClock.elapsedRealtime() - startedAt)
             if (remaining > 0) delay(remaining)
+            val installedStacks = withContext(Dispatchers.IO) { installer.installedStacks() }
             _state.update {
                 it.copy(
                     startupStage = StartupStage.READY,
                     startupProgress = 1f,
+                    installedDevStacks = installedStacks,
                     installedAgentVersions = installer.installedAgentVersions(),
                 )
             }
