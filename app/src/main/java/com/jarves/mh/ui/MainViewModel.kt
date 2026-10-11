@@ -396,6 +396,8 @@ data class AppUiState(
     val selectedTaskForLogs: BackgroundTaskInfo? = null,
     val contextMemory: ContextMemory = ContextMemory(""),
     val memoryViewerVisible: Boolean = false,
+    /** Settings > Diagnostics snapshot; collected only on demand. */
+    val diagnostics: AppDiagnostics = AppDiagnostics(),
 )
 
 
@@ -835,6 +837,155 @@ class MainViewModel(
 
     fun clearTerminal() {
         _terminalLines.value = emptyList()
+    }
+
+    private var diagnosticsJob: Job? = null
+    private var lastDiagnosticsRefreshAtElapsedMillis = 0L
+    @Volatile private var cachedRecentExit: String? = null
+    @Volatile private var recentExitLoadedAtElapsedMillis: Long? = null
+
+    /**
+     * Collects one diagnostics snapshot off the main thread. Settings calls this when the
+     * Diagnostics section is shown or Refresh is tapped; repeated calls within a second are ignored.
+     */
+    fun refreshDiagnostics(force: Boolean = false) {
+        if (diagnosticsJob?.isActive == true) return
+        val now = SystemClock.elapsedRealtime()
+        if (!force && lastDiagnosticsRefreshAtElapsedMillis != 0L &&
+            now - lastDiagnosticsRefreshAtElapsedMillis < DIAGNOSTICS_REFRESH_COOLDOWN_MS
+        ) return
+        lastDiagnosticsRefreshAtElapsedMillis = now
+        _state.update { it.copy(diagnostics = it.diagnostics.copy(loading = true)) }
+        diagnosticsJob = viewModelScope.launch {
+            val snapshot = runCatching { withContext(ioDispatcher) { collectDiagnostics() } }
+                .getOrElse { error ->
+                    if (error is CancellationException) throw error
+                    _state.value.diagnostics.copy(loading = false)
+                }
+            _state.update { it.copy(diagnostics = snapshot) }
+        }
+    }
+
+    /**
+     * Deletes leftover runtime output logs. It refuses while any runtime work runs, and even then
+     * skips a log this process still holds open or that was written to in the last minute.
+     */
+    fun clearRuntimeOutputCache() {
+        viewModelScope.launch {
+            val freed = withContext(ioDispatcher) {
+                if (runtimeWorkInProgress()) return@withContext null
+                val openPaths = openFilePathsInProcess()
+                val now = System.currentTimeMillis()
+                var bytes = 0L
+                runtimeOutputFiles().forEach { file ->
+                    val disposable = isDisposableRuntimeOutput(
+                        name = file.name,
+                        isRegularFile = file.isFile,
+                        lastModifiedMillis = file.lastModified(),
+                        nowMillis = now,
+                        openInProcess = file.absolutePath in openPaths,
+                    )
+                    if (!disposable) return@forEach
+                    val size = file.length()
+                    if (runCatching { file.delete() }.getOrDefault(false)) bytes += size
+                }
+                bytes
+            }
+            _state.update {
+                it.copy(
+                    toastMessage = if (freed == null) {
+                        "Wait for running work to finish before clearing the runtime cache."
+                    } else {
+                        "Runtime cache cleared (${formatDiagnosticBytes(freed)})."
+                    },
+                )
+            }
+            refreshDiagnostics(force = true)
+        }
+    }
+
+    private fun runtimeOutputFiles(): List<File> =
+        getApplication<Application>().cacheDir.listFiles { _, name -> isRuntimeOutputName(name) }.orEmpty().toList()
+
+    /** Paths this app process holds open; a runtime output log in this set is still being written or read. */
+    private fun openFilePathsInProcess(): Set<String> =
+        File("/proc/self/fd").listFiles().orEmpty().mapNotNullTo(HashSet()) { fd ->
+            runCatching { Os.readlink(fd.absolutePath) }.getOrNull()
+        }
+
+    /** True while anything that may own a runtime output log is running. Call off the main thread. */
+    private fun runtimeWorkInProgress(): Boolean {
+        val current = _state.value
+        return current.isRunning || current.projectTerminalRunning || current.androidBuildRunning ||
+            _isTerminalRunning.value || current.devStackInstalling != null || current.devStackRemoving ||
+            current.agentInstalling != null || current.agentUpdating != null ||
+            current.backgroundTasks.any { it.status == BackgroundTaskStatus.RUNNING } ||
+            RuntimeSetupController.snapshot.value.status == RuntimeSetupStatus.RUNNING ||
+            com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).activeTasks.value.values
+                .any { it.status.isActive } ||
+            projectTerminalProcess?.isAlive == true || terminalProcess?.isAlive == true ||
+            githubAuthProcess?.isAlive == true
+    }
+
+    private fun collectDiagnostics(): AppDiagnostics {
+        val current = _state.value
+        val memory = android.os.Debug.MemoryInfo().also(android.os.Debug::getMemoryInfo)
+        val runtime = Runtime.getRuntime()
+        val activeTasks = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).activeTasks.value.values
+            .filter { it.status.isActive }
+        val processes = buildList {
+            activeTasks.groupingBy { AgentKind.fromStored(it.agentKind).title }.eachCount().forEach { (agent, count) ->
+                add(if (count == 1) "Agent task ($agent)" else "$count agent tasks ($agent)")
+            }
+            val backgroundRunning = current.backgroundTasks.count { it.status == BackgroundTaskStatus.RUNNING }
+            if (backgroundRunning > 0) add(if (backgroundRunning == 1) "Background command" else "$backgroundRunning background commands")
+            if (current.projectTerminalRunning || projectTerminalProcess?.isAlive == true) add("Project terminal")
+            if (_isTerminalRunning.value || terminalProcess?.isAlive == true) add("Terminal")
+            if (current.androidBuildRunning) add("Android build")
+            if (githubAuthProcess?.isAlive == true) add("GitHub sign-in")
+            current.devStackInstalling?.let { add("Installing ${it.label}") }
+            current.agentInstalling?.let { add("Installing ${it.title}") }
+            current.agentUpdating?.let { add("Updating ${it.title}") }
+            if (RuntimeSetupController.snapshot.value.status == RuntimeSetupStatus.RUNNING) add("Runtime setup")
+        }
+        val quickLines = _terminalLines.value
+        val outputFiles = runtimeOutputFiles().filter(File::isFile)
+        return AppDiagnostics(
+            appPssBytes = memory.totalPss.toLong() * 1_024L,
+            javaHeapUsedBytes = runtime.totalMemory() - runtime.freeMemory(),
+            javaHeapMaxBytes = runtime.maxMemory(),
+            activeProcesses = processes,
+            chatMessageCount = current.messages.size,
+            liveActivityCount = current.liveProcess.size,
+            terminalLineCount = current.projectTerminalLines.size + quickLines.size,
+            terminalOutputBytes = utf8SizeInBytes(current.projectTerminalLiveOutput) +
+                current.projectTerminalLines.sumOf { utf8SizeInBytes(it.output) } +
+                utf8SizeInBytes(_terminalLiveOutput.value) +
+                quickLines.sumOf { utf8SizeInBytes(it.output) },
+            runtimeCacheBytes = outputFiles.sumOf(File::length),
+            runtimeCacheFiles = outputFiles.size,
+            recentExit = recentAbnormalExit(),
+            refreshedAtMillis = System.currentTimeMillis(),
+        )
+    }
+
+    /** The newest abnormal exit the system recorded for this app, read at most once a minute. */
+    private fun recentAbnormalExit(): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val now = SystemClock.elapsedRealtime()
+        recentExitLoadedAtElapsedMillis?.let { loadedAt ->
+            if (now - loadedAt < RECENT_EXIT_CACHE_MS) return cachedRecentExit
+        }
+        val summary = runCatching {
+            val app = getApplication<Application>()
+            app.getSystemService(android.app.ActivityManager::class.java)
+                ?.getHistoricalProcessExitReasons(app.packageName, 0, 8)
+                .orEmpty()
+                .firstNotNullOfOrNull { info -> formatExitSummary(info.reason, info.timestamp, info.description) }
+        }.getOrNull()
+        cachedRecentExit = summary
+        recentExitLoadedAtElapsedMillis = now
+        return summary
     }
 
     fun requestProjectTerminalCommand(command: String) {
@@ -6010,6 +6161,8 @@ class MainViewModel(
         private const val MAX_IMPORTED_ZIP_ENTRIES = 100_000
         private const val AUTO_OPEN_DEDUPE_MS = 15_000L
         private const val CLAUDE_STATUS_RECHECK_MS = 30_000L
+        private const val DIAGNOSTICS_REFRESH_COOLDOWN_MS = 1_000L
+        private const val RECENT_EXIT_CACHE_MS = 60_000L
         private const val LEGACY_GITHUB_TOKEN_KEY = "GITHUB_APP"
         private const val GITHUB_DEVICE_URL = "https://github.com/login/device"
         private val GITHUB_DEVICE_CODE = Regex("\\b[A-Z0-9]{4}-[A-Z0-9]{4}\\b")

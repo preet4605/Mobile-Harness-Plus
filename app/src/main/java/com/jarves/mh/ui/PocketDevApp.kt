@@ -499,6 +499,8 @@ private fun RootScreenHost(
                         onSetDebugUpdateManifestUrl = viewModel::setDebugUpdateManifestUrl,
                         onClearDebugUpdateManifestUrl = viewModel::clearDebugUpdateManifestUrl,
                         onOpenAgent = { screen = RootScreen.AGENT },
+                        onRefreshDiagnostics = { viewModel.refreshDiagnostics() },
+                        onClearRuntimeCache = viewModel::clearRuntimeOutputCache,
                     )
                 }
             }
