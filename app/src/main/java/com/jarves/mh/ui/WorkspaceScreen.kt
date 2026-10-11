@@ -1256,9 +1256,11 @@ private fun FilesTab(
             segments.take(depth).joinToString("/") in expandedSet
         }
     }
-    val directChildCounts = files.filter { candidate ->
-        candidate.path.contains('/')
-    }.groupingBy { candidate -> candidate.path.substringBeforeLast('/') }.eachCount()
+    val directChildCounts = remember(files) {
+        files.filter { candidate ->
+            candidate.path.contains('/')
+        }.groupingBy { candidate -> candidate.path.substringBeforeLast('/') }.eachCount()
+    }
     val bottom = bottomClearance + PocketSpacing.lg
 
     LazyColumn(

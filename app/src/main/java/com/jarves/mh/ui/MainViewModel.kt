@@ -4032,12 +4032,8 @@ class MainViewModel(
                     sizeBytes = if (file.isFile) file.length() else 0,
                 )
             }
-            .sortedWith(
-                compareBy<WorkspaceEntry> { it.path.substringBeforeLast('/', "") }
-                    .thenByDescending { it.isDirectory }
-                    .thenBy { it.name.lowercase(Locale.ROOT) }
-            )
             .toList()
+            .let(::sortWorkspaceEntries)
     }
 
     private fun isClaudeRuntimeMetadata(relativePath: String): Boolean {
