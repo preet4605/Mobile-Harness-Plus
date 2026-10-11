@@ -351,6 +351,8 @@ class AppPreferences(
             .putString("${prefix}model", profile.model)
             .putString("${prefix}dsh_api", profile.dshApi)
             .putBoolean("${prefix}dsh_api_explicit", true)
+            .putString("${prefix}openrouter_order", profile.openRouterProviderOrder)
+            .putBoolean("${prefix}openrouter_allow_fallbacks", profile.openRouterAllowFallbacks)
             .putString("${prefix}profile_id", profile.profileId)
             .putString("${prefix}claude_auth_mode", profile.claudeAuthMode.name)
         if (profile.kind == ProviderKind.CLAUDE) {
@@ -367,6 +369,8 @@ class AppPreferences(
             .putString("provider_base_url", profile.baseUrl)
             .putString("provider_model", profile.model)
             .putString("provider_dsh_api", profile.dshApi)
+            .putString("provider_openrouter_order", profile.openRouterProviderOrder)
+            .putBoolean("provider_openrouter_allow_fallbacks", profile.openRouterAllowFallbacks)
             .putString("provider_profile_id", profile.profileId)
             .putString("claude_auth_mode", profile.claudeAuthMode.name)
         if (profile.kind == ProviderKind.CLAUDE) {
@@ -382,6 +386,8 @@ class AppPreferences(
                 .putString("${prefix}model", profile.model)
                 .putString("${prefix}dsh_api", profile.dshApi)
                 .putBoolean("${prefix}dsh_api_explicit", true)
+                .putString("${prefix}openrouter_order", profile.openRouterProviderOrder)
+                .putBoolean("${prefix}openrouter_allow_fallbacks", profile.openRouterAllowFallbacks)
                 .putString("${prefix}profile_id", profile.profileId)
                 .putString("${prefix}claude_auth_mode", profile.claudeAuthMode.name)
         }
@@ -509,6 +515,16 @@ class AppPreferences(
             model = effectiveModel,
             hasSecret = (!tokenHarborKeyDeleted && !revokedKeyDeleted && !isStoredRevoked) && (vault.contains(kind.name) || (kind == ProviderKind.ANTIGRAVITY_SERVER) || isNativeClaude || (kind == ProviderKind.CHATGPT && codexSignedIn)),
             dshApi = effectiveDshApi,
+            openRouterProviderOrder = if (useStoredValues) {
+                preferences.getString("${sourcePrefix}openrouter_order", "").orEmpty()
+            } else {
+                ""
+            },
+            openRouterAllowFallbacks = if (useStoredValues) {
+                preferences.getBoolean("${sourcePrefix}openrouter_allow_fallbacks", true)
+            } else {
+                true
+            },
             claudeAuthMode = storedAuthMode,
             claudeThinkingLevel = claudeThinking,
             profileId = if (useStoredValues && kind == ProviderKind.CUSTOM) {

@@ -148,4 +148,15 @@ class RuntimeLaunchConfigBuilderTest {
         assertEquals("antigravity-local-token", config.environment["ANTHROPIC_API_KEY"])
         assertEquals("1", config.environment["CLAUDE_CODE_DISABLE_TOKEN_COUNTING"])
     }
+
+    @Test
+    fun openRouterCanUseLocalRoutingGateway() {
+        val config = RuntimeLaunchConfigBuilder.build(
+            ProviderProfile(ProviderKind.LLM_ROUTER),
+            authToken = "temporary-openrouter-secret",
+            localGatewayUrl = "http://127.0.0.1:23456",
+        )
+
+        assertEquals("http://127.0.0.1:23456", config.environment["ANTHROPIC_BASE_URL"])
+    }
 }

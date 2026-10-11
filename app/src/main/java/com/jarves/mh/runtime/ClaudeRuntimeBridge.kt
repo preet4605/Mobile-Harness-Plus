@@ -255,6 +255,7 @@ class ClaudeRuntimeBridge(
 
         var formatGateway: LocalFormatGateway? = null
         var antigravityGateway: AntigravityGatewayServer? = null
+        var openRouterGateway: OpenRouterRoutingGateway? = null
         runCatching {
             RuntimeTaskController.stopAction = {
                 userStopRequested = true
@@ -286,8 +287,11 @@ class ClaudeRuntimeBridge(
                 )) {
                 formatGateway = LocalFormatGateway(provider, secret.orEmpty()).start()
                 gatewayAuthToken = formatGateway.gatewaySecret
+            } else if (provider.kind == ProviderKind.LLM_ROUTER && provider.openRouterProviders.isNotEmpty() && !secret.isNullOrBlank()) {
+                // The gateway authenticates callers with the same OpenRouter key Claude Code sends.
+                openRouterGateway = OpenRouterRoutingGateway(provider, secret).start()
             }
-            val localGatewayUrl = antigravityGateway?.url ?: formatGateway?.url
+            val localGatewayUrl = antigravityGateway?.url ?: formatGateway?.url ?: openRouterGateway?.url
             val launch = RuntimeLaunchConfigBuilder.build(provider, authToken = gatewayAuthToken ?: secret, localGatewayUrl = localGatewayUrl)
             Log.d("ClaudeBridge", "Provider: ${provider.kind}, Model: ${provider.model}, BaseUrl: ${provider.baseUrl}")
             Log.d("ClaudeBridge", "Launch environment keys: ${launch.environment.keys}")
@@ -461,6 +465,7 @@ class ClaudeRuntimeBridge(
                     (activeProcess as? NativeSpawnProcess)?.outputFile?.delete()
                     formatGateway?.close()
                     antigravityGateway?.close()
+                    openRouterGateway?.close()
                     activeProcess = null
                     activeSessionId = null
                     activeTaskId = null
@@ -473,6 +478,7 @@ class ClaudeRuntimeBridge(
             (activeProcess as? NativeSpawnProcess)?.outputFile?.delete()
             formatGateway?.close()
             antigravityGateway?.close()
+            openRouterGateway?.close()
             activeProcess = null
             activeSessionId = null
             activeTaskId = null

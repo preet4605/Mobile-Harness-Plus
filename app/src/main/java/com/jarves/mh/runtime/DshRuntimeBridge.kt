@@ -143,6 +143,7 @@ class DshRuntimeBridge(
         }
 
         var antigravityGateway: AntigravityGatewayServer? = null
+        var openRouterGateway: OpenRouterRoutingGateway? = null
         runCatching {
             RuntimeTaskController.stopAction = {
                 userStopRequested = true
@@ -167,8 +168,13 @@ class DshRuntimeBridge(
             val before = checkpoints.snapshot(workspace)
             if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER) {
                 antigravityGateway = AntigravityGatewayServer(effectiveAccountMgr, targetModel = { provider.model }).start()
+            } else if (provider.kind == ProviderKind.LLM_ROUTER && provider.openRouterProviders.isNotEmpty() && secret.isNotBlank()) {
+                openRouterGateway = OpenRouterRoutingGateway(provider, secret).start()
             }
-            val route = DshRouteMapper.forProfile(provider, localGatewayUrl = antigravityGateway?.url)
+            val route = DshRouteMapper.forProfile(
+                provider,
+                localGatewayUrl = antigravityGateway?.url ?: openRouterGateway?.url,
+            )
             writeDshSettings(installed.rootfs, route, provider)
             val dshSecret = if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER && antigravityGateway != null) {
                 antigravityGateway.gatewaySecret
@@ -259,6 +265,7 @@ class DshRuntimeBridge(
                 if (activeSessionId == sessionId) {
                     (activeProcess as? NativeSpawnProcess)?.outputFile?.delete()
                     antigravityGateway?.close()
+                    openRouterGateway?.close()
                     activeProcess = null
                     activeSessionId = null
                     activeTaskId = null
@@ -270,6 +277,7 @@ class DshRuntimeBridge(
         if (activeSessionId == sessionId) {
             (activeProcess as? NativeSpawnProcess)?.outputFile?.delete()
             antigravityGateway?.close()
+            openRouterGateway?.close()
             activeProcess = null
             activeSessionId = null
             activeTaskId = null
@@ -819,7 +827,7 @@ internal object DshRouteMapper {
                 name = "mh-openrouter",
                 keyEnv = DshRuntimeBridge.FALLBACK_KEY_ENV,
                 defaultModel = model,
-                custom = DshCustomRoute("anthropic-messages", profile.resolvedBaseUrl),
+                custom = DshCustomRoute("anthropic-messages", localGatewayUrl ?: profile.resolvedBaseUrl),
             )
             ProviderKind.KIMI -> DshRoute(
                 name = "mh-kimi",

@@ -7,6 +7,7 @@ import com.jarves.mh.model.ProviderProtocol
 import com.jarves.mh.model.providerProtocolForAgent
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class ProviderApiClientTest {
@@ -104,5 +105,23 @@ class ProviderApiClientTest {
         org.junit.Assert.assertTrue("expected a size-limit failure, got $result", result is ModelDiscoveryResult.Failure)
         org.junit.Assert.assertTrue((result as ModelDiscoveryResult.Failure).message.contains("limit"))
         org.junit.Assert.assertTrue("connection left open after an oversized body", connection.disconnected)
+    }
+
+    @Test
+    fun openRouterProbeIncludesRequestedProviderOrder() {
+        val body = JSONObject(
+            ProviderApiClient().validationBody(
+                model = "anthropic/claude-sonnet-4.6",
+                protocol = ProviderProtocol.OPENROUTER,
+                openRouterProviderOrder = " anthropic, amazon-bedrock, anthropic ",
+                openRouterAllowFallbacks = false,
+            ),
+        )
+
+        val routing = body.getJSONObject("provider")
+        assertEquals(listOf("anthropic", "amazon-bedrock"), routing.getJSONArray("order").let { array ->
+            (0 until array.length()).map(array::getString)
+        })
+        assertFalse(routing.getBoolean("allow_fallbacks"))
     }
 }

@@ -1,5 +1,6 @@
 package com.jarves.mh.network
 
+import com.jarves.mh.model.ProviderProfile
 import com.jarves.mh.model.ProviderProtocol
 import org.json.JSONArray
 import org.json.JSONObject
@@ -86,6 +87,8 @@ class ProviderApiClient(
         apiKey: String,
         protocol: ProviderProtocol,
         discoveredModels: List<DiscoveredModel>,
+        openRouterProviderOrder: String = "",
+        openRouterAllowFallbacks: Boolean = true,
     ): ConnectionValidation = withContext(Dispatchers.IO) {
         if (baseUrl.isBlank() || model.isBlank()) {
             return@withContext ConnectionValidation.Failure("Base URL and model are required.")
@@ -97,7 +100,7 @@ class ProviderApiClient(
             )
         }
         val endpoint = messagesEndpoint(baseUrl, protocol)
-        val body = validationBody(model, protocol)
+        val body = validationBody(model, protocol, openRouterProviderOrder, openRouterAllowFallbacks)
         // Gateways may need to cold-start a model before returning the first token.
         // A ten-second validation timeout produced false "network" failures even
         // though discovery and the endpoint itself were healthy.
@@ -242,7 +245,12 @@ class ProviderApiClient(
             url.path.trimEnd('/').endsWith("/models")
     }.getOrDefault(false)
 
-    internal fun validationBody(model: String, protocol: ProviderProtocol): String = when (protocol) {
+    internal fun validationBody(
+        model: String,
+        protocol: ProviderProtocol,
+        openRouterProviderOrder: String = "",
+        openRouterAllowFallbacks: Boolean = true,
+    ): String = when (protocol) {
         ProviderProtocol.OPENAI_RESPONSES -> JSONObject()
             .put("model", model)
             .put(
@@ -270,6 +278,21 @@ class ProviderApiClient(
             .put("model", model)
             .put("max_tokens", 8)
             .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "Reply OK")))
+            .let { body ->
+                // Test the same provider routing the agent run will use.
+                if (protocol == ProviderProtocol.OPENROUTER) {
+                    com.jarves.mh.runtime.applyOpenRouterRouting(
+                        body,
+                        ProviderProfile(
+                            kind = com.jarves.mh.model.ProviderKind.LLM_ROUTER,
+                            openRouterProviderOrder = openRouterProviderOrder,
+                            openRouterAllowFallbacks = openRouterAllowFallbacks,
+                        ),
+                    )
+                } else {
+                    body
+                }
+            }
             .toString()
     }
 

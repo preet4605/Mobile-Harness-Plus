@@ -236,6 +236,12 @@ fun AgentScreen(
     var baseUrl by rememberSaveable(state.provider.baseUrl) { mutableStateOf(state.provider.baseUrl) }
     var model by rememberSaveable(state.provider.model) { mutableStateOf(state.provider.model) }
     var dshApi by rememberSaveable(state.provider.dshApi) { mutableStateOf(state.provider.dshApi) }
+    var openRouterProviderOrder by rememberSaveable(state.provider.openRouterProviderOrder) {
+        mutableStateOf(state.provider.openRouterProviderOrder)
+    }
+    var openRouterAllowFallbacks by rememberSaveable(state.provider.openRouterAllowFallbacks) {
+        mutableStateOf(state.provider.openRouterAllowFallbacks)
+    }
     var apiKey by rememberSaveable(selectedKind) { mutableStateOf(getSavedApiKey(selectedKind)) }
     var savedKeys by remember(selectedKind, state.activeApiKeyName) {
         mutableStateOf(getSavedApiKeys(selectedKind))
@@ -327,7 +333,14 @@ fun AgentScreen(
             statusProviderMessage = null
             val kind = selectedKind
             val url = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl.trim()
-            val profile = ProviderProfile(kind, url, model.trim(), dshApi = dshApi)
+            val profile = ProviderProfile(
+                kind,
+                url,
+                model.trim(),
+                dshApi = dshApi,
+                openRouterProviderOrder = openRouterProviderOrder,
+                openRouterAllowFallbacks = openRouterAllowFallbacks,
+            )
             when (val result = onDiscoverModels(profile, effectiveKey)) {
                 is ModelDiscoveryResult.Success -> {
                     models = result.models
@@ -389,6 +402,8 @@ fun AgentScreen(
         baseUrl = kind.defaultBaseUrl
         model = kind.defaultModel
         dshApi = defaultDshApiForProvider(kind)
+        openRouterProviderOrder = ""
+        openRouterAllowFallbacks = true
         models = startingModels(kind, kind.defaultBaseUrl, loadSavedModels)
         modelSearch = ""
         newKeyName = ""
@@ -464,7 +479,15 @@ fun AgentScreen(
             } else {
                 state.provider.claudeAuthMode
             }
-            val profile = ProviderProfile(kind, url, model.trim(), dshApi = dshApi, claudeAuthMode = authMode)
+            val profile = ProviderProfile(
+                kind,
+                url,
+                model.trim(),
+                dshApi = dshApi,
+                claudeAuthMode = authMode,
+                openRouterProviderOrder = openRouterProviderOrder,
+                openRouterAllowFallbacks = openRouterAllowFallbacks,
+            )
             if (kind == ProviderKind.CLAUDE) {
                 onSaveProvider(profile, apiKey.trim())
                 if (authMode == ClaudeAuthMode.SETUP_TOKEN_LEGACY) {
@@ -711,6 +734,41 @@ fun AgentScreen(
                                 baseUrl = baseUrl,
                                 onBaseUrl = onBaseUrl,
                             )
+                        }
+                        if (selectedKind == ProviderKind.LLM_ROUTER) {
+                            item(key = "openrouter-routing") {
+                                ListSection(
+                                    header = "Provider routing",
+                                    footer = "Optional OpenRouter provider slugs, separated by commas and tried in order.",
+                                ) {
+                                    Box(Modifier.fillMaxWidth().padding(horizontal = ListInset, vertical = PocketSpacing.md)) {
+                                        PocketTextField(
+                                            value = openRouterProviderOrder,
+                                            onValueChange = {
+                                                openRouterProviderOrder = it
+                                                status = null
+                                                statusProviderMessage = null
+                                                keyConnectionStatuses = emptyMap()
+                                            },
+                                            placeholder = "exacto, together",
+                                            label = "Provider order",
+                                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                        )
+                                    }
+                                    ToggleRow(
+                                        "Allow provider fallbacks",
+                                        checked = openRouterAllowFallbacks,
+                                        onCheckedChange = {
+                                            openRouterAllowFallbacks = it
+                                            status = null
+                                            statusProviderMessage = null
+                                            keyConnectionStatuses = emptyMap()
+                                        },
+                                        subtitle = "Turn off to use only the providers listed above.",
+                                        enabled = openRouterProviderOrder.isNotBlank(),
+                                    )
+                                }
+                            }
                         }
                         if (state.agentKind == AgentKind.DEEPSEEK_HARNESS && selectedKind in DSH_PROTOCOL_PROVIDERS && !selectedKind.fixedProtocol) {
                             item(key = "protocol") {

@@ -326,12 +326,22 @@ data class ProviderProfile(
     val claudeThinkingLevel: String = "default",
     /** Stable id of a multi-profile custom provider; blank for built-ins and the legacy single custom profile. */
     val profileId: String = "",
+    /** Comma-separated OpenRouter provider slugs, tried in order. Blank keeps automatic routing. */
+    val openRouterProviderOrder: String = "",
+    /** Whether OpenRouter may use providers outside [openRouterProviderOrder]. */
+    val openRouterAllowFallbacks: Boolean = true,
 ) {
     /** Vault id for this profile's API keys. Legacy and built-in profiles keep the kind-scoped id. */
     val secretId: String get() = if (profileId.isBlank()) kind.name else "custom:$profileId"
 
     /** Effective base URL: fixed kinds always resolve to their constant, ignoring stored drift. */
     val resolvedBaseUrl: String get() = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl
+
+    val openRouterProviders: List<String>
+        get() = openRouterProviderOrder.split(',')
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
 }
 
 enum class ProjectKind { PROJECT, QUICK_PROJECT }
