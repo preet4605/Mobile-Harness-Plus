@@ -5402,8 +5402,8 @@ class MainViewModel(
         }
         val trimmed = prompt.trim()
         if (trimmed.isBlank() && attachments.isEmpty()) return
-        // While a task runs, or earlier follow-ups still wait, the message joins the queue in order.
-        if (!fromQueue && (state.value.isRunning || state.value.queuedFollowUps.isNotEmpty())) {
+        // While a task or Android build runs, or earlier follow-ups still wait, the message joins the queue in order.
+        if (!fromQueue && (state.value.isRunning || state.value.androidBuildRunning || state.value.queuedFollowUps.isNotEmpty())) {
             queueFollowUp(project, prompt, attachments)
             return
         }

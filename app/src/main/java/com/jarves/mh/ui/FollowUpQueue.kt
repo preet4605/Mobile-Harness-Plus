@@ -51,5 +51,6 @@ object FollowUpQueue {
      */
     fun canStartNext(state: AppUiState): Boolean =
         state.queuedFollowUps.isNotEmpty() && state.activeProject != null &&
-            !state.isRunning && !state.isStopping && !state.chatLoading && !state.projectTerminalRunning
+            !state.isRunning && !state.isStopping && !state.chatLoading && !state.projectTerminalRunning &&
+            !state.androidBuildRunning
 }

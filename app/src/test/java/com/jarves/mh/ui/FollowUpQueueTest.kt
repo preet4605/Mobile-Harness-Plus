@@ -73,5 +73,6 @@ class FollowUpQueueTest {
         assertFalse(FollowUpQueue.canStartNext(ready.copy(isStopping = true)))
         assertFalse(FollowUpQueue.canStartNext(ready.copy(chatLoading = true)))
         assertFalse(FollowUpQueue.canStartNext(ready.copy(projectTerminalRunning = true)))
+        assertFalse(FollowUpQueue.canStartNext(ready.copy(androidBuildRunning = true)))
     }
 }
