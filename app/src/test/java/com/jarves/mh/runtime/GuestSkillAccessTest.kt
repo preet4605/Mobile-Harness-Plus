@@ -13,7 +13,7 @@ class GuestSkillAccessTest {
     @get:Rule val temp = TemporaryFolder()
     private fun skill(dir: File, source: SkillSource): SkillInfo {
         val file = File(dir, "SKILL.md").apply { parentFile!!.mkdirs(); writeText("skill body") }
-        return SkillInfo("${source.name}:fixture", "fixture", "description", file.path, source)
+        return SkillInfo("${source.name}:fixture", "fixture", "description", file.path, source, sourceWorkspacePath = dir.canonicalPath)
     }
     @Test fun projectAndBuiltinPathsUseGuestLocationsWithoutChangingSourcePaths() {
         val files = temp.newFolder(); val rootfs = temp.newFolder(); val workspace = temp.newFolder()
@@ -87,4 +87,11 @@ class GuestSkillAccessTest {
         assertEquals("skill body", File(linked.filePath).readText())
         assertEquals(64L * 1024 * 1024, large.length())
     }
+    @Test fun guestGlobalPublicationCannotCopyAnArbitraryRootfsFolder() {
+        val files = temp.newFolder(); val rootfs = temp.newFolder(); val workspace = temp.newFolder()
+        val outside = skill(File(rootfs, "root/.codex/private-fixture"), SkillSource.GLOBAL)
+        val prepared = GuestSkillAccess(files).prepare(listOf(outside), workspace, rootfs, "/workspace/demo")
+        org.junit.Assert.assertNull(prepared.single().guestFilePath)
+    }
+
 }

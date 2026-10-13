@@ -395,7 +395,7 @@ class SkillManager(
         for (dir in searchDirs) {
             if (!dir.isDirectory) continue
             dir.listFiles()?.filter { it.isDirectory }?.forEach { sub ->
-                val skillFile = File(sub, "SKILL.md")
+                val skillFile = SkillFiles.contained(projectWorkspaceDir, sub.relativeTo(projectWorkspaceDir).path + "/SKILL.md") ?: return@forEach
                 if (skillFile.isFile) {
                     parseSkillFile(skillFile, source)?.let { skill ->
                         if (seenNames.add(skill.name.lowercase())) {
@@ -415,6 +415,7 @@ class SkillManager(
     private fun projectSkillRoot(projectId: String, rootPath: String, workspacesBaseDir: File): File? =
         runCatching {
             val workspace = File(workspacesBaseDir, projectId).canonicalFile
+            require(workspace.toPath().startsWith(workspacesBaseDir.canonicalFile.toPath()))
             if (rootPath.isBlank()) return@runCatching workspace
             File(workspace, rootPath).canonicalFile.takeIf { it.toPath().startsWith(workspace.toPath()) }
         }.getOrNull()
@@ -556,16 +557,22 @@ class SkillManager(
 
         // 2. Linked Skills from other projects (Virtually referenced)
         config.linkedSkills.forEach { link ->
-            val sourceRootPath = allProjects.firstOrNull { it.id == link.sourceProjectId }?.rootPath.orEmpty()
-            val sourceDir = projectSkillRoot(link.sourceProjectId, sourceRootPath, workspacesBaseDir)
-            val skillFile = sourceDir?.let { File(it, "${link.relativeSkillPath}/SKILL.md") }
+            val sourceProject = allProjects.firstOrNull { it.id == link.sourceProjectId }
+            val sourceDir = sourceProject?.let { projectSkillRoot(it.id, it.rootPath, workspacesBaseDir) }
+            val skillFile = sourceDir?.let { SkillFiles.contained(it, "${link.relativeSkillPath}/SKILL.md") }
             if (skillFile != null && skillFile.isFile) {
                 parseSkillFile(skillFile, SkillSource.LINKED)?.let { parsed ->
-                    val isEnabled = parsed.id !in config.disabledSkillIds
+                    val publishedId = "linked:${link.sourceProjectId}:${parsed.name}"
+                    val isEnabled = if (config.scopeMode == CustomizationScopeMode.CUSTOM) {
+                        publishedId in config.enabledSkillIds || parsed.id in config.enabledSkillIds
+                    } else {
+                        publishedId !in config.disabledSkillIds && parsed.id !in config.disabledSkillIds
+                    }
                     if (seenNames.add(parsed.name.lowercase())) {
                         result.add(
                             parsed.copy(
-                                id = "linked:${link.sourceProjectId}:${parsed.name}",
+                                id = publishedId,
+                                sourceWorkspacePath = sourceDir.canonicalPath,
                                 sourceProjectId = link.sourceProjectId,
                                 sourceProjectName = link.sourceProjectName,
                                 isEnabled = isEnabled,
@@ -642,8 +649,7 @@ class SkillManager(
         require(targetDir.canonicalFile.toPath().startsWith(targetWorkspaceDir.canonicalFile.toPath())) {
             "Target escapes workspace directory: ${targetDir.path}"
         }
-        targetDir.mkdirs()
-        sourceSkillDir.copyRecursively(targetDir, overwrite = true)
+        SkillFiles.copy(sourceSkillDir, targetDir)
         return targetDir
     }
 
@@ -664,14 +670,13 @@ class SkillManager(
         require(targetDir.canonicalFile.toPath().startsWith(globalSkillsDir.canonicalFile.toPath())) {
             "Target escapes global skills directory: ${targetDir.path}"
         }
-        targetDir.mkdirs()
-        sourceSkillDir.copyRecursively(targetDir, overwrite = true)
+        SkillFiles.copy(sourceSkillDir, targetDir)
 
         if (rootfsDir != null && rootfsDir.isDirectory) {
             val linuxGlobalDir = File(rootfsDir, "root/.gemini/config/skills/$cleanName")
             if (linuxGlobalDir.canonicalFile.toPath().startsWith(rootfsDir.canonicalFile.toPath())) {
                 linuxGlobalDir.mkdirs()
-                runCatching { sourceSkillDir.copyRecursively(linuxGlobalDir, overwrite = true) }
+                SkillFiles.copy(sourceSkillDir, linuxGlobalDir)
             }
         }
         return targetDir
@@ -711,38 +716,39 @@ class SkillManager(
      * Parses SKILL.md YAML frontmatter into a SkillInfo object.
      */
     fun parseSkillFile(file: File, source: SkillSource): SkillInfo? {
-        val text = runCatching { file.readText() }.getOrNull() ?: return null
-        val match = Regex("""^---\s*\r?\n([\s\S]*?)\r?\n---\s*(\r?\n[\s\S]*)?$""").find(text)
-        val frontmatter = match?.groupValues?.get(1).orEmpty()
-        val markdownBody = match?.groupValues?.getOrNull(2)?.trim().orEmpty()
-
-        val rawName = Regex("""^name:\s*(.+)$""", RegexOption.MULTILINE).find(frontmatter)?.groupValues?.get(1)?.trim()
-        val name = rawName?.removeSurrounding("\"")?.removeSurrounding("'")?.trim()
-            ?: file.parentFile?.name
-            ?: file.nameWithoutExtension
-
-        val rawDescription = Regex("""^description:\s*(.+)$""", RegexOption.MULTILINE).find(frontmatter)?.groupValues?.get(1)?.trim()
-        val description = rawDescription?.removeSurrounding("\"")?.removeSurrounding("'")?.trim()
-            ?: "Custom developer skill."
-
-        return SkillInfo(
-            id = "${source.name.lowercase()}:$name",
-            name = name,
-            description = description,
-            filePath = file.absolutePath,
-            source = source,
-            isEnabled = true,
-            markdownContent = markdownBody.ifBlank { text },
-        )
+        return runCatching {
+            val text = SkillFiles.readText(file)
+            val match = Regex("""^---\s*\r?\n([\s\S]*?)\r?\n---\s*(\r?\n[\s\S]*)?$""").find(text)
+            val metadata = SkillYaml.parse(match?.groupValues?.get(1).orEmpty())
+            val name = (metadata["name"] as? String ?: file.parentFile?.name ?: file.nameWithoutExtension).trim()
+            require(name.isNotBlank() && name.length <= 128 && name.none { it == '\n' || it == '\r' })
+            val description = (metadata["description"] as? String ?: "Custom developer skill.").trim().replace(Regex("\\s+"), " ")
+            require(description.length <= 4096)
+            val policyFile = SkillFiles.contained(file.parentFile!!, "agents/openai.yaml")
+            val implicit = if (policyFile == null) false else if (!policyFile.exists()) true else runCatching {
+                val policy = SkillYaml.parse(SkillFiles.readText(policyFile))["policy"] as? Map<*, *>
+                val value = policy?.get("allow_implicit_invocation")
+                require(value == null || value is Boolean)
+                value != false
+            }.getOrDefault(false)
+            SkillInfo(
+                id = "${source.name.lowercase()}:$name", name = name, description = description,
+                filePath = file.absolutePath, source = source,
+                markdownContent = match?.groupValues?.getOrNull(2)?.trim()?.ifBlank { text } ?: text,
+                allowImplicitInvocation = implicit && metadata["disable-model-invocation"] != true,
+            )
+        }.getOrNull()
     }
 
     /**
      * Builds the progressive disclosure index table for injection into the system prompt.
      */
     fun buildProgressiveDisclosureIndex(skills: List<SkillInfo>): String {
-        val enabled = skills.filter { it.isEnabled && it.guestFilePath != null }
+        val readable = skills.filter { it.isEnabled && !it.isMissingSource && it.guestFilePath != null }
+        val enabled = readable.filter { it.allowImplicitInvocation }
+        val manual = readable.filter { !it.allowImplicitInvocation }
         val unavailable = skills.filter { it.isEnabled && it.guestFilePath == null }
-        if (enabled.isEmpty() && unavailable.isEmpty()) return ""
+        if (readable.isEmpty() && unavailable.isEmpty()) return ""
         fun escapeXml(text: String): String = text
             .replace("&", "&amp;")
             .replace("<", "&lt;")
@@ -757,6 +763,10 @@ class SkillManager(
                 val safePath = escapeXml(skill.guestFilePath!!)
                 val safeDesc = escapeXml(skill.description)
                 appendLine("- $safeName ($safePath): $safeDesc")
+            }
+            if (manual.isNotEmpty()) {
+                appendLine("Manual-only skills: use only when the user explicitly requests the named skill; never select them by task relevance.")
+                manual.forEach { appendLine("- /${escapeXml(it.name)} (${escapeXml(it.guestFilePath!!)}): explicit invocation only") }
             }
             if (unavailable.isNotEmpty()) appendLine("Unavailable skills (missing/unsafe/over limit): " +
                 unavailable.joinToString { escapeXml(it.name) } + ". Do not use host-only paths.")
@@ -806,7 +816,7 @@ class SkillManager(
         val text = buildString {
             appendLine("---")
             appendLine("name: $cleanName")
-            appendLine("description: $description")
+            appendLine("description: ${org.json.JSONObject.quote(description)}")
             appendLine("---")
             appendLine()
             appendLine(instructions)

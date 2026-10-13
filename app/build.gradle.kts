@@ -277,6 +277,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.apache.commons:commons-compress:1.27.1")
+    implementation("org.yaml:snakeyaml:2.3")
     implementation("com.github.luben:zstd-jni:1.5.6-9@aar")
     implementation("com.github.BuildItCode:LiquidGlass:0.2.5")
     implementation("androidx.javascriptengine:javascriptengine:1.1.1")

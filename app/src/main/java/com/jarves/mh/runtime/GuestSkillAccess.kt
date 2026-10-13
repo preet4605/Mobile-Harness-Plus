@@ -3,7 +3,6 @@ package com.jarves.mh.runtime
 import com.jarves.mh.model.SkillInfo
 import com.jarves.mh.model.SkillSource
 import java.io.File
-import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.FileVisitResult
 import java.nio.file.Path
@@ -15,8 +14,7 @@ import java.util.UUID
 /** Keeps app-side source paths separate from paths usable by a launched guest. */
 internal class GuestSkillAccess(private val appFiles: File) {
     companion object {
-        private const val MAX_FILES = 256
-        private const val MAX_SKILL_BYTES = 8 * 1024 * 1024
+        private const val MAX_FILES = SkillFiles.MAX_FILES
         private const val MAX_CACHE_BYTES = 64L * 1024 * 1024
         fun linkedDirectory(appFiles: File, workspace: File): File =
             File(appFiles, "runtime-skills/${hash(workspace.canonicalPath.toByteArray())}")
@@ -36,10 +34,19 @@ internal class GuestSkillAccess(private val appFiles: File) {
                         snapshot(source, linkedDirectory(appFiles, workspace))
                     }
                     SkillSource.GLOBAL -> {
-                        check(mapped(source, File(appFiles, "skills"), "") != null || rootfs?.let { mapped(source, it, "") } != null)
+                        val guestGlobal = rootfs?.canonicalFile?.let { guestRoot ->
+                            listOf("root/.gemini/config/skills", "root/.agents/skills", "root/.gemini/skills").any { relative ->
+                                source.canonicalFile.toPath().startsWith(File(guestRoot, relative).toPath())
+                            }
+                        } == true
+                        check(mapped(source, File(appFiles, "skills"), "") != null || guestGlobal)
                         snapshot(source, linkedDirectory(appFiles, workspace))
                     }
-                    SkillSource.LINKED -> snapshot(source, linkedDirectory(appFiles, workspace))
+                    SkillSource.LINKED -> {
+                        val origin = skill.sourceWorkspacePath?.let(::File) ?: error("Linked skill origin is missing")
+                        check(mapped(source, origin, "") != null)
+                        snapshot(source, linkedDirectory(appFiles, workspace))
+                    }
                     SkillSource.OTHER_PROJECT -> null
                 }
             }.getOrNull()
@@ -56,33 +63,13 @@ internal class GuestSkillAccess(private val appFiles: File) {
     /** Complete, bounded snapshots keep references stable while a task is reading them. */
     private fun snapshot(skillFile: File, cache: File): String {
         val source = skillFile.parentFile!!.canonicalFile
-        val root = source.toPath()
         val contents = sortedMapOf<String, ByteArray>()
         val executables = mutableSetOf<String>()
-        var entries = 0
-        var bytes = 0
-        source.walkTopDown().forEach { file ->
-            check(++entries <= MAX_FILES && !Files.isSymbolicLink(file.toPath())) { "Skill contains too many files or symbolic links" }
-            check(file.canonicalFile.toPath().startsWith(root)) { "Skill resource escapes its folder" }
-            if (file.isFile) {
-                check(file.length() <= MAX_SKILL_BYTES - bytes) { "Skill resources are too large" }
-                val content = file.inputStream().use { input ->
-                    val output = ByteArrayOutputStream()
-                    val buffer = ByteArray(8192)
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        check(output.size() + count <= MAX_SKILL_BYTES - bytes) { "Skill resources are too large" }
-                        output.write(buffer, 0, count)
-                    }
-                    output.toByteArray()
-                }
-                bytes += content.size
-                val name = root.relativize(file.toPath()).toString()
-                contents[name] = content
-                if (file.canExecute()) executables += name
-            } else check(file.isDirectory) { "Unsupported skill resource" }
+        SkillFiles.resources(source).filter { it.content != null }.forEach { resource ->
+            contents[resource.path] = resource.content!!
+            if (resource.executable) executables += resource.path
         }
+        val bytes = contents.values.sumOf { it.size }
         val digest = MessageDigest.getInstance("SHA-256")
         contents.forEach { (name, content) ->
             digest.update(name.toByteArray()); digest.update(0.toByte())

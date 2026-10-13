@@ -760,6 +760,8 @@ data class SkillInfo(
     val isReadOnly: Boolean = false,
     val isMissingSource: Boolean = false,
     val guestFilePath: String? = null,
+    val sourceWorkspacePath: String? = null,
+    val allowImplicitInvocation: Boolean = true,
 )
 
 data class ProjectRule(
