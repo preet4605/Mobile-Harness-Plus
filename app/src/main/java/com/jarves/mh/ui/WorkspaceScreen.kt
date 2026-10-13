@@ -2477,7 +2477,16 @@ private fun ChatTab(
                         commands = slashCommands,
                         skills = skills,
                         onSelect = { cmd ->
-                            if (cmd.isLocalOnly && cmd.parameterHint == null) {
+                            val template = cmd.insertText
+                            if (template != null) {
+                                // A mod's prompt template: its text replaces the "/query" segment.
+                                val currentText = inputState.text
+                                val cursorPos = inputState.selection.end
+                                val slashIdx = currentText.lastIndexOf('/', cursorPos)
+                                val before = if (slashIdx >= 0) currentText.substring(0, slashIdx) else currentText
+                                val after = if (slashIdx >= 0) currentText.substring(cursorPos) else ""
+                                setInput(TextFieldValue(text = before + template + after, selection = TextRange(before.length + template.length)))
+                            } else if (cmd.isLocalOnly && cmd.parameterHint == null) {
                                 // Local instant commands: dispatch immediately and clear input
                                 onSend(cmd.syntax)
                                 setInput(TextFieldValue(""))

@@ -131,6 +131,9 @@ import com.jarves.mh.model.SkillSource
 import com.jarves.mh.model.SlashCommand
 import com.jarves.mh.model.SubagentInfo
 import com.jarves.mh.runtime.DiagnosticsHelper
+import com.jarves.mh.mods.ModCommandResult
+import com.jarves.mh.mods.ModContributionSet
+import com.jarves.mh.mods.ModRegistry
 import com.jarves.mh.runtime.SkillManager
 import com.jarves.mh.runtime.SlashCommandEngine
 import com.jarves.mh.runtime.WorkspaceCheckpoints
@@ -451,6 +454,10 @@ class MainViewModel(
     private val preferences = AppPreferences(application)
     private val memoryStore = ContextMemoryStore(application)
     private val skillManager = SkillManager(application)
+    /** Mods (spec v2): loaded off Main; null until then. Nothing to do when no mod is installed. */
+    @Volatile private var modRegistry: ModRegistry? = null
+    /** What the active mods add to chat, rebuilt off Main whenever a mod changes. */
+    @Volatile private var modContributions = ModContributionSet()
     private val antigravityAccountManager = AntigravityAccountManager(application, preferences)
     private val claudeRuntime = ClaudeRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
     private val dshRuntime = DshRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
@@ -620,6 +627,7 @@ class MainViewModel(
         vault.remove(LEGACY_GITHUB_TOKEN_KEY)
         viewModelScope.launch { refreshGitHubConnection() }
         RuntimeSetupController.restore(application)
+        loadMods(application)
         val taskSupervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(application)
         viewModelScope.launch {
             taskSupervisor.activeTasks.collect { activeMap ->
@@ -2466,6 +2474,31 @@ class MainViewModel(
             else -> ApiPingStatus.FAILED to "Not signed in to ChatGPT"
         }
         _state.update { it.copy(apiPingStatus = status, apiPingMessage = message) }
+    }
+
+    /** The registry counts this start; a run that lasts [MOD_STABLE_AFTER_MS] ends the unstable-start count. */
+    private fun loadMods(application: Application) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val registry = runCatching { ModRegistry.getInstance(application) }
+                .onFailure { android.util.Log.w("MainViewModel", "Mods could not load", it) }
+                .getOrNull() ?: return@launch
+            modRegistry = registry
+            launch {
+                delay(MOD_STABLE_AFTER_MS)
+                runCatching { registry.markStable() }
+            }
+            registry.snapshot.collect { snapshot ->
+                modContributions = runCatching {
+                    ModContributionSet.build(snapshot) { skillManager.parseSkillFile(it, SkillSource.MOD) }
+                }.getOrElse { ModContributionSet() }
+            }
+        }
+    }
+
+    /** The app left the screen cleanly: this run counts as stable for mod safe mode. */
+    fun onAppStopped() {
+        val registry = modRegistry ?: return
+        viewModelScope.launch(Dispatchers.IO) { runCatching { registry.markStable() } }
     }
 
     /** Re-checks the Claude session when the app returns to the foreground (e.g. back from the browser). */
@@ -4963,8 +4996,11 @@ class MainViewModel(
         when (trigger.type) {
             TriggerType.SLASH_COMMAND -> {
                 val query = trigger.query
-                val filteredCmds = SlashCommandEngine.filterCommands(query, _state.value.agentKind)
-                val filteredSkills = SlashCommandEngine.filterSkills(query, _state.value.activeSkills)
+                val mods = modContributions
+                val userSkills = _state.value.activeSkills
+                val filteredCmds = SlashCommandEngine.filterCommands(query, _state.value.agentKind) +
+                    mods.filterCommands(query, _state.value.agentKind, userSkills)
+                val filteredSkills = SlashCommandEngine.filterSkills(query, userSkills) + mods.filterSkills(query, userSkills)
                 _state.update {
                     it.copy(
                         slashCommandsVisible = filteredCmds.isNotEmpty() || filteredSkills.isNotEmpty(),
@@ -5510,6 +5546,7 @@ class MainViewModel(
                                         SkillSource.GLOBAL -> "Global Library"
                                         SkillSource.BUNDLED -> "Built-in"
                                         SkillSource.OTHER_PROJECT -> "Available"
+                                        SkillSource.MOD -> "Mod"
                                     }
                                     appendLine("- [$status] **${s.name}** (`$badge`): ${s.description}")
                                 }
@@ -5752,12 +5789,28 @@ class MainViewModel(
         }
 
         // Check if input is a skill invocation
-        val parsedSkill = if (parsedCmd == null) {
+        val userSkill = if (parsedCmd == null) {
             SlashCommandEngine.parseSkillInvocation(trimmed, _state.value.activeSkills)
         } else null
+        // Then mods: built-in commands and the user's own skills keep their names.
+        val mods = modContributions
+        val modCommand = if (parsedCmd == null && userSkill == null) mods.resolveCommand(trimmed, _state.value.agentKind) else null
+        val parsedSkill = userSkill ?: if (parsedCmd == null && modCommand == null) mods.resolveSkill(trimmed) else null
+
+        if (modCommand is ModCommandResult.Rejected) {
+            _state.update {
+                it.copy(
+                    messages = it.messages + ChatMessage(fromUser = true, text = trimmed) + ChatMessage(fromUser = false, text = modCommand.message),
+                    slashCommandsVisible = false,
+                    filteredSkills = emptyList(),
+                )
+            }
+            persistMessages()
+            return
+        }
 
         // If user typed a slash command that does not exist and is not an available skill, reject locally without burning tokens
-        if (parsedCmd == null && parsedSkill == null && trimmed.startsWith("/")) {
+        if (parsedCmd == null && parsedSkill == null && modCommand == null && trimmed.startsWith("/")) {
             val cmdToken = trimmed.substringBefore(' ')
             _state.update {
                 it.copy(
@@ -5776,6 +5829,7 @@ class MainViewModel(
             parsedCmd != null -> {
                 SlashCommandEngine.buildPromptForCommand(parsedCmd.first, parsedCmd.second, _state.value.agentKind)
             }
+            modCommand is ModCommandResult.Prompt -> modCommand.text
             parsedSkill != null -> {
                 val skill = parsedSkill.first
                 val skillContent = skill.markdownContent?.takeIf { it.isNotBlank() }
@@ -5845,6 +5899,10 @@ class MainViewModel(
         val envelopePrefix = buildString {
             if (rulesBlock.isNotBlank()) {
                 appendLine(rulesBlock)
+                appendLine()
+            }
+            if (mods.rulesBlock.isNotBlank()) {
+                appendLine(mods.rulesBlock)
                 appendLine()
             }
             if (skillsIndex.isNotBlank()) {
@@ -6898,6 +6956,7 @@ class MainViewModel(
         private const val MAX_IMPORTED_ZIP_ENTRIES = 100_000
         private const val AUTO_OPEN_DEDUPE_MS = 15_000L
         private const val CLAUDE_STATUS_RECHECK_MS = 30_000L
+        private const val MOD_STABLE_AFTER_MS = 60_000L
         private const val DIAGNOSTICS_REFRESH_COOLDOWN_MS = 1_000L
         private const val RECENT_EXIT_CACHE_MS = 60_000L
         private const val LEGACY_GITHUB_TOKEN_KEY = "GITHUB_APP"

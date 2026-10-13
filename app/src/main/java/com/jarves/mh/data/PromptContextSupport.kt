@@ -13,7 +13,7 @@ object PromptContextSupport {
     /** Tags whose literal closing/opening form must not be forgeable by embedded content. */
     private val DELIMITER_TAG_REGEX = Regex(
         "<(/?)(persistent_memory|BRAIN_CONTEXT|USER_TASK|conversation_history|project_workspace|" +
-            "pocketdev_workspace|user_rules|skills|active_skill|RULE\\b)",
+            "pocketdev_workspace|user_rules|skills|active_skill|RULE\\b|mod_rules|mod\\b)",
         RegexOption.IGNORE_CASE,
     )
 

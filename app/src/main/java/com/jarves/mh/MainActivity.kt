@@ -22,6 +22,7 @@ class MainActivity : ComponentActivity() {
             val state by vm.state.collectAsStateWithLifecycle()
             // Returning from the browser after a sign-in must show the real session state.
             LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.onAppResumed() }
+            LifecycleEventEffect(Lifecycle.Event.ON_STOP) { vm.onAppStopped() }
             PocketTheme(themeMode = state.themeMode) {
                 PocketDevApp(vm)
             }

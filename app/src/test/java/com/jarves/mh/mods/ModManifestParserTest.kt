@@ -41,7 +41,7 @@ class ModManifestParserTest {
 
     @Test
     fun `full declarative manifest parses`() {
-        val text = ModTestKit.manifest(mapOf("rules/style.md" to "Use tabs.", "skills/review/SKILL.md" to "# Review")) {
+        val text = ModTestKit.manifest(mapOf("rules/style.md" to "Use tabs.", "skills/code-review/SKILL.md" to "# Review")) {
             put("permissions", JSONArray().put(permission("ui.toast")).put(permission("files.write", listOf("notes/*.md"))))
             put("contributes", JSONObject()
                 .put("slashCommands", JSONArray().put(JSONObject()
@@ -51,7 +51,7 @@ class ModManifestParserTest {
                 .put("settings", JSONArray().put(JSONObject().put("key", "style").put("title", "Style").put("type", "enum")
                     .put("options", JSONArray().put("short").put("long")).put("default", "short")))
                 .put("rules", JSONArray().put(JSONObject().put("id", "style").put("file", "rules/style.md")))
-                .put("skills", JSONArray().put(JSONObject().put("id", "review").put("dir", "skills/review")))
+                .put("skills", JSONArray().put(JSONObject().put("id", "code-review").put("dir", "skills/code-review")))
                 .put("hooks", JSONArray()
                     .put(JSONObject().put("id", "done").put("on", "task.finished")
                         .put("action", JSONObject().put("type", "ui.toast").put("text", "{{project.name}}: {{task.status}}"))
@@ -65,7 +65,7 @@ class ModManifestParserTest {
         assertEquals(ModEvent.TASK_FINISHED, manifest.hooks[0].on)
         assertEquals("completed", manifest.hooks[0].status)
         assertTrue(manifest.hooks[1].action is ModHookAction.FilesAppend)
-        assertEquals(listOf("rules/style.md", "skills/review/SKILL.md"), manifest.referencedFiles)
+        assertEquals(listOf("rules/style.md", "skills/code-review/SKILL.md"), manifest.referencedFiles)
     }
 
     @Test
@@ -88,6 +88,14 @@ class ModManifestParserTest {
             put("contributes", JSONObject().put("slashCommands", JSONArray().put(JSONObject()
                 .put("name", "tidy").put("description", "x"))))
         }, "needs a \"template\"")
+        assertRejected(ModTestKit.manifest(mapOf("skills/review/SKILL.md" to "# Review")) {
+            put("contributes", JSONObject().put("skills", JSONArray().put(JSONObject().put("id", "review").put("dir", "skills/review"))))
+        }, "hidden by the built-in /review")
+        assertRejected(ModTestKit.manifest {
+            put("contributes", JSONObject()
+                .put("slashCommands", JSONArray().put(JSONObject().put("name", "tidy").put("description", "x").put("template", "x")))
+                .put("promptTemplates", JSONArray().put(JSONObject().put("id", "tidy").put("title", "T").put("template", "x"))))
+        }, "/tidy is used by more than one")
     }
 
     @Test

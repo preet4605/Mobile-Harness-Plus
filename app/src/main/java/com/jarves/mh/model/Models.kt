@@ -661,6 +661,7 @@ enum class SlashCommandCategory(val title: String) {
     CONFIG("Configuration"),
     DIAGNOSTICS("Diagnostics"),
     VCS("Version Control"),
+    MODS("Mods"),
 }
 
 data class SlashCommand(
@@ -671,6 +672,10 @@ data class SlashCommand(
     val isLocalOnly: Boolean = false,
     val parameterHint: String? = null,
     val supportedAgents: Set<AgentKind> = AgentKind.entries.toSet(),
+    /** A prompt template: choosing it puts this text in the composer instead of the command. */
+    val insertText: String? = null,
+    /** The mod that added this command, shown in the `/` menu. */
+    val source: String? = null,
 )
 
 enum class SkillSource(val title: String) {
@@ -678,7 +683,8 @@ enum class SkillSource(val title: String) {
     LINKED("Linked from Other Project"),
     GLOBAL("Global Library"),
     BUNDLED("Built-in System"),
-    OTHER_PROJECT("Available in Other Project");
+    OTHER_PROJECT("Available in Other Project"),
+    MOD("Installed Mod");
 }
 
 data class LinkedSkillReference(

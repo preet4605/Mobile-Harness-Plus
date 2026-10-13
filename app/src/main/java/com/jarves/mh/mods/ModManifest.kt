@@ -269,6 +269,11 @@ object ModManifestParser {
 
         val builtIn = SlashCommandEngine.ALL_SLASH_COMMANDS.map { it.name.lowercase(Locale.ROOT) }.toSet()
         commands.filter { it.name in builtIn }.forEach { p.add("Command /${it.name} would replace a built-in command.") }
+        templates.filter { it.id in builtIn }.forEach { p.add("Prompt template ${it.id} would be hidden by the built-in /${it.id}; give it another id.") }
+        skills.filter { it.id in builtIn }.forEach { p.add("Skill ${it.id} would be hidden by the built-in /${it.id}; give it another id.") }
+        (commands.map { it.name }.distinct() + templates.map { it.id }.distinct() + skills.map { it.id }.distinct())
+            .groupingBy { it }.eachCount().filterValues { it > 1 }.keys
+            .forEach { p.add("/$it is used by more than one command, prompt template or skill.") }
         if (hooksModule == null) {
             commands.filter { it.template.isNullOrBlank() }.forEach { p.add("Command /${it.name} needs a \"template\".") }
         }

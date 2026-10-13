@@ -47,6 +47,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Layers
@@ -208,7 +209,7 @@ fun SlashCommandMenu(
                         title = "/${cmd.name}",
                         hint = cmd.parameterHint,
                         description = cmd.description,
-                        tag = if (cmd.isLocalOnly) "Instant" else null,
+                        tag = cmd.source ?: if (cmd.isLocalOnly) "Instant" else null,
                         separated = index > 0,
                         onClick = { onSelect(cmd) },
                     ) { SymbolTile(icon, tint) }
@@ -377,6 +378,7 @@ private fun commandSymbol(category: SlashCommandCategory): Pair<ImageVector, Col
         SlashCommandCategory.CONFIG -> Icons.Outlined.Tune to colors.gray
         SlashCommandCategory.DIAGNOSTICS -> Icons.Outlined.Speed to colors.teal
         SlashCommandCategory.VCS -> Icons.Outlined.History to colors.orange
+        SlashCommandCategory.MODS -> Icons.Outlined.Extension to colors.pink
     }
 }
 
@@ -386,6 +388,7 @@ private fun skillSourceTitle(source: SkillSource): String = when (source) {
     SkillSource.GLOBAL -> "Library"
     SkillSource.BUNDLED -> "Built-in"
     SkillSource.OTHER_PROJECT -> "Other project"
+    SkillSource.MOD -> "Mod"
 }
 
 // =============================================================================================
@@ -1185,6 +1188,7 @@ private fun skillTileColor(source: SkillSource): Color {
         SkillSource.GLOBAL -> colors.purple
         SkillSource.BUNDLED -> colors.gray
         SkillSource.OTHER_PROJECT -> colors.teal
+        SkillSource.MOD -> colors.pink
     }
 }
 
@@ -1306,6 +1310,7 @@ private fun ActiveSkillRow(
         SkillSource.GLOBAL -> "Library"
         SkillSource.BUNDLED -> "Built-in"
         SkillSource.OTHER_PROJECT -> "Other project"
+        SkillSource.MOD -> "Mod ${skill.sourceProjectName.orEmpty()}".trim()
     }
     val hasMenu = skill.source == SkillSource.PROJECT || skill.source == SkillSource.LINKED
     Column {
