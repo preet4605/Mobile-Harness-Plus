@@ -619,19 +619,7 @@ class ClaudeRuntimeBridge(
     }
 
     override suspend fun acceptFileChange(projectId: String, path: String): Boolean = withContext(Dispatchers.IO) {
-        if (isInternalRuntimePath(path) || path !in readChangedPaths(projectId)) return@withContext false
-        val workspace = ensureWorkspace(projectId)
-        val backup = File(checkpointDir(projectId), "project")
-        val current = safeWorkspaceFile(workspace, path)
-        val baseline = safeWorkspaceFile(backup, path)
-        if (current.isFile) {
-            baseline.parentFile?.mkdirs()
-            current.copyTo(baseline, overwrite = true)
-        } else if (baseline.isFile) {
-            baseline.delete()
-        }
-        removeChangedPath(projectId, path)
-        true
+        checkpoints.acceptFileChange(projectId, path)
     }
 
     private suspend fun watchPermissionRequests(sessionId: String) {
