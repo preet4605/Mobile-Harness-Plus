@@ -228,6 +228,12 @@ fun AgentScreen(
     onCancelCodexLogin: () -> Unit = {},
     onLogoutCodex: () -> Unit = {},
     onRefreshCodexAuth: () -> Unit = {},
+    onSelectCodexAccount: (String) -> Unit = {},
+    onCodexAccountBalancing: (Boolean) -> Unit = {},
+    onReconnectCodexAccount: (String) -> Unit = {},
+    onEnableCodexAccount: (String, Boolean) -> Unit = { _, _ -> },
+    onRemoveCodexAccount: (String) -> Unit = {},
+    onRenameCodexAccount: (String, String) -> Unit = { _, _ -> },
     listState: LazyListState = rememberLazyListState(),
 ) {
     val scope = rememberCoroutineScope()
@@ -248,7 +254,7 @@ fun AgentScreen(
     }
     var newKeyName by rememberSaveable(selectedKind) { mutableStateOf("") }
     var newApiKey by rememberSaveable(selectedKind) { mutableStateOf("") }
-    var models by remember(selectedKind, baseUrl) {
+    var models by remember(selectedKind, baseUrl, state.selectedCodexAccountId, state.codexAccountRevision) {
         mutableStateOf(startingModels(selectedKind, baseUrl, loadSavedModels))
     }
     var modelSearch by rememberSaveable(selectedKind) { mutableStateOf("") }
@@ -696,17 +702,29 @@ fun AgentScreen(
                             CodexAccountCard(
                                 auth = state.codexAuth,
                                 codexInstalled = state.installedAgentVersions.containsKey(AgentKind.CODEX),
-                                busy = state.isRunning || state.agentInstalling != null,
+                                busy = state.isRunning || state.isStopping || state.queuedFollowUps.isNotEmpty() || state.codexAccountsInUse.isNotEmpty() || state.agentInstalling != null,
                                 onSignIn = onStartCodexLogin,
                                 onCancel = onCancelCodexLogin,
                                 onSignOut = onLogoutCodex,
                                 onRefresh = onRefreshCodexAuth,
+                                accounts = state.codexAccounts,
+                                selectedAccountId = state.selectedCodexAccountId,
+                                inUse = state.codexAccountsInUse,
+                                onSelectAccount = onSelectCodexAccount,
+                                balancingEnabled = state.codexAccountBalancing,
+                                onBalancingChanged = onCodexAccountBalancing,
+                                onReconnectAccount = onReconnectCodexAccount,
+                                onEnableAccount = onEnableCodexAccount,
+                                onRemoveAccount = onRemoveCodexAccount,
+                                onRenameAccount = onRenameCodexAccount,
                             )
                         }
                         item(key = "model") {
                             ListSection(
                                 header = "Model",
-                                footer = "Leave this on Codex default unless you need a specific model.",
+                                footer = if (model.isNotBlank() && models.isNotEmpty() && models.none { it.id == model })
+                                    "This model is not in the selected account's saved catalog. Discover models or choose Codex default."
+                                else "Leave this on Codex default unless you need a specific model.",
                             ) {
                                 ListRow(
                                     "Model",
@@ -1062,6 +1080,14 @@ private fun AgentUsageSection(state: AppUiState, onRefresh: () -> Unit) {
         header = "Usage",
         footer = "Session totals come from this chat. Limits are read only when you refresh.",
     ) {
+        if (state.agentKind == AgentKind.CODEX && state.provider.kind == ProviderKind.CHATGPT) {
+            state.codexAccounts.firstOrNull { it.id == state.selectedCodexAccountId }?.let {
+                ListRow("Plan limits for", subtitle = it.label, subtitleMaxLines = 2)
+            }
+            usage.checkedAtMillis?.let { checked ->
+                ListRow("Last refreshed", subtitle = java.text.DateFormat.getDateTimeInstance().format(java.util.Date(checked)))
+            }
+        }
         ListRow(
             "This session",
             subtitle = "${tokens.promptTokens} in · ${tokens.completionTokens} out · ${tokens.cachedTokens} cached tokens",

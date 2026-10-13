@@ -71,6 +71,7 @@ internal data class CodexRunResult(
     val failure: String,
     val exitCode: Int,
     val threadId: String?,
+    val goalStatus: String? = null,
 )
 
 /**

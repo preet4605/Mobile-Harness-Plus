@@ -83,6 +83,7 @@ internal object RuntimeSessionRouting {
         if (state.activeProject?.id != attemptProjectId) return state
         return state.copy(
             isRunning = true,
+            liveWorkStatus = com.jarves.mh.model.WorkStatus.WORKING,
             activeSessionId = null,
             retiredSessionIds = state.retiredSessionIds + listOfNotNull(state.activeSessionId, previousSessionId),
             taskFinishedAtMillis = null,

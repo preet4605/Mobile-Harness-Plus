@@ -7,6 +7,7 @@ import com.jarves.mh.model.AntigravityAccount
 import com.jarves.mh.model.AntigravityAccountStatus
 import com.jarves.mh.model.AntigravityLoadBalancingStrategy
 import java.io.File
+import java.nio.file.Files
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -84,18 +85,32 @@ class AntigravityAccountManager(
     fun getPrimaryAccount(): AntigravityAccount? =
         _accounts.value.firstOrNull { it.isPrimary } ?: _accounts.value.firstOrNull()
 
-    fun getAccountHomeGuestPath(accountId: String): String =
-        "/root/.antigravity-accounts/$accountId"
+    fun getAccountHomeGuestPath(accountId: String): String {
+        getAccountHomeHostDir(accountId)
+        return "/root/.antigravity-accounts/$accountId"
+    }
 
-    fun getAccountHomeHostDir(accountId: String): File =
-        if (customAccountsDir != null) {
-            File(customAccountsDir, accountId)
-        } else {
-            File(context?.filesDir, "runtime/ubuntu/root/.antigravity-accounts/$accountId")
+    fun getAccountHomeHostDir(accountId: String): File {
+        require(accountId.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}"))) { "Invalid Google account ID" }
+        val base = customAccountsDir?.canonicalFile ?: File(context?.filesDir?.canonicalFile,
+            "runtime/ubuntu/root/.antigravity-accounts")
+        require(base.canonicalFile == base.absoluteFile && !Files.isSymbolicLink(base.toPath()))
+        val home = File(base, accountId)
+        require(home.canonicalFile == home.absoluteFile && !Files.isSymbolicLink(home.toPath()))
+        return home
+    }
+
+    fun getAccountTokenHostFile(accountId: String): File {
+        val home = getAccountHomeHostDir(accountId)
+        val token = File(home, ".gemini/antigravity-cli/antigravity-oauth-token")
+        var component: File? = token
+        while (component != null && component != home) {
+            require(!Files.isSymbolicLink(component.toPath())) { "Google credential paths must not contain symbolic links." }
+            component = component.parentFile
         }
-
-    fun getAccountTokenHostFile(accountId: String): File =
-        File(getAccountHomeHostDir(accountId), ".gemini/antigravity-cli/antigravity-oauth-token")
+        require(token.canonicalFile == token.absoluteFile && token.toPath().startsWith(home.toPath()))
+        return token
+    }
 
     @Synchronized
     fun addAccount(
@@ -136,7 +151,7 @@ class AntigravityAccountManager(
 
         // Delete guest storage for this account
         runCatching {
-            getAccountHomeHostDir(id).deleteRecursively()
+            deleteAuthDirectory(getAccountHomeHostDir(id))
         }
 
         saveAndPublish(remaining)

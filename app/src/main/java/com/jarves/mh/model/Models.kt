@@ -528,7 +528,16 @@ data class ChatMessage(
      * chat post. Shown in the chat, never sent to the agent as conversation.
      */
     val origin: String? = null,
+    /** Explicit supervisor outcome. Absent on legacy history and intermediate work segments. */
+    val workStatus: WorkStatus? = null,
 )
+
+enum class WorkStatus(val label: String) {
+    WORKING("Working"), CHECKING("Checking result"), WAITING_FOR_APPROVAL("Waiting for approval"),
+    WAITING_FOR_INPUT("Waiting for input"), RECOVERING("Recovering"), STOPPING("Stopping"),
+    COMPLETED("Completed"), UNVERIFIED("Finished · unverified"), FAILED("Failed"),
+    STOPPED("Stopped"), INTERRUPTED("Interrupted"),
+}
 
 data class ChatAttachment(
     val id: String = UUID.randomUUID().toString(),

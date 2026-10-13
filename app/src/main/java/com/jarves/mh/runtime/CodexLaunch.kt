@@ -17,7 +17,7 @@ internal sealed interface CodexRoute {
     val model: String
 
     /** Codex's own ChatGPT sign-in. Credentials live in `$CODEX_HOME/auth.json` inside the guest. */
-    data class ChatGptLogin(override val model: String) : CodexRoute
+    data class ChatGptLogin(override val model: String, val home: String = CodexLaunchBuilder.CODEX_HOME_GUEST_PATH) : CodexRoute
 
     /**
      * A Responses-API endpoint reached with an API key that travels only in the process
@@ -122,6 +122,7 @@ internal object CodexLaunchBuilder {
         resumeSessionId: String? = null,
         persistSession: Boolean = false,
         inspectionTools: Boolean = false,
+        skillConfig: String? = null,
     ): List<String> =
         buildList {
             add(CODEX_GUEST_PATH)
@@ -154,6 +155,7 @@ internal object CodexLaunchBuilder {
                 add("-c")
                 add(it)
             }
+            skillConfig?.let { add("-c"); add(it) }
             reasoningEffort?.let {
                 add("-c")
                 add("model_reasoning_effort=${tomlString(it)}")
@@ -165,6 +167,21 @@ internal object CodexLaunchBuilder {
             resumeSessionId?.let { add(it) }
             add("-")
         }
+
+    /** Native controls share exec's launch-local provider, skill and MCP configuration. */
+    fun appServerCommand(route: CodexRoute, reasoningEffort: String?, inspectionTools: Boolean, skillConfig: String?): List<String> = buildList {
+        add(CODEX_GUEST_PATH)
+        add("app-server")
+        configOverrides(route).forEach { add("-c"); add(it) }
+        add("-c"); add("sandbox_mode=${tomlString("danger-full-access")}")
+        if (route.model.isNotBlank()) { add("-c"); add("model=${tomlString(route.model)}") }
+        reasoningEffort?.let { add("-c"); add("model_reasoning_effort=${tomlString(it)}") }
+        skillConfig?.let { add("-c"); add(it) }
+        if (inspectionTools) {
+            add("-c")
+            add("mcp_servers.pocket_native_inspection={command=\"/usr/local/bin/node\",args=[\"/opt/pocket/harness/harness-tools.cjs\",\"--mcp\"],env_vars=[\"POCKET_INSPECTION_TOKEN\",\"POCKET_WORKSPACE\",\"PATH\"],startup_timeout_sec=10,tool_timeout_sec=40,required=false}")
+        }
+    }
 
     /** Attached images the Codex CLI can take with `-i`, in attachment order. Other files stay as prompt text. */
     fun imagePaths(prompt: String, guestWorkspacePath: String): List<String> {
@@ -197,7 +214,7 @@ internal object CodexLaunchBuilder {
     /** [secret] is required for [CodexRoute.ApiKey] and ignored for ChatGPT sign-in. */
     fun environment(route: CodexRoute, secret: String?): Map<String, String> {
         val env = linkedMapOf(
-            "CODEX_HOME" to CODEX_HOME_GUEST_PATH,
+            "CODEX_HOME" to if (route is CodexRoute.ChatGptLogin) route.home else CODEX_HOME_GUEST_PATH,
             "NO_COLOR" to "1",
         )
         if (route is CodexRoute.ApiKey) {

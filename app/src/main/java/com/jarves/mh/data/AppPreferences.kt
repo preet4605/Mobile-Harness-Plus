@@ -188,12 +188,12 @@ class AppPreferences(
         set(value) { preferences.edit().putString("codex_reasoning_effort", value).apply() }
 
     /** Last model list discovered for this agent, provider and endpoint. Settings and chat both read it. */
-    fun saveModelList(agent: AgentKind, kind: ProviderKind, baseUrl: String, models: List<com.jarves.mh.network.DiscoveredModel>) {
-        preferences.edit().putString(ModelListCache.key(agent, kind, baseUrl), ModelListCache.encode(models)).apply()
+    fun saveModelList(agent: AgentKind, kind: ProviderKind, baseUrl: String, models: List<com.jarves.mh.network.DiscoveredModel>, accountId: String? = null) {
+        preferences.edit().putString(ModelListCache.key(agent, kind, baseUrl, accountId), ModelListCache.encode(models)).apply()
     }
 
-    fun loadModelList(agent: AgentKind, kind: ProviderKind, baseUrl: String): List<com.jarves.mh.network.DiscoveredModel> =
-        ModelListCache.decode(preferences.getString(ModelListCache.key(agent, kind, baseUrl), null))
+    fun loadModelList(agent: AgentKind, kind: ProviderKind, baseUrl: String, accountId: String? = null): List<com.jarves.mh.network.DiscoveredModel> =
+        ModelListCache.decode(preferences.getString(ModelListCache.key(agent, kind, baseUrl, accountId), null))
 
     /** The last `rate_limit_event` line Claude printed, kept for the Usage section. */
     var claudeRateLimitEvent: String?
@@ -243,6 +243,31 @@ class AppPreferences(
         val key = agentConversationKey(agent, projectId, chatId)
         val value = preferences.getString(key, null)
         return if (preferences.edit().remove(key).commit()) value else null
+    }
+
+    /** Goal controls survive an interrupted turn without making ordinary partial turns resumable. */
+    fun saveCodexGoalThread(projectId: String, scope: String, threadId: String) {
+        check(preferences.edit().putString("${agentConversationKey(AgentKind.CODEX, projectId, scope)}:goal", threadId).commit()) {
+            "Could not persist the native Codex goal thread."
+        }
+    }
+
+    fun loadCodexGoalThread(projectId: String, scope: String): String? =
+        preferences.getString("${agentConversationKey(AgentKind.CODEX, projectId, scope)}:goal", null)
+
+    fun clearCodexGoalThread(projectId: String, scope: String) {
+        check(preferences.edit().remove("${agentConversationKey(AgentKind.CODEX, projectId, scope)}:goal").commit()) {
+            "Could not clear the native Codex goal reference."
+        }
+    }
+
+    fun codexPlanMode(projectId: String, scope: String): Boolean =
+        preferences.getBoolean("${agentConversationKey(AgentKind.CODEX, projectId, scope)}:plan", false)
+
+    fun saveCodexPlanMode(projectId: String, scope: String, enabled: Boolean) {
+        check(preferences.edit().putBoolean("${agentConversationKey(AgentKind.CODEX, projectId, scope)}:plan", enabled).commit()) {
+            "Could not persist Codex Plan mode."
+        }
     }
 
     fun clearAgentConversation(agent: AgentKind, projectId: String, chatId: String) {
@@ -1066,6 +1091,7 @@ class AppPreferences(
                     }
                 })
                 put("workedMillis", m.workedMillis)
+                m.workStatus?.let { put("workStatus", it.name) }
                 if (m.activeSkill != null) {
                     put("activeSkill", m.activeSkill)
                 }
@@ -1208,6 +1234,7 @@ class AppPreferences(
         }.orEmpty(),
         workedMillis = obj.optLong("workedMillis", 0L),
         origin = obj.optString("origin").takeIf { it.isNotBlank() && !obj.isNull("origin") },
+        workStatus = runCatching { com.jarves.mh.model.WorkStatus.valueOf(obj.optString("workStatus")) }.getOrNull(),
         workItems = obj.optJSONArray("workItems")?.let { workItems ->
             (0 until workItems.length()).mapNotNull { index ->
                 runCatching {

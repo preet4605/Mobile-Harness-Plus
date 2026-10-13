@@ -128,6 +128,11 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
     }
 
     private val fallbackDeciders = ConcurrentHashMap<String, TaskFallbackDecider>()
+    private val stopHandlers = ConcurrentHashMap<String, suspend (Boolean) -> Unit>()
+
+    /** A native protocol may need to persist pause before generic process termination. */
+    internal fun registerStopHandler(taskId: String, handler: suspend (Boolean) -> Unit) { stopHandlers[taskId] = handler }
+    internal fun unregisterStopHandler(taskId: String) { stopHandlers.remove(taskId) }
 
     fun registerFallbackDecider(taskId: String, decider: TaskFallbackDecider) {
         fallbackDeciders[taskId] = decider
@@ -693,7 +698,9 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         constraints: List<String> = emptyList(),
         acceptanceCriteria: List<String> = emptyList(),
         plan: ExecutionPlan? = null,
-        objective: String? = null
+        objective: String? = null,
+        nativeControlJson: String? = null,
+        singleOperation: Boolean = false,
     ): DurableTaskRecord {
         val existingCanonical = canonicalTaskRepository.getTask(taskId)
         val record = stateStore.get(taskId) ?: DurableTaskRecord(
@@ -705,7 +712,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             providerJson = providerJson,
             prompt = prompt,
             status = TaskExecutionStatus.CREATED,
-            maxRetries = maxRetries
+            maxRetries = maxRetries,
+            nativeControlJson = nativeControlJson,
         )
 
         if (existingCanonical != null && existingCanonical.plan.steps.isNotEmpty()) {
@@ -726,7 +734,13 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             listOf("Fulfill objective: $effectiveObjective")
         }
 
-        val executionPlan = if (plan != null) {
+        val executionPlan = if (nativeControlJson != null || singleOperation) {
+            PlanBuilder(planId, taskId, title = "Native Codex operation").addStep(
+                ExecutionStep(stepId = "$taskId-step-0", stepOrder = 0, title = "Execute native Codex operation",
+                    objective = "Execute native Codex operation: $effectiveObjective", acceptanceCriteria = effCriteria,
+                    maxAttempts = 1, planId = planId)
+            ).build()
+        } else if (plan != null) {
             val validation = validateExecutionPlan(plan)
             require(validation.isValid) { "Invalid execution plan for task $taskId: ${validation.errorMessage}" }
             val deterministicSteps = plan.steps.mapIndexed { index, s ->
@@ -1006,6 +1020,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         wakeLockManager?.release(targetTaskId)
         healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
         processSupervisor.unregister(targetTaskId)
+        unregisterStopHandler(targetTaskId)
         outputBuffers.remove(targetTaskId)
         fallbackDeciders.remove(targetTaskId)
         activeJobs.remove(targetTaskId)
@@ -2206,6 +2221,9 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         if (resolvedSessionId != null) {
             processSupervisor.markCancellationRequested(resolvedSessionId)
         }
+        stopHandlers[resolvedTaskId]?.let { handler -> runCatching {
+            kotlinx.coroutines.withTimeout(8_000L) { handler(force) }
+        } }
         val stopped = processSupervisor.terminate(resolvedTaskId, force = force)
         activeJobs[resolvedTaskId]?.cancel()
         finalizeTask(resolvedTaskId, TaskExecutionStatus.CANCELLED, error = "Stop requested by user")

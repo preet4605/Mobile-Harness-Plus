@@ -15,6 +15,7 @@ internal class NativeSpawnProcess private constructor(
     private val outputPump: Thread? = null,
     private val captureFailed: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(),
     private val capturePipe: File? = null,
+    private val onExit: () -> Unit = {},
 ) : Process() {
     val processPid: Int get() = pid
     @Volatile private var result: Int? = null
@@ -52,7 +53,9 @@ internal class NativeSpawnProcess private constructor(
             NativeSpawn.kill(pid, 9)
             closeStreams()
         }
-        return status.also { result = it }
+        result = status
+        runCatching { onExit() }
+        return status
     }
 
     override fun destroy() {
@@ -104,6 +107,7 @@ internal class NativeSpawnProcess private constructor(
             pseudoTerminal: Boolean = false,
             ptyRows: Int = 40,
             ptyColumns: Int = 120,
+            onExit: () -> Unit = {},
         ): NativeSpawnProcess {
             validateArgv(argv)
             outputFile.parentFile?.mkdirs()
@@ -118,6 +122,7 @@ internal class NativeSpawnProcess private constructor(
                 ).also { check(it.size == 3 && it[0] > 0) { "Native runtime launch failed" } }
             } catch (error: Throwable) {
                 pipe?.delete()
+                runCatching { onExit() }
                 outputFile.delete()
                 throw error
             }
@@ -138,7 +143,7 @@ internal class NativeSpawnProcess private constructor(
                     runCatching { NativeSpawn.kill(spawned[0], 9) }
                 } finally { pipe?.delete() }
             }, "pocket-runtime-output").apply { isDaemon = true; start() }
-            return NativeSpawnProcess(spawned[0], outputFile, input, pump, failed, pipe)
+            return NativeSpawnProcess(spawned[0], outputFile, input, pump, failed, pipe, onExit)
         }
 
         fun isPidAlive(targetPid: Int): Boolean {

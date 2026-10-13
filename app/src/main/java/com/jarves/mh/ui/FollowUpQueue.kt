@@ -17,6 +17,7 @@ data class QueuedFollowUp(
     val chatId: String,
     val prompt: String,
     val attachments: List<ChatAttachment> = emptyList(),
+    val codexAccountId: String? = null,
 )
 
 /** Pure queue operations for follow-ups; the view model owns when they run. */

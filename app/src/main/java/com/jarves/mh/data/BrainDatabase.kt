@@ -6,7 +6,7 @@ import java.io.Closeable
 class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
 
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 2
+        const val CURRENT_SCHEMA_VERSION = 3
     }
 
     var schemaVersion: Int = 1
@@ -118,6 +118,7 @@ class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
 
         // Perform migration to V2 (canonical tasks, recovery plans, execution steps, knowledge taxonomy)
         migrateToV2()
+        migrateNativeControls()
 
         // FTS5 Virtual Table initialization with graceful fallback
         try {
@@ -352,6 +353,16 @@ class BrainDatabase(val driver: BrainDatabaseDriver) : Closeable {
             }
 
             driver.execute("PRAGMA user_version = 2")
+            schemaVersion = 2
+        }
+    }
+
+    /** Nullable native intent preserves existing durable rows and can be safely reopened. */
+    private fun migrateNativeControls() {
+        driver.transaction {
+            val columns = driver.query("PRAGMA table_info(durable_task_states)") { it.getString("name") ?: "" }.toSet()
+            if ("native_control_json" !in columns) driver.execute("ALTER TABLE durable_task_states ADD COLUMN native_control_json TEXT")
+            driver.execute("PRAGMA user_version = 3")
             schemaVersion = CURRENT_SCHEMA_VERSION
         }
     }

@@ -14,6 +14,15 @@ class FollowUpQueueTest {
     private fun item(id: String, projectId: String = "p", chatId: String = "chat") =
         QueuedFollowUp(id = id, projectId = projectId, chatId = chatId, prompt = "prompt $id")
 
+    @Test fun queuedCodexAccountSurvivesSteerAndDrain() {
+        val first = item("a").copy(codexAccountId = "account-a")
+        val second = item("b").copy(codexAccountId = "account-b")
+        val queue = FollowUpQueue.steerToFront(listOf(first, second), "b")
+        val (next, rest) = FollowUpQueue.popFor(queue, "p", "chat")
+        assertEquals("account-b", next?.codexAccountId)
+        assertEquals("account-a", rest.single().codexAccountId)
+    }
+
     @Test fun enqueueKeepsOrder() {
         val queue = FollowUpQueue.enqueue(FollowUpQueue.enqueue(emptyList(), item("a")), item("b"))
         assertEquals(listOf("a", "b"), queue.map { it.id })

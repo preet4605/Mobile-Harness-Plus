@@ -5,6 +5,12 @@ import com.jarves.mh.model.AntigravityAccountStatus
 import java.io.File
 import java.io.RandomAccessFile
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,14 +19,17 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 
 /** Drives only agy's official interactive OAuth flow; it never reads the resulting credentials. */
-class AntigravityAuthController(
+class AntigravityAuthController internal constructor(
     private val context: Context,
     val accountManager: AntigravityAccountManager,
     initiallySignedIn: Boolean,
     initialAccountEmail: String,
     private val onSignedInChanged: (Boolean, String?) -> Unit,
+    private val launchOverride: ((String, File) -> Process)? = null,
+    private val loginTimeoutMs: Long = 10 * 60_000L,
 ) {
     private val installer = RuntimeInstaller(context)
+    private var foregroundOwner: Any? = null
     private val mutableState = MutableStateFlow(
         AntigravityAuthState(
             status = if (initiallySignedIn) AntigravityAuthStatus.SIGNED_IN else AntigravityAuthStatus.SIGNED_OUT,
@@ -31,9 +40,9 @@ class AntigravityAuthController(
     val state: StateFlow<AntigravityAuthState> = mutableState.asStateFlow()
     private val authOutput = File(context.cacheDir, "antigravity-auth-output.log")
     private val logoutOutput = File(context.cacheDir, "antigravity-logout-output.log")
+    private val operation = Mutex()
+    private val cancelRequested = AtomicBoolean(false)
     @Volatile private var process: Process? = null
-    @Volatile private var codeSubmitted = false
-    @Volatile private var currentLoginAccountId: String? = null
 
     init {
         // Remove output left by an app/process crash before starting a new OAuth flow.
@@ -51,63 +60,52 @@ class AntigravityAuthController(
             officialCredentialFile().isFile
 
     suspend fun beginLogin() = withContext(Dispatchers.IO) {
-        if (process?.isAlive == true) return@withContext
-        if (!installer.isAgentInstalled(com.jarves.mh.model.AgentKind.ANTIGRAVITY)) {
-            mutableState.value = AntigravityAuthState(
-                AntigravityAuthStatus.ERROR,
-                message = "Install Antigravity CLI before signing in.",
-            )
-            return@withContext
-        }
-        mutableState.value = AntigravityAuthState(AntigravityAuthStatus.STARTING, message = "Starting Google sign-in…")
-        codeSubmitted = false
-        authOutput.delete()
-        val runtime = installer.installedRuntime()
-        val workspace = java.io.File(context.filesDir, "workspaces/antigravity-auth").apply { mkdirs() }
-        val loginAccountId = UUID.randomUUID().toString()
-        currentLoginAccountId = loginAccountId
-        accountManager.getAccountHomeHostDir(loginAccountId).mkdirs()
-        val guestHome = accountManager.getAccountHomeGuestPath(loginAccountId)
-        val running = installer.process(
-            runtime.proot,
-            runtime.rootfs,
-            workspace,
-            // SSH selects agy's official manual browser URL + one-time code flow.
-            // NativeSpawn supplies a real PTY; PocketDev remains only the terminal.
-            mapOf(
-                "SSH_CONNECTION" to "127.0.0.1 1 127.0.0.1 1",
-                "TERM" to "xterm-256color",
-                "NO_COLOR" to "1",
-                "HOME" to guestHome,
-            ),
-            listOf(RuntimeInstaller.AGY_GUEST_PATH),
-            guestWorkspacePath = "/workspace/antigravity-auth",
-            emulateHardLinks = false,
-            outputFile = authOutput,
-            pseudoTerminal = true,
-            ptyRows = 40,
-            ptyColumns = 120,
-        )
-        process = running
-        val native = running as? NativeSpawnProcess ?: error("Unsupported Antigravity authentication process")
-        var offset = 0L
-        val output = StringBuilder()
-        var handshakeReplies = 0
-        var lastHandshakeReplyLength = 0
-        var loginMenuAdvanced = false
-        var colorScreenCompleted = false
-        var renderingScreenCompleted = false
-        var privacyScreenCompleted = false
-        var workspaceTrustCompleted = false
+        if (!operation.tryLock()) return@withContext
+        var running: Process? = null
+        var loginAccountId: String? = null
+        var completed = false
+        var foregroundStarted = false
         try {
-            while (running.isAlive || native.outputFile.length() > offset) {
-                val available = native.outputFile.length() - offset
+            check(process?.isAlive != true) { "The previous sign-in is still closing. Try again later." }
+            cancelRequested.set(false)
+            if (launchOverride == null && !installer.isAgentInstalled(com.jarves.mh.model.AgentKind.ANTIGRAVITY)) {
+                mutableState.value = AntigravityAuthState(AntigravityAuthStatus.ERROR,
+                    message = "Install Antigravity CLI before signing in.")
+                return@withContext
+            }
+            mutableState.value = AntigravityAuthState(AntigravityAuthStatus.STARTING, message = "Starting Google sign-in…")
+            authOutput.delete()
+            val id = UUID.randomUUID().toString()
+            loginAccountId = id
+            accountManager.getAccountHomeHostDir(id).mkdirs()
+            startForegroundWhileSigningIn()
+            foregroundStarted = true
+            currentCoroutineContext().ensureActive()
+            check(!cancelRequested.get()) { "Sign in cancelled." }
+            val child = launchOverride?.invoke(id, authOutput) ?: launchCli(id)
+            running = child
+            process = child
+            val deadline = System.nanoTime() + loginTimeoutMs * 1_000_000L
+            var offset = 0L
+            val output = StringBuilder()
+            var handshakeReplies = 0
+            var lastHandshakeReplyLength = 0
+            var loginMenuAdvanced = false
+            var colorScreenCompleted = false
+            var renderingScreenCompleted = false
+            var privacyScreenCompleted = false
+            var workspaceTrustCompleted = false
+            while (child.isAlive || authOutput.length() > offset) {
+                currentCoroutineContext().ensureActive()
+                if (cancelRequested.get()) break
+                check(System.nanoTime() < deadline) { "Google sign-in timed out. Start a new sign-in attempt." }
+                val available = authOutput.length() - offset
                 if (available <= 0) {
                     delay(80)
                     continue
                 }
                 val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
-                val count = RandomAccessFile(native.outputFile, "r").use { file ->
+                val count = RandomAccessFile(authOutput, "r").use { file ->
                     file.seek(offset)
                     file.read(bytes)
                 }
@@ -124,8 +122,8 @@ class AntigravityAuthController(
                     output.length - lastHandshakeReplyLength > 200 &&
                     output.substring(lastHandshakeReplyLength).contains("\u001B[?u")
                 ) {
-                    running.outputStream.write(TERMINAL_HANDSHAKE_REPLY.toByteArray())
-                    running.outputStream.flush()
+                    child.outputStream.write(TERMINAL_HANDSHAKE_REPLY.toByteArray())
+                    child.outputStream.flush()
                     handshakeReplies++
                     lastHandshakeReplyLength = output.length
                 }
@@ -141,8 +139,8 @@ class AntigravityAuthController(
                     // A lone CR is mapped to the arrow-right key and only
                     // re-paints the menu, while a real terminal transmits
                     // CR LF on Enter, which Ink accepts even with raw input.
-                    running.outputStream.write("\r\n".toByteArray())
-                    running.outputStream.flush()
+                    child.outputStream.write("\r\n".toByteArray())
+                    child.outputStream.flush()
                     loginMenuAdvanced = true
                     if (mutableState.value.status == AntigravityAuthStatus.STARTING) {
                         mutableState.value = mutableState.value.copy(
@@ -160,10 +158,16 @@ class AntigravityAuthController(
                 }
                 if (isSignedInScreen(clean)) {
                     val email = extractSignedInEmail(clean)
-                    val targetToken = accountManager.getAccountTokenHostFile(loginAccountId)
-                    if (targetToken.isFile) {
+                    val targetToken = accountManager.getAccountTokenHostFile(id)
+                    val flushDeadline = minOf(deadline, System.nanoTime() + 2_000_000_000L)
+                    while (!targetToken.isFile && child.isAlive && System.nanoTime() < flushDeadline && !cancelRequested.get()) delay(50)
+                    if (cancelRequested.get()) break
+                    check(targetToken.isFile && targetToken.length() > 0L) { "Google sign-in did not save credentials. Try again." }
+                    currentCoroutineContext().ensureActive()
+                    synchronized(this@AntigravityAuthController) {
+                        check(!cancelRequested.get()) { "Sign in cancelled." }
                         accountManager.addAccount(
-                            id = loginAccountId,
+                            id = id,
                             email = email ?: "Google account",
                             isPrimary = accountManager.accountsList().isEmpty(),
                         )
@@ -172,31 +176,32 @@ class AntigravityAuthController(
                             legacy.parentFile?.mkdirs()
                             runCatching { targetToken.copyTo(legacy, overwrite = true) }
                         }
+                        completed = true
+                        onSignedInChanged(true, email)
+                        mutableState.value = AntigravityAuthState(
+                            AntigravityAuthStatus.SIGNED_IN,
+                            message = email?.let { "Connected as $it" } ?: "Google account connected",
+                            accountEmail = email,
+                        )
                     }
-                    onSignedInChanged(true, email)
-                    mutableState.value = AntigravityAuthState(
-                        AntigravityAuthStatus.SIGNED_IN,
-                        message = email?.let { "Connected as $it" } ?: "Google account connected",
-                        accountEmail = email,
-                    )
                     // Leave the official CLI cleanly so it has a chance to flush
                     // its own credential/session state before PocketDev closes
                     // the temporary terminal. PocketDev never reads that state.
                     runCatching {
-                        running.outputStream.write("/quit\r\n".toByteArray())
-                        running.outputStream.flush()
+                        child.outputStream.write("/quit\r\n".toByteArray())
+                        child.outputStream.flush()
                     }
                     repeat(20) {
-                        if (!running.isAlive) return@repeat
+                        if (!child.isAlive) return@repeat
                         delay(50)
                     }
-                    if (running.isAlive) running.destroy()
+                    if (child.isAlive) child.destroy()
                     break
                 }
                 if (!colorScreenCompleted && clean.contains("Choose your color scheme", true)) {
                     // Keep the official terminal color scheme selected by default.
-                    running.outputStream.write("\r\n".toByteArray())
-                    running.outputStream.flush()
+                    child.outputStream.write("\r\n".toByteArray())
+                    child.outputStream.flush()
                     colorScreenCompleted = true
                 }
                 if (!renderingScreenCompleted &&
@@ -205,8 +210,8 @@ class AntigravityAuthController(
                 ) {
                     // Select inline rendering, which is the appropriate mode for
                     // PocketDev's captured PTY output.
-                    running.outputStream.write("\u001B[B\r\n".toByteArray())
-                    running.outputStream.flush()
+                    child.outputStream.write("\u001B[B\r\n".toByteArray())
+                    child.outputStream.flush()
                     renderingScreenCompleted = true
                 }
                 if (!privacyScreenCompleted &&
@@ -221,8 +226,8 @@ class AntigravityAuthController(
                     } else {
                         "\t\t\r\n"
                     }
-                    running.outputStream.write(optOutAndFinish.toByteArray())
-                    running.outputStream.flush()
+                    child.outputStream.write(optOutAndFinish.toByteArray())
+                    child.outputStream.flush()
                     privacyScreenCompleted = true
                     mutableState.value = mutableState.value.copy(
                         message = "Google connected — finishing private Antigravity setup…",
@@ -234,41 +239,75 @@ class AntigravityAuthController(
                 ) {
                     // The authentication workspace is created and owned privately
                     // by PocketDev and contains no user project files.
-                    running.outputStream.write("\r\n".toByteArray())
-                    running.outputStream.flush()
+                    child.outputStream.write("\r\n".toByteArray())
+                    child.outputStream.flush()
                     workspaceTrustCompleted = true
                 }
                 if (clean.contains("authentication failed", true) || clean.contains("failed to exchange", true)) {
                     error("Google authentication failed. Start a new sign-in attempt.")
                 }
             }
-            if (!codeSubmitted && mutableState.value.status == AntigravityAuthStatus.STARTING) {
-                val exit = running.waitFor()
-                error("Antigravity login closed before producing an authorization URL (exit $exit).")
-            }
+            if (cancelRequested.get()) restoreAfterCancel()
+            else if (!completed) error("Google sign-in closed before authentication completed. Start again.")
+        } catch (cancelled: CancellationException) {
+            restoreAfterCancel()
+            throw cancelled
         } catch (error: Throwable) {
-            if (mutableState.value.status != AntigravityAuthStatus.SIGNED_IN) {
-                mutableState.value = AntigravityAuthState(
-                    AntigravityAuthStatus.ERROR,
-                    message = error.message?.take(240) ?: "Antigravity sign-in failed",
-                )
-            }
+            if (cancelRequested.get()) restoreAfterCancel()
+            else if (!completed) mutableState.value = AntigravityAuthState(
+                AntigravityAuthStatus.ERROR, message = "Google sign-in failed. " +
+                    when {
+                        error.message?.contains("timed out") == true -> "The sign-in timed out. Try again."
+                        error.message?.contains("save credentials") == true -> "Credentials could not be saved. Try again."
+                        else -> "Start a new sign-in attempt."
+                    },
+            )
         } finally {
-            if (running.isAlive) running.destroy()
-            runCatching { running.outputStream.close() }
-            native.outputFile.delete() // OAuth terminal output is intentionally ephemeral.
-            process = null
-            codeSubmitted = false
-            if (mutableState.value.status != AntigravityAuthStatus.SIGNED_IN) {
-                currentLoginAccountId?.let { id ->
-                    runCatching { accountManager.getAccountHomeHostDir(id).deleteRecursively() }
+            val closed = running?.let(::closeAuthProcess) ?: (process?.isAlive != true)
+            if (closed) {
+                authOutput.delete()
+                process = null
+                if (!completed) loginAccountId?.let { id ->
+                    runCatching { deleteAuthDirectory(accountManager.getAccountHomeHostDir(id)) }
                 }
+                if (foregroundStarted) stopForegroundAfterSigningIn()
             }
-            currentLoginAccountId = null
+            operation.unlock()
         }
     }
 
+    private fun launchCli(id: String): Process {
+        val runtime = installer.installedRuntime()
+        val workspace = File(context.filesDir, "workspaces/antigravity-auth").apply { mkdirs() }
+        val guestHome = accountManager.getAccountHomeGuestPath(id)
+        return installer.process(runtime.proot, runtime.rootfs, workspace,
+            mapOf("SSH_CONNECTION" to "127.0.0.1 1 127.0.0.1 1", "TERM" to "xterm-256color", "NO_COLOR" to "1", "HOME" to guestHome),
+            listOf(RuntimeInstaller.AGY_GUEST_PATH), guestWorkspacePath = "/workspace/antigravity-auth",
+            credentialHome = guestHome, emulateHardLinks = false, outputFile = authOutput,
+            pseudoTerminal = true, ptyRows = 40, ptyColumns = 120)
+    }
+
+    private fun restoreAfterCancel() {
+        val primary = accountManager.getPrimaryAccount()
+        val signedIn = hasOfficialCredential()
+        mutableState.value = AntigravityAuthState(
+            if (signedIn) AntigravityAuthStatus.SIGNED_IN else AntigravityAuthStatus.SIGNED_OUT,
+            message = "Sign in cancelled.", accountEmail = primary?.email)
+    }
+
+    private fun startForegroundWhileSigningIn() {
+        foregroundOwner = runCatching { AuthForegroundService.acquire(context, "Signing in to Google") }.getOrNull()
+    }
+
+    private fun stopForegroundAfterSigningIn() {
+        val owner = foregroundOwner ?: return
+        foregroundOwner = null
+        runCatching { AuthForegroundService.release(context, owner) }
+    }
+
+    @Synchronized
     fun submitCode(code: String) {
+        check(!cancelRequested.get()) { "Start Google sign-in again" }
         val value = code.trim()
         require(value.isNotBlank()) { "Paste the authorization code from Google" }
         val running = process ?: error("Start Google sign-in again")
@@ -277,7 +316,6 @@ class AntigravityAuthController(
         // the Enter key. LF alone inserts/repaints a line without submitting it.
         running.outputStream.write((value + "\r\n").toByteArray())
         running.outputStream.flush()
-        codeSubmitted = true
         mutableState.value = mutableState.value.copy(
             status = AntigravityAuthStatus.COMPLETING,
             message = "Completing Google sign-in…",
@@ -285,53 +323,59 @@ class AntigravityAuthController(
     }
 
     suspend fun logout(accountId: String? = null) = withContext(Dispatchers.IO) {
-        process?.destroy()
-        val previousEmail = mutableState.value.accountEmail
-        mutableState.value = AntigravityAuthState(
-            status = AntigravityAuthStatus.STARTING,
-            message = "Signing out of Antigravity…",
-            accountEmail = previousEmail,
-        )
-        try {
-            if (accountId != null) {
-                accountManager.removeAccount(accountId)
-            } else {
-                val all = accountManager.accountsList()
-                all.forEach { acc ->
-                    accountManager.removeAccount(acc.id)
-                }
-            }
-            val remaining = accountManager.accountsList()
-            if (remaining.isEmpty()) {
-                val credential = officialCredentialFile()
-                if (credential.exists()) credential.delete()
-                onSignedInChanged(false, null)
-                mutableState.value = AntigravityAuthState(AntigravityAuthStatus.SIGNED_OUT, message = "Signed out")
-            } else {
-                val primary = accountManager.getPrimaryAccount()
-                onSignedInChanged(true, primary?.email)
-                mutableState.value = AntigravityAuthState(
-                    AntigravityAuthStatus.SIGNED_IN,
-                    message = primary?.email?.let { "Connected as $it" },
-                    accountEmail = primary?.email,
-                )
-            }
-        } catch (error: Throwable) {
+        cancelRequested.set(true)
+        process?.let { runCatching { it.destroyForcibly() } }
+        operation.withLock {
+            process?.let { check(closeAuthProcess(it)) { "The previous sign-in is still closing. Try again later." }; process = null }
+            val previousEmail = mutableState.value.accountEmail
             mutableState.value = AntigravityAuthState(
-                status = AntigravityAuthStatus.SIGNED_IN,
-                message = error.message?.take(240) ?: "Could not log out of Antigravity",
+                status = AntigravityAuthStatus.STARTING,
+                message = "Signing out of Antigravity…",
                 accountEmail = previousEmail,
             )
-            throw error
-        } finally {
-            process = null
-            logoutOutput.delete()
+            try {
+                if (accountId != null) {
+                    accountManager.removeAccount(accountId)
+                } else {
+                    val all = accountManager.accountsList()
+                    all.forEach { acc ->
+                        accountManager.removeAccount(acc.id)
+                    }
+                }
+                val remaining = accountManager.accountsList()
+                if (remaining.isEmpty()) {
+                    val credential = officialCredentialFile()
+                    if (credential.exists()) credential.delete()
+                    onSignedInChanged(false, null)
+                    mutableState.value = AntigravityAuthState(AntigravityAuthStatus.SIGNED_OUT, message = "Signed out")
+                } else {
+                    val primary = accountManager.getPrimaryAccount()
+                    onSignedInChanged(true, primary?.email)
+                    mutableState.value = AntigravityAuthState(
+                        AntigravityAuthStatus.SIGNED_IN,
+                        message = primary?.email?.let { "Connected as $it" },
+                        accountEmail = primary?.email,
+                    )
+                }
+            } catch (error: Throwable) {
+                mutableState.value = AntigravityAuthState(
+                    status = AntigravityAuthStatus.SIGNED_IN,
+                    message = error.message?.take(240) ?: "Could not log out of Antigravity",
+                    accountEmail = previousEmail,
+                )
+                throw error
+            } finally {
+                process = null
+                logoutOutput.delete()
+            }
         }
     }
 
+    @Synchronized
     fun cancel() {
-        process?.destroy()
-        mutableState.value = AntigravityAuthState(AntigravityAuthStatus.SIGNED_OUT)
+        cancelRequested.set(true)
+        process?.let { runCatching { it.destroyForcibly() } }
+        restoreAfterCancel()
     }
 
     fun invalidateSession(message: String) {

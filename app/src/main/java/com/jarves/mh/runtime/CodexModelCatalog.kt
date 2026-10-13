@@ -20,46 +20,109 @@ import java.io.RandomAccessFile
 internal class CodexModelCatalog(private val context: Context) {
     private val installer = RuntimeInstaller(context)
 
-    fun fetch(): ModelDiscoveryResult = withAppServer(
+    fun fetch(accountId: String = CodexAccounts.LEGACY): ModelDiscoveryResult = withAppServer(
+        accountId = accountId,
         failure = { ModelDiscoveryResult.Failure(it) },
     ) { process, output -> readCatalog(process, output) }
 
     /** Plan limits of the signed-in ChatGPT account. Blocking, so call from IO. Never throws. */
-    fun fetchUsage(): AgentUsage = withAppServer(
+    fun fetchUsage(accountId: String = CodexAccounts.LEGACY): AgentUsage = withAppServer(
+        accountId = accountId,
         failure = { AgentUsage(note = it) },
-    ) { process, output -> readUsage(process, output) }
+    ) { process, output -> readUsage(process, output, accountId) }
+
+    /** Null means no validated ChatGPT account; credentials are never read by the app. */
+    fun readAccount(accountId: String): CodexAccountDetails? = withAppServer(
+        accountId = accountId, failure = { null },
+    ) { process, output ->
+        val reader = CaptureLineReader(output)
+        val deadline = System.currentTimeMillis() + TIMEOUT_MS
+        if (!send(process, CodexAppServerProtocol.initializeRequest(INIT_ID)) ||
+            !send(process, CodexAppServerProtocol.initializedNotification()) ||
+            !send(process, CodexAppServerProtocol.accountRequest(LIST_ID_FIRST))) return@withAppServer null
+        while (System.currentTimeMillis() < deadline) {
+            val alive = process.isAlive
+            for (line in reader.readLines()) {
+                val reply = CodexAppServerProtocol.parseReply(line) ?: continue
+                if (reply.id == LIST_ID_FIRST) return@withAppServer reply.result?.let(CodexAppServerProtocol::parseAccount)
+            }
+            if (!alive) break
+            Thread.sleep(POLL_MS)
+        }
+        null
+    }
+
+    /** Reads only local skill metadata. A missing/failed inventory blocks the task's launch. */
+    fun readSkills(
+        accountId: String, workspace: File, guestWorkspace: String,
+        cancelled: () -> Boolean, onProcess: (NativeSpawnProcess?) -> Unit,
+    ): List<CodexSkillSelection.NativeSkill>? = withAppServer(
+        accountId = accountId, failure = { null }, taskWorkspace = workspace,
+        guestWorkspace = guestWorkspace, onProcess = onProcess,
+    ) { process, output ->
+        val reader = CaptureLineReader(output)
+        val deadline = android.os.SystemClock.elapsedRealtime() + TIMEOUT_MS
+        if (!send(process, CodexAppServerProtocol.initializeRequest(INIT_ID)) ||
+            !send(process, CodexAppServerProtocol.initializedNotification()) ||
+            !send(process, CodexAppServerProtocol.skillsRequest(LIST_ID_FIRST, guestWorkspace))) return@withAppServer null
+        while (!cancelled() && android.os.SystemClock.elapsedRealtime() < deadline) {
+            if (output.length() > 2 * 1024 * 1024) return@withAppServer null
+            for (line in reader.readLines()) {
+                val reply = CodexAppServerProtocol.parseReply(line) ?: continue
+                if (reply.id != LIST_ID_FIRST) continue
+                if (reply.errorMessage != null) return@withAppServer null
+                return@withAppServer runCatching {
+                    CodexAppServerProtocol.parseSkills(reply.result ?: error("Missing skill result"), guestWorkspace)
+                }.getOrNull()
+            }
+            if (!process.isAlive) break
+            Thread.sleep(POLL_MS)
+        }
+        null
+    }
 
     /** Starts one app-server process, runs [body], and always kills the process and removes its capture file. */
-    private fun <T> withAppServer(failure: (String) -> T, body: (NativeSpawnProcess, File) -> T): T {
+    private fun <T> withAppServer(
+        accountId: String, failure: (String) -> T, taskWorkspace: File? = null,
+        guestWorkspace: String = "/workspace/$WORKSPACE", onProcess: (NativeSpawnProcess?) -> Unit = {},
+        body: (NativeSpawnProcess, File) -> T,
+    ): T {
         if (!installer.isCodexInstalled()) {
             return failure("Codex is not installed. Open Settings → Coding agent and tap Install.")
         }
         val runtime = runCatching { installer.installedRuntime() }
             .getOrElse { return failure(it.message ?: "The core runtime is not ready.") }
-        val workspace = File(context.filesDir, "workspaces/$WORKSPACE").apply { mkdirs() }
+        val accounts = CodexAccounts(runtime.rootfs)
+        val home = accounts.home(accountId)
+        accounts.hostHome(accountId).mkdirs()
+        accounts.credentialFile(accountId)
+        val workspace = taskWorkspace ?: File(context.filesDir, "workspaces/$WORKSPACE").apply { mkdirs() }
         val output = File(context.cacheDir, "codex-app-server-${System.nanoTime()}.log")
         val process = runCatching {
             installer.process(
                 proot = runtime.proot,
                 rootfs = runtime.rootfs,
                 workspace = workspace,
-                environment = CodexLaunchBuilder.environment(CodexRoute.ChatGptLogin(""), null),
+                environment = CodexLaunchBuilder.environment(CodexRoute.ChatGptLogin("", home), null),
                 guestCommand = listOf(CodexLaunchBuilder.CODEX_GUEST_PATH, "app-server"),
-                guestWorkspacePath = "/workspace/$WORKSPACE",
+                guestWorkspacePath = guestWorkspace,
+                credentialHome = home,
                 emulateHardLinks = false,
                 outputFile = output,
             ) as? NativeSpawnProcess
         }.getOrNull() ?: return failure("Codex could not start to read its data.")
-        return try {
+        var closed = false
+        val result = try {
+            onProcess(process)
             body(process, output)
         } finally {
-            runCatching { process.outputStream.close() }
-            runCatching { if (process.isAlive) process.destroyForcibly() }
-            runCatching { output.delete() }
+            closed = closeAuthProcess(process)
+            if (closed) { onProcess(null); runCatching { output.delete() } }
         }
+        return if (closed) result else failure("Codex is still closing its account request. Try again later.")
     }
 
-    private fun readUsage(process: NativeSpawnProcess, output: File): AgentUsage {
+    private fun readUsage(process: NativeSpawnProcess, output: File, accountId: String): AgentUsage {
         val reader = CaptureLineReader(output)
         val deadline = System.currentTimeMillis() + TIMEOUT_MS
         val started = send(process, CodexAppServerProtocol.initializeRequest(INIT_ID)) &&
@@ -72,7 +135,9 @@ internal class CodexModelCatalog(private val context: Context) {
                 val reply = CodexAppServerProtocol.parseReply(line) ?: continue
                 if (reply.id != LIST_ID_FIRST) continue
                 reply.errorMessage?.let { return CodexAppServerProtocol.usageError(it) }
-                return CodexAppServerProtocol.parseRateLimits(reply.result ?: JSONObject())
+                val result = reply.result ?: JSONObject()
+                result.optJSONObject("rateLimits")?.let { CodexAccounts(installer.rootfs).recordRateLimits(accountId, it) }
+                return CodexAppServerProtocol.parseRateLimits(result)
             }
             if (!alive) return AgentUsage(note = "Codex stopped before it reported usage.")
             if (System.currentTimeMillis() >= deadline) {
@@ -219,6 +284,20 @@ internal object CodexAppServerProtocol {
 
     fun initializedNotification(): String = line(JSONObject().put("jsonrpc", "2.0").put("method", "initialized"))
 
+    fun accountRequest(id: Int): String = line(
+        JSONObject().put("jsonrpc", "2.0").put("id", id).put("method", "account/read")
+            .put("params", JSONObject().put("refreshToken", false)),
+    )
+
+    fun parseAccount(result: JSONObject): CodexAccountDetails? {
+        val account = result.optJSONObject("account") ?: return null
+        if (account.optString("type") != "chatgpt") return null
+        return CodexAccountDetails(
+            account.optString("email").takeUnless { it.isBlank() || it == "null" },
+            account.optString("planType").takeUnless { it.isBlank() || it == "null" },
+        )
+    }
+
     fun rateLimitsRequest(id: Int): String = line(
         JSONObject().put("jsonrpc", "2.0").put("id", id).put("method", "account/rateLimits/read"),
     )
@@ -276,7 +355,26 @@ internal object CodexAppServerProtocol {
         )
     }
 
-    /** Responses only. Startup banners, notifications and anything that is not a JSON object return null. */
+    fun skillsRequest(id: Int, cwd: String): String = line(JSONObject().put("jsonrpc", "2.0")
+        .put("id", id).put("method", "skills/list").put("params", JSONObject()
+            .put("cwds", org.json.JSONArray().put(cwd)).put("forceReload", true)))
+
+    fun parseSkills(result: JSONObject, cwd: String): List<CodexSkillSelection.NativeSkill> {
+        val data = result.getJSONArray("data")
+        require(data.length() == 1)
+        val entry = data.getJSONObject(0)
+        require(entry.getString("cwd") == cwd && entry.getJSONArray("errors").length() == 0)
+        val skills = entry.getJSONArray("skills")
+        require(skills.length() <= 256)
+        return (0 until skills.length()).map { i ->
+            val skill = skills.getJSONObject(i)
+            val scope = skill.getString("scope")
+            require(scope in listOf("repo", "user", "admin", "system"))
+            CodexSkillSelection.NativeSkill(skill.getString("name"), skill.getString("path"), scope, skill.getBoolean("enabled"))
+        }
+    }
+
+    /** Responses only. Startup banners and notifications are ignored. */
     fun parseReply(raw: String): Reply? {
         val text = raw.trim()
         if (!text.startsWith("{")) return null
@@ -322,4 +420,8 @@ internal object CodexAppServerProtocol {
     }
 
     private fun line(json: JSONObject): String = json.toString() + "\n"
+}
+
+internal data class CodexAccountDetails(val email: String?, val plan: String?) {
+    val label: String get() = listOfNotNull(email, plan).joinToString(" · ").ifBlank { "ChatGPT account" }
 }

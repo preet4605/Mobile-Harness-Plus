@@ -344,7 +344,7 @@ private fun AppScreen(
             onSetCustomizationScopeMode = viewModel::setCustomizationScopeMode,
             onToggleSkill = viewModel::toggleSkill,
             onToggleRule = viewModel::toggleRule,
-            onLinkSkill = viewModel::linkSkill,
+            onLinkSkill = { source, name, path -> viewModel.linkSkill(source, name, path) },
             onUnlinkSkill = viewModel::unlinkSkill,
             onImportSkill = viewModel::importSkill,
             onPromoteSkillToGlobal = viewModel::promoteSkillToGlobal,
@@ -515,6 +515,12 @@ private fun RootScreenHost(
                     onCancelCodexLogin = viewModel::cancelCodexLogin,
                     onLogoutCodex = viewModel::logoutCodex,
                     onRefreshCodexAuth = viewModel::refreshCodexAuthStatus,
+                    onSelectCodexAccount = viewModel::selectCodexAccount,
+                    onCodexAccountBalancing = viewModel::setCodexAccountBalancing,
+                    onReconnectCodexAccount = viewModel::reconnectCodexAccount,
+                    onEnableCodexAccount = viewModel::setCodexAccountEnabled,
+                    onRemoveCodexAccount = viewModel::removeCodexAccount,
+                    onRenameCodexAccount = viewModel::renameCodexAccount,
                 )
                 RootScreen.MODS -> ModsScreen(
                     bottomBarPadding = floatingNavClearance,

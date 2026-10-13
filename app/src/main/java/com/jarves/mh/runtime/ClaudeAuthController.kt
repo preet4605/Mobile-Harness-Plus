@@ -1,8 +1,6 @@
 package com.jarves.mh.runtime
 
 import android.content.Context
-import android.content.Intent
-import androidx.core.content.ContextCompat
 import com.jarves.mh.model.AgentKind
 import java.io.File
 import java.io.RandomAccessFile
@@ -34,6 +32,7 @@ class ClaudeAuthController(
     private val onLoginCompleted: () -> Unit = {},
 ) {
     private val installer = RuntimeInstaller(context)
+    private var foregroundOwner: Any? = null
     private val mutableState = MutableStateFlow(ClaudeAuthState())
     val state: StateFlow<ClaudeAuthState> = mutableState.asStateFlow()
 
@@ -205,29 +204,13 @@ class ClaudeAuthController(
 
     /** Keeps the app alive while the user is away in the browser; reuses the existing runtime service. */
     private fun startForegroundWhileSigningIn() {
-        runCatching {
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, RuntimeExecutionService::class.java)
-                    .setAction(RuntimeExecutionService.ACTION_START)
-                    .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, "Claude sign-in")
-                    .putExtra(RuntimeExecutionService.EXTRA_TITLE, "Signing in to Claude")
-                    .putExtra(RuntimeExecutionService.EXTRA_CAN_STOP, false),
-            )
-        }
+        foregroundOwner = runCatching { AuthForegroundService.acquire(context, "Signing in to Claude") }.getOrNull()
     }
 
     private fun stopForegroundAfterSigningIn() {
-        // A coding session that started meanwhile owns the service; do not stop it from here.
-        if (RuntimeTaskController.stopAction != null) return
-        runCatching {
-            context.startService(
-                Intent(context, RuntimeExecutionService::class.java)
-                    .setAction(RuntimeExecutionService.ACTION_CANCELLED),
-            )
-        }.onFailure {
-            runCatching { context.stopService(Intent(context, RuntimeExecutionService::class.java)) }
-        }
+        val owner = foregroundOwner ?: return
+        foregroundOwner = null
+        runCatching { AuthForegroundService.release(context, owner) }
     }
 
     /** Adapts a PTY-backed [NativeSpawnProcess] to the engine's process abstraction. */

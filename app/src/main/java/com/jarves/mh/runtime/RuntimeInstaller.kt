@@ -11,6 +11,8 @@ import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -1744,15 +1746,10 @@ class RuntimeInstaller(private val context: Context) {
                 add("${skillSnapshots.absolutePath}:/opt/pocket/skills/linked")
             }
             credentialHome?.let { activeHome ->
-                val mask = File(context.cacheDir, "credential-mask").apply { mkdirs() }
-                val hidden = CredentialMounts.hiddenHomes(activeHome)
-                hidden.forEach { guestPath ->
+                val mask = File(context.cacheDir, "credential-masks/$inspectionToken")
+                CredentialMounts.bindings(rootfs, mask, activeHome).forEach { binding ->
                     add("-b")
-                    add("${mask.absolutePath}:$guestPath")
-                }
-                if (hidden.any { activeHome.startsWith("$it/") }) {
-                    add("-b")
-                    add("${File(rootfs, activeHome.removePrefix("/")).absolutePath}:$activeHome")
+                    add(binding)
                 }
             }
             add("-w")
@@ -1798,6 +1795,7 @@ class RuntimeInstaller(private val context: Context) {
             pseudoTerminal = pseudoTerminal,
             ptyRows = ptyRows,
             ptyColumns = ptyColumns,
+            onExit = { deleteAuthDirectory(File(context.cacheDir, "credential-masks/$inspectionToken")) },
         )
         if (inspectionReady) InspectionSessions.shared.register(inspectionToken, workspace, guestWorkspacePath) {
             process.isAlive && inspectionAllowed?.invoke() != false

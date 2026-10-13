@@ -22,6 +22,7 @@ import com.jarves.mh.data.MemoryEntry
 import com.jarves.mh.data.MemoryExtractor
 import com.jarves.mh.data.MemorySource
 import com.jarves.mh.model.ActivityItem
+import com.jarves.mh.model.WorkStatus
 import com.jarves.mh.model.AgentKind
 import com.jarves.mh.model.ChangeItem
 import com.jarves.mh.model.ChatMessage
@@ -74,10 +75,15 @@ import com.jarves.mh.runtime.ClaudeAuthController
 import com.jarves.mh.runtime.ClaudeAuthState
 import com.jarves.mh.runtime.ClaudeAuthStatusState
 import com.jarves.mh.runtime.ClaudeRuntimeBridge
+import com.jarves.mh.runtime.CodexAccounts
+import com.jarves.mh.runtime.CodexConversationHandoff
+import com.jarves.mh.runtime.NativeConversationScope
+import com.jarves.mh.runtime.CodexAccount
 import com.jarves.mh.runtime.CodexAuthController
 import com.jarves.mh.runtime.CodexAuthState
 import com.jarves.mh.runtime.CodexModelCatalog
 import com.jarves.mh.runtime.CodexAuthStatus
+import com.jarves.mh.runtime.CodexNativeControl
 import com.jarves.mh.runtime.CodexRuntimeBridge
 import com.jarves.mh.model.AntigravityAccount
 import com.jarves.mh.model.AntigravityAccountStatus
@@ -157,6 +163,10 @@ import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
+import com.jarves.mh.runtime.completeGitHubLogin
+import com.jarves.mh.runtime.closeAuthProcess
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -327,6 +337,7 @@ data class AppUiState(
     val changes: List<ChangeItem> = emptyList(),
     val activity: List<ActivityItem> = emptyList(),
     val liveProcess: List<ActivityItem> = emptyList(),
+    val liveWorkStatus: WorkStatus = WorkStatus.WORKING,
     val liveThinking: Boolean = false,
     val activeThinkingBlockId: Long? = null,
     val taskStartedAtMillis: Long? = null,
@@ -379,6 +390,11 @@ data class AppUiState(
     val antigravityAccounts: List<AntigravityAccount> = emptyList(),
     val claudeAuth: ClaudeAuthState = ClaudeAuthState(),
     val codexAuth: CodexAuthState = CodexAuthState(),
+    val codexAccounts: List<CodexAccount> = emptyList(),
+    val codexAccountBalancing: Boolean = false,
+    val selectedCodexAccountId: String? = null,
+    val codexAccountRevision: Long = 0,
+    val codexAccountsInUse: Set<String> = emptySet(),
     val claudeAuthMode: ClaudeAuthMode = ClaudeAuthMode.NATIVE_SUBSCRIPTION,
     val antigravityLoadBalancingStrategy: AntigravityLoadBalancingStrategy = AntigravityLoadBalancingStrategy.LEAST_RECENTLY_USED,
     val antigravityFailoverEnabled: Boolean = true,
@@ -499,6 +515,7 @@ class MainViewModel(
     private val antigravityAccountManager = AntigravityAccountManager(application, preferences)
     private val claudeRuntime = ClaudeRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
     private val dshRuntime = DshRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
+    private var nativePlanJob: Job? = null
     private val codexRuntime = CodexRuntimeBridge(application) { profile -> vault.get(profile.secretId) }
     private val codexModelCatalog = CodexModelCatalog(application)
     private val installer = RuntimeInstaller(application)
@@ -534,6 +551,8 @@ class MainViewModel(
     @Volatile private var setupCompletionHandled: Boolean = false
     @Volatile private var githubAuthProcess: Process? = null
     private var githubAuthJob: kotlinx.coroutines.Job? = null
+    private var githubRestartJob: Job? = null
+    private var githubForegroundOwner: Any? = null
     @Volatile private var lastOpenedAntigravityAuthUrl: String? = null
     private var activeRuntimeRequest: RuntimeRetryRequest? = null
     /** Task whose sessions the chat follows; set by sendPrompt, read from supervisor threads. */
@@ -585,11 +604,12 @@ class MainViewModel(
         antigravityAccountManager,
         preferences.antigravitySignedIn,
         preferences.antigravityAccountEmail,
-    ) { signedIn, email ->
-        preferences.antigravitySignedIn = signedIn
-        preferences.antigravityAccountEmail = email.orEmpty()
-        if (!signedIn) preferences.clearAgentConversations(AgentKind.ANTIGRAVITY)
-    }
+        onSignedInChanged = { signedIn, email ->
+            preferences.antigravitySignedIn = signedIn
+            preferences.antigravityAccountEmail = email.orEmpty()
+            if (!signedIn) preferences.clearAgentConversations(AgentKind.ANTIGRAVITY)
+        },
+    )
     private val browserBridge = AndroidBrowserBridge(application) { url ->
         openExternalUrlOnce(url)
     }
@@ -618,6 +638,17 @@ class MainViewModel(
             }
         },
         onLoginCompleted = { adoptCodexAccountLogin() },
+        onAccountsChanged = { accounts, selected ->
+            _state.update { current ->
+                val changed = current.codexAccounts != accounts || current.selectedCodexAccountId != selected
+                current.copy(codexAccounts = accounts, selectedCodexAccountId = selected,
+                    codexAccountBalancing = CodexAccounts(installer.rootfs).balancingEnabled,
+                    codexAccountRevision = current.codexAccountRevision + if (changed) 1 else 0,
+                    usage = if (changed) com.jarves.mh.model.AgentUsage() else current.usage,
+                    providerModels = if (changed && current.provider.kind == ProviderKind.CHATGPT) emptyList() else current.providerModels)
+            }
+        },
+        canModifyAccounts = { canModifyCodexAccounts() },
     )
     private var lastAutoOpenedUrl: String? = null
     private var lastAutoOpenedAtMillis = 0L
@@ -669,11 +700,14 @@ class MainViewModel(
         val taskSupervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(application)
         viewModelScope.launch {
             taskSupervisor.activeTasks.collect { activeMap ->
+                _state.update { it.copy(codexAccountsInUse = activeMap.values.filter { task -> task.agentKind == AgentKind.CODEX.name }
+                    .mapNotNull { task -> runCatching { CodexAccounts.taskAccount(task.providerJson) }.getOrNull() }.toSet()) }
                 val current = _state.value
                 val tracked = activeUiTaskId
                 if (tracked != null) {
-                    taskSupervisor.stateStore.get(tracked)?.takeIf { it.status.isTerminal }?.let {
-                        finishSupervisedTask(tracked)
+                    taskSupervisor.stateStore.get(tracked)?.let { record ->
+                        _state.update { it.copy(liveWorkStatus = supervisorWorkStatus(it, tracked, record)) }
+                        if (record.status.isTerminal) finishSupervisedTask(tracked)
                     }
                 } else {
                     // Reattach after Activity/ViewModel recreation only to this chat and engine.
@@ -683,7 +717,7 @@ class MainViewModel(
                     }
                     if (active != null) {
                         activeUiTaskId = active.taskId
-                        _state.update { it.copy(isRunning = true, activeSessionId = active.sessionId) }
+                        _state.update { it.copy(isRunning = true, activeSessionId = active.sessionId, liveWorkStatus = active.status.workStatus()) }
                     }
                 }
             }
@@ -2462,14 +2496,79 @@ class MainViewModel(
         syncClaudePingFromAuth()
     }
 
+    private fun canModifyCodexAccounts(): Boolean =
+        !_state.value.isRunning && !_state.value.isStopping && _state.value.queuedFollowUps.isEmpty() &&
+            com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).stateStore.getActiveTasks().isEmpty() && RuntimeTaskController.stopAction == null
+
+    fun selectCodexAccount(id: String) {
+        runCatching { codexAuthController.selectAccount(id) }
+            .onSuccess {
+                _state.update { it.copy(codexAccountRevision = it.codexAccountRevision + 1, usage = com.jarves.mh.model.AgentUsage(),
+                    toastMessage = "Default account changed. Future tasks may send this chat's history to that account.") }
+                refreshCodexAuthStatus()
+            }
+            .onFailure { error -> _state.update { it.copy(toastMessage = error.message) } }
+    }
+
+    fun setCodexAccountBalancing(enabled: Boolean) {
+        if (!canModifyCodexAccounts() || codexAuthController.isLoginInFlight) return
+        runCatching { codexAuthController.accounts.balancingEnabled = enabled }
+            .onSuccess { _state.update { it.copy(codexAccountBalancing = enabled,
+                toastMessage = if (enabled) "ChatGPT accounts rotate between completed turns. Native goals and chats with subagents keep their account." else "Future tasks use the default account.") } }
+            .onFailure { error -> _state.update { it.copy(toastMessage = error.message) } }
+    }
+
+    private fun codexContextOwner(project: Project, chatId: String, provider: ProviderProfile, control: CodexNativeControl?): String? {
+        val workspace = WorkspaceCheckpoints(getApplication<Application>().filesDir).ensureWorkspace(project.id)
+        val key = NativeConversationScope.key(chatId, workspace, provider, "codex-account-pool")
+        val handoff = CodexConversationHandoff(installer.rootfs)
+        if (!codexAuthController.accounts.balancingEnabled && !handoff.hasState(key)) return null
+        if (control?.kind in setOf("goalStatus", "goalPause", "goalClear", "goalResume")) handoff.savedGoalOwner(key)?.let { return it }
+        handoff.goalOwner(key)?.let { return it }
+        handoff.requireReady(key)
+        handoff.childThreadOwner(key)?.let { return it }
+        if (control != null && control.kind != "planTurn") handoff.owner(key)?.let { return it.accountId }
+        if (handoff.owner(key) != null || handoff.wasReset(key)) return null
+        val latest = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).stateStore
+            .getLatestTaskForChat(project.id, chatId, AgentKind.CODEX.name) ?: return null
+        val id = CodexAccounts.taskAccount(latest.providerJson) ?: return null
+        val account = codexAuthController.accounts.requireUsable(id)
+        val scope = NativeConversationScope.key(chatId, workspace, provider, "codex-account:${account.id}:${account.scope}")
+        return id.takeIf { control != null && control.kind != "planTurn" || preferences.loadCodexGoalThread(project.id, scope) != null }
+    }
+
+    fun reconnectCodexAccount(id: String) {
+        if (!canModifyCodexAccounts() || codexAuthController.isLoginInFlight) return
+        _state.update { it.copy(codexAccountRevision = it.codexAccountRevision + 1, usage = com.jarves.mh.model.AgentUsage()) }
+        viewModelScope.launch { codexAuthController.beginLogin(id) }
+    }
+
+    fun setCodexAccountEnabled(id: String, enabled: Boolean) {
+        runCatching { codexAuthController.setAccountEnabled(id, enabled) }
+            .onSuccess { refreshCodexAuthStatus() }
+            .onFailure { error -> _state.update { it.copy(toastMessage = error.message) } }
+    }
+
+    fun renameCodexAccount(id: String, label: String) {
+        runCatching { codexAuthController.renameAccount(id, label) }
+            .onFailure { error -> _state.update { it.copy(toastMessage = error.message) } }
+    }
+
+    fun removeCodexAccount(id: String) {
+        viewModelScope.launch {
+            runCatching { codexAuthController.logout(id) }
+                .onFailure { error -> _state.update { it.copy(toastMessage = error.message) } }
+        }
+    }
+
     fun startCodexLogin() {
         if (codexAuthController.isLoginInFlight) return
         if (_state.value.agentInstalling != null) {
             _state.update { it.copy(toastMessage = "Wait for the current install to finish, then sign in.") }
             return
         }
-        if (_state.value.isRunning) {
-            _state.update { it.copy(toastMessage = "Stop the current task before signing in.") }
+        if (!canModifyCodexAccounts()) {
+            _state.update { it.copy(toastMessage = "Wait for running and queued tasks to finish before signing in.") }
             return
         }
         if (!installer.isAgentInstalled(AgentKind.CODEX)) {
@@ -2503,6 +2602,9 @@ class MainViewModel(
      * provider, saved for the Codex agent only. A model the user already picked is kept.
      */
     private fun adoptCodexAccountLogin() {
+        codexAuthController.accounts.selectedId()?.let { id ->
+            preferences.saveModelList(AgentKind.CODEX, ProviderKind.CHATGPT, "", emptyList(), accountId = id)
+        }
         val existing = preferences.loadProvider(vault, AgentKind.CODEX)
         val profile = if (existing.kind == ProviderKind.CHATGPT) {
             existing.copy(hasSecret = true)
@@ -2996,17 +3098,30 @@ class MainViewModel(
 
     /** Discover from the provider, then keep the list so Settings and chat show the same models. */
     suspend fun discoverModels(profile: ProviderProfile, secret: String): ModelDiscoveryResult {
-        val result = fetchModelList(profile, secret)
-        // Antigravity lists carry live quota labels, so they are never saved.
+        val current = _state.value
+        val id = current.selectedCodexAccountId
+        val revision = current.codexAccountRevision
+        if (profile.kind == ProviderKind.CHATGPT && id == null) return ModelDiscoveryResult.Failure("Choose a ChatGPT account first.")
+        val result = fetchModelList(profile, secret, id)
+        if (profile.kind == ProviderKind.CHATGPT &&
+            (id != _state.value.selectedCodexAccountId || revision != _state.value.codexAccountRevision)) {
+            return ModelDiscoveryResult.Failure("Account changed. Refresh models for the selected account.")
+        }
         if (result is ModelDiscoveryResult.Success && profile.kind != ProviderKind.ANTIGRAVITY_SERVER) {
-            preferences.saveModelList(_state.value.agentKind, profile.kind, profile.baseUrl, result.models)
+            preferences.saveModelList(current.agentKind, profile.kind, profile.baseUrl, result.models,
+                accountId = id.takeIf { profile.kind == ProviderKind.CHATGPT })
         }
         return result
     }
 
-    private suspend fun fetchModelList(profile: ProviderProfile, secret: String): ModelDiscoveryResult {
+    private suspend fun fetchModelList(profile: ProviderProfile, secret: String, accountId: String? = _state.value.selectedCodexAccountId): ModelDiscoveryResult {
         if (profile.kind == ProviderKind.CHATGPT) {
-            return withContext(Dispatchers.IO) { codexModelCatalog.fetch() }
+            if (accountId == null) return ModelDiscoveryResult.Failure("Choose a ChatGPT account first.")
+            return withContext(Dispatchers.IO) {
+                if (runCatching { codexAuthController.accounts.requireUsable(accountId) }.isFailure)
+                    ModelDiscoveryResult.Failure("Enable or reconnect this ChatGPT account first.")
+                else codexModelCatalog.fetch(accountId)
+            }
         }
         if (profile.kind == ProviderKind.CLAUDE) {
             return ModelDiscoveryResult.Success(com.jarves.mh.model.CLAUDE_SUBSCRIPTION_MODELS, "Claude Code")
@@ -3926,121 +4041,113 @@ class MainViewModel(
     }
 
     fun startGitHubLogin() {
+        if (githubRestartJob?.isActive == true || githubAuthProcess?.isAlive == true) return
         if (_state.value.githubAuthStatus == GitHubAuthStatus.STARTING || _state.value.githubAuthStatus == GitHubAuthStatus.AWAITING_USER) return
         _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.STARTING, githubMessage = "Preparing official GitHub sign-in…") }
         startGitHubForegroundOperation()
         githubAuthJob = viewModelScope.launch {
+            val owner = currentCoroutineContext()[Job]
             try {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    installer.ensureGitHubCliInstalled { progress ->
-                        _state.update { it.copy(githubMessage = progress.message) }
-                    }
-                    val runtime = installer.installedRuntime()
-                    val outputFile = File(getApplication<Application>().cacheDir, "github-auth-${System.nanoTime()}.log")
-                    val workspace = File(getApplication<Application>().filesDir, "workspaces/github-auth").apply { mkdirs() }
-                    val process = installer.process(
-                        runtime.proot,
-                        runtime.rootfs,
-                        workspace,
-                        githubCliEnvironment(),
-                        listOf(
-                            RuntimeInstaller.GITHUB_CLI_GUEST_PATH,
-                            "auth", "login",
-                            "--hostname", "github.com",
-                            "--git-protocol", "https",
-                            "--web",
-                            "--insecure-storage",
-                        ),
-                        guestWorkspacePath = "/workspace/github-auth",
-                        outputFile = outputFile,
-                    )
-                    githubAuthProcess = process
-                    var offset = 0L
-                    val captured = StringBuilder()
-                    var browserOpened = false
-                    try {
-                        while (process.isAlive || outputFile.length() > offset) {
-                            if (outputFile.length() > offset) {
-                                val count = (outputFile.length() - offset).coerceAtMost(16L * 1024).toInt()
-                                val bytes = ByteArray(count)
-                                RandomAccessFile(outputFile, "r").use { file -> file.seek(offset); file.readFully(bytes) }
-                                offset += count
-                                captured.append(bytes.toString(Charsets.UTF_8))
-                                val clean = sanitizeTerminalOutput(captured.toString()).takeLast(20_000)
-                                val code = GITHUB_DEVICE_CODE.find(clean)?.value
-                                if (code != null && !browserOpened) {
-                                    browserOpened = true
-                                    _state.update {
-                                        it.copy(
-                                            githubAuthStatus = GitHubAuthStatus.AWAITING_USER,
-                                            githubUserCode = code,
-                                            githubVerificationUri = GITHUB_DEVICE_URL,
-                                            githubMessage = "Enter this one-time code on GitHub",
-                                        )
-                                    }
-                                    openExternalUrl(GITHUB_DEVICE_URL)
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        installer.ensureGitHubCliInstalled { progress ->
+                            _state.update { it.copy(githubMessage = progress.message) }
+                        }
+                        val runtime = installer.installedRuntime()
+                        val outputFile = File(getApplication<Application>().cacheDir, "github-auth-${System.nanoTime()}.log")
+                        val workspace = File(getApplication<Application>().filesDir, "workspaces/github-auth").apply { mkdirs() }
+                        currentCoroutineContext().ensureActive()
+                        val process = installer.process(
+                            runtime.proot,
+                            runtime.rootfs,
+                            workspace,
+                            githubCliEnvironment(),
+                            listOf(
+                                RuntimeInstaller.GITHUB_CLI_GUEST_PATH,
+                                "auth", "login",
+                                "--hostname", "github.com",
+                                "--git-protocol", "https",
+                                "--web",
+                                "--insecure-storage",
+                            ),
+                            guestWorkspacePath = "/workspace/github-auth",
+                            outputFile = outputFile,
+                        )
+                        githubAuthProcess = process
+                        try {
+                            completeGitHubLogin(process, outputFile, onCode = { code ->
+                                _state.update {
+                                    it.copy(
+                                        githubAuthStatus = GitHubAuthStatus.AWAITING_USER,
+                                        githubUserCode = code,
+                                        githubVerificationUri = GITHUB_DEVICE_URL,
+                                        githubMessage = "Enter this one-time code on GitHub",
+                                    )
                                 }
-                            } else {
-                                delay(100)
-                            }
+                                openExternalUrl(GITHUB_DEVICE_URL)
+                            })
+                        } finally {
+                            if (!process.isAlive && githubAuthProcess === process) githubAuthProcess = null
                         }
-                        val exit = process.waitFor()
-                        check(exit == 0) {
-                            sanitizeTerminalOutput(captured.toString()).lineSequence().lastOrNull { it.isNotBlank() }
-                                ?: "GitHub sign-in failed (exit $exit)"
-                        }
-                    } finally {
-                        githubAuthProcess = null
-                        outputFile.delete()
+                        githubAccountLogin() ?: error("GitHub connected, but the account could not be identified")
                     }
-                    githubAccountLogin() ?: error("GitHub connected, but the account could not be identified")
                 }
-            }
-            result.onSuccess { login ->
-                preferences.githubLogin = login
-                _state.update {
-                    it.copy(
-                        githubAuthStatus = GitHubAuthStatus.CONNECTED,
-                        githubLogin = login,
-                        githubUserCode = null,
-                        githubVerificationUri = null,
-                        githubMessage = "Connected as @$login",
-                    )
+                result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+                result.onSuccess { login ->
+                    preferences.githubLogin = login
+                    _state.update {
+                        it.copy(
+                            githubAuthStatus = GitHubAuthStatus.CONNECTED,
+                            githubLogin = login,
+                            githubUserCode = null,
+                            githubVerificationUri = null,
+                            githubMessage = "Connected as @$login",
+                        )
+                    }
+                    refreshGitHubRepositories()
+                }.onFailure { error ->
+                    _state.update {
+                        it.copy(
+                            githubAuthStatus = GitHubAuthStatus.ERROR,
+                            githubUserCode = null,
+                            githubVerificationUri = null,
+                            githubMessage = error.message?.take(240) ?: "GitHub sign-in failed",
+                        )
+                    }
                 }
-                refreshGitHubRepositories()
-            }.onFailure { error ->
-                _state.update {
-                    it.copy(
-                        githubAuthStatus = GitHubAuthStatus.ERROR,
-                        githubUserCode = null,
-                        githubVerificationUri = null,
-                        githubMessage = error.message?.take(240) ?: "GitHub sign-in failed",
-                    )
-                }
-            }
             } finally {
-                stopGitHubForegroundOperation()
-                githubAuthJob = null
+                if (githubAuthJob === owner) {
+                    if (githubAuthProcess?.isAlive != true) stopGitHubForegroundOperation()
+                    githubAuthJob = null
+                }
             }
         }
     }
 
     fun generateNewGitHubCode() {
-        githubAuthProcess?.destroy()
-        githubAuthJob?.cancel()
-        githubAuthProcess = null
-        githubAuthJob = null
-        stopGitHubForegroundOperation()
-        _state.update {
-            it.copy(
-                githubAuthStatus = GitHubAuthStatus.DISCONNECTED,
-                githubUserCode = null,
-                githubVerificationUri = null,
-                githubMessage = "Generating a new GitHub code…",
-            )
+        if (githubRestartJob?.isActive == true) return
+        val previous = githubAuthJob
+        _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.STARTING,
+            githubUserCode = null, githubVerificationUri = null, githubMessage = "Closing the previous sign-in…") }
+        githubRestartJob = viewModelScope.launch {
+            try {
+                previous?.cancelAndJoin()
+                withContext(Dispatchers.IO) {
+                    githubAuthProcess?.let { child ->
+                        check(closeAuthProcess(child)) { "GitHub sign-in is still closing. Try again later." }
+                        if (githubAuthProcess === child) githubAuthProcess = null
+                    }
+                }
+                _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.DISCONNECTED) }
+                githubRestartJob = null
+                startGitHubLogin()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.ERROR,
+                    githubMessage = "Could not close the previous sign-in. Try again.") }
+            } finally { githubRestartJob = null }
         }
-        startGitHubLogin()
     }
 
     fun refreshGitHubRepositories() {
@@ -4201,27 +4308,15 @@ class MainViewModel(
     }
 
     private fun startGitHubForegroundOperation() {
-        ContextCompat.startForegroundService(
-            getApplication(),
-            Intent(getApplication(), com.jarves.mh.runtime.RuntimeExecutionService::class.java)
-                .setAction(com.jarves.mh.runtime.RuntimeExecutionService.ACTION_START)
-                .putExtra(com.jarves.mh.runtime.RuntimeExecutionService.EXTRA_PROJECT_NAME, "GitHub sign-in")
-                .putExtra(com.jarves.mh.runtime.RuntimeExecutionService.EXTRA_TITLE, "Connecting GitHub")
-                .putExtra(com.jarves.mh.runtime.RuntimeExecutionService.EXTRA_CAN_STOP, false),
-        )
+        githubForegroundOwner = runCatching {
+            com.jarves.mh.runtime.AuthForegroundService.acquire(getApplication(), "Connecting GitHub")
+        }.getOrNull()
     }
 
     private fun stopGitHubForegroundOperation() {
-        runCatching {
-            getApplication<Application>().startService(
-                Intent(getApplication(), com.jarves.mh.runtime.RuntimeExecutionService::class.java)
-                    .setAction(com.jarves.mh.runtime.RuntimeExecutionService.ACTION_CANCELLED),
-            )
-        }.onFailure {
-            getApplication<Application>().stopService(
-                Intent(getApplication(), com.jarves.mh.runtime.RuntimeExecutionService::class.java),
-            )
-        }
+        val owner = githubForegroundOwner ?: return
+        githubForegroundOwner = null
+        runCatching { com.jarves.mh.runtime.AuthForegroundService.release(getApplication(), owner) }
     }
 
     fun renameProject(projectId: String, newName: String) {
@@ -5322,9 +5417,14 @@ class MainViewModel(
     fun refreshUsage() {
         if (_state.value.usageRefreshing) return
         _state.update { it.copy(usageRefreshing = true) }
+        val owner = _state.value
         viewModelScope.launch {
             val usage = loadUsage()
-            _state.update { it.copy(usage = usage, usageRefreshing = false) }
+            _state.update {
+                if (owner.agentKind == it.agentKind && owner.provider.kind == it.provider.kind &&
+                    owner.selectedCodexAccountId == it.selectedCodexAccountId && owner.codexAccountRevision == it.codexAccountRevision) it.copy(usage = usage, usageRefreshing = false)
+                else it.copy(usageRefreshing = false)
+            }
         }
     }
 
@@ -5332,7 +5432,13 @@ class MainViewModel(
     private suspend fun loadUsage(): com.jarves.mh.model.AgentUsage {
         val current = _state.value
         val usage = when (current.agentKind) {
-            AgentKind.CODEX -> withContext(Dispatchers.IO) { codexModelCatalog.fetchUsage() }
+            AgentKind.CODEX -> if (current.provider.kind == ProviderKind.CHATGPT && current.selectedCodexAccountId != null) {
+                withContext(Dispatchers.IO) {
+                    if (runCatching { codexAuthController.accounts.requireUsable(current.selectedCodexAccountId) }.isFailure)
+                        com.jarves.mh.model.AgentUsage(note = "Enable or reconnect this ChatGPT account first.")
+                    else codexModelCatalog.fetchUsage(current.selectedCodexAccountId)
+                }
+            } else com.jarves.mh.model.AgentUsage(note = "Select a ChatGPT account to read plan usage.")
             AgentKind.CLAUDE_CODE -> com.jarves.mh.runtime.ClaudeUsageReport.parse(preferences.claudeRateLimitEvent).let {
                 if (preferences.claudeRateLimitEvent.isNullOrBlank()) it else it.copy(
                     note = "Last CLI report; Refresh reads cached limits.",
@@ -5371,10 +5477,13 @@ class MainViewModel(
 
     /** Model lists saved by Discover in Settings, for this agent's provider and endpoint. */
     fun savedModelsFor(agent: AgentKind, provider: ProviderProfile): List<com.jarves.mh.network.DiscoveredModel> =
-        preferences.loadModelList(agent, provider.kind, provider.baseUrl)
+        preferences.loadModelList(agent, provider.kind, provider.baseUrl, modelAccountId(provider.kind))
 
     fun savedModelList(kind: ProviderKind, baseUrl: String): List<com.jarves.mh.network.DiscoveredModel> =
-        preferences.loadModelList(_state.value.agentKind, kind, baseUrl)
+        preferences.loadModelList(_state.value.agentKind, kind, baseUrl, modelAccountId(kind))
+
+    private fun modelAccountId(kind: ProviderKind): String? =
+        if (kind == ProviderKind.CHATGPT) _state.value.selectedCodexAccountId ?: "unselected" else null
 
     fun setCustomizationScopeMode(mode: CustomizationScopeMode) {
         val project = _state.value.activeProject ?: return
@@ -5413,24 +5522,35 @@ class MainViewModel(
         saveCustomizationConfig(project, newConfig)
     }
 
-    fun linkSkill(sourceProjectId: String, skillName: String, relativeSkillPath: String = ".agents/skills/$skillName") {
-        val project = _state.value.activeProject ?: return
+    fun linkSkill(sourceProjectId: String, skillName: String, relativeSkillPath: String = ".agents/skills/$skillName"): Boolean {
+        val project = _state.value.activeProject ?: return false
         val sourceProj = _state.value.projects.firstOrNull { it.id == sourceProjectId }
-        val sourceProjectName = sourceProj?.name ?: "Other Project"
+        if (sourceProj == null) return false
+        val sourceProjectName = sourceProj.name
+        val sourceRoot = projectWorkspaceRoot(sourceProj)
+        val discovered = _state.value.otherProjectsSkills.entries.firstOrNull { it.key.id == sourceProjectId }
+            ?.value?.firstOrNull { it.name.equals(skillName, true) }
+        val relative = if (relativeSkillPath == ".agents/skills/$skillName" && discovered != null)
+            File(discovered.filePath).parentFile!!.relativeTo(sourceRoot).invariantSeparatorsPath else relativeSkillPath
+        if (com.jarves.mh.runtime.SkillFiles.contained(sourceRoot, "$relative/SKILL.md")?.isFile != true) {
+            _state.update { it.copy(toastMessage = "Skill '$skillName' is missing or outside its source project.") }
+            return false
+        }
         val currentConfig = _state.value.activeCustomizationConfig
         if (currentConfig.linkedSkills.any { it.sourceProjectId == sourceProjectId && it.skillName.equals(skillName, ignoreCase = true) }) {
             _state.update { it.copy(toastMessage = "Skill '$skillName' is already linked.") }
-            return
+            return false
         }
         val newRef = LinkedSkillReference(
             sourceProjectId = sourceProjectId,
             sourceProjectName = sourceProjectName,
             skillName = skillName,
-            relativeSkillPath = relativeSkillPath,
+            relativeSkillPath = relative,
         )
         val newConfig = currentConfig.copy(linkedSkills = currentConfig.linkedSkills + newRef)
         saveCustomizationConfig(project, newConfig)
         _state.update { it.copy(toastMessage = "Linked '$skillName' from $sourceProjectName.") }
+        return true
     }
 
     fun unlinkSkill(linkIdOrSkillName: String) {
@@ -5539,8 +5659,14 @@ class MainViewModel(
             "clear" -> {
                 val owner = _state.value
                 owner.activeProject?.let { project ->
-                    owner.activeChatId?.let { chat ->
+                    (owner.activeChatId ?: "default").let { chat ->
                         AgentKind.entries.forEach { preferences.clearAgentConversation(it, project.id, chat) }
+                        val handoff = CodexConversationHandoff(installer.rootfs)
+                        handoff.clearChat("${project.id}:$chat")
+                        if (owner.agentKind == AgentKind.CODEX && owner.provider.kind == ProviderKind.CHATGPT) {
+                            val workspace = WorkspaceCheckpoints(getApplication<Application>().filesDir).ensureWorkspace(project.id)
+                            handoff.reset(NativeConversationScope.key(chat, workspace, owner.provider, "codex-account-pool"), "${project.id}:$chat")
+                        }
                     }
                 }
                 _state.update {
@@ -5606,14 +5732,21 @@ class MainViewModel(
             "usage" -> {
                 val pending = ChatMessage(fromUser = false, text = "Checking usage…")
                 _state.update { it.copy(messages = it.messages + ChatMessage(fromUser = true, text = "/usage") + pending) }
+                val owner = _state.value
                 viewModelScope.launch {
                     val usage = loadUsage()
                     _state.update { current ->
-                        val summary = com.jarves.mh.model.usageSummary(current.agentKind, current.tokenMetrics, usage)
-                        current.copy(
-                            usage = usage,
-                            messages = current.messages.dropLast(1) + ChatMessage(fromUser = false, text = summary),
-                        )
+                        if (current.activeProject?.id != owner.activeProject?.id || current.activeChatId != owner.activeChatId) current
+                        else {
+                            val stillOwned = current.agentKind == owner.agentKind && current.provider.kind == owner.provider.kind &&
+                                current.selectedCodexAccountId == owner.selectedCodexAccountId && current.codexAccountRevision == owner.codexAccountRevision
+                            val summary = if (stillOwned) com.jarves.mh.model.usageSummary(owner.agentKind, owner.tokenMetrics, usage)
+                                else "Account changed. Run /usage again to check the selected account."
+                            current.copy(
+                                usage = if (stillOwned) usage else current.usage,
+                                messages = current.messages.map { if (it.id == pending.id) it.copy(text = summary) else it },
+                            )
+                        }
                     }
                     persistMessages()
                 }
@@ -5702,7 +5835,7 @@ class MainViewModel(
             }
             "skills", "skill" -> {
                 val trimmedArgs = args.trim()
-                val parts = trimmedArgs.split("\\s+".toRegex()).filter { it.isNotBlank() }
+                val parts = SlashCommandEngine.tokenizeArgs(trimmedArgs)
                 val project = _state.value.activeProject
                 val replyText = when {
                     parts.isEmpty() -> {
@@ -5731,10 +5864,10 @@ class MainViewModel(
                             }
                             appendLine()
                             appendLine("*Available commands:*")
-                            appendLine("- `/skill link <projectName> <skillName>`")
-                            appendLine("- `/skill unlink <skillName>`")
-                            appendLine("- `/skill import <projectName> <skillName>`")
-                            appendLine("- `/skill promote <skillName>`")
+                            appendLine("- `/skills link <projectName> <skillName>`")
+                            appendLine("- `/skills unlink <skillName>`")
+                            appendLine("- `/skills import <projectName> <skillName>`")
+                            appendLine("- `/skills promote <skillName>`")
                         }
                     }
                     parts[0].equals("link", ignoreCase = true) && parts.size >= 3 -> {
@@ -5746,8 +5879,8 @@ class MainViewModel(
                         if (sourceProj == null) {
                             "Error: Project '$sourceTarget' not found in registered projects."
                         } else {
-                            linkSkill(sourceProj.id, skillName)
-                            "✓ Linked skill '$skillName' from project '${sourceProj.name}' into current workspace."
+                            if (linkSkill(sourceProj.id, skillName)) "✓ Linked skill '$skillName' from project '${sourceProj.name}' into current workspace."
+                            else "Could not link '$skillName'. Check its source path or existing link."
                         }
                     }
                     parts[0].equals("unlink", ignoreCase = true) && parts.size >= 2 -> {
@@ -5764,9 +5897,10 @@ class MainViewModel(
                         if (sourceProj == null) {
                             "Error: Project '$sourceTarget' not found."
                         } else {
-                            val sourceSkillDir = File(getApplication<Application>().filesDir, "workspaces/${sourceProj.id}/.agents/skills/$skillName")
-                            if (!sourceSkillDir.isDirectory) {
-                                "Error: Skill directory not found at ${sourceSkillDir.path}"
+                            val sourceSkillDir = skillManager.scanProjectWorkspaceForSkills(projectWorkspaceRoot(sourceProj), SkillSource.OTHER_PROJECT)
+                                .firstOrNull { it.name.equals(skillName, true) }?.let { File(it.filePath).parentFile }
+                            if (sourceSkillDir == null || !sourceSkillDir.isDirectory) {
+                                "Error: Skill '$skillName' not found in ${sourceProj.name}."
                             } else {
                                 importSkill(sourceSkillDir, skillName)
                                 "✓ Importing '$skillName' from '${sourceProj.name}' into `.agents/skills/$skillName`…"
@@ -5779,16 +5913,17 @@ class MainViewModel(
                             "Error: No active workspace."
                         } else {
                             val workspace = projectWorkspaceRoot(project)
-                            val sourceSkillDir = File(workspace, ".agents/skills/$skillName")
-                            if (!sourceSkillDir.isDirectory) {
-                                "Error: Local workspace skill '$skillName' not found at ${sourceSkillDir.path}"
+                            val sourceSkillDir = skillManager.scanProjectWorkspaceForSkills(workspace, SkillSource.PROJECT)
+                                .firstOrNull { it.name.equals(skillName, true) }?.let { File(it.filePath).parentFile }
+                            if (sourceSkillDir == null || !sourceSkillDir.isDirectory) {
+                                "Error: Local workspace skill '$skillName' not found."
                             } else {
                                 promoteSkillToGlobal(sourceSkillDir, skillName)
                                 "✓ Promoted '$skillName' to Global Library."
                             }
                         }
                     }
-                    else -> "Invalid syntax. Usage: `/skill [link <project> <skill> | unlink <skill> | import <project> <skill> | promote <skill>]`"
+                    else -> "Invalid syntax. Usage: `/skills [link <project> <skill> | unlink <skill> | import <project> <skill> | promote <skill>]`"
                 }
                 _state.update {
                     it.copy(
@@ -5934,7 +6069,7 @@ class MainViewModel(
     }
 
     /** [fromQueue]: a queued follow-up being sent; it carries its own attachments and leaves the composer's alone. */
-    private fun sendPrompt(prompt: String, attachments: List<ChatAttachment>, fromQueue: Boolean) {
+    private fun sendPrompt(prompt: String, attachments: List<ChatAttachment>, fromQueue: Boolean, queuedCodexAccountId: String? = null) {
         val project = state.value.activeProject ?: return
         if (_state.value.agentKind == AgentKind.ANTIGRAVITY &&
             _state.value.antigravityAuth.status != AntigravityAuthStatus.SIGNED_IN) {
@@ -5947,6 +6082,49 @@ class MainViewModel(
         }
         val trimmed = prompt.trim()
         if (trimmed.isBlank() && attachments.isEmpty()) return
+        val parsedCmd = SlashCommandEngine.parseCommand(trimmed)
+        val nativeControl = if (_state.value.agentKind == AgentKind.CODEX && parsedCmd?.first?.name in setOf("compact", "plan", "goal", "review")) {
+            try { CodexNativeControl.parse(parsedCmd!!.first.name, parsedCmd.second) }
+            catch (error: Exception) {
+                appendNativeCommandResult(trimmed, error.message ?: "Invalid native Codex command.")
+                return
+            }
+        } else null
+        if (nativeControl != null && nativeControl.kind !in setOf("goalSet", "planTurn") && attachments.isNotEmpty()) {
+            appendNativeCommandResult(trimmed, "Attach files to a goal objective, a planning task or a regular task; this native control does not accept attachments.")
+            return
+        }
+        if (nativePlanJob?.isActive == true) {
+            _state.update { it.copy(toastMessage = "Wait for Codex Plan mode to finish updating.") }
+            return
+        }
+        if (nativeControl?.localPlan == true) {
+            val owner = state.value
+            val chatId = owner.activeChatId ?: "default"
+            val accountId = if (owner.provider.kind == ProviderKind.CHATGPT) {
+                runCatching { codexContextOwner(project, chatId, owner.provider, nativeControl) ?: queuedCodexAccountId ?: codexAuthController.accounts.selected().id }.getOrElse {
+                    appendNativeCommandResult(trimmed, it.message ?: "Choose a ChatGPT account first.")
+                    return
+                }
+            } else null
+            nativePlanJob = viewModelScope.launch {
+                val message = runCatching { codexRuntime.configurePlanMode(project.id, chatId, owner.provider,
+                    accountId, nativeControl) }.getOrElse { it.message ?: "Could not update Plan mode." }
+                if (state.value.activeProject?.id == project.id && (state.value.activeChatId ?: "default") == chatId && state.value.agentKind == AgentKind.CODEX) {
+                    appendNativeCommandResult(trimmed, message)
+                }
+            }
+            return
+        }
+        if (nativeControl?.goalControl == true && state.value.isRunning) {
+            if (!codexRuntime.requestGoalControl(nativeControl, project.id, state.value.activeChatId ?: "default")) {
+                _state.update { it.copy(toastMessage = "A native goal control is pending or this chat does not own the running Codex task.") }
+            } else {
+                _state.update { it.copy(messages = it.messages + ChatMessage(fromUser = true, text = trimmed), slashCommandsVisible = false) }
+                persistMessages()
+            }
+            return
+        }
         // While a task or Android build runs, or earlier follow-ups still wait, the message joins the queue in order.
         if (!fromQueue && (state.value.isRunning || state.value.androidBuildRunning || state.value.queuedFollowUps.isNotEmpty())) {
             queueFollowUp(project, prompt, attachments)
@@ -5960,12 +6138,31 @@ class MainViewModel(
         }
 
         // Check if input is a slash command
-        val parsedCmd = SlashCommandEngine.parseCommand(trimmed)
+        if (parsedCmd != null && _state.value.agentKind !in parsedCmd.first.supportedAgents) {
+            _state.update { it.copy(messages = it.messages + ChatMessage(fromUser = true, text = trimmed) +
+                ChatMessage(fromUser = false, text = "/${parsedCmd.first.name} is not supported by ${it.agentKind.title}.")) }
+            persistMessages()
+            return
+        }
         if (parsedCmd != null && parsedCmd.first.isLocalOnly) {
             executeLocalSlashCommand(parsedCmd.first, parsedCmd.second)
             return
         }
 
+        if (codexAuthController.isLoginInFlight) {
+            _state.update { it.copy(toastMessage = "Finish or cancel ChatGPT sign-in before starting a task.") }
+            return
+        }
+
+        // Reject unavailable skill bodies before loading any host-only content.
+        val requestedSkill = trimmed.removePrefix("/").substringBefore(' ').substringBefore('\n')
+        val unavailableSkill = _state.value.activeSkills.firstOrNull {
+            it.name.equals(requestedSkill, true) && it.isEnabled && (it.isMissingSource || it.guestFilePath == null)
+        }
+        if (parsedCmd == null && trimmed.startsWith("/") && unavailableSkill != null) {
+            _state.update { it.copy(toastMessage = "Skill '${unavailableSkill.name}' is unavailable. Check its source, resources and size limits.") }
+            return
+        }
         // Check if input is a skill invocation
         val userSkill = if (parsedCmd == null) {
             SlashCommandEngine.parseSkillInvocation(trimmed, _state.value.activeSkills)
@@ -6004,6 +6201,8 @@ class MainViewModel(
 
         // Format agent workflow command, skill invocation, or use plain prompt
         val effectivePrompt = when {
+            nativeControl != null -> if (nativeControl.kind in setOf("goalSet", "planTurn")) nativeControl.text
+                else if (nativeControl.kind == "goalResume") "" else trimmed
             parsedCmd != null -> {
                 SlashCommandEngine.buildPromptForCommand(parsedCmd.first, parsedCmd.second, _state.value.agentKind)
             }
@@ -6020,6 +6219,28 @@ class MainViewModel(
             }
         }
 
+        val pinnedCodexAccount = if (state.value.agentKind == AgentKind.CODEX && state.value.provider.kind == ProviderKind.CHATGPT) {
+            runCatching {
+                val account = codexAuthController.accounts.selectForTask(
+                    pinnedId = codexContextOwner(project, state.value.activeChatId ?: "default", state.value.provider, nativeControl) ?: queuedCodexAccountId,
+                    model = state.value.provider.model,
+                )
+                val catalog = preferences.loadModelList(AgentKind.CODEX, ProviderKind.CHATGPT, state.value.provider.baseUrl, accountId = account.id)
+                require(state.value.provider.model.isBlank() || catalog.isEmpty() || catalog.any { it.id == state.value.provider.model }) {
+                    "This model is not in the routed account's saved catalog. Discover models for that account or choose Codex default."
+                }
+                account.id
+            }.getOrElse { error ->
+                _state.update { it.copy(toastMessage = error.message ?: "Choose a ChatGPT account first.") }
+                return
+            }
+        } else null
+
+        val managedCodexTask = pinnedCodexAccount != null && run {
+            val key = NativeConversationScope.key(state.value.activeChatId ?: "default", WorkspaceCheckpoints(getApplication<Application>().filesDir).ensureWorkspace(project.id), state.value.provider, "codex-account-pool")
+            val handoff = CodexConversationHandoff(installer.rootfs)
+            codexAuthController.accounts.balancingEnabled || handoff.hasState(key)
+        }
         val requestText = effectivePrompt
         updateActiveChatTitle(requestText)
 
@@ -6037,13 +6258,16 @@ class MainViewModel(
                 pendingAttachments = if (fromQueue) it.pendingAttachments else emptyList(),
                 isRunning = true,
                 slashCommandsVisible = false,
+                liveWorkStatus = WorkStatus.WORKING,
                 filteredSkills = emptyList(),
                 activity = listOf(ActivityItem(
                     if (skillName != null) "Applying skill: $skillName" else "Understanding your request",
                     if (skillName != null) "Executing skill directives" else "Preparing a safe plan",
                     false
                 )) + it.activity,
-                liveProcess = listOf(ActivityItem(
+                liveProcess = listOfNotNull(pinnedCodexAccount?.let { id ->
+                    ActivityItem("ChatGPT account", it.codexAccounts.firstOrNull { account -> account.id == id }?.label ?: "Selected account")
+                }) + listOf(ActivityItem(
                     "Think",
                     if (skillName != null) "Applying skill: $skillName - ${requestPlanningSummary(requestText, it.agentKind)}"
                     else requestPlanningSummary(requestText, it.agentKind),
@@ -6102,20 +6326,26 @@ class MainViewModel(
                 projectSlug = project.slug,
                 chatId = state.value.activeChatId ?: "default",
                 agentKind = state.value.agentKind.name,
-                providerJson = state.value.provider.kind.name,
+                providerJson = pinnedCodexAccount?.let(CodexAccounts::taskProvider) ?: state.value.provider.kind.name,
                 prompt = runtimePrompt,
-                objective = requestText.ifBlank { runtimePrompt }
+                objective = requestText.ifBlank { runtimePrompt },
+                nativeControlJson = nativeControl?.encode(),
+                maxRetries = if (nativeControl != null || managedCodexTask) 0 else 2,
+                singleOperation = managedCodexTask,
             )
         } catch (t: Throwable) {
             runCatching { android.util.Log.e("MainViewModel", "Failed to create task in sendPrompt", t) }
             _state.update {
-                it.copy(
+                val finishedAt = System.currentTimeMillis()
+                finishWorkSegment(it, finishedAt, ActivityItem("Task failed", "Could not start the task: ${t.localizedMessage ?: t.message}"), WorkStatus.FAILED).copy(
                     isRunning = false,
                     liveThinking = false,
+                    taskFinishedAtMillis = finishedAt,
                     activeSessionId = null,
                     toastMessage = "Task creation error: ${t.localizedMessage ?: t.message}",
                 )
             }
+            persistMessages(includeLiveProcess = true, immediate = true)
             return
         }
         activeRuntimeRequest = RuntimeRetryRequest(
@@ -6133,7 +6363,7 @@ class MainViewModel(
         attemptedProfileIds.clear()
         state.value.provider.profileId.takeIf { it.isNotBlank() }?.let { attemptedProfileIds += it }
         emitModEvent(ModEvent.TASK_STARTED, { mapOf("task.prompt" to prompt.trim()) }, project = project)
-        supervisor.registerFallbackDecider(taskRecord.taskId) { taskId, errorMsg ->
+        if (nativeControl == null && !managedCodexTask) supervisor.registerFallbackDecider(taskRecord.taskId) { taskId, errorMsg ->
             applyFallbackForTask(taskId, errorMsg)
         }
         activeUiTaskId = taskRecord.taskId
@@ -6185,6 +6415,12 @@ class MainViewModel(
         }
     }
 
+    private fun appendNativeCommandResult(request: String, result: String) {
+        _state.update { it.copy(messages = it.messages + ChatMessage(fromUser = true, text = request) +
+            ChatMessage(fromUser = false, text = result), slashCommandsVisible = false) }
+        persistMessages()
+    }
+
     /** Only the durable supervisor outcome can finish chat or record task success. */
     private fun finishSupervisedTask(taskId: String) {
         val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
@@ -6197,6 +6433,7 @@ class MainViewModel(
             verified -> "Task completed"
             unverified -> "Task finished — unverified"
             cancelled -> "Task stopped"
+            record.status == com.jarves.mh.runtime.task.TaskExecutionStatus.ABANDONED -> "Task interrupted"
             else -> "Task failed"
         }
         val detail = when {
@@ -6218,7 +6455,7 @@ class MainViewModel(
                     unverified || cancelled -> TaskRegistry.terminate(current.backgroundTasks, "*")
                     else -> TaskRegistry.failRunning(current.backgroundTasks)
                 }
-                attachTaskDuration(finishWorkSegment(current, finishedAt), finishedAt).copy(
+                attachTaskDuration(finalizeTaskWork(current, activeUiTaskId, record, title, detail, finishedAt), finishedAt).copy(
                     isRunning = false,
                     isStopping = false,
                     activeSessionId = null,
@@ -6281,6 +6518,8 @@ class MainViewModel(
             chatId = FollowUpQueue.chatKey(_state.value.activeChatId),
             prompt = prompt.trim(),
             attachments = attachments,
+            codexAccountId = if (_state.value.agentKind == AgentKind.CODEX && _state.value.provider.kind == ProviderKind.CHATGPT && !codexAuthController.accounts.balancingEnabled)
+                _state.value.selectedCodexAccountId ?: CodexAccounts.LEGACY else null,
         )
         _state.update {
             it.copy(
@@ -6353,7 +6592,7 @@ class MainViewModel(
                     it.copy(queuedFollowUps = rest)
                 }
                 val item = next ?: break
-                sendPrompt(item.prompt, item.attachments, fromQueue = true)
+                sendPrompt(item.prompt, item.attachments, fromQueue = true, queuedCodexAccountId = item.codexAccountId)
                 // A local command or a rejected prompt starts no task; go on to the next follow-up.
                 if (_state.value.isRunning) break
             }
@@ -6398,12 +6637,16 @@ class MainViewModel(
             )
         }
         val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
+        val stoppingTaskId = activeUiTaskId
+        val stoppingRuntime = activeRuntime()
         viewModelScope.launch {
-            supervisor.requestStopActive(force = false)
-            activeRuntime().stopActiveSession()
+            if (stoppingRuntime === codexRuntime && stoppingTaskId != null) supervisor.requestStop(stoppingTaskId, force = false)
+            else supervisor.requestStopActive(force = false)
+            // Codex's task-scoped handler already pauses and closes its native process.
+            if (stoppingRuntime !== codexRuntime) stoppingRuntime.stopActiveSession()
             // Auto-escalate to force kill after 1500ms if still alive.
             delay(1500)
-            if (_state.value.isStopping) {
+            if (activeUiTaskId == stoppingTaskId && _state.value.isStopping) {
                 forceKillTask()
             }
         }
@@ -6414,10 +6657,13 @@ class MainViewModel(
         if (!_state.value.isRunning && !_state.value.isStopping) return
         val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
         val killedTaskId = activeUiTaskId
+        val killedRuntime = activeRuntime()
         viewModelScope.launch {
+            if (activeUiTaskId != killedTaskId) return@launch
             // Pass force=true to skip any remaining grace period and immediately kill
-            supervisor.requestStopActive(force = true)
-            runCatching { activeRuntime().stopActiveSession(force = true) }
+            if (killedRuntime === codexRuntime && killedTaskId != null) supervisor.requestStop(killedTaskId, force = true)
+            else supervisor.requestStopActive(force = true)
+            if (killedRuntime !== codexRuntime) runCatching { killedRuntime.stopActiveSession(force = true) }
             // If the bridge still hasn't emitted SessionFailed, force-clear UI state.
             delay(500)
             // The killed task already ended and a queued follow-up started: leave the new task's state alone.
@@ -6490,18 +6736,6 @@ class MainViewModel(
         }
     }
 
-    private fun isNoisyRuntimeItem(item: ActivityItem): Boolean {
-        val combined = "${item.title} ${item.detail}"
-        return combined.contains("Starting Claude Code", true) ||
-            combined.contains("Agent process started", true) ||
-            combined.contains("Claude Code connected", true) ||
-            combined.contains("Runtime warning", true) ||
-            combined.contains("unrecognized_model", true) ||
-            combined.contains("Writing response", true) ||
-            combined.contains("Claude Code finished", true) ||
-            combined.contains("Task completed", true)
-    }
-
     private fun toolPlanSummary(toolName: String, detail: String): String {
         val clean = detail.replace(Regex("\\s+"), " ").trim()
         val short = clean.take(90).ifBlank { "the current project" }
@@ -6538,29 +6772,6 @@ class MainViewModel(
         } else {
             "$requestPart. ${toolPlanSummary(toolName, detail)}."
         }
-    }
-
-    private fun finishWorkSegment(current: AppUiState, finishedAt: Long = System.currentTimeMillis()): AppUiState {
-        val meaningfulItems = current.liveProcess.filterNot(::isNoisyRuntimeItem)
-            .map { if (it.isComplete) it else it.copy(isComplete = true) }
-            .takeLast(MAX_VISIBLE_WORK_ITEMS)
-        if (!current.liveThinking && meaningfulItems.isEmpty()) {
-            return current.copy(liveProcess = emptyList(), workSegmentStartedAtMillis = null)
-        }
-        val startedAt = current.workSegmentStartedAtMillis ?: current.taskStartedAtMillis ?: finishedAt
-        val block = ChatMessage(
-            fromUser = false,
-            text = "",
-            workItems = meaningfulItems,
-            workedMillis = (finishedAt - startedAt).coerceAtLeast(0L),
-        )
-        return current.copy(
-            messages = current.messages + block,
-            liveProcess = emptyList(),
-            liveThinking = false,
-            activeThinkingBlockId = null,
-            workSegmentStartedAtMillis = null,
-        )
     }
 
     /** Adds the complete request duration to the response produced after the latest user message. */
@@ -6607,7 +6818,7 @@ class MainViewModel(
             _state.value.provider.kind == ProviderKind.CHATGPT &&
             event.reason.contains("not signed in", ignoreCase = true)
         ) {
-            codexAuthController.markExpired()
+            codexAuthController.markExpired(activeUiTaskId?.let { supervisor.stateStore.get(it)?.providerJson }?.let(CodexAccounts::taskAccount))
         }
         if (event is RuntimeEvent.SessionFailed && retryWithNextApiKey(event)) {
             // A predicted fallback can still fail later. Consume the close so final failure can finish chat.
@@ -6627,6 +6838,7 @@ class MainViewModel(
             } else when (event) {
                 is RuntimeEvent.SessionStarted -> current.copy(
                     activeSessionId = event.sessionId,
+                    liveWorkStatus = WorkStatus.WORKING,
                     activity = current.activity.mapIndexed { index, item -> if (index == 0) item.copy(isComplete = true) else item },
                 )
                 is RuntimeEvent.AssistantDelta -> {
@@ -6731,6 +6943,7 @@ class MainViewModel(
                     if (task?.status?.isTerminal != true) supervisor.pauseForApproval(event.sessionId)
                     appendWorkItem(current.copy(
                         pendingApproval = event.request,
+                        liveWorkStatus = WorkStatus.WAITING_FOR_APPROVAL,
                         activity = listOf(ActivityItem("Waiting for approval", event.request.explanation, false)) + current.activity,
                     ), ActivityItem("Waiting for approval", event.request.explanation, false))
                 }
@@ -6738,6 +6951,7 @@ class MainViewModel(
                     if (task?.status?.isTerminal != true) supervisor.resumeFromApproval(event.sessionId)
                     appendWorkItem(current.copy(
                         pendingApproval = null,
+                        liveWorkStatus = WorkStatus.WORKING,
                         activity = listOf(ActivityItem("Applying approved changes", "Editing project files", false)) + current.activity,
                     ), ActivityItem("Action approved", "Claude is continuing the task", false))
                 }
@@ -6745,6 +6959,7 @@ class MainViewModel(
                     if (task?.status?.isTerminal != true) supervisor.resumeFromApproval(event.sessionId)
                     appendWorkItem(current.copy(
                         pendingApproval = null,
+                        liveWorkStatus = WorkStatus.WORKING,
                     ), ActivityItem("Action rejected", "Claude will continue without this action"))
                 }
                 is RuntimeEvent.ToolCompleted -> {
@@ -6796,12 +7011,14 @@ class MainViewModel(
                 is RuntimeEvent.SessionCompleted -> appendWorkItem(
                     RuntimeSessionRouting.closeAttempt(current, event.sessionId).copy(
                         activity = listOf(ActivityItem("Checking result", "Execution finished; supervisor verification is pending", false)) + current.activity,
+                        liveWorkStatus = WorkStatus.CHECKING,
                     ),
                     ActivityItem("Checking result", "Waiting for supervisor verification", false),
                 )
                 is RuntimeEvent.SessionFailed -> appendWorkItem(
                     RuntimeSessionRouting.closeAttempt(current, event.sessionId).copy(
                         activity = listOf(ActivityItem("Attempt failed", event.reason)) + current.activity,
+                        liveWorkStatus = WorkStatus.RECOVERING,
                     ),
                     ActivityItem("Attempt failed", "${event.reason} — supervisor will decide recovery"),
                 )
@@ -7180,7 +7397,6 @@ class MainViewModel(
         private const val RECENT_EXIT_CACHE_MS = 60_000L
         private const val LEGACY_GITHUB_TOKEN_KEY = "GITHUB_APP"
         private const val GITHUB_DEVICE_URL = "https://github.com/login/device"
-        private val GITHUB_DEVICE_CODE = Regex("\\b[A-Z0-9]{4}-[A-Z0-9]{4}\\b")
         private const val TEST_PROVIDER_DEFAULTS_VERSION = 1
         private const val TEST_OPENROUTER_BASE_URL = "https://openrouter.ai/api"
         private const val TEST_OPENROUTER_MODEL = "stealth/ox-alpha"
@@ -7194,7 +7410,8 @@ class MainViewModel(
                 id = "interrupted-${UUID.randomUUID()}",
                 fromUser = false,
                 text = "",
-                workItems = liveItems.map { it.copy(isComplete = true) } + ActivityItem(
+                workStatus = WorkStatus.INTERRUPTED,
+                workItems = historicalWorkItems(liveItems) + ActivityItem(
                     "Task interrupted",
                     "The agent process stopped before reporting completion. Continue this chat to resume its official session.",
                 ),

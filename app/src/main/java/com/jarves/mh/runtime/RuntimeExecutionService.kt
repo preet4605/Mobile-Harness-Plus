@@ -282,3 +282,29 @@ class RuntimeExecutionService : Service() {
         }
     }
 }
+
+/** Each browser sign-in releases only its own foreground-service ownership. */
+internal object AuthForegroundService {
+    private val owners = mutableSetOf<Any>()
+
+    @Synchronized
+    fun acquire(context: Context, title: String): Any {
+        val owner = Any()
+        ContextCompat.startForegroundService(context,
+            Intent(context, RuntimeExecutionService::class.java)
+                .setAction(RuntimeExecutionService.ACTION_START)
+                .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, title)
+                .putExtra(RuntimeExecutionService.EXTRA_TITLE, title)
+                .putExtra(RuntimeExecutionService.EXTRA_CAN_STOP, false))
+        owners.add(owner)
+        return owner
+    }
+
+    @Synchronized
+    fun release(context: Context, owner: Any) {
+        if (!owners.remove(owner) || owners.isNotEmpty() || RuntimeTaskController.stopAction != null) return
+        if (TaskSupervisor.getInstance(context).stateStore.getActiveTasks().isNotEmpty()) return
+        context.startService(Intent(context, RuntimeExecutionService::class.java)
+            .setAction(RuntimeExecutionService.ACTION_CANCELLED))
+    }
+}

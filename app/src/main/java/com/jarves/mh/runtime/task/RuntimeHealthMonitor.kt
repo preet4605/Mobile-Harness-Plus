@@ -57,6 +57,17 @@ class RuntimeHealthMonitor {
         }
     }
 
+    /** An owned preparatory child was reaped; the task itself remains active. */
+    fun onTaskProcessClosed(pid: Int) {
+        _snapshot.update { current ->
+            current.copy(
+                activeProcessCount = (current.activeProcessCount - if (pid in current.activePids) 1 else 0).coerceAtLeast(0),
+                activePids = current.activePids - pid,
+                lastEventTimestamp = System.currentTimeMillis(),
+            )
+        }
+    }
+
     fun onTaskCompleted(taskId: String, pid: Int?) {
         _snapshot.update { current ->
             current.copy(
