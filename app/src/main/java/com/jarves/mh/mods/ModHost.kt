@@ -46,6 +46,12 @@ interface ModHostEffects : ModHookEffects {
      * [timeoutMs] while the task goes on.
      */
     suspend fun askAgent(mod: InstalledMod, harness: AgentKind?, prompt: String, context: ModEventContext, timeoutMs: Long): JSONObject
+
+    /**
+     * A `run.end` hook's `{ followUp }`: queued in [context]'s chat as the next prompt. False when
+     * that chat is no longer open or mods already chained the most follow-ups one prompt allows.
+     */
+    fun followUp(mod: InstalledMod, text: String, context: ModEventContext): Boolean
 }
 
 enum class ModEngineState(val label: String) {
@@ -110,6 +116,22 @@ data class ModSurfaces(
     val status: String?,
 )
 
+/**
+ * What the mods' gate hooks decided about an action (spec v2 §4.2 host gates). Every gate fails
+ * open: a hook that throws, runs out of time or answers nonsense passes the action on unchanged.
+ */
+data class ModGateOutcome(
+    /** The action's input after the mods' rewrites (only fields the app sent can change). */
+    val input: JSONObject,
+    /** "deny", "drop" or "confirm" when a mod answered so; null when every mod passed it on. */
+    val verdict: String? = null,
+    val reason: String? = null,
+    val modId: String? = null,
+    val modName: String? = null,
+    /** `{ context }` answers and `prompt.compose` sections, as (mod id, mod name, text). */
+    val notes: List<Triple<String, String, String>> = emptyList(),
+)
+
 /** Time limits; tests shorten them. */
 data class ModHostLimits(
     /** A call into the isolate must return within this, or the isolate is stuck. */
@@ -121,6 +143,14 @@ data class ModHostLimits(
     val endBudgetMs: Long = 1_500,
     val eventBudgetMs: Long = 10_000,
     val quickBudgetMs: Long = 1_000,
+    /** Own time for a gate on the user's tap path: prompt.submit, terminal.command, files.op, build.start. */
+    val gateBudgetMs: Long = 3_000,
+    /** Wall time a gate may wait on one mod, including its `$` calls, before passing the action on. */
+    val gateWaitMs: Long = 8_000,
+    /** Own time for `prompt.compose`. */
+    val composeBudgetMs: Long = 2_000,
+    /** Own time for Claude's `tool.call` gate. */
+    val toolBudgetMs: Long = 5_000,
     /** Own time for one `ui.render` (spec v2 §4.2). */
     val renderBudgetMs: Long = 250,
     /** At most this often per surface: 10 redraws a second. */
@@ -177,6 +207,12 @@ class ModHost(
 
     /** Events at least one running mod hooks; read from any thread to skip building unused events. */
     @Volatile private var listening: Set<String> = emptySet()
+    /**
+     * The tools Claude's PreToolUse hook must send to mods (spec v2 §7 gate channel): a matcher
+     * like "Bash|Edit", "*" for every tool, or null when no running mod may gate tools.
+     */
+    @Volatile var toolGateMatcher: String? = null
+        private set
     private val logs = HashMap<String, ArrayDeque<ModLogEntry>>()
     private val logsLock = Any()
 
@@ -236,6 +272,8 @@ class ModHost(
 
     private inner class Loaded(val mod: InstalledMod, val key: String, val isolate: ModIsolate, val inbox: Channel<String>) {
         var events: Set<String> = emptySet()
+        /** Tools its tool.call hooks match; "*" for any. */
+        var tools: Set<String> = emptySet()
         var ready = false
         var closed = false
         val dispatches = HashMap<Long, Dispatch>()
@@ -258,6 +296,7 @@ class ModHost(
         started = true
         registry.snapshot.collect { snapshot ->
             mods = snapshot
+            refreshListening()
             reconcile()
             // Grants and places may have changed what a shown surface may draw.
             slots.filterValues { it.holders.isNotEmpty() }.keys.forEach { (id, surface) -> requestRender(id, surface) }
@@ -330,6 +369,94 @@ class ModHost(
             value.optString("text").isNotBlank() -> ModCodeCommandOutcome.Reply(value.optString("text").take(MAX_TEXT))
             else -> ModCodeCommandOutcome.Nothing
         }
+    }
+
+    /**
+     * Asks the running mods that hook [event] and may use [capability] whether an action goes on
+     * (spec v2 §4.2 gates), one mod after another in id order; each sees the input as the mods
+     * before it left it. [verdicts] are the answers this gate takes, such as "deny" or "confirm".
+     * Returns at once, unchanged, when no mod hooks [event].
+     */
+    suspend fun gate(
+        event: String,
+        input: JSONObject,
+        capability: ModCapability,
+        verdicts: Set<String>,
+        budgetMs: Long = limits.gateBudgetMs,
+    ): ModGateOutcome {
+        if (!listens(event)) return ModGateOutcome(input)
+        return withContext(hostContext) { runGate(event, input, capability, verdicts, budgetMs, compose = false) }
+    }
+
+    /**
+     * `prompt.compose`: each mod may add sections the agent reads before the prompt, at most
+     * [MAX_SECTION_BYTES] per mod; they come back as [ModGateOutcome.notes].
+     */
+    suspend fun compose(prompt: String, harness: String): ModGateOutcome {
+        val input = JSONObject().put("prompt", prompt).put("harness", harness).put("sections", JSONArray())
+        if (!listens("prompt.compose")) return ModGateOutcome(input)
+        return withContext(hostContext) {
+            runGate("prompt.compose", input, ModCapability.PROMPT_COMPOSE, emptySet(), limits.composeBudgetMs, compose = true)
+        }
+    }
+
+    private suspend fun runGate(
+        event: String,
+        input: JSONObject,
+        capability: ModCapability,
+        verdicts: Set<String>,
+        budgetMs: Long,
+        compose: Boolean,
+    ): ModGateOutcome {
+        var current = input
+        val notes = mutableListOf<Triple<String, String, String>>()
+        for (loaded in running.values.filter { it.ready && event in it.events }.sortedBy { it.id }) {
+            val mod = currentMod(loaded)
+            if (!allowed(mod, capability)) {
+                if (throttle("denied:${mod.id}/$event", 60_000)) registry.recordDenied(mod.id, event, capability, "permission is off")
+                continue
+            }
+            val result = CompletableDeferred<JSONObject?>()
+            dispatch(loaded, event, JSONObject(current.toString()), budgetMs, result = result) { id, body ->
+                "__mh.gate($id, ${JSONObject.quote(event)}, $body)"
+            }
+            val answer = withTimeoutOrNull(limits.gateWaitMs) { result.await() }
+            if (answer == null) {
+                addLog(loaded.id, "warn", "Its $event hook didn't answer in time, so the action went on.")
+                continue
+            }
+            // A hook that failed was logged and counted; gates fail open.
+            val value = answer.opt("value") as? JSONObject ?: continue
+            val passed = if (value.optBoolean("__mhPass")) value.optJSONObject("e") ?: continue else null
+            if (compose) {
+                val sections = (passed ?: value).optJSONArray("sections") ?: continue
+                val added = addedSections(current.optJSONArray("sections") ?: JSONArray(), sections)
+                if (added.isNotEmpty()) {
+                    val text = utf8Take(added.joinToString("\n\n"), MAX_SECTION_BYTES)
+                    current.getJSONArray("sections").put(JSONObject().put("mod", mod.id).put("text", text))
+                    notes += Triple(mod.id, mod.manifest.name, text)
+                }
+                continue
+            }
+            // A hook may pass the action on and add context too: `{ ...(await next(e)), context }`.
+            val context = (value.opt("context") as? String)?.trim()
+            if (!context.isNullOrEmpty()) notes += Triple(mod.id, mod.manifest.name, utf8Take(context, MAX_SECTION_BYTES))
+            if (passed != null) {
+                current = mergeInput(current, passed)
+                continue
+            }
+            val verdict = verdicts.firstOrNull { value.has(it) && !value.isNull(it) && value.opt(it) != false }
+            if (verdict != null) {
+                val given = value.opt(verdict) as? String
+                val reason = ModHookRunner.clean(given.orEmpty().take(300)).ifBlank { "${mod.manifest.name} stopped it." }
+                addLog(loaded.id, "info", "$event: $verdict ($reason)")
+                registry.recordCall(mod.id, event, capability, verdict, reason)
+                return ModGateOutcome(current, verdict, reason, mod.id, mod.manifest.name, notes)
+            }
+            if (!context.isNullOrEmpty()) continue
+            addLog(loaded.id, "warn", "Its $event hook answered something the app doesn't use, so the action went on.")
+        }
+        return ModGateOutcome(current, notes = notes)
     }
 
     /** Clears a crash and its strikes, or resumes paused mod code, and starts the mod again. */
@@ -573,6 +700,8 @@ class ModHost(
                 val source = withContext(ioContext) { File(mod.dir, mod.manifest.hooksModule!!).readText() }
                 isolate.evaluate(ModModuleSource.wrap(source))
                 val answer = JSONObject(isolate.evaluate("__mh.start(${ModJson.literal(options(mod))})"))
+                answer.optJSONArray("tools")?.let { array -> (0 until minOf(array.length(), 64)).map { array.optString(it) }.toSet() }
+                    ?.let { tools -> loaded.tools = tools }
                 answer.optJSONArray("events")?.let { array -> (0 until array.length()).map { array.optString(it) }.toSet() }.orEmpty()
             }
         } catch (e: CancellationException) {
@@ -729,11 +858,19 @@ class ModHost(
     private suspend fun emitNow(event: String, payload: JSONObject, private: Map<String, ModCapability> = emptyMap()) {
         if (engine == null) return
         val budget = if (event.startsWith("app.")) limits.quickBudgetMs else limits.eventBudgetMs
+        val where = context
         running.values.filter { it.ready && event in it.events }.forEach { loaded ->
             val mod = currentMod(loaded)
             val visible = JSONObject(payload.toString())
             private.forEach { (field, capability) -> if (!allowed(mod, capability)) visible.remove(field) }
-            dispatch(loaded, event, visible, budget)
+            if (event == "run.end") {
+                // A run.end hook may answer { followUp } to keep the agent working (spec v2 §4.2).
+                val result = CompletableDeferred<JSONObject?>()
+                dispatch(loaded, event, visible, budget, result = result)
+                scope.launch { followUp(loaded, (result.await()?.opt("value") as? JSONObject)?.opt("followUp"), where) }
+            } else {
+                dispatch(loaded, event, visible, budget)
+            }
         }
     }
 
@@ -989,6 +1126,20 @@ class ModHost(
         Result.failure(e)
     }
 
+    private fun followUp(loaded: Loaded, value: Any?, where: ModEventContext?) {
+        val text = (value as? String)?.trim()?.take(MAX_PROMPT)
+        if (text.isNullOrEmpty() || where?.projectId == null) return
+        val mod = currentMod(loaded)
+        if (!allowed(mod, ModCapability.PROMPT_SEND)) {
+            addLog(loaded.id, "warn", "Its run.end hook asked for a follow-up, which needs the prompt.send permission.")
+            registry.recordDenied(mod.id, "run.end followUp", ModCapability.PROMPT_SEND, "permission is off")
+            return
+        }
+        val queued = runCatching { effects?.followUp(mod, text, where) == true }.getOrDefault(false)
+        addLog(loaded.id, "info", if (queued) "Queued a follow-up: ${firstLine(text).take(120)}" else "Its follow-up wasn't queued: the chat changed or mods already chained 3 follow-ups.")
+        if (queued) registry.recordCall(mod.id, "run.end followUp", ModCapability.PROMPT_SEND, "allowed", null)
+    }
+
     private suspend fun answer(loaded: Loaded, callId: Long, result: Result<Any?>) {
         val script = result.fold(
             onSuccess = { "__mh.answer($callId, true, ${ModJson.literal(it)})" },
@@ -1129,6 +1280,43 @@ class ModHost(
 
     private fun scopeOf(context: ModEventContext?): Any = ModJson.project(context)
 
+    /** [passed] as a mod handed it on, kept to the fields the app sent and their kinds. */
+    private fun mergeInput(current: JSONObject, passed: JSONObject): JSONObject {
+        val merged = JSONObject(current.toString())
+        for (key in current.keys()) {
+            if (!passed.has(key)) continue
+            val before = current.opt(key)
+            val after = passed.opt(key)
+            val sameKind = when (before) {
+                is String -> after is String
+                is Boolean -> after is Boolean
+                is Number -> after is Number
+                is JSONObject -> after is JSONObject
+                is JSONArray -> after is JSONArray
+                else -> false
+            }
+            if (sameKind) merged.put(key, after)
+        }
+        return merged
+    }
+
+    /** The texts a `prompt.compose` hook added after the sections it was given. */
+    private fun addedSections(before: JSONArray, after: JSONArray): List<String> =
+        (before.length() until minOf(after.length(), before.length() + 8)).mapNotNull { i ->
+            when (val item = after.opt(i)) {
+                is String -> item
+                is JSONObject -> item.optString("text").takeIf { it.isNotBlank() }
+                else -> null
+            }?.trim()?.takeIf { it.isNotEmpty() }
+        }
+
+    private fun utf8Take(text: String, maxBytes: Int): String {
+        if (text.length * 3 <= maxBytes || text.toByteArray().size <= maxBytes) return text
+        var end = minOf(text.length, maxBytes)
+        while (end > 0 && text.substring(0, end).toByteArray().size > maxBytes) end -= maxOf(1, (end - maxBytes / 3) / 2)
+        return text.substring(0, end)
+    }
+
     private fun modName(id: String) = mods.mods.firstOrNull { it.id == id }?.manifest?.name ?: id
 
     private fun text(args: JSONArray): String = if (args.isNull(0)) "" else args.opt(0).toString()
@@ -1146,6 +1334,15 @@ class ModHost(
 
     private fun refreshListening() {
         listening = running.values.filter { it.ready }.flatMap { it.events }.toSet()
+        val tools = running.values
+            .filter { it.ready && "tool.call" in it.events && allowed(currentMod(it), ModCapability.TOOLS_GATE) }
+            .flatMap { it.tools }
+            .toSet()
+        toolGateMatcher = when {
+            tools.isEmpty() -> null
+            "*" in tools -> "*"
+            else -> tools.sorted().joinToString("|") { it.replace(".", "\\.") }
+        }
     }
 
     private fun addLog(id: String, level: String, text: String) {
@@ -1225,6 +1422,8 @@ class ModHost(
         private const val MAX_PANES = 8
         private const val MAX_RUN_LOG_LINES = 200
         private const val MAX_PROMPT = 20_000
+        /** What one mod may add to a prompt (spec v2 §7 prompt injection). */
+        const val MAX_SECTION_BYTES = 8 * 1024
         private const val MIN_ASK_MS = 10_000L
         private const val DEFAULT_ASK_MS = 30 * 60_000L
         private const val MAX_ASK_MS = 2 * 60 * 60_000L

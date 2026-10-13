@@ -188,8 +188,9 @@ object ModAuthoringGuide {
           (never secrets). Add every hook there; `on` refuses later calls.
         - `on(event, matcher?, hook)`. A hook is `async (${'$'}, e, next)`; `e` is frozen. A matcher object
           compares each key with `e`: a value must be equal, a RegExp must match, an array lists choices.
-        - `next(e)` runs this mod's later hooks for the event and returns their answer. These events only
-          report what happened, so a hook may return without calling `next`.
+        - `next(e)` runs this mod's later hooks for the event and returns their answer. Most events only
+          report what happened, so a hook may return without calling `next`. Gates (below) are different:
+          there, returning without `next` answers for the action.
         - `on(...).catch((${'$'}, e, next, error) => ...)` answers when that hook throws. Without it, a hook
           that throws is skipped.
         - Every `${'$'}` call returns a promise, except `${'$'}.log` and `${'$'}.clock.now/after/every/cancel`.
@@ -225,6 +226,11 @@ object ModAuthoringGuide {
         | `plan.update` | The open chat's task plan changed | `taskId`, `plan` (`title`, `status`, `current`, `steps`; only with `project.info`) |
         | `run.log` | The running task's live output, batched once a second, only while one of the mod's surfaces is showing | `lines` (`kind`: `reply`, `tool` or `log`; `text`; `time`), `dropped`. Needs `events.subscribe` |
         | `ui.render` | The app needs a surface drawn (see "Drawing") | `component`, `requestId`, `title`, `surface` |
+        | `prompt.submit` | Gate: the user sends a message (see "Gates") | `text`, `harness`, `attachments` (a count). Needs `prompt.transform` |
+        | `prompt.compose` | Gate: a message is about to go to the agent | `prompt`, `harness`, `sections`. Needs `prompt.compose` |
+        | `terminal.command` | Gate: the user runs a command in the project terminal | `command`. Needs `terminal.gate` |
+        | `files.op` | Gate: the user renames, deletes or saves a file in Files | `op` (`rename`, `delete`, `save`), `path`, `newName`. Needs `files.gate` |
+        | `build.start` | Gate: the user starts an Android build | `install`, `force`. Needs `terminal.gate` |
 
         ### `${'$'}` for mod code
 
@@ -253,6 +259,26 @@ object ModAuthoringGuide {
         never sees it), or `{ prompt }`, sent to the agent as if the user typed it. Declare commands in
         `contributes.slashCommands` without a `template`, or add them with `${'$'}.command.register`.
         A `${'$'}` call without its permission throws an error that names the permission.
+
+        ### Gates
+
+        Gate events happen before an action, and the mod's answer decides it:
+
+        - `return next(e)` lets it go on; `next({ ...e, text })` changes it on the way (only the fields
+          the app sent can change, and only `prompt.submit`'s `text` is used).
+        - `prompt.submit` may answer `{ drop: 'why' }` (the message is not sent; the user sees why) or
+          `{ context: 'text' }` (sent along for the agent to read, at most 8 KB); to change the text and add
+          context, answer `{ ...(await next({ ...e, text })), context: 'text' }`.
+        - `prompt.compose` adds sections the agent reads before the message:
+          `next({ ...e, sections: [...e.sections, 'Always write tests.'] })`, at most 8 KB per mod,
+          marked with the mod's id.
+        - `terminal.command`, `files.op` and `build.start` may answer `{ deny: 'why' }` (stopped) or
+          `{ confirm: 'why' }` (the user is asked first).
+        - `run.end` (not a gate) may answer `{ followUp: 'text' }` to queue the next message for the agent;
+          needs `prompt.send`, and at most 3 follow-ups chain after one message from the user.
+        - Mods run one after another; each sees what the mods before it passed on. Gates fail open: a
+          hook that throws or runs out of time (3 s; 2 s for `prompt.compose`) lets the action go on,
+          unless its `.catch` answers otherwise. A user waits on gates, so keep them fast.
 
         ### Agent tasks
 

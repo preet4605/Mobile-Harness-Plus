@@ -336,6 +336,7 @@ private fun AppScreen(
             onTerminalClear = viewModel::clearProjectTerminal,
             onTerminalConfirm = viewModel::confirmProjectTerminalCommand,
             onTerminalCancel = viewModel::cancelProjectTerminalCommand,
+            onModConfirm = viewModel::answerModConfirm,
             onUseSuggestedProjectRoot = viewModel::useSuggestedProjectRoot,
             onExportProject = viewModel::exportActiveProject,
             onAddAttachments = viewModel::addChatAttachments,

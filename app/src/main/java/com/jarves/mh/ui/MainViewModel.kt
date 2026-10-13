@@ -273,6 +273,9 @@ private data class ImportedZipProject(
     val sourceAttachment: ChatAttachment,
 )
 
+/** A mod asked the user to confirm an action first (spec v2 §4.2 host gates). */
+data class ModConfirmRequest(val title: String, val modName: String, val reason: String)
+
 data class AppUiState(
     val startupStage: StartupStage = StartupStage.CHECKING,
     val startupProgress: Float = 0f,
@@ -365,6 +368,10 @@ data class AppUiState(
     val projectTerminalCommand: String? = null,
     val projectTerminalDraft: String? = null,
     val pendingTerminalCommand: String? = null,
+    /** Why a mod asked to confirm [pendingTerminalCommand]; null for the app's own destructive-command check. */
+    val pendingTerminalReason: String? = null,
+    /** A mod asked the user to confirm a file change or build first (spec v2 §4.2 host gates). */
+    val pendingModConfirm: ModConfirmRequest? = null,
     val suggestedProjectRoot: String? = null,
     val selectedDevStacks: Set<DevStack> = emptySet(),
     val installedDevStacks: Set<DevStack> = emptySet(),
@@ -575,7 +582,24 @@ class MainViewModel(
             context: ModEventContext,
             timeoutMs: Long,
         ): JSONObject = runModAsk(mod, harness, prompt, context, timeoutMs)
+
+        override fun followUp(mod: InstalledMod, text: String, context: ModEventContext): Boolean {
+            val current = _state.value
+            val project = current.activeProject ?: return false
+            if (project.id != context.projectId || current.activeChatId != context.chatId) return false
+            if (modFollowUpsInChain >= MAX_MOD_FOLLOW_UPS) return false
+            modFollowUpsInChain++
+            postModMessage(ChatMessage(fromUser = false, text = "${mod.manifest.name} asked the agent to keep working.", origin = "mod:${mod.id}"), context)
+            queueFollowUp(project, text, emptyList())
+            return true
+        }
     }
+    /** Follow-ups mods queued from `run.end` since the user last sent a message; at most [MAX_MOD_FOLLOW_UPS]. Main thread. */
+    private var modFollowUpsInChain = 0
+    /** A prompt waiting on the mods' prompt.submit and prompt.compose hooks; a second send waits for it. */
+    private var modPromptJob: Job? = null
+    /** What runs when the user confirms [AppUiState.pendingModConfirm]. Main thread. */
+    private var modConfirmAction: (() -> Unit)? = null
     /** One mod agent task at a time; the next waits its turn. */
     private val modAskLock = kotlinx.coroutines.sync.Mutex()
     /** Mod agent tasks by task id, answered when the task ends. Main thread only. */
@@ -1202,8 +1226,27 @@ class MainViewModel(
             }
             return
         }
+        val host = modHost?.takeIf { it.listens("terminal.command") }
+        if (host == null) {
+            continueProjectTerminalCommand(normalized)
+            return
+        }
+        // Spec v2 §4.2: mods may stop the command or ask the user to confirm it first.
+        viewModelScope.launch {
+            val outcome = runCatching {
+                host.gate("terminal.command", JSONObject().put("command", normalized), com.jarves.mh.mods.ModCapability.TERMINAL_GATE, setOf("deny", "confirm"))
+            }.getOrNull()
+            when (outcome?.verdict) {
+                "deny" -> _state.update { it.copy(toastMessage = "${outcome.modName}: ${outcome.reason}") }
+                "confirm" -> _state.update { it.copy(pendingTerminalCommand = normalized, pendingTerminalReason = "${outcome.modName}: ${outcome.reason}") }
+                else -> continueProjectTerminalCommand(normalized)
+            }
+        }
+    }
+
+    private fun continueProjectTerminalCommand(normalized: String) {
         if (isDestructiveTerminalCommand(normalized)) {
-            _state.update { it.copy(pendingTerminalCommand = normalized) }
+            _state.update { it.copy(pendingTerminalCommand = normalized, pendingTerminalReason = null) }
         } else {
             runProjectTerminalCommand(normalized)
         }
@@ -1539,7 +1582,14 @@ class MainViewModel(
     /** Runs Gradle even when the last debug APK looks current. */
     fun forceRebuildAndroidApp() = startAndroidBuild(installAfterBuild = false, force = true)
 
-    private fun startAndroidBuild(installAfterBuild: Boolean, force: Boolean) {
+    private fun startAndroidBuild(installAfterBuild: Boolean, force: Boolean) = withModGate(
+        "build.start",
+        com.jarves.mh.mods.ModCapability.TERMINAL_GATE,
+        if (installAfterBuild) "Build and run the app?" else "Build the app?",
+        { JSONObject().put("install", installAfterBuild).put("force", force) },
+    ) { startAndroidBuildNow(installAfterBuild, force) }
+
+    private fun startAndroidBuildNow(installAfterBuild: Boolean, force: Boolean) {
         val project = _state.value.activeProject ?: return
         if (_state.value.androidBuildRunning || androidBuildActive.get()) return
         if (!installer.isStackInstalled(DevStack.ANDROID)) {
@@ -4969,6 +5019,16 @@ class MainViewModel(
      * replaces the file atomically.
      */
     fun saveOpenedFile() {
+        val path = _state.value.openedFilePath ?: return
+        val edit = _state.value.openedFileEdit ?: return
+        if (edit.saving || !edit.dirty) return
+        withModGate(
+            "files.op", com.jarves.mh.mods.ModCapability.FILES_GATE, "Save ${path.substringAfterLast('/')}?",
+            { JSONObject().put("op", "save").put("path", path.trim('/')) },
+        ) { saveOpenedFileNow() }
+    }
+
+    private fun saveOpenedFileNow() {
         val current = _state.value
         val project = current.activeProject ?: return
         val path = current.openedFilePath ?: return
@@ -5076,6 +5136,13 @@ class MainViewModel(
     fun renameWorkspaceEntry(path: String, newName: String) {
         if (showEntryNameProblem(newName)) return
         if (newName == path.substringAfterLast('/')) return
+        withModGate(
+            "files.op", com.jarves.mh.mods.ModCapability.FILES_GATE, "Rename ${path.substringAfterLast('/')}?",
+            { JSONObject().put("op", "rename").put("path", path.trim('/')).put("newName", newName) },
+        ) { renameWorkspaceEntryNow(path, newName) }
+    }
+
+    private fun renameWorkspaceEntryNow(path: String, newName: String) {
         runWorkspaceFileOperation { root ->
             val source = resolveWorkspacePath(root, path)
                 ?.takeIf { Files.exists(it.toPath(), LinkOption.NOFOLLOW_LINKS) } ?: error(PROTECTED_ENTRY_MESSAGE)
@@ -5093,6 +5160,13 @@ class MainViewModel(
     /** Deletes the file or folder at [path] and everything in it. Symbolic links inside are removed, never followed. */
     fun deleteWorkspaceEntry(path: String) {
         val name = path.trim('/').substringAfterLast('/')
+        withModGate(
+            "files.op", com.jarves.mh.mods.ModCapability.FILES_GATE, "Delete $name?",
+            { JSONObject().put("op", "delete").put("path", path.trim('/')) },
+        ) { deleteWorkspaceEntryNow(path, name) }
+    }
+
+    private fun deleteWorkspaceEntryNow(path: String, name: String) {
         runWorkspaceFileOperation { root ->
             val target = resolveWorkspacePath(root, path)
                 ?.takeIf { Files.exists(it.toPath(), LinkOption.NOFOLLOW_LINKS) } ?: error(PROTECTED_ENTRY_MESSAGE)
@@ -6218,6 +6292,7 @@ class MainViewModel(
 
     fun sendPrompt(prompt: String) {
         composerSends++
+        modFollowUpsInChain = 0
         sendPrompt(prompt, state.value.pendingAttachments, fromQueue = false)
     }
 
@@ -6227,8 +6302,11 @@ class MainViewModel(
         attachments: List<ChatAttachment>,
         fromQueue: Boolean,
         queuedCodexAccountId: String? = null,
-        /** Sent by a mod's `$.agent.ask`, not typed. */
+        /** Sent by a mod's `$.agent.ask`, not typed: the prompt.submit hooks don't see it. */
         fromMod: Boolean = false,
+        /** The mods' prompt hooks already ran; [modSections] is what they added for the agent. */
+        modsChecked: Boolean = false,
+        modSections: String = "",
     ) {
         val project = state.value.activeProject ?: return
         if (_state.value.agentKind == AgentKind.ANTIGRAVITY &&
@@ -6295,6 +6373,20 @@ class MainViewModel(
             // The build owns the foreground service and its wake lock until it finishes.
             _state.update { it.copy(toastMessage = "Wait for the Android build to finish, or cancel it, before starting a task.") }
             return
+        }
+        if (!modsChecked) {
+            val host = modHost
+            val submit = !fromMod && host?.listens("prompt.submit") == true
+            if (host != null && (submit || host.listens("prompt.compose"))) {
+                if (modPromptJob?.isActive == true) {
+                    _state.update { it.copy(toastMessage = "Mods are still checking your last message.") }
+                    return
+                }
+                modPromptJob = viewModelScope.launch {
+                    checkPromptWithMods(host, project, prompt, attachments, fromQueue, queuedCodexAccountId, fromMod, submit)
+                }
+                return
+            }
         }
 
         // Check if input is a slash command
@@ -6474,6 +6566,10 @@ class MainViewModel(
                 appendLine(mods.rulesBlock)
                 appendLine()
             }
+            if (modSections.isNotBlank()) {
+                appendLine(modSections)
+                appendLine()
+            }
             if (skillsIndex.isNotBlank()) {
                 appendLine(skillsIndex)
                 appendLine()
@@ -6615,6 +6711,8 @@ class MainViewModel(
                 postModMessage(ChatMessage(fromUser = false, text = "${mod.manifest.name} asked ${kind.title} to work on the next message.", origin = "mod:${mod.id}"), context)
                 val toastBefore = _state.value.toastMessage
                 sendPrompt(prompt, emptyList(), fromQueue = true, fromMod = true)
+                // prompt.compose hooks finish the send a moment later.
+                modPromptJob?.takeIf { it.isActive }?.join()
                 val started = activeUiTaskId?.takeIf { _state.value.isRunning }
                     ?: error(_state.value.toastMessage?.takeIf { it != toastBefore } ?: "${kind.title} didn't start a task for it.")
                 taskId = started
@@ -6660,6 +6758,90 @@ class MainViewModel(
                 .put("taskId", taskId)
                 .put("error", if (status == "failed") record?.lastError ?: "The task failed." else JSONObject.NULL),
         )
+    }
+
+    /**
+     * Spec v2 §4.2 prompt gates: `prompt.submit` hooks may rewrite the message, drop it or add
+     * context; `prompt.compose` hooks add sections the agent reads first (8 KB per mod, marked
+     * with the mod's id). Then the prompt is sent as if they had not been there. Gates fail open.
+     */
+    private suspend fun checkPromptWithMods(
+        host: ModHost,
+        project: Project,
+        prompt: String,
+        attachments: List<ChatAttachment>,
+        fromQueue: Boolean,
+        queuedCodexAccountId: String?,
+        fromMod: Boolean,
+        submit: Boolean,
+    ) {
+        val notice = viewModelScope.launch {
+            delay(MOD_CHECK_NOTICE_MS)
+            _state.update { it.copy(toastMessage = "Waiting for mods to check your message…") }
+        }
+        val harness = com.jarves.mh.mods.ModManifestParser.harnessId(_state.value.agentKind)
+        val chatId = _state.value.activeChatId
+        var text = prompt.trim()
+        val notes = mutableListOf<Triple<String, String, String>>()
+        try {
+            if (submit) {
+                val outcome = runCatching {
+                    host.gate(
+                        "prompt.submit",
+                        JSONObject().put("text", text).put("harness", harness).put("attachments", attachments.size),
+                        com.jarves.mh.mods.ModCapability.PROMPT_TRANSFORM,
+                        setOf("drop"),
+                    )
+                }.getOrNull()
+                if (outcome?.verdict == "drop") {
+                    _state.update { it.copy(toastMessage = "${outcome.modName}: ${outcome.reason}") }
+                    return
+                }
+                outcome?.input?.optString("text")?.trim()?.takeIf { it.isNotEmpty() }?.let { text = it.take(MAX_MOD_PROMPT) }
+                outcome?.notes?.let(notes::addAll)
+            }
+            runCatching { host.compose(text, harness) }.getOrNull()?.notes?.let(notes::addAll)
+        } finally {
+            notice.cancel()
+        }
+        currentCoroutineContext().ensureActive()
+        val current = _state.value
+        if (current.activeProject?.id != project.id || current.activeChatId != chatId) return
+        val sections = notes.joinToString("\n\n") { (id, name, body) ->
+            "<mod id=\"$id\" name=\"${name.replace("\"", "'")}\">\n$body\n</mod>"
+        }
+        sendPrompt(text, attachments, fromQueue, queuedCodexAccountId, fromMod = fromMod, modsChecked = true, modSections = sections)
+    }
+
+    /**
+     * Spec v2 §4.2 host gates: runs [action] once the mods hooking [event] let it. With no such mod
+     * it runs at once, as before. A mod may stop it (a toast says why) or ask the user to confirm.
+     */
+    private fun withModGate(event: String, capability: com.jarves.mh.mods.ModCapability, title: String, input: () -> JSONObject, action: () -> Unit) {
+        val host = modHost?.takeIf { it.listens(event) && _state.value.activeProject != null }
+        if (host == null) {
+            action()
+            return
+        }
+        val payload = runCatching(input).getOrElse { JSONObject() }
+        viewModelScope.launch {
+            val outcome = runCatching { host.gate(event, payload, capability, setOf("deny", "confirm")) }.getOrNull()
+            when (outcome?.verdict) {
+                "deny" -> _state.update { it.copy(toastMessage = "${outcome.modName}: ${outcome.reason}") }
+                "confirm" -> {
+                    modConfirmAction = action
+                    _state.update { it.copy(pendingModConfirm = ModConfirmRequest(title, outcome.modName.orEmpty(), outcome.reason.orEmpty())) }
+                }
+                else -> action()
+            }
+        }
+    }
+
+    fun answerModConfirm(confirmed: Boolean) {
+        val action = modConfirmAction
+        modConfirmAction = null
+        _state.update { it.copy(pendingModConfirm = null) }
+        if (confirmed) action?.invoke()
     }
 
     private fun appendNativeCommandResult(request: String, result: String) {
@@ -7688,6 +7870,10 @@ class MainViewModel(
         private const val MOD_STABLE_AFTER_MS = 60_000L
         private const val MAX_PENDING_MOD_POSTS = 5
         private const val MAX_MOD_ASK_REPLY = 50_000
+        /** Follow-ups mods may chain after one message from the user (spec v2 §4.2 run.end). */
+        private const val MAX_MOD_FOLLOW_UPS = 3
+        private const val MAX_MOD_PROMPT = 100_000
+        private const val MOD_CHECK_NOTICE_MS = 700L
         private const val DIAGNOSTICS_REFRESH_COOLDOWN_MS = 1_000L
         private const val RECENT_EXIT_CACHE_MS = 60_000L
         private const val LEGACY_GITHUB_TOKEN_KEY = "GITHUB_APP"

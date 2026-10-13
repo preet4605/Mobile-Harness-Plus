@@ -5,7 +5,8 @@
  * (`on(event, matcher?, hook)`, `next`, `.catch`), the `$` interface and atoms, and talks to the
  * app over one message port named "mh":
  *   app -> mod: the app evaluates `__mh.connect()`, `__mh.start(options)`,
- *               `__mh.dispatch(id, event, e)` and `__mh.answer(callId, ok, value)`.
+ *               `__mh.dispatch(id, event, e)`, `__mh.gate(id, event, e)` and
+ *               `__mh.answer(callId, ok, value)`.
  *   mod -> app: JSON messages on the port:
  *               {t:'op', d, id, op, args}   a `$` call the app runs and answers
  *               {t:'done', d, value|error}  a dispatch finished
@@ -218,14 +219,14 @@
    * Runs hook [i] and, through `next`, the hooks after it. A hook that throws is skipped: its
    * `.catch` handler answers instead, and without one the chain goes on as if it were not there.
    */
-  function chain(d, $, list, i, e) {
-    if (i >= list.length) return Promise.resolve(null);
+  function chain(d, $, list, i, e, bottom) {
+    if (i >= list.length) return Promise.resolve(bottom ? bottom(e) : null);
     var hook = list[i];
     var below = null;
     var next = function (input) {
       if (below) return below;
       next.called = true;
-      below = chain(d, $, list, i + 1, input === undefined ? e : freeze(input));
+      below = chain(d, $, list, i + 1, input === undefined ? e : freeze(input), bottom);
       return below;
     };
     next.called = false;
@@ -238,6 +239,24 @@
         return fallback();
       });
     });
+  }
+
+  /**
+   * The tool names the mod's tool.call hooks match, for the app's Claude hook matcher; ['*'] when
+   * a hook matches any tool (no matcher, or a pattern the app can't list).
+   */
+  function toolMatchers() {
+    var names = [];
+    var all = false;
+    (hooks['tool.call'] || []).forEach(function (h) {
+      var want = h.matcher && h.matcher.tool;
+      var list = Array.isArray(want) ? want : [want];
+      list.forEach(function (name) {
+        if (typeof name === 'string' && /^[A-Za-z0-9_.-]{1,80}$/.test(name)) { if (names.indexOf(name) < 0) names.push(name); }
+        else all = true;
+      });
+    });
+    return all ? ['*'] : names;
   }
 
   function finish(d, run) {
@@ -387,7 +406,7 @@
       if (result && typeof result.then === 'function') {
         result.then(null, function (err) { report(0, 'register', err); });
       }
-      return JSON.stringify({ events: Object.keys(hooks) });
+      return JSON.stringify({ events: Object.keys(hooks), tools: toolMatchers() });
     },
 
     dispatch: function (d, event, e) {
@@ -395,6 +414,17 @@
       var list = (hooks[event] || []).filter(function (h) { return matches(h.matcher, e); });
       var input = freeze(e);
       finish(d, chain(d, dollar(d), list, 0, input));
+      return 'ok';
+    },
+
+    /**
+     * A gate (spec v2 §4.2: prompt.submit, tool.call, ...): runs the hooks like dispatch, but the
+     * bottom of the chain answers with what reached it, so the app sees whether every hook passed
+     * the action on (and with what input) or one answered for itself, such as { deny }.
+     */
+    gate: function (d, event, e) {
+      var list = (hooks[event] || []).filter(function (h) { return matches(h.matcher, e); });
+      finish(d, chain(d, dollar(d), list, 0, freeze(e), function (input) { return { __mhPass: true, e: input }; }));
       return 'ok';
     },
 

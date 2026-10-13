@@ -616,6 +616,7 @@ internal fun WorkspaceScreen(
     onTerminalClear: () -> Unit,
     onTerminalConfirm: () -> Unit,
     onTerminalCancel: () -> Unit,
+    onModConfirm: (Boolean) -> Unit = {},
     onUseSuggestedProjectRoot: () -> Unit,
     onExportProject: (Uri, ExportSelection) -> Unit,
     onAddAttachments: (List<Uri>) -> Unit,
@@ -804,7 +805,7 @@ internal fun WorkspaceScreen(
         PocketAlert(
             onDismiss = onTerminalCancel,
             title = "Run this command?",
-            message = "It can delete files, rewrite Git history, or change the project significantly.",
+            message = state.pendingTerminalReason ?: "It can delete files, rewrite Git history, or change the project significantly.",
             actions = listOf(
                 AlertAction("Cancel", AlertRole.Cancel, onClick = onTerminalCancel),
                 AlertAction("Run anyway", AlertRole.Destructive, onClick = onTerminalConfirm),
@@ -821,6 +822,17 @@ internal fun WorkspaceScreen(
                     .padding(PocketSpacing.md),
             )
         }
+    }
+    state.pendingModConfirm?.let { request ->
+        PocketAlert(
+            onDismiss = { onModConfirm(false) },
+            title = request.title,
+            message = "${request.modName}: ${request.reason}",
+            actions = listOf(
+                AlertAction("Cancel", AlertRole.Cancel, onClick = { onModConfirm(false) }),
+                AlertAction("Continue", AlertRole.Default, onClick = { onModConfirm(true) }),
+            ),
+        )
     }
     if (state.auxiliaryInspectorVisible) {
         AuxiliaryInspectorSheet(

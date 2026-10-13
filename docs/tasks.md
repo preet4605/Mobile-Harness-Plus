@@ -1,8 +1,19 @@
 # Tasks and progress
 
+## Mod host gates (spec v2 phase P6) — 2026-10-13
+
+COMPLETE: mod code can block, rewrite or ask before the app's own actions.
+
+- Gate events run each listening mod's chain in mod id order; the chain bottom passes the (possibly rewritten) input on. Verdicts: `{deny}` stops with the mod's reason, `{drop}` silently drops a prompt, `{confirm}` asks the user (Cancel / Continue), `{context}` adds notes. A rewrite keeps only the original keys with the same JSON kinds. A gate that times out (8 s wait, 3 s own time), throws or answers nonsense is skipped (fail open).
+- `prompt.submit` (permission `prompt.transform`) can rewrite or drop the user's prompt (up to 100,000 characters); `prompt.compose` (`prompt.compose`) adds sections, each mod's capped at 8 KB, wrapped as `<mod id name>` after the mod rules block. A toast shows while mods check a prompt for more than 0.7 s. Prompts sent by `$.agent.ask` skip `prompt.submit` but still get `prompt.compose`.
+- `terminal.command` and `build.start` (`terminal.gate`) gate terminal commands and Android builds; `files.op` (`files.gate`) gates rename, delete and save in Files.
+- `run.end` hooks may answer `{followUp}` to queue another prompt in the same chat (permission `prompt.send`; at most 3 chained per user message).
+- VERIFIED: `ModHostTest` passed, including gate order, rewrite, drop, notes, confirm/deny, fail open, the 8 KB compose cap, a gate with no hooks and follow-up permission.
+- NOT RUN: gates on a device, UI tests for the confirm dialog.
+
 ## Mod agent tasks — 2026-10-13
 
-COMPLETE: mod code can start tasks on a chosen harness (needed by the user's Super Harness mod: orchestrator, coder, reviewer and researcher on different harnesses).
+COMPLETE (pushed to harness-dev as c13e23a): mod code can start tasks on a chosen harness (needed by the user's Super Harness mod: orchestrator, coder, reviewer and researcher on different harnesses).
 
 - `$.agent.ask({ harness, prompt, timeoutMs })` (permission `agent.ask`, HIGH) waits until the mod's chat is free, switches to the named harness, posts a mod note, sends the prompt as a normal turn (other harnesses see it in history), and resolves with `status`, the final reply `text`, `taskId`, `harness` and `error`. One mod task runs at a time; a timeout (default 30 min, 10 s to 2 h) answers `timeout` while the task continues. `$.agent.list()` lists harnesses with installed/current flags.
 - Slow `$` calls (`clock.sleep`, `agent.ask`) now run beside the mod's other messages, so a long task never blocks its drawing or logs; their waiting time stays outside the hook's budget. Each ask is written to the audit log.

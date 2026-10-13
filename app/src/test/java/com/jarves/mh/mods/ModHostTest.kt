@@ -46,6 +46,11 @@ class ModHostTest {
             kotlinx.coroutines.delay(300) // the task runs in the app, outside the mod's own time
             return JSONObject().put("status", "completed").put("text", "done: $prompt").put("taskId", "t${asks.size}")
         }
+        val followUps = CopyOnWriteArrayList<String>()
+        override fun followUp(mod: InstalledMod, text: String, context: ModEventContext): Boolean {
+            followUps += text
+            return true
+        }
     }
 
     @Before
@@ -271,7 +276,7 @@ class ModHostTest {
         waitFor("a third engine") { engines.size == 3 && engines[2].liveIsolates().size == 2 }
         engines[2].kill(culprit = engines[2].liveIsolates().first())
         waitFor("mod code to pause") { host.snapshot.value.engine == ModEngineState.PAUSED }
-        assertEquals(ModRunState.BLOCKED, host.info("dev.test.b")?.state)
+        assertEquals(host.logText("dev.test.b"), ModRunState.BLOCKED, host.info("dev.test.b")?.state)
 
         host.restart(null)
         waitFor("mod code to resume") { host.snapshot.value.engine == ModEngineState.ON && engines.size == 4 }
@@ -463,5 +468,78 @@ class ModHostTest {
         assertEquals(listOf("codex: Plan a todo app", "antigravity: Build: done: Plan a todo app"), effects.asks.toList())
         assertEquals(0, host.info()?.strikes)
         assertTrue(registry.snapshot.value.mods.first().let { mod -> registry.readAudit(mod.id).any { "agent.ask" in it.op } })
+    }
+
+    @Test
+    fun `gates pass, rewrite, stop or ask, in mod order, and fail open`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('prompt.submit', ($, e, next) => e.text.includes('secret') ? { drop: 'No secrets, please' } : next({ ...e, text: e.text + '!', extra: 1 }))
+              on('terminal.command', { command: /^rm / }, () => ({ confirm: 'This deletes files' }))
+              on('terminal.command', { command: /^curl / }, () => ({ deny: 'No network from the terminal' }))
+              on('terminal.command', { command: /^boom/ }, () => { throw new Error('bug') })
+              on('files.op', ($, e, next) => next(e))
+            }
+        """.trimIndent(), id = "a.first", permissions = listOf("prompt.transform", "terminal.gate", "files.gate"))
+        install(registry, """
+            export function register(on) {
+              on('prompt.submit', async ($, e, next) => { await $.clock.sleep(50); return next({ ...e, text: e.text.toUpperCase() }) })
+              on('prompt.submit', async ($, e, next) => ({ ...(await next(e)), context: 'Project uses tabs' }))
+            }
+        """.trimIndent(), id = "b.second", permissions = listOf("prompt.transform"))
+        install(registry, """
+            export function register(on) {
+              on('prompt.submit', () => ({ drop: 'never asked for the permission' }))
+              on('prompt.compose', ($, e, next) => next({ ...e, sections: [...e.sections, 'Use British spelling.', 'x'.repeat(20000)] }))
+            }
+        """.trimIndent(), id = "c.third", permissions = listOf("prompt.compose"))
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("three mods to start") { host.snapshot.value.mods.values.count { it.state == ModRunState.RUNNING } == 3 }
+
+        val pass = host.gate("prompt.submit", JSONObject().put("text", "hi"), ModCapability.PROMPT_TRANSFORM, setOf("drop"))
+        assertEquals(null, pass.verdict)
+        // a.first then b.second: the later mod sees the earlier one's rewrite; unknown fields are not kept.
+        assertEquals("HI!", pass.input.getString("text"))
+        assertFalse(pass.input.has("extra"))
+        assertEquals(listOf(Triple("b.second", "Sample", "Project uses tabs")), pass.notes)
+        // c.third lacks prompt.transform, so its drop never runs.
+        val dropped = host.gate("prompt.submit", JSONObject().put("text", "my secret"), ModCapability.PROMPT_TRANSFORM, setOf("drop"))
+        assertEquals("drop", dropped.verdict)
+        assertEquals("No secrets, please", dropped.reason)
+        assertEquals("a.first", dropped.modId)
+
+        val verdicts = setOf("deny", "confirm")
+        assertEquals("confirm", host.gate("terminal.command", JSONObject().put("command", "rm -rf build"), ModCapability.TERMINAL_GATE, verdicts).verdict)
+        assertEquals("No network from the terminal", host.gate("terminal.command", JSONObject().put("command", "curl x"), ModCapability.TERMINAL_GATE, verdicts).reason)
+        assertEquals(null, host.gate("terminal.command", JSONObject().put("command", "boom"), ModCapability.TERMINAL_GATE, verdicts).verdict)
+        assertEquals(null, host.gate("terminal.command", JSONObject().put("command", "ls"), ModCapability.TERMINAL_GATE, verdicts).verdict)
+        assertTrue(host.logText("a.first"), "terminal.command hook failed" in host.logText("a.first"))
+
+        val composed = host.compose("Fix the colour", "codex")
+        assertEquals(1, composed.notes.size)
+        assertTrue(composed.notes[0].third.startsWith("Use British spelling."))
+        assertTrue(composed.notes[0].third.toByteArray().size <= ModHost.MAX_SECTION_BYTES)
+        // No hooks for an event: answered at once, unchanged.
+        assertEquals(null, host.gate("build.start", JSONObject(), ModCapability.TERMINAL_GATE, verdicts).verdict)
+    }
+
+    @Test
+    fun `run end follow-ups need prompt send`() {
+        val registry = registry()
+        val code = """
+            export function register(on) {
+              on('run.end', ($, e) => e.status === 'failed' ? { followUp: 'Try again: ' + e.error } : undefined)
+            }
+        """.trimIndent()
+        install(registry, code, id = "a.retry", permissions = listOf("prompt.send"))
+        install(registry, code, id = "b.nope", permissions = emptyList())
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("both mods to start") { host.snapshot.value.mods.values.count { it.state == ModRunState.RUNNING } == 2 }
+        host.emit("run.end", JSONObject().put("status", "failed").put("error", "tests red"))
+        waitFor("the follow-up") { effects.followUps.isNotEmpty() && "prompt.send permission" in host.logText("b.nope") }
+        assertEquals(listOf("Try again: tests red"), effects.followUps.toList())
     }
 }
