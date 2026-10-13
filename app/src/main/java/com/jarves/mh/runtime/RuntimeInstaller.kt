@@ -2286,6 +2286,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
 private const val ANDROID_AAPT2_GRADLE_PROPERTY = "android.aapt2FromMavenOverride"
 private val MANAGED_ANDROID_GRADLE_PROPERTIES = listOf(
     ANDROID_AAPT2_GRADLE_PROPERTY,
+    "org.gradle.daemon",
     "org.gradle.jvmargs",
     "org.gradle.workers.max",
     "org.gradle.parallel",
@@ -2299,12 +2300,14 @@ internal fun isManagedAndroidGradleProperty(line: String): Boolean =
 
 /**
  * Keeps the user's own lines in the guest's global gradle.properties and replaces only the keys
- * the app manages. Bounded heap, two workers, no parallel projects and in-process Kotlin keep
- * Android builds inside a phone's memory instead of forking extra JVMs (upstream a4ab2b7).
+ * the app manages. Bounded heap, two workers, no parallel projects and in-process Kotlin limit
+ * build resources. Disabling daemon reuse lets Gradle shut its build JVM down when finished,
+ * before the app loses foreground protection.
  */
 internal fun mergeManagedAndroidGradleProperties(existingLines: List<String>, aapt2GuestPath: String): List<String> =
     existingLines.filterNot(::isManagedAndroidGradleProperty) + listOf(
         "$ANDROID_AAPT2_GRADLE_PROPERTY=$aapt2GuestPath",
+        "org.gradle.daemon=false",
         "org.gradle.jvmargs=-Xmx512m -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8",
         "org.gradle.workers.max=2",
         "org.gradle.parallel=false",

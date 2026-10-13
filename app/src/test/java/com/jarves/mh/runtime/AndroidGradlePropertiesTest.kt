@@ -30,6 +30,35 @@ class AndroidGradlePropertiesTest {
     @Test
     fun similarUserKeysAreNotManaged() {
         assertFalse(isManagedAndroidGradleProperty("org.gradle.jvmargsExtra=1"))
+        assertFalse(isManagedAndroidGradleProperty("org.gradle.daemon.idletimeout=1000"))
+        assertFalse(isManagedAndroidGradleProperty("# org.gradle.daemon=true"))
         assertTrue(isManagedAndroidGradleProperty("kotlin.compiler.execution.strategy=daemon"))
+    }
+
+    @Test
+    fun buildsDisableReusableDaemonsByDefault() {
+        val merged = mergeManagedAndroidGradleProperties(emptyList(), "/aapt2")
+
+        assertTrue("org.gradle.daemon=false" in merged)
+    }
+
+    @Test
+    fun existingDaemonOverridesAreRepairedWithoutRemovingOtherSettings() {
+        val merged = mergeManagedAndroidGradleProperties(
+            listOf(
+                "org.gradle.daemon=true",
+                " org.gradle.daemon : true",
+                "org.gradle.daemon.idletimeout=1000",
+                "my.flag=true",
+            ),
+            "/aapt2",
+        )
+
+        assertEquals(1, merged.count { it.trim().startsWith("org.gradle.daemon=") })
+        assertTrue("org.gradle.daemon=false" in merged)
+        assertFalse(" org.gradle.daemon : true" in merged)
+        assertTrue("org.gradle.daemon.idletimeout=1000" in merged)
+        assertTrue("my.flag=true" in merged)
+        assertTrue(isManagedAndroidGradleProperty("org.gradle.daemon=false"))
     }
 }
