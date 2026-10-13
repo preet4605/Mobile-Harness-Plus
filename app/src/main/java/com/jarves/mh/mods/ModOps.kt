@@ -53,6 +53,9 @@ enum class ModOp(
     SECRETS_SET("secrets.set", ModCapability.SECRETS),
     PROMPT_SEND("prompt.send", ModCapability.PROMPT_SEND, needsProject = true),
     BROWSER_OPEN("browser.open", ModCapability.BROWSER_OPEN),
+    HTTP_FETCH("http.fetch", ModCapability.NET_FETCH, slow = true),
+    MODEL_COMPLETE("model.complete", ModCapability.MODEL_COMPLETE, slow = true),
+    MODEL_USAGE("model.usage", ModCapability.MODEL_COMPLETE),
     AGENT_LIST("agent.list", ModCapability.AGENT_ASK),
     AGENT_ASK("agent.ask", ModCapability.AGENT_ASK, needsProject = true, slow = true),
     ;

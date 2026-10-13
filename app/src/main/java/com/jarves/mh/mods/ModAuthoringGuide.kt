@@ -254,6 +254,9 @@ object ModAuthoringGuide {
         | `${'$'}.secrets.get(key)` / `${'$'}.secrets.set(key, value)` | `secrets` | The mod's own encrypted secrets, including its secret settings; `null` removes one |
         | `${'$'}.prompt.send(text)` | `prompt.send` | Sends a message to the agent in the open chat (at most 3 after each message from the user) |
         | `${'$'}.browser.open(url)` | `browser.open` | Opens an https page in the browser |
+        | `${'$'}.http.fetch(url, { method, headers, body })` | `net.fetch` | https only, to the hosts in the permission's `scope.hosts` (`api.example.com`, or `*.example.com`); no cookies or redirects followed; 1 MB, 15 s; resolves `{ status, ok, headers, text }` |
+        | `${'$'}.model.complete({ prompt, system, maxTokens })` | `model.complete` | One answer from the user's API-key provider: `{ text, inputTokens, outputTokens, usedToday, dailyLimit }`; 50,000 tokens a day per mod |
+        | `${'$'}.model.usage()` | `model.complete` | `{ usedToday, dailyLimit }` |
         | `${'$'}.changes.list()` | `changes.read` | The agent's file changes the user hasn't kept or undone: `{ path, additions, deletions, binary }` |
         | `${'$'}.changes.undo(path)` | `changes.undo` | Undoes the agent's change to one file from its checkpoint; `true` when undone. Only paths in the permission's `scope.paths`, when it has any |
         | `${'$'}.tool.register({ name, description, inputSchema })` | `tools.provide` | Gives the agents a tool; resolves to the name they see (see "Tools for the agents") |

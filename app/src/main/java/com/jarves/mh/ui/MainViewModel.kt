@@ -602,6 +602,21 @@ class MainViewModel(
             undone
         }
 
+        override suspend fun modelComplete(mod: InstalledMod, prompt: String, system: String?, maxTokens: Int): JSONObject {
+            val profile = _state.value.provider
+            require(
+                profile.kind != ProviderKind.CHATGPT && profile.kind != ProviderKind.ANTIGRAVITY_SERVER &&
+                    !(profile.kind == ProviderKind.CLAUDE && profile.claudeAuthMode == ClaudeAuthMode.NATIVE_SUBSCRIPTION),
+            ) { "Mods can call the model only with an API-key provider, not an account sign-in." }
+            require(profile.resolvedBaseUrl.isNotBlank() && profile.model.isNotBlank()) { "Choose a provider and model in Settings first." }
+            val key = withContext(Dispatchers.IO) { vault.get(profile.secretId).orEmpty() }
+            require(key.isNotBlank()) { "The active provider has no API key." }
+            val protocol = providerProtocolForAgent(profile, _state.value.agentKind)
+            val answer = providerApi.complete(profile.resolvedBaseUrl, profile.model, key, protocol, prompt, system, maxTokens)
+            return JSONObject().put("text", answer.text).put("inputTokens", answer.inputTokens)
+                .put("outputTokens", answer.outputTokens).put("model", profile.model)
+        }
+
         override fun openUrl(mod: InstalledMod, url: String): Boolean {
             openExternalUrlOnce(url)
             return true

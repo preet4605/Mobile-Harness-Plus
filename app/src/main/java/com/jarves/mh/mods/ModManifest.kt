@@ -152,7 +152,8 @@ object ModManifestParser {
     private val ITEM_ID = Regex("^[a-z0-9-]{1,40}$")
     private val PANE_ID = Regex("^[a-z0-9-]{1,30}$")
     private val SETTING_KEY = Regex("^[a-z][a-z0-9_]{0,39}$")
-    private val HOST = Regex("^[a-z0-9.-]+$")
+    /** A host name, or `*.` and one for all of its subdomains. */
+    private val HOST = Regex("^(\\*\\.)?[a-z0-9-]+(\\.[a-z0-9-]+)+$")
     private val COMMAND = Regex("^[A-Za-z0-9._+-]+$")
     private val TEMPLATE_VAR = Regex("\\{\\{\\s*([A-Za-z0-9_.]+)\\s*\\}\\}")
 

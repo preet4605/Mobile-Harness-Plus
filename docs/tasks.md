@@ -1,8 +1,18 @@
 # Tasks and progress
 
+## Mod network and model calls (spec v2 phase P10) — 2026-10-13
+
+COMPLETE: mod code can reach named websites and ask the user's model, within limits.
+
+- `$.http.fetch(url, { method, headers, body })` (`net.fetch`, HIGH) needs `scope.hosts` (`api.example.com`, or `*.example.com` for subdomains; the manifest now accepts that form). https on the standard port only; IP addresses, localhost and user:password URLs are refused; Host, Cookie and other transport headers can't be set; no cookies are kept and redirects are not followed (the 3xx comes back); 256 KB body, 1 MB answer, 15 s; at most 4 requests at a time. `Set-Cookie` is dropped from the answer. One audit entry per host a minute. The permission confirm and rows show the hosts.
+- `$.model.complete({ prompt, system, maxTokens })` (`model.complete`, HIGH) sends one non-streamed request to the active provider when it is API-key based (Anthropic messages, OpenAI chat or responses shapes; `ProviderApiClient.complete`). Account sign-ins (Claude subscription, ChatGPT, Antigravity) are refused. Each mod has 50,000 tokens a day (UTC), counted from the provider's usage and held as an estimate while a call runs; `$.model.usage()` reports it. Saved in the mod's data folder.
+- Default taken: the daily limit is fixed at 50,000 tokens per mod and is not yet shown in Settings > Usage (the mod log and audit show each call).
+- VERIFIED: 71 tests (all mods tests and ProviderApiClientTest) passed, including `ModHostTest` (allowed host and wildcard, unknown host, http, Cookie header, the daily limit refusing the second call, usage file), `ModRegistryTest` (its unusable-capability example moved from net.fetch to git.read), `ModNetTest` (host matching, addresses, ports, credentials, headers, bodies), `ProviderApiClientTest` (request and answer shapes for the three protocols).
+- NOT RUN: real network or provider calls from a mod on a device.
+
 ## More mod calls: files, secrets, messages, pages — 2026-10-13
 
-COMPLETE: the remaining non-network `$` calls from spec v2 §6.1.
+COMPLETE (pushed to harness-dev as fb28e4e): the remaining non-network `$` calls from spec v2 §6.1.
 
 - `$.fs.read/list/stat/exists` (`files.read`; the whole project when the permission names no `scope.paths`, else only those globs) and `$.fs.write(path, text)` (`files.write`, which needs `scope.paths`; atomic replace, 1 MB). Agent, git and app settings files stay closed and links are never followed (ModPaths). Writes are audited and logged.
 - `$.secrets.get/set` (`secrets`): encrypted in ApiKeyVault under `mod:<id>:<key>` (ModSecrets), at most 32 per mod, removed with the mod. Secret settings can now be entered on the mod's Controls tab (a hidden field) and read the same way; they never reach `options`. Like other vault entries, whitespace is stripped.

@@ -75,10 +75,10 @@ class ModRegistryTest {
     @Test
     fun `import installs, turns on and keeps only grants it may hold`() {
         val registry = registry()
-        val staged = stageZip(registry, ModTestKit.modZip(toastManifest(extraPermissions = listOf("net.fetch")), files))
-        assertTrue(staged.warnings.any { "net.fetch" in it })
+        val staged = stageZip(registry, ModTestKit.modZip(toastManifest(extraPermissions = listOf("git.read")), files))
+        assertTrue(staged.warnings.any { "git.read" in it })
 
-        val mod = registry.install(staged, setOf(ModCapability.UI_TOAST, ModCapability.NET_FETCH, ModCapability.NOTIFY), ModTrust.IMPORTED, "sample.mhmod")
+        val mod = registry.install(staged, setOf(ModCapability.UI_TOAST, ModCapability.GIT_READ, ModCapability.NOTIFY), ModTrust.IMPORTED, "sample.mhmod")
 
         assertEquals(setOf(ModCapability.UI_TOAST), mod.granted)
         assertTrue(mod.enabled)

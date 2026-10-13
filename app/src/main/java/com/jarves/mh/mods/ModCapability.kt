@@ -28,7 +28,7 @@ enum class ModCapability(
     GIT_READ("git.read", RiskLevel.REVIEW, "Read git status and diffs"),
     BROWSER_OPEN("browser.open", RiskLevel.REVIEW, "Open web pages", usable = true),
     TERMINAL_RUN("terminal.run", RiskLevel.HIGH, "Run terminal commands"),
-    NET_FETCH("net.fetch", RiskLevel.HIGH, "Connect to the internet"),
+    NET_FETCH("net.fetch", RiskLevel.HIGH, "Connect to the websites it names", usable = true),
     SECRETS("secrets", RiskLevel.REVIEW, "Keep its own secrets", usable = true),
     MEMORY_READ("memory.read", RiskLevel.REVIEW, "Read project memory"),
     AGENT_ASK("agent.ask", RiskLevel.HIGH, "Start agent tasks on any of your harnesses", usable = true),
@@ -44,7 +44,7 @@ enum class ModCapability(
     TERMINAL_GATE("terminal.gate", RiskLevel.REVIEW, "Block or ask before terminal commands and app builds", usable = true),
     TOOLS_GATE("tools.gate", RiskLevel.REVIEW, "Block or change Claude's tool calls and approval requests", usable = true),
     TOOLS_PROVIDE("tools.provide", RiskLevel.HIGH, "Give the agents new tools they may call", usable = true),
-    MODEL_COMPLETE("model.complete", RiskLevel.HIGH, "Call the AI model on your account"),
+    MODEL_COMPLETE("model.complete", RiskLevel.HIGH, "Call the AI model on your account (daily token limit)", usable = true),
     ;
 
     companion object {

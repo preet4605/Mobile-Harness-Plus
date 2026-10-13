@@ -543,6 +543,7 @@ private fun ModPage(
             message = listOfNotNull(
                 permission?.reason?.let { "${mod.manifest.name} says: $it" },
                 permission?.paths?.takeIf { it.isNotEmpty() }?.let { "Only: ${it.joinToString()}" },
+                permission?.hosts?.takeIf { it.isNotEmpty() }?.let { "Only these sites: ${it.joinToString()}" },
                 "This is a high-risk permission.",
             ).joinToString("\n\n"),
             actions = listOf(
@@ -846,7 +847,7 @@ private fun LazyListScope.permissionsTab(mod: InstalledMod, viewModel: ModsViewM
                 val details = listOfNotNull(
                     "${capability.id} · ${riskLabel(capability.risk)}",
                     permission.reason,
-                    permission.paths.takeIf { it.isNotEmpty() }?.let { "Only ${it.joinToString()}" },
+                    permission.paths.takeIf { it.isNotEmpty() }?.let { "Only ${it.joinToString()}" }, permission.hosts.takeIf { it.isNotEmpty() }?.let { "Sites: ${it.joinToString()}" },
                 ).joinToString("\n")
                 val granted = capability in mod.granted
                 ListRow(
@@ -1012,7 +1013,7 @@ private fun ModReviewSheet(review: ModReview, busy: Boolean, onInstall: (Set<Mod
                             subtitle = listOfNotNull(
                                 "${capability.id} · ${riskLabel(capability.risk)}",
                                 permission.reason,
-                                permission.paths.takeIf { it.isNotEmpty() }?.let { "Only ${it.joinToString()}" },
+                                permission.paths.takeIf { it.isNotEmpty() }?.let { "Only ${it.joinToString()}" }, permission.hosts.takeIf { it.isNotEmpty() }?.let { "Sites: ${it.joinToString()}" },
                                 if (blocked) "Turn on “Trust this mod” on its page first." else null,
                             ).joinToString("\n"),
                             subtitleMaxLines = 5,

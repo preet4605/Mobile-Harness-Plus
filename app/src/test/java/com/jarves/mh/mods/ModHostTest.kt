@@ -51,6 +51,8 @@ class ModHostTest {
             followUps += text
             return true
         }
+        override suspend fun modelComplete(mod: InstalledMod, prompt: String, system: String?, maxTokens: Int): JSONObject =
+            JSONObject().put("text", "hi").put("inputTokens", 200).put("outputTokens", 400).put("model", "test")
         val opened = CopyOnWriteArrayList<String>()
         override fun openUrl(mod: InstalledMod, url: String): Boolean { opened += url; return true }
         val undone = CopyOnWriteArrayList<String>()
@@ -96,6 +98,7 @@ class ModHostTest {
         return registry.install(staged, granted, ModTrust.IMPORTED, "test.mhmod")
     }
 
+    private val httpCalls = CopyOnWriteArrayList<ModHttpRequest>()
     private val secretValues = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val secretStore = object : ModSecretStore {
         override fun get(modId: String, key: String): String? = secretValues["$modId:$key"]
@@ -112,6 +115,10 @@ class ModHostTest {
             dataDir = registry::dataDir,
             limits = limits,
             secrets = secretStore,
+            http = { request ->
+                httpCalls += request
+                JSONObject().put("status", 200).put("ok", true).put("text", "pong")
+            },
         ).also {
             it.effects = effects
             it.start()
@@ -719,5 +726,50 @@ class ModHostTest {
         assertEquals("keep", File(root, "notes.md").readText())
         assertEquals("s3cret", secretValues["dev.test.sample:token"])
         assertEquals(listOf("https://example.com/docs"), effects.opened.toList())
+    }
+
+    @Test
+    fun `web requests reach only named hosts and model calls stop at the daily limit`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('run.end', async ($) => {
+                const r = (p) => p.then(v => JSON.stringify(v), err => 'refused: ' + err.message)
+                console.log('api ' + await r($.http.fetch('https://api.example.com/v1/items?x=1', { method: 'POST', headers: { 'X-Key': 'k' }, body: { a: 1 } }).then(a => a.status + ' ' + a.text)))
+                console.log('sub ' + await r($.http.fetch('https://cdn.example.org/a.js').then(a => a.status)))
+                console.log('other ' + await r($.http.fetch('https://evil.test/')))
+                console.log('plain ' + await r($.http.fetch('http://api.example.com/')))
+                console.log('cookie ' + await r($.http.fetch('https://api.example.com/', { headers: { Cookie: 'a=b' } })))
+                console.log('first ' + await r($.model.complete({ prompt: 'Say hi', maxTokens: 100 }).then(a => a.text + ' ' + a.usedToday)))
+                console.log('second ' + await r($.model.complete({ prompt: 'x'.repeat(4000), maxTokens: 500 })))
+                console.log('usage ' + await r($.model.usage()))
+                console.log('done')
+              })
+            }
+        """.trimIndent(), permissions = listOf("net.fetch", "model.complete")) {
+            put("permissions", JSONArray(listOf(
+                permission("net.fetch").put("scope", JSONObject().put("hosts", JSONArray().put("api.example.com").put("*.example.org"))),
+                permission("model.complete"),
+            )))
+        }
+        val host = host(registry, LIMITS.copy(modelTokensPerDay = 1_000))
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod to start") { host.info()?.state == ModRunState.RUNNING }
+        host.emit("run.end", JSONObject().put("status", "completed"))
+        waitFor("the calls") { "info: done" in host.logText() }
+        val log = host.logText()
+        assertTrue(log, "api \"200 pong\"" in log)
+        assertTrue(log, "sub 200" in log)
+        assertTrue(log, "other refused: evil.test is not one of the hosts" in log)
+        assertTrue(log, "plain refused:" in log && "https:// URLs only" in log)
+        assertTrue(log, "cookie refused: The Cookie header can't be set" in log)
+        assertTrue(log, "first \"hi 600\"" in log)
+        assertTrue(log, "second refused: Sample has used 600 of its 1000 model tokens today" in log)
+        assertTrue(log, "\"usedToday\":600" in log && "\"dailyLimit\":1000" in log)
+        assertEquals(2, httpCalls.size)
+        assertEquals("POST", httpCalls[0].method)
+        assertEquals("{\"a\":1}", httpCalls[0].body)
+        assertEquals(mapOf("X-Key" to "k"), httpCalls[0].headers)
+        assertTrue(File(registry.dataDir("dev.test.sample"), "model-usage.json").readText().contains("600"))
     }
 }

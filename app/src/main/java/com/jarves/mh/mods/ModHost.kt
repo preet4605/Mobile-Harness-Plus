@@ -33,6 +33,12 @@ interface ModHostEffects : ModHookEffects {
     /** The newest [limit] messages of [context]'s chat, oldest first, as (from, text); null when that chat is not open. */
     fun chatMessages(context: ModEventContext, limit: Int): List<Pair<String, String>>?
 
+    /**
+     * One answer from the user's active provider (spec v2 P10 `$.model.complete`): `{ text,
+     * inputTokens, outputTokens, model }`. Throws with a reason the mod can show when there is none.
+     */
+    suspend fun modelComplete(mod: InstalledMod, prompt: String, system: String?, maxTokens: Int): JSONObject
+
     /** Opens an https page in the browser; false when it can't. */
     fun openUrl(mod: InstalledMod, url: String): Boolean
 
@@ -158,6 +164,8 @@ data class ModHostLimits(
     val gateBudgetMs: Long = 3_000,
     /** Wall time a gate may wait on one mod, including its `$` calls, before passing the action on. */
     val gateWaitMs: Long = 8_000,
+    /** Model tokens one mod may use a day through `$.model.complete` (prompt and answer). */
+    val modelTokensPerDay: Long = 50_000,
     /** Wall time a mod tool may take, including its `$` calls, before the agent hears it timed out. */
     val toolWaitMs: Long = 25_000,
     /** Own time for `prompt.compose`. */
@@ -203,6 +211,8 @@ class ModHost(
     private val hostContext: CoroutineContext = Dispatchers.Default.limitedParallelism(1),
     private val ioContext: CoroutineContext = Dispatchers.IO,
     private val secrets: ModSecretStore? = null,
+    /** Sends a checked `$.http.fetch` request; replaced in tests. */
+    private val http: (ModHttpRequest) -> JSONObject = ModNet::send,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + hostContext + CoroutineExceptionHandler { _, error ->
         runCatching { android.util.Log.w(TAG, "Mod host error", error) }
@@ -293,6 +303,8 @@ class ModHost(
         val dispatches = HashMap<Long, Dispatch>()
         val timers = HashMap<Long, Job>()
         val commands = LinkedHashMap<String, ModCodeCommand>()
+        /** `$.http.fetch` requests in flight. */
+        var fetching = 0
         /** Tools it gave the agents with `$.tool.register`, by name. */
         val provided = LinkedHashMap<String, ModTool>()
         var consumer: Job? = null
@@ -1262,6 +1274,45 @@ class ModHost(
                 if (!throttle("browser:${mod.id}", 5_000)) false
                 else (effects ?: error("The app screen is closed")).openUrl(mod, url)
             }
+            ModOp.HTTP_FETCH -> {
+                val hosts = mod.manifest.permission(ModCapability.NET_FETCH)?.hosts.orEmpty()
+                val request = ModNet.check(text(args), args.optJSONObject(1), hosts)
+                require(loaded.fetching < MAX_FETCHES) { "At most $MAX_FETCHES requests at a time" }
+                val host = java.net.URI(request.url).host
+                if (throttle("fetch-audit:${mod.id}/$host", 60_000)) registry.recordCall(mod.id, "http.fetch $host", ModCapability.NET_FETCH, "allowed", null)
+                loaded.fetching++
+                try {
+                    withContext(ioContext) { http(request) }
+                } finally {
+                    loaded.fetching--
+                }
+            }
+            ModOp.MODEL_COMPLETE -> {
+                val spec = args.optJSONObject(0) ?: JSONObject().put("prompt", text(args))
+                val prompt = spec.optString("prompt")
+                require(prompt.isNotBlank() && prompt.length <= MAX_MODEL_PROMPT) { "\$.model.complete({ prompt }) needs a prompt of up to $MAX_MODEL_PROMPT characters" }
+                val system = spec.optString("system").take(MAX_MODEL_SYSTEM).ifBlank { null }
+                val maxTokens = spec.optInt("maxTokens", 1_024).coerceIn(1, MAX_MODEL_TOKENS)
+                val e = effects ?: error("The app screen is closed")
+                // The estimate is held while the call runs, so calls side by side can't pass the cap together.
+                val estimate = (prompt.length + (system?.length ?: 0)) / 4L + maxTokens
+                val used = modelTokensToday(mod.id)
+                require(used + estimate <= limits.modelTokensPerDay) {
+                    "${mod.manifest.name} has used $used of its ${limits.modelTokensPerDay} model tokens today; this call could need $estimate"
+                }
+                addModelTokens(mod.id, estimate)
+                val answer = try {
+                    e.modelComplete(mod, prompt, system, maxTokens)
+                } catch (error: Throwable) {
+                    addModelTokens(mod.id, -estimate)
+                    throw error
+                }
+                val spent = answer.optLong("inputTokens", 0) + answer.optLong("outputTokens", 0)
+                addModelTokens(mod.id, (if (spent > 0) spent else estimate) - estimate)
+                registry.recordCall(mod.id, "model.complete", ModCapability.MODEL_COMPLETE, "allowed", "${if (spent > 0) spent else estimate} tokens")
+                answer.put("usedToday", modelTokensToday(mod.id)).put("dailyLimit", limits.modelTokensPerDay)
+            }
+            ModOp.MODEL_USAGE -> JSONObject().put("usedToday", modelTokensToday(mod.id)).put("dailyLimit", limits.modelTokensPerDay)
             ModOp.AGENT_LIST -> (effects ?: error("The app screen is closed")).agents()
             ModOp.AGENT_ASK -> {
                 val spec = args.optJSONObject(0) ?: JSONObject().put("prompt", text(args))
@@ -1424,6 +1475,34 @@ class ModHost(
         loaded.commands[name] = ModCodeCommand(loaded.id, loaded.mod.manifest.name, name, description, hint)
         setInfo(loaded.id) { it.copy(commands = loaded.commands.values.toList()) }
         return true
+    }
+
+    /** Model tokens each mod used today (UTC), by mod id; kept in its data folder. Host thread. */
+    private val modelUsage = HashMap<String, Pair<String, Long>>()
+
+    private fun usageDay(): String = java.time.Instant.ofEpochMilli(wallClock()).atZone(java.time.ZoneOffset.UTC).toLocalDate().toString()
+
+    private suspend fun modelTokensToday(modId: String): Long {
+        val day = usageDay()
+        val known = modelUsage[modId] ?: withContext(ioContext) {
+            runCatching { JSONObject(File(dataDir(modId), MODEL_USAGE_FILE).readText()) }.getOrNull()
+                ?.let { it.optString("day") to it.optLong("tokens") } ?: (day to 0L)
+        }.also { modelUsage[modId] = it }
+        return if (known.first == day) known.second else 0L
+    }
+
+    private suspend fun addModelTokens(modId: String, tokens: Long) {
+        val day = usageDay()
+        val total = (modelTokensToday(modId) + tokens).coerceAtLeast(0)
+        modelUsage[modId] = day to total
+        withContext(ioContext) {
+            runCatching {
+                val dir = dataDir(modId).apply { mkdirs() }
+                val staging = File(dir, "$MODEL_USAGE_FILE.tmp")
+                staging.writeText(JSONObject().put("day", day).put("tokens", total).toString())
+                check(staging.renameTo(File(dir, MODEL_USAGE_FILE)))
+            }
+        }
     }
 
     private fun registerTool(loaded: Loaded, spec: JSONObject): String {
@@ -1618,6 +1697,11 @@ class ModHost(
         private const val MAX_PROMPT = 20_000
         /** What one mod may add to a prompt (spec v2 §7 prompt injection). */
         const val MAX_SECTION_BYTES = 8 * 1024
+        const val MAX_FETCHES = 4
+        const val MAX_MODEL_PROMPT = 100_000
+        const val MAX_MODEL_SYSTEM = 20_000
+        const val MAX_MODEL_TOKENS = 4_096
+        private const val MODEL_USAGE_FILE = "model-usage.json"
         const val MAX_TOOLS = 16
         const val MAX_TOOL_SCHEMA = 8 * 1024
         const val MAX_TOOL_TEXT = 48_000

@@ -124,4 +124,30 @@ class ProviderApiClientTest {
         })
         assertFalse(routing.getBoolean("allow_fallbacks"))
     }
+
+    @Test
+    fun modCompletionsUseEachProtocolsShapeAndCountTokens() {
+        val client = ProviderApiClient()
+        val anthropic = JSONObject(client.completionBody("m", ProviderProtocol.ANTHROPIC, "hi", "be brief", 50))
+        assertEquals("be brief", anthropic.getString("system"))
+        assertEquals(50, anthropic.getInt("max_tokens"))
+        val chat = JSONObject(client.completionBody("m", ProviderProtocol.OPENAI_CHAT, "hi", "be brief", 50))
+        assertEquals("system", chat.getJSONArray("messages").getJSONObject(0).getString("role"))
+        val responses = JSONObject(client.completionBody("m", ProviderProtocol.OPENAI_RESPONSES, "hi", null, 50))
+        assertEquals("hi", responses.getString("input"))
+        assertFalse(responses.has("instructions"))
+
+        assertEquals(
+            ModelCompletion("Hello", 3, 2),
+            client.parseCompletion("""{"content":[{"type":"text","text":"Hel"},{"type":"text","text":"lo"}],"usage":{"input_tokens":3,"output_tokens":2}}""", ProviderProtocol.ANTHROPIC),
+        )
+        assertEquals(
+            ModelCompletion("Hi", 4, 1),
+            client.parseCompletion("""{"choices":[{"message":{"content":"Hi"}}],"usage":{"prompt_tokens":4,"completion_tokens":1}}""", ProviderProtocol.OPENAI_CHAT),
+        )
+        assertEquals(
+            ModelCompletion("Yo", 5, 6),
+            client.parseCompletion("""{"output":[{"type":"message","content":[{"type":"output_text","text":"Yo"}]}],"usage":{"input_tokens":5,"output_tokens":6}}""", ProviderProtocol.OPENAI_RESPONSES),
+        )
+    }
 }

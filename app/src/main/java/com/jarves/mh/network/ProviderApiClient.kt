@@ -155,6 +155,79 @@ class ProviderApiClient(
         }
     }
 
+    /**
+     * One non-streamed answer (mod `$.model.complete`, spec v2 P10). Throws with the provider's
+     * reason when it fails.
+     */
+    suspend fun complete(
+        baseUrl: String,
+        model: String,
+        apiKey: String,
+        protocol: ProviderProtocol,
+        prompt: String,
+        system: String?,
+        maxTokens: Int,
+    ): ModelCompletion = withContext(Dispatchers.IO) {
+        val endpoint = messagesEndpoint(baseUrl, protocol)
+        val response = request(endpoint, "POST", apiKey, completionBody(model, protocol, prompt, system, maxTokens), protocol, readTimeoutMs = 90_000)
+        if (response.code !in 200..299) {
+            error(providerErrorMessage(response.body) ?: response.error ?: friendlyHttpError(response.code))
+        }
+        parseCompletion(response.body, protocol)
+    }
+
+    internal fun completionBody(model: String, protocol: ProviderProtocol, prompt: String, system: String?, maxTokens: Int): String = when (protocol) {
+        ProviderProtocol.OPENAI_RESPONSES -> JSONObject()
+            .put("model", model)
+            .put("input", prompt)
+            .put("max_output_tokens", maxTokens)
+            .apply { if (system != null) put("instructions", system) }
+        ProviderProtocol.OPENAI_CHAT -> JSONObject()
+            .put("model", model)
+            .put("max_tokens", maxTokens)
+            .put("messages", JSONArray().apply {
+                if (system != null) put(JSONObject().put("role", "system").put("content", system))
+                put(JSONObject().put("role", "user").put("content", prompt))
+            })
+        else -> JSONObject()
+            .put("model", model)
+            .put("max_tokens", maxTokens)
+            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
+            .apply { if (system != null) put("system", system) }
+    }.toString()
+
+    internal fun parseCompletion(body: String, protocol: ProviderProtocol): ModelCompletion {
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: error("The provider's answer wasn't JSON.")
+        val usage = root.optJSONObject("usage")
+        return when (protocol) {
+            ProviderProtocol.OPENAI_CHAT -> ModelCompletion(
+                root.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content").orEmpty(),
+                usage?.optInt("prompt_tokens") ?: 0,
+                usage?.optInt("completion_tokens") ?: 0,
+            )
+            ProviderProtocol.OPENAI_RESPONSES -> {
+                val text = root.optString("output_text").ifEmpty {
+                    val output = root.optJSONArray("output") ?: JSONArray()
+                    (0 until output.length()).mapNotNull { output.optJSONObject(it) }
+                        .filter { it.optString("type") == "message" }
+                        .flatMap { item -> item.optJSONArray("content")?.let { c -> (0 until c.length()).mapNotNull { c.optJSONObject(it) } }.orEmpty() }
+                        .filter { it.optString("type") == "output_text" }
+                        .joinToString("") { it.optString("text") }
+                }
+                ModelCompletion(text, usage?.optInt("input_tokens") ?: 0, usage?.optInt("output_tokens") ?: 0)
+            }
+            else -> {
+                val content = root.optJSONArray("content") ?: JSONArray()
+                ModelCompletion(
+                    (0 until content.length()).mapNotNull { content.optJSONObject(it) }
+                        .filter { it.optString("type") == "text" }.joinToString("") { it.optString("text") },
+                    usage?.optInt("input_tokens") ?: 0,
+                    usage?.optInt("output_tokens") ?: 0,
+                )
+            }
+        }
+    }
+
     private fun request(
         endpoint: String,
         method: String,
@@ -326,6 +399,9 @@ class ProviderApiClient(
 
     private data class HttpResult(val code: Int, val body: String, val error: String? = null)
 }
+
+/** One answer from [ProviderApiClient.complete], with the tokens the provider counted. */
+data class ModelCompletion(val text: String, val inputTokens: Int, val outputTokens: Int)
 
 object ModelResponseParser {
     fun parse(json: String): List<DiscoveredModel> = runCatching {
