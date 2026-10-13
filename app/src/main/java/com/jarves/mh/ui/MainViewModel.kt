@@ -6590,6 +6590,10 @@ class MainViewModel(
                 appendLine(modSections)
                 appendLine()
             }
+            modToolsBlock(_state.value.agentKind).takeIf { it.isNotBlank() }?.let {
+                appendLine(it)
+                appendLine()
+            }
             if (skillsIndex.isNotBlank()) {
                 appendLine(skillsIndex)
                 appendLine()
@@ -6854,6 +6858,24 @@ class MainViewModel(
                 }
                 else -> action()
             }
+        }
+    }
+
+    /**
+     * Mod tools reach Claude and Codex as MCP tools; the other harnesses get them as a shell
+     * command, listed here (spec v2 P8).
+     */
+    private fun modToolsBlock(agent: AgentKind): String {
+        if (agent == AgentKind.CLAUDE_CODE || agent == AgentKind.CODEX) return ""
+        val tools = modHost?.snapshot?.value?.tools.orEmpty()
+        if (tools.isEmpty()) return ""
+        return buildString {
+            appendLine("<mod-tools>")
+            appendLine("Installed mods give you these tools. Call one with: harness-tools mod <name> '<json input>'")
+            tools.take(32).forEach { tool ->
+                appendLine("- ${tool.exposed}: ${tool.description.take(300)} Input schema: ${tool.inputSchema.take(600)}")
+            }
+            append("</mod-tools>")
         }
     }
 

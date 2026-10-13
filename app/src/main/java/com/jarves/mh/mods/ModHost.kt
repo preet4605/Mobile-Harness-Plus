@@ -85,6 +85,7 @@ data class ModRuntimeInfo(
     val summary: String? = null,
     val strikes: Int = 0,
     val commands: List<ModCodeCommand> = emptyList(),
+    val tools: List<ModTool> = emptyList(),
 )
 
 data class ModHostSnapshot(
@@ -94,6 +95,7 @@ data class ModHostSnapshot(
     val mods: Map<String, ModRuntimeInfo> = emptyMap(),
 ) {
     val commands: List<ModCodeCommand> get() = mods.values.flatMap { it.commands }
+    val tools: List<ModTool> get() = mods.values.flatMap { it.tools }
 }
 
 data class ModLogEntry(val time: Long, val level: String, val text: String)
@@ -153,6 +155,8 @@ data class ModHostLimits(
     val gateBudgetMs: Long = 3_000,
     /** Wall time a gate may wait on one mod, including its `$` calls, before passing the action on. */
     val gateWaitMs: Long = 8_000,
+    /** Wall time a mod tool may take, including its `$` calls, before the agent hears it timed out. */
+    val toolWaitMs: Long = 25_000,
     /** Own time for `prompt.compose`. */
     val composeBudgetMs: Long = 2_000,
     /** Own time for Claude's `tool.call` gate. */
@@ -285,6 +289,8 @@ class ModHost(
         val dispatches = HashMap<Long, Dispatch>()
         val timers = HashMap<Long, Job>()
         val commands = LinkedHashMap<String, ModCodeCommand>()
+        /** Tools it gave the agents with `$.tool.register`, by name. */
+        val provided = LinkedHashMap<String, ModTool>()
         var consumer: Job? = null
         var settle: Job? = null
         var callsInFlight = 0
@@ -374,6 +380,45 @@ class ModHost(
             value.optString("prompt").isNotBlank() -> ModCodeCommandOutcome.Prompt(value.optString("prompt").take(MAX_TEXT))
             value.optString("text").isNotBlank() -> ModCodeCommandOutcome.Reply(value.optString("text").take(MAX_TEXT))
             else -> ModCodeCommandOutcome.Nothing
+        }
+    }
+
+    /**
+     * Runs a mod tool an agent called (spec v2 P8): the owning mod's `tool.call` hooks answer it,
+     * matched by `{ tool: name }`. The hooks have [ModHostLimits.toolBudgetMs] of their own time
+     * and [ModHostLimits.toolWaitMs] in all, including their `$` calls. Never throws.
+     */
+    suspend fun callTool(exposed: String, input: JSONObject): ModToolResult = withContext(hostContext) {
+        val loaded = running.values.firstOrNull { it.ready && it.provided.values.any { tool -> tool.exposed == exposed } }
+            ?: return@withContext ModToolResult("The mod tool $exposed isn't available right now; its mod may have stopped.", isError = true)
+        val tool = loaded.provided.values.first { it.exposed == exposed }
+        val mod = currentMod(loaded)
+        if (!allowed(mod, ModCapability.TOOLS_PROVIDE)) {
+            registry.recordDenied(mod.id, "tool ${tool.name}", ModCapability.TOOLS_PROVIDE, "permission is off")
+            return@withContext ModToolResult("${mod.manifest.name} may no longer give tools.", isError = true)
+        }
+        registry.recordCall(mod.id, "tool ${tool.name}", ModCapability.TOOLS_PROVIDE, "called", null)
+        val result = CompletableDeferred<JSONObject?>()
+        val startedAt = wallClock()
+        val payload = JSONObject().put("tool", tool.name).put("input", input).put("provided", true).put("canGate", false)
+        dispatch(loaded, "tool.call", payload, limits.toolBudgetMs, result = result)
+        val message = withTimeoutOrNull(limits.toolWaitMs) { result.await() }
+            ?: return@withContext ModToolResult("${mod.manifest.name}'s tool ${tool.name} didn't answer in time.", isError = true)
+        if (message.has("error")) return@withContext ModToolResult("${tool.name} failed: ${firstLine(message.optString("error"))}", isError = true)
+        when (val value = message.opt("value")) {
+            null, JSONObject.NULL -> {
+                // A hook that threw was logged (and struck); tell the agent why rather than nothing.
+                val failure = log(loaded.id).lastOrNull { it.level == "error" && it.time >= startedAt }?.text
+                ModToolResult(if (failure != null) "${tool.name} failed: ${firstLine(failure)}" else "${tool.name} gave no answer.", isError = true)
+            }
+            is String -> ModToolResult(value.take(MAX_TOOL_TEXT))
+            is JSONObject -> when {
+                value.has("error") -> ModToolResult(value.optString("error").take(MAX_TOOL_TEXT).ifBlank { "${tool.name} failed." }, isError = true)
+                value.opt("text") is String -> ModToolResult(value.getString("text").take(MAX_TOOL_TEXT))
+                value.optBoolean("__mhPass") -> ModToolResult("${tool.name} gave no answer.", isError = true)
+                else -> ModToolResult(value.toString().take(MAX_TOOL_TEXT))
+            }
+            else -> ModToolResult(value.toString().take(MAX_TOOL_TEXT))
         }
     }
 
@@ -805,7 +850,7 @@ class ModHost(
         runCatching { loaded.isolate.close() }
         refreshListening()
         drawings.remove(loaded.id)
-        setInfo(loaded.id) { it.copy(state = ModRunState.WAITING, commands = emptyList()) }
+        setInfo(loaded.id) { it.copy(state = ModRunState.WAITING, commands = emptyList(), tools = emptyList()) }
     }
 
     private suspend fun onTerminated(loaded: Loaded, generation: Int, reason: ModTermination, detail: String) {
@@ -1157,6 +1202,12 @@ class ModHost(
                 if (undone) addLog(mod.id, "info", "Undid the agent's change to $path")
                 undone
             }
+            ModOp.TOOL_REGISTER -> registerTool(loaded, args.optJSONObject(0) ?: error("\$.tool.register({ name, description, inputSchema }) needs an object"))
+            ModOp.TOOL_UNREGISTER -> {
+                val removed = loaded.provided.remove(args.optString(0)) != null
+                setInfo(mod.id) { it.copy(tools = loaded.provided.values.toList()) }
+                removed
+            }
             ModOp.AGENT_LIST -> (effects ?: error("The app screen is closed")).agents()
             ModOp.AGENT_ASK -> {
                 val spec = args.optJSONObject(0) ?: JSONObject().put("prompt", text(args))
@@ -1321,6 +1372,29 @@ class ModHost(
         return true
     }
 
+    private fun registerTool(loaded: Loaded, spec: JSONObject): String {
+        val name = spec.optString("name")
+        require(ModTool.NAME.matches(name)) { "Tool name \"$name\" must be 2 to 40 lowercase letters, digits or underscores, starting with a letter." }
+        require(name in loaded.provided || loaded.provided.size < MAX_TOOLS) { "A mod can give at most $MAX_TOOLS tools." }
+        val description = ModHookRunner.clean(spec.optString("description").take(1_000))
+        require(description.isNotBlank()) { "Tool $name needs a description; the agent reads it to decide when to call it." }
+        val schema = when (val given = spec.opt("inputSchema")) {
+            null, JSONObject.NULL -> JSONObject().put("type", "object")
+            is JSONObject -> given
+            else -> error("Tool $name's inputSchema must be a JSON Schema object.")
+        }
+        require(schema.optString("type", "object") == "object") { "Tool $name's inputSchema must have type \"object\"." }
+        val schemaText = schema.toString()
+        require(schemaText.length <= MAX_TOOL_SCHEMA) { "Tool $name's inputSchema is larger than ${MAX_TOOL_SCHEMA / 1024} KB." }
+        val tool = ModTool(loaded.id, loaded.mod.manifest.name, name, description, schemaText)
+        val clash = running.values.firstOrNull { other -> other !== loaded && other.provided.values.any { it.exposed == tool.exposed } }
+        require(clash == null) { "Another mod (${clash?.mod?.manifest?.name}) already gives a tool named ${tool.exposed}." }
+        loaded.provided[name] = tool
+        setInfo(loaded.id) { it.copy(tools = loaded.provided.values.toList()) }
+        addLog(loaded.id, "info", "Gave the agents the tool ${tool.exposed}")
+        return tool.exposed
+    }
+
     // ---- helpers -------------------------------------------------------------------------
 
     private fun currentMod(loaded: Loaded): InstalledMod = mods.mods.firstOrNull { it.id == loaded.id } ?: loaded.mod
@@ -1437,7 +1511,7 @@ class ModHost(
                 engineState == ModEngineState.UNAVAILABLE -> info.copy(state = ModRunState.BLOCKED, message = engineMessage)
                 engineState == ModEngineState.PAUSED -> info.copy(state = ModRunState.BLOCKED, message = engineMessage)
                 !engineOn && info.state != ModRunState.RESTARTING && info.state != ModRunState.BLOCKED ->
-                    info.copy(state = ModRunState.WAITING, message = "Runs while a project is open or Mods is showing.", commands = emptyList())
+                    info.copy(state = ModRunState.WAITING, message = "Runs while a project is open or Mods is showing.", commands = emptyList(), tools = emptyList())
                 else -> info
             }
             mod.id to adjusted
@@ -1490,6 +1564,9 @@ class ModHost(
         private const val MAX_PROMPT = 20_000
         /** What one mod may add to a prompt (spec v2 §7 prompt injection). */
         const val MAX_SECTION_BYTES = 8 * 1024
+        const val MAX_TOOLS = 16
+        const val MAX_TOOL_SCHEMA = 8 * 1024
+        const val MAX_TOOL_TEXT = 48_000
         private const val MIN_ASK_MS = 10_000L
         private const val DEFAULT_ASK_MS = 30 * 60_000L
         private const val MAX_ASK_MS = 2 * 60 * 60_000L

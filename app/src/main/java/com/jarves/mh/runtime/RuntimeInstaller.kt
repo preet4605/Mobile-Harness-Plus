@@ -1819,6 +1819,10 @@ class RuntimeInstaller(private val context: Context) {
         install(script, content)
         install(File(rootfs, "usr/local/bin/harness-tools"),
             "#!/bin/sh\nexec /usr/local/bin/node /opt/pocket/harness/harness-tools.cjs \"${'$'}@\"\n".toByteArray(), true)
+        // Claude's `--mcp-config` for mod tools (spec v2 P8); the server inherits Claude's environment.
+        install(File(rootfs, CLAUDE_MOD_TOOLS_CONFIG.removePrefix("/")), JSONObject().put("mcpServers", JSONObject().put("mods", JSONObject()
+            .put("command", "/usr/local/bin/node")
+            .put("args", org.json.JSONArray().put("/opt/pocket/harness/harness-tools.cjs").put("--mcp").put("mods")))).toString().toByteArray())
         // Search is optional: a storage/asset failure must leave core commands and MCP working.
         RuntimeSearchTool.ensure(rootfs) { context.assets.open("harness/rg-arm64.bin") }
         true
@@ -1858,7 +1862,8 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
             .put(
                 "permissions",
                 JSONObject()
-                    .put("allow", if (interactiveApprovals) org.json.JSONArray(listOf("Read", "Glob", "Grep")) else claudeWorkspaceToolRules())
+                    // Mod tools were allowed when the user granted their mod tools.provide.
+                    .put("allow", if (interactiveApprovals) org.json.JSONArray(listOf("Read", "Glob", "Grep", "mcp__mods")) else claudeWorkspaceToolRules())
                     .put("defaultMode", if (interactiveApprovals) "default" else "acceptEdits"),
             )
             .put("hooks", hooks)
@@ -1900,6 +1905,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         put("Read")
         put("Glob")
         put("Grep")
+        put("mcp__mods")
     }
 
     fun writeResolver(dnsServersOverride: List<InetAddress>? = null) {
@@ -2153,6 +2159,8 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
     private fun File.readTextOrNull(): String? = runCatching { readText().trim() }.getOrNull()
 
     companion object {
+        /** Guest path of Claude's MCP config for mod tools, written with the harness tools. */
+        const val CLAUDE_MOD_TOOLS_CONFIG = "/opt/pocket/harness/mods.mcp.json"
         const val AGY_GUEST_PATH = "/root/.local/bin/agy"
         const val GITHUB_CLI_GUEST_PATH = "/root/.local/bin/gh"
 

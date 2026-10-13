@@ -124,8 +124,10 @@ internal class NativeInspectionBridge(
             token = request.getString("token")
             val scope = sessions.resolve(token) ?: error("Inspection launch has ended or is unavailable")
             require(parent.name == token) { "Inspection request belongs to another launch" }
-            val result = withTimeout(8_000) {
-                when (val operation = request.getString("operation")) {
+            val operation = request.getString("operation")
+            // A mod tool may wait on its own `$` calls; ModHost gives up on it first (toolWaitMs).
+            val result = withTimeout(if (operation == "mod_tool") 30_000 else 8_000) {
+                when (operation) {
                     "preview_dom", "preview_console", "preview_screenshot" -> preview(scope, operation)
                     "brain_search" -> {
                         val query = request.getJSONObject("args").getString("query")
@@ -154,6 +156,22 @@ internal class NativeInspectionBridge(
                             }
                         }
                         JSONObject().put("ok", true).apply { if (hook != null) put("hook", hook) }
+                    }
+                    "mod_tools" -> {
+                        // Tools running mods give the agents (mod spec v2 P8); none when no mod runs.
+                        val tools = com.jarves.mh.mods.ModHost.current.value?.snapshot?.value?.tools.orEmpty()
+                        JSONObject().put("ok", true).put("tools", JSONArray(tools.take(64).map { tool ->
+                            JSONObject().put("name", tool.exposed).put("description", "${tool.description} (from the ${tool.modName} mod)")
+                                .put("inputSchema", runCatching { JSONObject(tool.inputSchema) }.getOrElse { JSONObject().put("type", "object") })
+                        }))
+                    }
+                    "mod_tool" -> {
+                        val args = request.getJSONObject("args")
+                        val name = args.getString("name").take(64)
+                        val input = args.optJSONObject("input") ?: JSONObject()
+                        val answer = com.jarves.mh.mods.ModHost.current.value?.callTool(name, input)
+                            ?: com.jarves.mh.mods.ModToolResult("Mods aren't running right now.", isError = true)
+                        JSONObject().put("ok", true).put("text", answer.text).put("isError", answer.isError)
                     }
                     else -> error("Unsupported inspection operation")
                 }

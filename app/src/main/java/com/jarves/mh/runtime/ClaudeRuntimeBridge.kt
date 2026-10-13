@@ -325,6 +325,10 @@ class ClaudeRuntimeBridge(
                 effort = effort,
                 resumeSessionId = resumeId,
                 maxTurns = prefs.claudeMaxTurns,
+                mcpConfig = RuntimeInstaller.CLAUDE_MOD_TOOLS_CONFIG.takeIf {
+                    com.jarves.mh.mods.ModHost.current.value?.snapshot?.value?.tools?.isNotEmpty() == true &&
+                        File(installed.rootfs, it.removePrefix("/")).isFile
+                },
             )
             Log.d("ClaudeBridge", "Launching command: $command")
             val process = installer.process(
@@ -1184,6 +1188,8 @@ class ClaudeRuntimeBridge(
             effort: String? = null,
             resumeSessionId: String? = null,
             maxTurns: Int = 25,
+            /** Guest path of an MCP config to load, for tools running mods give (spec v2 P8). */
+            mcpConfig: String? = null,
         ): List<String> {
             val command = mutableListOf(
                 executable,
@@ -1207,6 +1213,7 @@ class ClaudeRuntimeBridge(
             command.add("--max-turns")
             require(maxTurns in 1..200) { "Claude turn budget must be between 1 and 200" }
             command.add(maxTurns.toString())
+            mcpConfig?.let { command.addAll(listOf("--mcp-config", it)) }
             NativeSpawnProcess.validateArgv(command)
             return command
         }

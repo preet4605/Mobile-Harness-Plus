@@ -42,6 +42,8 @@ enum class ModOp(
     PROMPT_DRAFT("prompt.draft", ModCapability.PROMPT_DRAFT, needsProject = true),
     CHANGES_LIST("changes.list", ModCapability.CHANGES_READ, needsProject = true),
     CHANGES_UNDO("changes.undo", ModCapability.CHANGES_UNDO, needsProject = true, slow = true),
+    TOOL_REGISTER("tool.register", ModCapability.TOOLS_PROVIDE),
+    TOOL_UNREGISTER("tool.unregister", ModCapability.TOOLS_PROVIDE),
     AGENT_LIST("agent.list", ModCapability.AGENT_ASK),
     AGENT_ASK("agent.ask", ModCapability.AGENT_ASK, needsProject = true, slow = true),
     ;
@@ -60,6 +62,31 @@ data class ModCodeCommand(
     val description: String,
     val argumentHint: String? = null,
 )
+
+/**
+ * A tool a running mod gave the agents with `$.tool.register` (spec v2 P8). Agents see it as
+ * [exposed]: Claude as `mcp__mods__<exposed>`, Codex through its harness-tools MCP server, and the
+ * other harnesses through `harness-tools mod <exposed> '<json>'`.
+ */
+data class ModTool(
+    val modId: String,
+    val modName: String,
+    val name: String,
+    val description: String,
+    /** The JSON Schema of its input, as JSON text. */
+    val inputSchema: String,
+) {
+    val exposed: String get() = exposedName(modId, name)
+
+    companion object {
+        val NAME = Regex("^[a-z][a-z0-9_]{1,39}$")
+        fun exposedName(modId: String, name: String): String =
+            ("mod_" + modId.substringAfterLast('.').lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(20) + "_" + name).take(64)
+    }
+}
+
+/** What a mod tool answered: the text the agent reads, and whether it is an error. */
+data class ModToolResult(val text: String, val isError: Boolean = false)
 
 /** What a mod command's `command.run` hook answered. */
 sealed interface ModCodeCommandOutcome {

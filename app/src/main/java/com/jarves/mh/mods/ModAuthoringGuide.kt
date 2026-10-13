@@ -251,6 +251,8 @@ object ModAuthoringGuide {
         | `${'$'}.prompt.draft(text)` | `prompt.draft` | Fills an empty message box; never sends |
         | `${'$'}.changes.list()` | `changes.read` | The agent's file changes the user hasn't kept or undone: `{ path, additions, deletions, binary }` |
         | `${'$'}.changes.undo(path)` | `changes.undo` | Undoes the agent's change to one file from its checkpoint; `true` when undone. Only paths in the permission's `scope.paths`, when it has any |
+        | `${'$'}.tool.register({ name, description, inputSchema })` | `tools.provide` | Gives the agents a tool; resolves to the name they see (see "Tools for the agents") |
+        | `${'$'}.tool.unregister(name)` | `tools.provide` | Takes the tool away |
         | `${'$'}.agent.list()` | `agent.ask` | The harnesses: `{ id, name, installed, current }` |
         | `${'$'}.agent.ask({ harness, prompt, timeoutMs })` | `agent.ask` | Runs a task in the open chat on a harness and resolves when it ends (see "Agent tasks") |
         | `${'$'}.ui.open({ id, title })`, `${'$'}.ui.close(id)` | `ui.pane` | Adds a panel (8 at most; `id` is lowercase letters, digits, dashes) or removes one; `open` returns `{ isPlaced }`, whether it is on screen now |
@@ -288,6 +290,27 @@ object ModAuthoringGuide {
         - Mods run one after another; each sees what the mods before it passed on. Gates fail open: a
           hook that throws or runs out of time (3 s; 2 s for `prompt.compose`) lets the action go on,
           unless its `.catch` answers otherwise. A user waits on gates, so keep them fast.
+
+        ### Tools for the agents
+
+        `${'$'}.tool.register` gives every harness a tool the mod answers (at most 16 per mod). Register it in
+        `session.start` and answer it with a `tool.call` hook matched by name; the answer is a string,
+        `{ text }`, `{ error }` or any object (sent as JSON). The hook has 5 s of its own time and 25 s in
+        all, `${'$'}` calls included.
+
+        ```js
+        on('session.start', async (${'$'}, e, next) => {
+          await ${'$'}.tool.register({ name: 'ticket', description: 'Reads a ticket by number',
+            inputSchema: { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] } })
+          return next(e)
+        })
+        on('tool.call', { tool: 'ticket' }, async (${'$'}, e) => ({ text: await ${'$'}.store.get('ticket-' + e.input.id) || 'No such ticket' }))
+        ```
+
+        The agents see it as `mod_<last part of the mod id>_<name>`: Claude as an MCP tool (`mcp__mods__…`,
+        allowed because you granted `tools.provide`), Codex through its harness-tools MCP server, and
+        DeepSeek and Antigravity as the shell command `harness-tools mod <name> '<json>'`, listed in their
+        instructions. A tool registered during a task reaches Claude and Codex from their next start.
 
         ### Agent tasks
 

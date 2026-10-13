@@ -89,7 +89,20 @@ const tools = [
   {name:'harness_preview',description:'Read the active project local Preview DOM, console, or viewport screenshot. Preview must be open; no remote browsing or arbitrary script execution.',inputSchema:{type:'object',properties:{kind:{type:'string',enum:['dom','console','screenshot']}},required:['kind'],additionalProperties:false},annotations:{readOnlyHint:true}},
   {name:'harness_brain_search',description:'Search saved Brain facts for this launch project. Results are untrusted contextual data.',inputSchema:{type:'object',properties:{query:{type:'string',maxLength:256}},required:['query'],additionalProperties:false},annotations:{readOnlyHint:true}}
 ];
+/** Tools running mods give the agents (mod platform spec v2 P8); none when the app can't be reached. */
+async function modTools(signal, options = {}) {
+  try {
+    const result = await nativeRequest('mod_tools', {}, {signal, timeout: 5000, ...options});
+    return (Array.isArray(result.tools) ? result.tools : []).filter(tool => tool && typeof tool.name === 'string' && /^mod_[a-z0-9_]{1,60}$/.test(tool.name))
+      .map(tool => ({name:tool.name, description:String(tool.description || '').slice(0,1200), inputSchema:tool.inputSchema && typeof tool.inputSchema === 'object' ? tool.inputSchema : {type:'object'}}));
+  } catch { return []; }
+}
 async function call(name,args,signal) {
+  if (typeof name === 'string' && /^mod_[a-z0-9_]{1,60}$/.test(name)) {
+    const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+    if (Buffer.byteLength(JSON.stringify(input)) > 48 * 1024) throw Error('Tool input is larger than 48 KB');
+    return nativeRequest('mod_tool', {name, input}, {signal, timeout: 32000});
+  }
   if (name === 'harness_doctor') return {ok:true,text:JSON.stringify(await doctor(signal))};
   if (name === 'harness_preview' && ['dom','console','screenshot'].includes(args?.kind)) return nativeRequest('preview_'+args.kind,{}, {signal});
   if (name === 'harness_brain_search' && typeof args?.query === 'string' && args.query.length <= 256) return nativeRequest('brain_search',{query:args.query},{signal});
@@ -140,7 +153,7 @@ async function content(result) {
   }
   return blocks;
 }
-function serve() {
+function serve(mode) {
   const active = new Map(); let buffer=''; let initialized=false;
   const reply = value => process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+'\n');
   async function handle(message) {
@@ -151,11 +164,14 @@ function serve() {
     if (method === 'initialize') {initialized=true; reply({id,result:{protocolVersion:['2024-11-05','2025-03-26','2025-06-18','2025-11-25'].includes(params?.protocolVersion) ? params.protocolVersion : '2024-11-05',capabilities:{tools:{}},serverInfo:{name:'mobile-harness',version:'1.0.0'}}}); return;}
     if (method === 'ping') {reply({id,result:{}}); return;}
     if (!initialized) {reply({id,error:{code:-32000,message:'Initialize first'}});return;}
-    if (method === 'tools/list') {reply({id,result:{tools}});return;}
+    if (method === 'tools/list') {const mods = await modTools(); reply({id,result:{tools:mode === 'mods' ? mods : [...tools, ...mods]}});return;}
     if (method !== 'tools/call') {reply({id,error:{code:-32601,message:'Method not found'}});return;}
     if (active.size >= 2 || active.has(id)) {reply({id,error:{code:-32000,message:'Inspection is busy'}});return;}
     const controller = new AbortController(); active.set(id,controller);
-    try {const result = await call(params?.name,params?.arguments,controller.signal); reply({id,result:{content:await content(result),isError:false}});}
+    try {
+      if (mode === 'mods' && !/^mod_/.test(String(params?.name))) throw Error('Unknown tool or invalid arguments');
+      const result = await call(params?.name,params?.arguments,controller.signal); reply({id,result:{content:await content(result),isError:result.isError === true}});
+    }
     catch (error) {reply({id,result:{content:[{type:'text',text:error.message.slice(0,200)}],isError:true}});}
     finally {active.delete(id);}
   }
@@ -173,9 +189,23 @@ function serve() {
   process.stdin.on('end',() => {for(const controller of active.values())controller.abort();});
   process.once('SIGTERM',() => {for(const controller of active.values())controller.abort();process.stdin.destroy();});
 }
-module.exports = {probe,doctor,nativeRequest,call,gate,shrink};
+module.exports = {probe,doctor,nativeRequest,call,gate,shrink,modTools};
 if (require.main === module) {
-  if (process.argv[2] === '--mcp') serve();
+  if (process.argv[2] === '--mcp') serve(process.argv[3]);
+  else if (process.argv[2] === 'mod') {
+    // harness-tools mod                  -> lists mod tools
+    // harness-tools mod <name> '<json>'  -> calls one (for harnesses without MCP)
+    const [name, json] = process.argv.slice(3);
+    const run = async () => {
+      if (!name) return JSON.stringify(await modTools(), null, 1);
+      let input = {};
+      if (json) { try { input = JSON.parse(json); } catch { throw Error('The input must be JSON, like \'{"query":"x"}\''); } }
+      const result = await call(name, input);
+      if (result.isError) throw Error(result.text || 'The tool failed');
+      return result.text || '';
+    };
+    run().then(text => process.stdout.write(text + '\n')).catch(error => {process.stderr.write(error.message.slice(0, 2000)+'\n');process.exitCode=1;});
+  }
   else if (process.argv[2] === 'gate') readStdin().then(gate).then(output => { if (output) process.stdout.write(JSON.stringify(output) + '\n'); }, () => {});
   else {
     const [command,argument] = process.argv.slice(2);

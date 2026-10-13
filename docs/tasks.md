@@ -1,8 +1,18 @@
 # Tasks and progress
 
+## Mod tools for the agents (spec v2 phase P8) — 2026-10-13
+
+COMPLETE: a mod can give every harness a tool it answers.
+
+- `$.tool.register({ name, description, inputSchema })` (permission `tools.provide`, HIGH; at most 16 per mod, schema up to 8 KB) adds a tool named `mod_<last id part>_<name>`, answered by the mod's `tool.call` hook matched by `{ tool: name }` (5 s own time, 25 s in all; string, `{text}`, `{error}` or JSON). Calls are audited.
+- Reach: the native inspection bridge has `mod_tools` (list) and `mod_tool` (call, 30 s). `harness-tools.cjs` adds mod tools to its MCP list (Codex already loads it), has a mods-only MCP mode for Claude (`--mcp-config /opt/pocket/harness/mods.mcp.json`, passed only while a running mod gives tools; `mcp__mods` is in Claude's allow list) and a `harness-tools mod <name> '<json>'` command that DeepSeek and Antigravity are told about in their instructions.
+- Defaults taken: mod tools are allowed without a per-call prompt, because the user granted `tools.provide` (HIGH) to that mod; tools registered mid-task reach Claude and Codex at their next start.
+- VERIFIED: 115 tests (mods, inspection bridge, Claude bridge) passed, including `ModHostTest` (register, name checks, permission, text/JSON/error answers, a failing hook's error reaching the agent, unknown tool, audit); `node --test tools/tests/harness-tools.test.cjs` 11/11 (mod list filtering, no bridge, mods-only MCP server); the `harness-tools mod` CLI answers `[]` and clear errors without the app.
+- NOT RUN: a mod tool called by each harness on a device (the spec's P8 check). Not verified here that Claude Code passes its environment (the bridge token) to the MCP server it starts; if it does not, Claude simply sees no mod tools.
+
 ## Mod tool gate and undo calls (spec v2 phase P7) — 2026-10-13
 
-COMPLETE: mod code can stop or change Claude's tool calls, refuse approval requests and undo the agent's file changes.
+COMPLETE (pushed to harness-dev as 9332b3e): mod code can stop or change Claude's tool calls, refuse approval requests and undo the agent's file changes.
 
 - While a running mod hooks `tool.call` with `tools.gate`, Claude's settings get a `PreToolUse` hook (`harness-tools gate`, 10 s) for just the tool names the mods match (`*` when a hook has no tool matcher). The hook asks the app over the native inspection bridge (`mod_gate`); mods may deny or rewrite the input. A rewrite answers "ask" with interactive approvals and "allow" without them, so a mod never approves anything on its own. Inputs over 48 KB are shortened, flagged `inputTruncated`, and can only be denied. Any failure (no bridge, a timeout, a stopped app) lets the call go on.
 - `tool.approval` (all harnesses that ask for approval) is a gate for mods with `tools.gate`: `{deny}` answers the request with "no" before the user does; other mods only hear of it.

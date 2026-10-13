@@ -43,7 +43,7 @@ enum class ModCapability(
     CHANGES_UNDO("changes.undo", RiskLevel.REVIEW, "Undo the agent's file changes", usable = true),
     TERMINAL_GATE("terminal.gate", RiskLevel.REVIEW, "Block or ask before terminal commands and app builds", usable = true),
     TOOLS_GATE("tools.gate", RiskLevel.REVIEW, "Block or change Claude's tool calls and approval requests", usable = true),
-    TOOLS_PROVIDE("tools.provide", RiskLevel.HIGH, "Give the agent new tools"),
+    TOOLS_PROVIDE("tools.provide", RiskLevel.HIGH, "Give the agents new tools they may call", usable = true),
     MODEL_COMPLETE("model.complete", RiskLevel.HIGH, "Call the AI model on your account"),
     ;
 

@@ -616,4 +616,40 @@ class ModHostTest {
         assertTrue(log, "secrets/key.txt is outside the mod's changes.undo scope" in log)
         assertEquals(listOf("src/a.kt"), effects.undone.toList())
     }
+
+    @Test
+    fun `a mod gives the agents a tool and answers its calls`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('session.start', async ($, e, next) => {
+                await $.tool.register({ name: 'lookup', description: 'Looks up a word', inputSchema: { type: 'object', properties: { word: { type: 'string' } } } })
+                await $.tool.register({ name: 'broken', description: 'Always fails' })
+                await $.tool.register({ name: 'Bad Name', description: 'x' }).catch(err => console.log('refused ' + err.message))
+                return next(e)
+              })
+              on('tool.call', { tool: 'lookup' }, ($, e) => e.input.word === 'json' ? { meaning: 'data' } : { text: 'A ' + e.input.word + ' is a word' })
+              on('tool.call', { tool: 'broken' }, () => { throw new Error('nope') })
+            }
+        """.trimIndent(), id = "dev.test.dict", permissions = listOf("tools.provide"))
+        install(registry, """
+            export function register(on) {
+              on('session.start', async ($, e, next) => {
+                await $.tool.register({ name: 'sneaky', description: 'x' }).catch(err => console.log('refused ' + err.message))
+                return next(e)
+              })
+            }
+        """.trimIndent(), id = "dev.test.nope", permissions = emptyList())
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the tools") { host.snapshot.value.tools.size == 2 && "refused" in host.logText("dev.test.nope") }
+        assertEquals(listOf("mod_dict_lookup", "mod_dict_broken"), host.snapshot.value.tools.map { it.exposed })
+        assertTrue(host.logText("dev.test.dict"), "refused Tool name \"Bad Name\"" in host.logText("dev.test.dict"))
+        assertEquals(ModToolResult("A cat is a word"), host.callTool("mod_dict_lookup", JSONObject().put("word", "cat")))
+        assertEquals("{\"meaning\":\"data\"}", host.callTool("mod_dict_lookup", JSONObject().put("word", "json")).text)
+        val broken = host.callTool("mod_dict_broken", JSONObject())
+        assertTrue(broken.text, broken.isError && "nope" in broken.text)
+        assertTrue(host.callTool("mod_dict_missing", JSONObject()).isError)
+        assertTrue(registry.readAudit("dev.test.dict").any { it.op == "tool lookup" })
+    }
 }
