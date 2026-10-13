@@ -1834,6 +1834,25 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
 """)
         Os.chmod(hook.absolutePath, 0b111101101)
 
+        val hooks = JSONObject().put(
+            "PermissionRequest",
+            org.json.JSONArray().put(
+                JSONObject()
+                    .put("matcher", "Bash|Edit|Write|NotebookEdit")
+                    .put(
+                        "hooks",
+                        org.json.JSONArray().put(
+                            JSONObject().put("type", "command").put("command", "/opt/pocket/permission-hook.sh").put("timeout", 150),
+                        ),
+                    ),
+            ),
+        )
+        // Mods' tool gate (spec v2 §7): only while a running mod may gate tools, for the tools they match.
+        com.jarves.mh.mods.ModHost.current.value?.toolGateMatcher?.let { matcher ->
+            hooks.put("PreToolUse", org.json.JSONArray().put(JSONObject().put("matcher", matcher).put("hooks", org.json.JSONArray().put(
+                JSONObject().put("type", "command").put("command", "/usr/local/bin/harness-tools gate").put("timeout", 10),
+            ))))
+        }
         val settingsContent = JSONObject()
             .put("disableAllHooks", false)
             .put(
@@ -1842,22 +1861,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
                     .put("allow", if (interactiveApprovals) org.json.JSONArray(listOf("Read", "Glob", "Grep")) else claudeWorkspaceToolRules())
                     .put("defaultMode", if (interactiveApprovals) "default" else "acceptEdits"),
             )
-            .put(
-                "hooks",
-                JSONObject().put(
-                    "PermissionRequest",
-                    org.json.JSONArray().put(
-                        JSONObject()
-                            .put("matcher", "Bash|Edit|Write|NotebookEdit")
-                            .put(
-                                "hooks",
-                                org.json.JSONArray().put(
-                                    JSONObject().put("type", "command").put("command", "/opt/pocket/permission-hook.sh").put("timeout", 150),
-                                ),
-                            ),
-                    ),
-                ),
-            )
+            .put("hooks", hooks)
             .toString()
 
         val settingsPaths = listOf(

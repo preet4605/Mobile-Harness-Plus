@@ -1,14 +1,26 @@
 # Tasks and progress
 
+## Mod tool gate and undo calls (spec v2 phase P7) — 2026-10-13
+
+COMPLETE: mod code can stop or change Claude's tool calls, refuse approval requests and undo the agent's file changes.
+
+- While a running mod hooks `tool.call` with `tools.gate`, Claude's settings get a `PreToolUse` hook (`harness-tools gate`, 10 s) for just the tool names the mods match (`*` when a hook has no tool matcher). The hook asks the app over the native inspection bridge (`mod_gate`); mods may deny or rewrite the input. A rewrite answers "ask" with interactive approvals and "allow" without them, so a mod never approves anything on its own. Inputs over 48 KB are shortened, flagged `inputTruncated`, and can only be denied. Any failure (no bridge, a timeout, a stopped app) lets the call go on.
+- `tool.approval` (all harnesses that ask for approval) is a gate for mods with `tools.gate`: `{deny}` answers the request with "no" before the user does; other mods only hear of it.
+- `$.changes.list()` (`changes.read`) and `$.changes.undo(path)` (`changes.undo`, limited to the permission's `scope.paths` when set) use the existing checkpoint undo.
+- Prompt hooks no longer see slash commands.
+- Default taken: Claude only for the pre-run `tool.call` gate (the spec's §7 path); the other harnesses keep the observe-only `tool.call` event.
+- VERIFIED: `ModHostTest` (deny, rewrite as ask/allow, unchanged and truncated inputs, unmatched tools, approval deny and observers, undo scope); `node --test tools/tests/harness-tools.test.cjs` 9/9.
+- NOT RUN: the hook inside a real Claude run on a device.
+
 ## Mod host gates (spec v2 phase P6) — 2026-10-13
 
-COMPLETE: mod code can block, rewrite or ask before the app's own actions.
+COMPLETE (pushed to harness-dev as 1d533cf): mod code can block, rewrite or ask before the app's own actions.
 
 - Gate events run each listening mod's chain in mod id order; the chain bottom passes the (possibly rewritten) input on. Verdicts: `{deny}` stops with the mod's reason, `{drop}` silently drops a prompt, `{confirm}` asks the user (Cancel / Continue), `{context}` adds notes. A rewrite keeps only the original keys with the same JSON kinds. A gate that times out (8 s wait, 3 s own time), throws or answers nonsense is skipped (fail open).
 - `prompt.submit` (permission `prompt.transform`) can rewrite or drop the user's prompt (up to 100,000 characters); `prompt.compose` (`prompt.compose`) adds sections, each mod's capped at 8 KB, wrapped as `<mod id name>` after the mod rules block. A toast shows while mods check a prompt for more than 0.7 s. Prompts sent by `$.agent.ask` skip `prompt.submit` but still get `prompt.compose`.
 - `terminal.command` and `build.start` (`terminal.gate`) gate terminal commands and Android builds; `files.op` (`files.gate`) gates rename, delete and save in Files.
 - `run.end` hooks may answer `{followUp}` to queue another prompt in the same chat (permission `prompt.send`; at most 3 chained per user message).
-- VERIFIED: `ModHostTest` passed, including gate order, rewrite, drop, notes, confirm/deny, fail open, the 8 KB compose cap, a gate with no hooks and follow-up permission.
+- VERIFIED: `ModHostTest` passed, including gate order, rewrite, drop, notes, confirm/deny, fail open, the 8 KB compose cap, a gate with no hooks and follow-up permission (57 mods tests). One earlier run failed the older memory-cap engine test on timing (a mod was marked crashed instead of blocked); it passed on the rerun and now prints the mod log when it fails.
 - NOT RUN: gates on a device, UI tests for the confirm dialog.
 
 ## Mod agent tasks — 2026-10-13

@@ -51,6 +51,13 @@ class ModHostTest {
             followUps += text
             return true
         }
+        val undone = CopyOnWriteArrayList<String>()
+        override fun pendingChanges(context: ModEventContext): JSONArray? =
+            JSONArray().put(JSONObject().put("path", "src/a.kt")).put(JSONObject().put("path", "secrets/key.txt"))
+        override suspend fun undoChange(context: ModEventContext, path: String): Boolean {
+            undone += path
+            return true
+        }
     }
 
     @Before
@@ -541,5 +548,72 @@ class ModHostTest {
         host.emit("run.end", JSONObject().put("status", "failed").put("error", "tests red"))
         waitFor("the follow-up") { effects.followUps.isNotEmpty() && "prompt.send permission" in host.logText("b.nope") }
         assertEquals(listOf("Try again: tests red"), effects.followUps.toList())
+    }
+
+    @Test
+    fun `claude tool calls can be denied or rewritten but never approved, and undo stays in its scope`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('tool.call', { tool: 'Bash' }, ($, e, next) => {
+                if (e.input.command.startsWith('rm ')) return { deny: 'No deleting' }
+                return next({ ...e, input: { ...e.input, command: e.input.command.replace('npm ', 'pnpm ') } })
+              })
+              on('tool.approval', ($, e, next) => e.tool === 'Write' ? { deny: 'Read-only today' } : next(e))
+              on('run.end', async ($) => {
+                const changes = await $.changes.list()
+                console.log('changes ' + changes.map(c => c.path).join(','))
+                console.log('undid ' + await $.changes.undo('src/a.kt'))
+                await $.changes.undo('secrets/key.txt').catch(err => console.log('refused ' + err.message))
+              })
+            }
+        """.trimIndent(), id = "a.guard", permissions = listOf("tools.gate", "changes.read", "changes.undo")) {
+            put("permissions", JSONArray(listOf(
+                permission("tools.gate"),
+                permission("changes.read"),
+                permission("changes.undo").put("scope", JSONObject().put("paths", JSONArray().put("src/**"))),
+            )))
+        }
+        install(registry, """
+            export function register(on) {
+              on('tool.approval', ($, e) => { console.log('heard ' + e.tool + ' ' + e.canGate); return { deny: 'not mine to say' } })
+            }
+        """.trimIndent(), id = "b.watch", permissions = emptyList())
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("both mods to start") { host.snapshot.value.mods.values.count { it.state == ModRunState.RUNNING } == 2 }
+        // Claude's PreToolUse hook is installed only for the tools a mod matches.
+        assertEquals("Bash", host.toolGateMatcher)
+
+        fun bash(command: String) = JSONObject().put("command", command).put("timeout", 5)
+        val denied = host.gateClaudeTool("Bash", bash("rm -rf build"), truncated = false, interactive = true)!!.getJSONObject("hookSpecificOutput")
+        assertEquals("deny", denied.getString("permissionDecision"))
+        assertEquals("Sample: No deleting", denied.getString("permissionDecisionReason"))
+        // A rewrite asks the user when approvals are interactive; it never approves on its own.
+        val rewritten = host.gateClaudeTool("Bash", bash("npm test"), truncated = false, interactive = true)!!.getJSONObject("hookSpecificOutput")
+        assertEquals("ask", rewritten.getString("permissionDecision"))
+        assertEquals("pnpm test", rewritten.getJSONObject("updatedInput").getString("command"))
+        assertEquals(5, rewritten.getJSONObject("updatedInput").getInt("timeout"))
+        assertEquals("allow", host.gateClaudeTool("Bash", bash("npm test"), truncated = false, interactive = false)!!
+            .getJSONObject("hookSpecificOutput").getString("permissionDecision"))
+        assertEquals(null, host.gateClaudeTool("Bash", bash("ls"), truncated = false, interactive = true))
+        // An input cut short for the bridge can be denied but not rewritten.
+        assertEquals(null, host.gateClaudeTool("Bash", bash("npm test"), truncated = true, interactive = true))
+        assertEquals(null, host.gateClaudeTool("Read", JSONObject().put("file_path", "a.kt"), truncated = false, interactive = true))
+
+        val write = host.gateApproval(JSONObject().put("tool", "Write").put("canGate", true))
+        assertEquals("deny", write.verdict)
+        assertEquals("Read-only today", write.reason)
+        // b.watch lacks tools.gate: it hears of the request, and its answer counts for nothing.
+        assertEquals(null, host.gateApproval(JSONObject().put("tool", "Edit").put("canGate", true)).verdict)
+        waitFor("b.watch to hear") { "heard Edit false" in host.logText("b.watch") }
+
+        host.emit("run.end", JSONObject().put("status", "completed"))
+        waitFor("the undo calls") { "refused" in host.logText("a.guard") }
+        val log = host.logText("a.guard")
+        assertTrue(log, "changes src/a.kt,secrets/key.txt" in log)
+        assertTrue(log, "undid true" in log)
+        assertTrue(log, "secrets/key.txt is outside the mod's changes.undo scope" in log)
+        assertEquals(listOf("src/a.kt"), effects.undone.toList())
     }
 }

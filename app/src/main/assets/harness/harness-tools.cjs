@@ -95,6 +95,41 @@ async function call(name,args,signal) {
   if (name === 'harness_brain_search' && typeof args?.query === 'string' && args.query.length <= 256) return nativeRequest('brain_search',{query:args.query},{signal});
   throw Error('Unknown tool or invalid arguments');
 }
+/** Cuts long strings and lists so a tool call fits the bridge's 64 KB request limit. */
+function shrink(value, depth = 0) {
+  if (typeof value === 'string') return value.length > 8192 ? value.slice(0, 8192) : value;
+  if (depth > 8 || value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.slice(0, 50).map(item => shrink(item, depth + 1));
+  const out = {};
+  for (const key of Object.keys(value).slice(0, 50)) out[key] = shrink(value[key], depth + 1);
+  return out;
+}
+/**
+ * Claude PreToolUse hook (mod platform spec v2 section 7): asks the app's mods about one tool call.
+ * Answers the hook output to print, or null for none, so the call goes on as it would without mods.
+ * Every failure (no bridge, a timeout, bad input) is null: mod gates fail open.
+ */
+async function gate(text, options = {}) {
+  let hook;
+  try { hook = JSON.parse(text); } catch { return null; }
+  if (!hook || typeof hook.tool_name !== 'string' || hook.tool_name.length > 128) return null;
+  let input = hook.tool_input && typeof hook.tool_input === 'object' && !Array.isArray(hook.tool_input) ? hook.tool_input : {};
+  let truncated = false;
+  if (Buffer.byteLength(JSON.stringify(input)) > 48 * 1024) { input = shrink(input); truncated = true; }
+  try {
+    const result = await nativeRequest('mod_gate', {tool: hook.tool_name, input, truncated}, {timeout: 9000, ...options});
+    return result.hook && typeof result.hook === 'object' && !Array.isArray(result.hook) ? result.hook : null;
+  } catch { return null; }
+}
+function readStdin(limit = 1024 * 1024) {
+  return new Promise(resolve => {
+    let text = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', data => { text += data; if (text.length > limit) { text = ''; process.stdin.destroy(); resolve(''); } });
+    process.stdin.on('end', () => resolve(text));
+    process.stdin.on('error', () => resolve(''));
+  });
+}
 async function content(result) {
   const blocks = [{type:'text',text:result.text || JSON.stringify(result)}];
   if (result.imagePath) {
@@ -138,9 +173,10 @@ function serve() {
   process.stdin.on('end',() => {for(const controller of active.values())controller.abort();});
   process.once('SIGTERM',() => {for(const controller of active.values())controller.abort();process.stdin.destroy();});
 }
-module.exports = {probe,doctor,nativeRequest,call};
+module.exports = {probe,doctor,nativeRequest,call,gate,shrink};
 if (require.main === module) {
   if (process.argv[2] === '--mcp') serve();
+  else if (process.argv[2] === 'gate') readStdin().then(gate).then(output => { if (output) process.stdout.write(JSON.stringify(output) + '\n'); }, () => {});
   else {
     const [command,argument] = process.argv.slice(2);
     const name = command === 'doctor' ? 'harness_doctor' : command === 'brain' ? 'harness_brain_search' : 'harness_preview';

@@ -214,9 +214,9 @@ object ModAuthoringGuide {
         | `run.start` | A task starts | `prompt`, `taskId` |
         | `run.end` | A task ends | `status` (`completed`, `failed`, `stopped`), `durationMs`, `error`, `taskId` |
         | `message.end` | The agent finished its reply | `text` (only with `chat.read`) |
-        | `tool.call` | The agent starts a tool | `tool`, `detail`, `sessionId` |
+        | `tool.call` | The agent starts a tool; for Claude, also a gate before it runs (`canGate: true`, see "Gates") | `tool`, `detail`, `sessionId`; as a gate `tool`, `input`, `harness`, `inputTruncated` |
         | `tool.result` | A tool finished | `tool`, `summary`, `sessionId` |
-        | `tool.approval` | The agent asks the user to approve a tool | `tool`, `risk` |
+        | `tool.approval` | The agent asks the user to approve a tool | `tool`, `risk`, `explanation`, `paths`, `command`, `canGate` |
         | `files.changed` | The agent changed files | `paths`, `count` |
         | `usage.update` | Token use changed (at most once a second) | `promptTokens`, `completionTokens`, `cachedTokens`, `contextLimit`, `costUsd` |
         | `terminal.end` | A terminal command finished | `command`, `exitCode` |
@@ -249,6 +249,8 @@ object ModAuthoringGuide {
         | `${'$'}.chat.messages(n)` | `chat.read` | The newest messages of the open chat (`from`, `text`), up to 50 |
         | `${'$'}.chat.append(text)` | `chat.post` | Adds the mod's own message to the chat; the agent never sees it |
         | `${'$'}.prompt.draft(text)` | `prompt.draft` | Fills an empty message box; never sends |
+        | `${'$'}.changes.list()` | `changes.read` | The agent's file changes the user hasn't kept or undone: `{ path, additions, deletions, binary }` |
+        | `${'$'}.changes.undo(path)` | `changes.undo` | Undoes the agent's change to one file from its checkpoint; `true` when undone. Only paths in the permission's `scope.paths`, when it has any |
         | `${'$'}.agent.list()` | `agent.ask` | The harnesses: `{ id, name, installed, current }` |
         | `${'$'}.agent.ask({ harness, prompt, timeoutMs })` | `agent.ask` | Runs a task in the open chat on a harness and resolves when it ends (see "Agent tasks") |
         | `${'$'}.ui.open({ id, title })`, `${'$'}.ui.close(id)` | `ui.pane` | Adds a panel (8 at most; `id` is lowercase letters, digits, dashes) or removes one; `open` returns `{ isPlaced }`, whether it is on screen now |
@@ -274,6 +276,13 @@ object ModAuthoringGuide {
           marked with the mod's id.
         - `terminal.command`, `files.op` and `build.start` may answer `{ deny: 'why' }` (stopped) or
           `{ confirm: 'why' }` (the user is asked first).
+        - `tool.call` with `canGate: true` (Claude only; needs `tools.gate`) may answer `{ deny: 'why' }`, or
+          rewrite the call with `next({ ...e, input: { ...e.input, command: 'pnpm test' } })`. A rewritten
+          call is never approved by the mod: with approvals on, the user is asked. Match tools by name,
+          `on('tool.call', { tool: 'Bash' }, ...)`, so Claude asks the app only about those. An input
+          too large to send (`inputTruncated: true`) can be denied but not rewritten.
+        - `tool.approval` (needs `tools.gate`) may answer `{ deny: 'why' }` before the user answers; it can
+          never approve. Mods without `tools.gate` still hear of it, with `canGate: false`.
         - `run.end` (not a gate) may answer `{ followUp: 'text' }` to queue the next message for the agent;
           needs `prompt.send`, and at most 3 follow-ups chain after one message from the user.
         - Mods run one after another; each sees what the mods before it passed on. Gates fail open: a

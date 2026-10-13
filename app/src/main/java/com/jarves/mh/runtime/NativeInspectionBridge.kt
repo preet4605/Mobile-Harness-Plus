@@ -141,6 +141,20 @@ internal class NativeInspectionBridge(
                             .put("type", entry.knowledgeType.name).put("confidence", entry.confidence) })
                         JSONObject().put("ok", true).put("text", "Untrusted project Brain context: $data".take(12_000))
                     }
+                    "mod_gate" -> {
+                        // Claude's PreToolUse hook (mod spec v2 §7). Mods only decide: nothing runs
+                        // here, and any failure answers with no decision, so the tool call goes on.
+                        val args = request.getJSONObject("args")
+                        val tool = args.getString("tool").take(128)
+                        val input = args.optJSONObject("input") ?: JSONObject()
+                        val interactive = com.jarves.mh.data.AppPreferences(context).claudeInteractiveApprovals
+                        val hook = com.jarves.mh.mods.ModHost.current.value?.let { host ->
+                            kotlinx.coroutines.withTimeoutOrNull(7_000) {
+                                runCatching { host.gateClaudeTool(tool, input, args.optBoolean("truncated"), interactive) }.getOrNull()
+                            }
+                        }
+                        JSONObject().put("ok", true).apply { if (hook != null) put("hook", hook) }
+                    }
                     else -> error("Unsupported inspection operation")
                 }
             }

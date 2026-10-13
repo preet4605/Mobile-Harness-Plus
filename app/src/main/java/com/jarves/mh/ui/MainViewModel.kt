@@ -583,6 +583,25 @@ class MainViewModel(
             timeoutMs: Long,
         ): JSONObject = runModAsk(mod, harness, prompt, context, timeoutMs)
 
+        override fun pendingChanges(context: ModEventContext): JSONArray? {
+            val current = _state.value
+            if (current.activeProject?.id != context.projectId) return null
+            return JSONArray(current.changes.take(200).map { change ->
+                JSONObject().put("path", change.path).put("additions", change.additions).put("deletions", change.deletions).put("binary", change.binary)
+            })
+        }
+
+        override suspend fun undoChange(context: ModEventContext, path: String): Boolean = withContext(Dispatchers.Main.immediate) {
+            val project = _state.value.activeProject?.takeIf { it.id == context.projectId } ?: error("That project is not open")
+            if (_state.value.changes.none { it.path == path }) return@withContext false
+            val undone = activeRuntime().undoFileChange(project.id, path)
+            if (undone) {
+                _state.update { current -> current.copy(changes = current.changes.filterNot { it.path == path }) }
+                refreshProjectFiles()
+            }
+            undone
+        }
+
         override fun followUp(mod: InstalledMod, text: String, context: ModEventContext): Boolean {
             val current = _state.value
             val project = current.activeProject ?: return false
@@ -6374,7 +6393,8 @@ class MainViewModel(
             _state.update { it.copy(toastMessage = "Wait for the Android build to finish, or cancel it, before starting a task.") }
             return
         }
-        if (!modsChecked) {
+        // Slash commands are the app's (or a mod's own); the prompt hooks see only messages for the agent.
+        if (!modsChecked && !prompt.trimStart().startsWith("/")) {
             val host = modHost
             val submit = !fromMod && host?.listens("prompt.submit") == true
             if (host != null && (submit || host.listens("prompt.compose"))) {
@@ -6834,6 +6854,25 @@ class MainViewModel(
                 }
                 else -> action()
             }
+        }
+    }
+
+    /** Spec v2 §4.2 `tool.approval`: a mod may deny an approval request before the user answers it, never approve it. */
+    private fun gateApprovalWithMods(request: ToolRequest) {
+        val host = modHost?.takeIf { it.listens("tool.approval") } ?: return
+        val payload = JSONObject()
+            .put("tool", request.toolName)
+            .put("risk", request.risk.name.lowercase(Locale.ROOT))
+            .put("explanation", request.explanation.take(2_000))
+            .put("paths", JSONArray(request.affectedPaths.take(50)))
+            .put("command", request.commandPreview?.take(4_000) ?: JSONObject.NULL)
+            .put("canGate", true)
+            .put("sessionId", request.sessionId)
+        viewModelScope.launch {
+            val outcome = runCatching { host.gateApproval(payload) }.getOrNull() ?: return@launch
+            if (outcome.verdict != "deny" || _state.value.pendingApproval?.approvalId != request.approvalId) return@launch
+            _state.update { it.copy(toastMessage = "${outcome.modName} declined ${request.toolName}: ${outcome.reason}") }
+            answerApproval(false)
         }
     }
 
@@ -7501,11 +7540,11 @@ class MainViewModel(
             is RuntimeEvent.ToolCompleted -> emitModEvent(ModEvent.TOOL_COMPLETED, { mapOf("tool.name" to event.toolName, "tool.summary" to event.summary) }) {
                 JSONObject().put("tool", event.toolName).put("summary", event.summary.take(2000)).put("sessionId", event.sessionId)
             }
-            is RuntimeEvent.ToolRequested -> emitModEvent(ModEvent.TOOL_REQUESTED, {
-                mapOf("tool.name" to event.request.toolName, "tool.risk" to event.request.risk.name.lowercase(Locale.ROOT))
-            }) {
-                JSONObject().put("tool", event.request.toolName).put("risk", event.request.risk.name.lowercase(Locale.ROOT))
-                    .put("canGate", false).put("sessionId", event.sessionId)
+            is RuntimeEvent.ToolRequested -> {
+                emitModEvent(ModEvent.TOOL_REQUESTED, {
+                    mapOf("tool.name" to event.request.toolName, "tool.risk" to event.request.risk.name.lowercase(Locale.ROOT))
+                })
+                gateApprovalWithMods(event.request)
             }
             is RuntimeEvent.ToolStarted -> modHost?.takeIf { it.listens("tool.call") }?.let { host ->
                 runCatching {

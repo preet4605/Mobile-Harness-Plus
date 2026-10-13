@@ -52,6 +52,12 @@ interface ModHostEffects : ModHookEffects {
      * that chat is no longer open or mods already chained the most follow-ups one prompt allows.
      */
     fun followUp(mod: InstalledMod, text: String, context: ModEventContext): Boolean
+
+    /** The agent's file changes in [context]'s project that the user hasn't kept or undone; null when it isn't open. */
+    fun pendingChanges(context: ModEventContext): JSONArray?
+
+    /** Undoes the agent's change to [path] in [context]'s project from its checkpoint; false when there is none. */
+    suspend fun undoChange(context: ModEventContext, path: String): Boolean
 }
 
 enum class ModEngineState(val label: String) {
@@ -400,6 +406,45 @@ class ModHost(
         }
     }
 
+    /**
+     * Claude's PreToolUse hook (spec v2 §7): the `tool.call` gate with `canGate: true`. Answers the
+     * hook output that denies the call, or that rewrites its input when a mod changed it, or null
+     * to let it go on. A rewrite never approves anything: with interactive approvals on it asks the
+     * user ("ask"), and without them the app already lets the tool run ("allow"). A truncated input
+     * (too large for the bridge) can be denied but never rewritten.
+     */
+    suspend fun gateClaudeTool(tool: String, input: JSONObject, truncated: Boolean, interactive: Boolean): JSONObject? {
+        val outcome = gate(
+            "tool.call",
+            JSONObject().put("tool", tool).put("input", input).put("canGate", true).put("harness", "claude").put("inputTruncated", truncated),
+            ModCapability.TOOLS_GATE,
+            setOf("deny"),
+            limits.toolBudgetMs,
+        )
+        val output = JSONObject().put("hookEventName", "PreToolUse")
+        val changed = outcome.input.optJSONObject("input")?.takeIf { !truncated && !sameJson(it, input) }
+        return when {
+            outcome.verdict == "deny" ->
+                JSONObject().put("hookSpecificOutput", output.put("permissionDecision", "deny").put("permissionDecisionReason", "${outcome.modName}: ${outcome.reason}"))
+            changed != null -> JSONObject().put("hookSpecificOutput", output
+                .put("permissionDecision", if (interactive) "ask" else "allow")
+                .put("permissionDecisionReason", "A mod changed this tool call")
+                .put("updatedInput", changed))
+            else -> null
+        }
+    }
+
+    /**
+     * `tool.approval` (spec v2 §4.2, Claude): mods with `tools.gate` may deny an approval request
+     * before the user answers it, never approve it (D4). Other mods that hook it only hear of it.
+     */
+    suspend fun gateApproval(payload: JSONObject): ModGateOutcome {
+        if (!listens("tool.approval")) return ModGateOutcome(payload)
+        return withContext(hostContext) {
+            runGate("tool.approval", payload, ModCapability.TOOLS_GATE, setOf("deny"), limits.toolBudgetMs, compose = false, observeWithout = true)
+        }
+    }
+
     private suspend fun runGate(
         event: String,
         input: JSONObject,
@@ -407,13 +452,16 @@ class ModHost(
         verdicts: Set<String>,
         budgetMs: Long,
         compose: Boolean,
+        /** Mods without [capability] still hear of the event, as an observe event. */
+        observeWithout: Boolean = false,
     ): ModGateOutcome {
         var current = input
         val notes = mutableListOf<Triple<String, String, String>>()
         for (loaded in running.values.filter { it.ready && event in it.events }.sortedBy { it.id }) {
             val mod = currentMod(loaded)
             if (!allowed(mod, capability)) {
-                if (throttle("denied:${mod.id}/$event", 60_000)) registry.recordDenied(mod.id, event, capability, "permission is off")
+                if (observeWithout) dispatch(loaded, event, JSONObject(input.toString()).put("canGate", false), limits.eventBudgetMs)
+                else if (throttle("denied:${mod.id}/$event", 60_000)) registry.recordDenied(mod.id, event, capability, "permission is off")
                 continue
             }
             val result = CompletableDeferred<JSONObject?>()
@@ -1099,6 +1147,16 @@ class ModHost(
                 val e = effects ?: error("The app screen is closed")
                 if (throttle("chat:${mod.id}", 2_000)) { e.chatPost(mod, text, scoped!!); true } else false
             }
+            ModOp.CHANGES_LIST -> (effects ?: error("The app screen is closed")).pendingChanges(scoped!!) ?: error("That project is not open")
+            ModOp.CHANGES_UNDO -> {
+                val path = text(args).trim().trim('/')
+                require(ModManifestParser.isSafeRelativePath(path)) { "\$.changes.undo(path) needs a path inside the project" }
+                val scope = mod.manifest.permission(ModCapability.CHANGES_UNDO)?.paths.orEmpty()
+                require(scope.isEmpty() || scope.any { ModPaths.matchesGlob(it, path) }) { "$path is outside the mod's changes.undo scope" }
+                val undone = (effects ?: error("The app screen is closed")).undoChange(scoped!!, path)
+                if (undone) addLog(mod.id, "info", "Undid the agent's change to $path")
+                undone
+            }
             ModOp.AGENT_LIST -> (effects ?: error("The app screen is closed")).agents()
             ModOp.AGENT_ASK -> {
                 val spec = args.optJSONObject(0) ?: JSONObject().put("prompt", text(args))
@@ -1279,6 +1337,14 @@ class ModHost(
     }
 
     private fun scopeOf(context: ModEventContext?): Any = ModJson.project(context)
+
+    /** True when [a] and [b] hold the same JSON, whatever the order of their keys. */
+    private fun sameJson(a: Any?, b: Any?): Boolean = when {
+        a is JSONObject && b is JSONObject -> a.length() == b.length() && a.keys().asSequence().all { b.has(it) && sameJson(a.opt(it), b.opt(it)) }
+        a is JSONArray && b is JSONArray -> a.length() == b.length() && (0 until a.length()).all { sameJson(a.opt(it), b.opt(it)) }
+        a is Number && b is Number -> a.toDouble() == b.toDouble()
+        else -> a == b
+    }
 
     /** [passed] as a mod handed it on, kept to the fields the app sent and their kinds. */
     private fun mergeInput(current: JSONObject, passed: JSONObject): JSONObject {

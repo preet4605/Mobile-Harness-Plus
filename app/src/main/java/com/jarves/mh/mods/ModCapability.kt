@@ -39,10 +39,10 @@ enum class ModCapability(
     UI_WEBPANE("ui.webpane", RiskLevel.REVIEW, "Show web panels"),
     PROMPT_COMPOSE("prompt.compose", RiskLevel.REVIEW, "Add instructions for the agent", usable = true),
     FILES_GATE("files.gate", RiskLevel.REVIEW, "Block or ask before file renames, deletes and saves in Files", usable = true),
-    CHANGES_READ("changes.read", RiskLevel.SAFE, "See the agent's pending file changes"),
-    CHANGES_UNDO("changes.undo", RiskLevel.REVIEW, "Undo the agent's file changes"),
+    CHANGES_READ("changes.read", RiskLevel.SAFE, "See the agent's pending file changes", usable = true),
+    CHANGES_UNDO("changes.undo", RiskLevel.REVIEW, "Undo the agent's file changes", usable = true),
     TERMINAL_GATE("terminal.gate", RiskLevel.REVIEW, "Block or ask before terminal commands and app builds", usable = true),
-    TOOLS_GATE("tools.gate", RiskLevel.REVIEW, "Block agent tool calls"),
+    TOOLS_GATE("tools.gate", RiskLevel.REVIEW, "Block or change Claude's tool calls and approval requests", usable = true),
     TOOLS_PROVIDE("tools.provide", RiskLevel.HIGH, "Give the agent new tools"),
     MODEL_COMPLETE("model.complete", RiskLevel.HIGH, "Call the AI model on your account"),
     ;

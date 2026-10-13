@@ -40,6 +40,8 @@ enum class ModOp(
     CHAT_MESSAGES("chat.messages", ModCapability.CHAT_READ, needsProject = true),
     CHAT_APPEND("chat.append", ModCapability.CHAT_POST, needsProject = true),
     PROMPT_DRAFT("prompt.draft", ModCapability.PROMPT_DRAFT, needsProject = true),
+    CHANGES_LIST("changes.list", ModCapability.CHANGES_READ, needsProject = true),
+    CHANGES_UNDO("changes.undo", ModCapability.CHANGES_UNDO, needsProject = true, slow = true),
     AGENT_LIST("agent.list", ModCapability.AGENT_ASK),
     AGENT_ASK("agent.ask", ModCapability.AGENT_ASK, needsProject = true, slow = true),
     ;
@@ -118,7 +120,6 @@ internal object ModCodeEvents {
         ModEvent.TASK_FINISHED -> "run.end"
         ModEvent.FILES_CHANGED -> "files.changed"
         ModEvent.TOOL_COMPLETED -> "tool.result"
-        ModEvent.TOOL_REQUESTED -> "tool.approval"
         ModEvent.TERMINAL_COMMAND_FINISHED -> "terminal.end"
         ModEvent.ASSISTANT_MESSAGE_COMPLETED -> "message.end"
         ModEvent.CHAT_SWITCHED -> "chat.switch"

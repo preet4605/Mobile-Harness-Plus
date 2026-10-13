@@ -83,3 +83,32 @@ test('MCP discovery and doctor invocation work over stdio', async t => {
   const answer=(await receive(3)).result; assert.equal(answer.isError,false); assert.match(answer.content[0].text,/certificates/);
   child.stdin.end();
 });
+test('the Claude gate relays a mod decision and fails open', async t => {
+  const dir = fixture(t); const seen = [];
+  const reply = fs.watch(dir, (_, name) => {
+    if (!name?.endsWith('.request')) return;
+    const file = path.join(dir, name);
+    if (!fs.existsSync(file)) return;
+    const request = JSON.parse(fs.readFileSync(file, 'utf8'));
+    seen.push(request);
+    const deny = request.args.input.command === 'rm -rf /';
+    fs.writeFileSync(file.replace('.request', '.response'), JSON.stringify(deny
+      ? {ok: true, hook: {hookSpecificOutput: {hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Guard: no'}}}
+      : {ok: true}));
+  });
+  t.after(() => reply.close());
+  const options = {directory: dir, token: 'fixture', timeout: 2000};
+  const denied = await tools.gate(JSON.stringify({tool_name: 'Bash', tool_input: {command: 'rm -rf /'}}), options);
+  assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(await tools.gate(JSON.stringify({tool_name: 'Bash', tool_input: {command: 'ls'}}), options), null);
+  assert.equal(seen[0].operation, 'mod_gate');
+  assert.equal(seen[0].args.truncated, false);
+  await tools.gate(JSON.stringify({tool_name: 'Write', tool_input: {file_path: 'a', content: 'x'.repeat(100000)}}), options);
+  assert.equal(seen[2].args.truncated, true);
+  assert.equal(seen[2].args.input.content.length, 8192);
+  // No bridge, bad JSON or a missing tool name: nothing printed, so the tool call goes on.
+  assert.equal(await tools.gate('{', options), null);
+  assert.equal(await tools.gate(JSON.stringify({tool_input: {}}), options), null);
+  assert.equal(await tools.gate(JSON.stringify({tool_name: 'Bash'}), {directory: dir, token: undefined, timeout: 100}), null);
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
