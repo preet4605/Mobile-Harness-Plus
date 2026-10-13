@@ -24,6 +24,7 @@ import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.PowerSettingsNew
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -100,20 +101,22 @@ fun ModsScreen(
     val import = { importLauncher.launch(arrayOf("*/*")) }
     var openId by rememberSaveable { mutableStateOf<String?>(null) }
     val openMod = snapshot.mods.firstOrNull { it.id == openId }
-    BackHandler(enabled = openMod != null) { openId = null }
+    BackHandler(enabled = openMod != null || openId == ENGINE_TEST_PAGE) { openId = null }
+    val page = if (openId == ENGINE_TEST_PAGE) ENGINE_TEST_PAGE else openMod?.id
 
-    AnimatedContent(targetState = openMod?.id, transitionSpec = { PocketTransitions.crossFade() }, label = "mods page") { shownId ->
+    AnimatedContent(targetState = page, transitionSpec = { PocketTransitions.crossFade() }, label = "mods page") { shownId ->
         val shown = snapshot.mods.firstOrNull { it.id == shownId }
-        if (shown == null) {
-            ModsList(
+        when {
+            shownId == ENGINE_TEST_PAGE -> ModEngineTestPage(bottomBarPadding, onBack = { openId = null }, viewModel)
+            shown == null -> ModsList(
                 snapshot, drafts, busy, bottomBarPadding, import,
                 onOpen = { openId = it },
                 onBuild = { building = true },
                 onOpenDraft = { onOpenProject(it.project) },
+                onEngineTest = { openId = ENGINE_TEST_PAGE },
                 viewModel = viewModel,
             )
-        } else {
-            ModPage(shown, snapshot, bottomBarPadding, onBack = { openId = null }, viewModel)
+            else -> ModPage(shown, snapshot, bottomBarPadding, onBack = { openId = null }, viewModel)
         }
     }
 
@@ -135,6 +138,9 @@ fun ModsScreen(
 
 private enum class ModsSection(val label: String) { INSTALLED("Installed"), STUDIO("Studio") }
 
+/** Page key for the engine test; mod ids are lowercase and dotted, so it never matches one. */
+private const val ENGINE_TEST_PAGE = "#engine-test"
+
 @Composable
 private fun ModsList(
     snapshot: ModsSnapshot,
@@ -145,6 +151,7 @@ private fun ModsList(
     onOpen: (String) -> Unit,
     onBuild: () -> Unit,
     onOpenDraft: (ModDraft) -> Unit,
+    onEngineTest: () -> Unit,
     viewModel: ModsViewModel,
 ) {
     val colors = PocketColors.current
@@ -254,6 +261,8 @@ private fun ModsList(
             icon = Icons.Outlined.PowerSettingsNew,
             destructive = snapshot.modsEnabled,
         )
+        GlassMenuDivider()
+        GlassMenuItem("Engine test", onEngineTest, icon = Icons.Outlined.Speed)
     }
 }
 

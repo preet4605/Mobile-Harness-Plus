@@ -6,16 +6,20 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jarves.mh.model.Project
+import com.jarves.mh.mods.EngineCheck
+import com.jarves.mh.mods.EngineReport
 import com.jarves.mh.mods.InstalledMod
 import com.jarves.mh.mods.ModAuthoringGuide
 import com.jarves.mh.mods.ModAuditEntry
 import com.jarves.mh.mods.ModCapability
+import com.jarves.mh.mods.ModEngineProbe
 import com.jarves.mh.mods.ModInstallException
 import com.jarves.mh.mods.ModRegistry
 import com.jarves.mh.mods.ModTrust
 import com.jarves.mh.mods.ModsSnapshot
 import com.jarves.mh.mods.StagedMod
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +27,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -47,6 +52,13 @@ data class ModDraft(
     val modId: String,
 )
 
+/** The engine test page: lines so far while it runs, then the finished report. */
+data class EngineTestState(
+    val running: Boolean = false,
+    val checks: List<EngineCheck> = emptyList(),
+    val report: EngineReport? = null,
+)
+
 /**
  * The Mods screen's state. All registry work runs on IO; a failure becomes a banner message,
  * never a crash.
@@ -63,6 +75,9 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     val messages: SharedFlow<String> = _messages.asSharedFlow()
     private val _drafts = MutableStateFlow<List<ModDraft>>(emptyList())
     val drafts: StateFlow<List<ModDraft>> = _drafts.asStateFlow()
+    private val _engineTest = MutableStateFlow(EngineTestState())
+    val engineTest: StateFlow<EngineTestState> = _engineTest.asStateFlow()
+    private var engineTestJob: Job? = null
 
     init {
         viewModelScope.launch { registry.await().snapshot.collect { _snapshot.value = it } }
@@ -185,6 +200,24 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun readText(mod: InstalledMod, path: String): String = runCatching {
         withContext(Dispatchers.IO) { File(mod.dir, path).readText().take(64 * 1024) }
     }.getOrDefault("")
+
+    /** Runs the engine test once; tapping Run again while it runs does nothing. */
+    fun runEngineTest() {
+        if (engineTestJob?.isActive == true) return
+        _engineTest.value = EngineTestState(running = true)
+        engineTestJob = viewModelScope.launch {
+            val report = try {
+                ModEngineProbe(getApplication()).run { check -> _engineTest.update { it.copy(checks = it.checks + check) } }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _engineTest.update { it.copy(running = false) }
+                throw e
+            } catch (t: Throwable) {
+                _messages.tryEmit("The engine test stopped: ${t.message ?: t.javaClass.simpleName}")
+                null
+            }
+            _engineTest.update { it.copy(running = false, report = report) }
+        }
+    }
 
     private suspend fun existing(id: String): InstalledMod? = registry.await().snapshot.value.mods.firstOrNull { it.id == id }
 

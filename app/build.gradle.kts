@@ -288,6 +288,7 @@ dependencies {
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("com.github.luben:zstd-jni:1.5.6-9@aar")
     implementation("com.github.BuildItCode:LiquidGlass:0.2.5")
+    implementation("androidx.javascriptengine:javascriptengine:1.1.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250107")
