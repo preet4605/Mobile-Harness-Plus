@@ -12,6 +12,7 @@ import com.jarves.mh.data.BrainDatabase
 import com.jarves.mh.data.BrainDatabaseDriverFactory
 import com.jarves.mh.runtime.task.TaskSupervisor
 import com.jarves.mh.runtime.task.TaskExecutionStatus
+import com.jarves.mh.runtime.task.DurableTaskRecord
 import org.junit.rules.TemporaryFolder
 import java.io.*
 import java.net.*
@@ -193,6 +194,21 @@ class RemainingBehaviorTest {
         assertNotEquals(original, NativeConversationScope.key("chat", a, profile.copy(model = "other"), "key1"))
         assertNotEquals(original, NativeConversationScope.key("chat", a, profile, "key2"))
         assertNull(NativeConversationScope.validId("--last"))
+    }
+
+    @Test fun nativeResumeRequiresLatestTaskToUseSameEngineAndRoute() {
+        fun task(id: String, engine: String, route: String = "CUSTOM") = DurableTaskRecord(
+            taskId = id, projectId = "project", projectSlug = "slug", chatId = "chat",
+            agentKind = engine, providerJson = route, prompt = id, status = TaskExecutionStatus.COMPLETED,
+            sessionId = "same-session",
+        )
+        val current = task("current", AgentKind.CLAUDE_CODE.name)
+        assertTrue(NativeConversationScope.mayResumeFrom(task("previous", AgentKind.CLAUDE_CODE.name), current, AgentKind.CLAUDE_CODE))
+        assertFalse(NativeConversationScope.mayResumeFrom(task("previous", AgentKind.CODEX.name), current, AgentKind.CLAUDE_CODE))
+        assertFalse(NativeConversationScope.mayResumeFrom(null, current, AgentKind.CLAUDE_CODE))
+        assertFalse(NativeConversationScope.mayResumeFrom(task("previous", AgentKind.CLAUDE_CODE.name, "ANTHROPIC_API"), current, AgentKind.CLAUDE_CODE))
+        assertFalse(NativeConversationScope.mayResumeFrom(task("previous", AgentKind.CLAUDE_CODE.name).copy(chatId = "other"), current, AgentKind.CLAUDE_CODE))
+        assertFalse(NativeConversationScope.mayResumeFrom(task("previous", AgentKind.CLAUDE_CODE.name).copy(projectId = "other"), current, AgentKind.CLAUDE_CODE))
     }
 
     @Test fun resumeArgumentsUseExplicitIdAndKeepStdinImagesAndEffort() {

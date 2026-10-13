@@ -94,4 +94,13 @@ class GuestSkillAccessTest {
         org.junit.Assert.assertNull(prepared.single().guestFilePath)
     }
 
+    @Test fun modSkillsRemainExplicitContributionsWithoutPublishingHostPaths() {
+        val files = temp.newFolder(); val workspace = temp.newFolder()
+        val mod = skill(temp.newFolder(), SkillSource.MOD).copy(markdownContent = "Explicit mod instructions")
+        val prepared = GuestSkillAccess(files).prepare(listOf(mod), workspace, null, "/workspace/demo").single()
+        assertNull(prepared.guestFilePath)
+        assertEquals(mod.markdownContent, prepared.markdownContent)
+        assertEquals(mod.filePath, prepared.filePath)
+    }
+
 }

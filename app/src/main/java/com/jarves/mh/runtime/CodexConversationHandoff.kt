@@ -47,6 +47,31 @@ internal class CodexConversationHandoff(rootfs: File) {
     fun requireReady(key: String) = synchronized(lock) {
         check(read(key).getProperty("pendingTask") == null) { RECOVERY_MESSAGE }
     }
+    fun needsHistory(key: String): Boolean = synchronized(lock) { read(key).getProperty("history") == "true" }
+    fun completedTask(key: String): String? = synchronized(lock) { read(key).getProperty("completedTask") }
+
+    /** Terminal task status alone is insufficient: callers must verify the owned process is closed. */
+    fun recoverInterrupted(key: String, isStopped: (String) -> Boolean) = synchronized(lock) {
+        val task = read(key).getProperty("pendingTask") ?: return@synchronized
+        check(isStopped(task)) { RECOVERY_MESSAGE }
+        continueFromHistory(key, task)
+        val p = read(key); p.remove("pendingTask"); p.remove("pendingGoal"); write(key, p)
+    }
+
+    /** Only the runtime that has reaped this claim's process may release it directly. */
+    fun releaseInterrupted(key: String, taskId: String) = synchronized(lock) {
+        if (read(key).getProperty("pendingTask") == taskId) recoverInterrupted(key) { it == taskId }
+    }
+
+    /** Preserve old rollouts/snapshots for inspection; never restore stale context over interrupted work. */
+    fun continueFromHistory(key: String, taskId: String? = null) = synchronized(lock) {
+        val p = read(key)
+        check(p.getProperty("pendingTask") == taskId) { RECOVERY_MESSAGE }
+        listOf("account", "scope", "thread", "relative", "snapshot", "sha256", "childThreads",
+            "goalAccount", "goalScope", "goalPinned", "completedTask").forEach(p::remove)
+        p.setProperty("history", "true")
+        write(key, p)
+    }
     /** A crash leaves the claim visible; a later task cannot overwrite uncertain work. */
     fun claim(key: String, taskId: String, account: CodexAccount, workspace: String, chatKey: String = key, goal: Boolean = false, goalControl: Boolean = false) = synchronized(lock) {
         val p = read(key)
@@ -64,11 +89,12 @@ internal class CodexConversationHandoff(rootfs: File) {
         if (goal) { p.setProperty("goalAccount", account.id); p.setProperty("goalScope", account.scope); p.setProperty("goalPinned", "true") }
         write(key, p)
     }
-    fun adopt(key: String, chatKey: String, account: CodexAccount, threadId: String, sourcePath: String, workspace: String, goal: Boolean = false) = synchronized(lock) {
+    fun adopt(key: String, chatKey: String, account: CodexAccount, threadId: String, sourcePath: String, workspace: String, goal: Boolean = false, completedTask: String? = null) = synchronized(lock) {
         val p = read(key)
         check(owner(p) == null && p.getProperty("pendingTask") == null && p.getProperty("reset") != "true")
         p.setProperty("chat", chatKey); p.setProperty("workspace", workspace)
         freeze(key, p, account, threadId, sourcePath, workspace)
+        completedTask?.let { p.setProperty("completedTask", it) }
         if (goal) { p.setProperty("goalAccount", account.id); p.setProperty("goalScope", account.scope); p.setProperty("goalPinned", "true") }
         write(key, p)
         pruneSnapshots(key, p.getProperty("snapshot"))
@@ -77,7 +103,6 @@ internal class CodexConversationHandoff(rootfs: File) {
     fun importForTask(key: String, taskId: String, target: CodexAccount, workspace: String): String? = synchronized(lock) {
         val p = read(key); check(p.getProperty("pendingTask") == taskId) { "This task does not own the Codex context handoff." }
         val source = owner(p) ?: return@synchronized null
-        require(accounts.list().any { it.id == source.accountId && it.scope == source.accountScope }) { "The previous ChatGPT account was removed or reconnected. Start a new chat to retain this history." }
         require(target.scope == accounts.requireUsable(target.id).scope) { "This task's ChatGPT account changed." }
         if (p.getProperty("childThreads") == "true") {
             require(source.accountId == target.id && source.accountScope == target.scope) { CHILD_MESSAGE }
@@ -106,14 +131,15 @@ internal class CodexConversationHandoff(rootfs: File) {
         val p = read(key); check(p.getProperty("pendingTask") == taskId) { "A stale task cannot promote native Codex context." }
         require(accounts.requireUsable(account.id).scope == account.scope) { "The ChatGPT account changed before context was saved." }
         freeze(key, p, account, threadId, sourcePath, workspace)
-        p.remove("pendingTask"); p.remove("pendingGoal"); p.remove("reset")
+        p.remove("pendingTask"); p.remove("pendingGoal"); p.remove("reset"); p.remove("history")
+        p.setProperty("completedTask", taskId)
         releaseGoal(p, goalStatus)
         write(key, p)
         pruneSnapshots(key, p.getProperty("snapshot"))
     }
     fun completeControl(key: String, taskId: String, goalStatus: String? = null) = synchronized(lock) {
         val p = read(key); check(p.getProperty("pendingTask") == taskId)
-        p.remove("pendingTask"); p.remove("pendingGoal"); releaseGoal(p, goalStatus); write(key, p)
+        p.remove("pendingTask"); p.remove("pendingGoal"); p.setProperty("completedTask", taskId); releaseGoal(p, goalStatus); write(key, p)
     }
     fun pinSavedGoal(key: String, taskId: String, account: CodexAccount) = synchronized(lock) {
         val p = read(key)
@@ -224,7 +250,7 @@ internal class CodexConversationHandoff(rootfs: File) {
         private val lock = Any()
         private const val MAX_BYTES = 32L * 1024 * 1024
         private const val CHILD_MESSAGE = "This chat has native subagent threads and must stay on its owning ChatGPT account to preserve their context."
-        const val RECOVERY_MESSAGE = "The previous Codex turn has no verified complete handoff. Start a new chat to retain this history, or use /clear to reset this chat."
+        const val RECOVERY_MESSAGE = "Previous Codex work is still running or its process has not been verified closed. Stop the running task before continuing."
         private fun digest(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     }
 }

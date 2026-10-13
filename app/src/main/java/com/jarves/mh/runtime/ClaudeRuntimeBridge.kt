@@ -300,12 +300,19 @@ class ClaudeRuntimeBridge(
             val guestWorkspacePath = "/workspace/$projectSlug"
             val prefs = com.jarves.mh.data.AppPreferences(context)
             installer.ensureSettingsAndHooks(prefs.claudeInteractiveApprovals)
-            val owner = taskId?.let { com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).stateStore.get(it) }
+            val taskSupervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
+            val owner = taskId?.let { taskSupervisor.stateStore.get(it) }
+            val previousChatTask = owner?.let {
+                taskSupervisor.stateStore.getLatestTaskForChatAnyAgent(projectId, it.chatId, it.taskId)
+            }
+            val canResumeNativeConversation = NativeConversationScope.mayResumeFrom(
+                previousChatTask, owner, com.jarves.mh.model.AgentKind.CLAUDE_CODE,
+            )
             val identity = if (provider.kind == ProviderKind.CLAUDE) File(installed.rootfs, "root/.claude/.credentials.json").lastModified().toString()
                 else com.jarves.mh.data.ApiKeyVault(context).credentials(provider.secretId).firstOrNull { it.isActive }?.id.orEmpty()
             val conversationScope = owner?.chatId?.let { NativeConversationScope.key(it, workspace, provider, identity) }
             val savedId = conversationScope?.let { prefs.consumeAgentConversation(com.jarves.mh.model.AgentKind.CLAUDE_CODE, projectId, it) }
-            val resumeId = if (owner?.retryCount == 0 && conversationHistory.count { it.fromUser } > 1)
+            val resumeId = if (canResumeNativeConversation && owner?.retryCount == 0 && conversationHistory.count { it.fromUser } > 1)
                 NativeConversationScope.validId(savedId) else null
             val contextPrompt = buildContextPrompt(injectedPrompt, if (resumeId == null) conversationHistory else emptyList(), guestWorkspacePath, projectKind, memory)
 

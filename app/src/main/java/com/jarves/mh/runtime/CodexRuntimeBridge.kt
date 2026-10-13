@@ -110,6 +110,7 @@ class CodexRuntimeBridge(
         pushForegroundProgress("Starting Codex…")
 
         var outputFile: File? = null
+        var contextClaim: Pair<String, String>? = null
         try {
             runCatching {
                 RuntimeTaskController.stopAction = {
@@ -156,32 +157,53 @@ class CodexRuntimeBridge(
                 val nativeControl = owner?.nativeControlJson?.let(CodexNativeControl::decode)
                 val handoff = CodexConversationHandoff(installer.rootfs)
                 val handoffKey = owner?.chatId?.takeIf { account != null }?.let { NativeConversationScope.key(it, workspace, provider, "codex-account-pool") }
-                val managedContext = handoffKey != null && (accounts.balancingEnabled || handoff.hasState(handoffKey))
-                if (managedContext && handoff.owner(handoffKey!!) == null && handoff.goalOwner(handoffKey) == null && !handoff.wasReset(handoffKey)) {
-                    val previous = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).stateStore
-                        .getLatestTaskForChat(projectId, owner!!.chatId, AgentKind.CODEX.name, owner.taskId)
-                    val previousId = previous?.providerJson?.let(CodexAccounts::taskAccount)
-                    if (previousId != null) {
-                        val previousAccount = accounts.requireUsable(previousId)
-                        val previousScope = NativeConversationScope.key(owner.chatId, workspace, provider, "codex-account:${previousAccount.id}:${previousAccount.scope}")
-                        val goalThread = prefs.loadCodexGoalThread(projectId, previousScope)
-                        val previousThread = if (nativeControl?.kind in setOf("goalStatus", "goalPause", "goalClear", "goalResume")) goalThread
-                            else prefs.loadAgentConversation(AgentKind.CODEX, projectId, previousScope)
-                        require(previousThread != null && (previous.status in setOf(com.jarves.mh.runtime.task.TaskExecutionStatus.COMPLETED,
-                            com.jarves.mh.runtime.task.TaskExecutionStatus.UNVERIFIED) || goalThread != null && nativeControl?.kind in setOf("goalStatus", "goalPause", "goalClear", "goalResume"))) {
-                            "This chat has no verified complete native Codex context to balance. Start a new chat to retain its history, or use /clear to reset."
-                        }
-                        handoff.adopt(handoffKey, "$projectId:${owner.chatId}", previousAccount, previousThread,
-                            handoff.findRollout(previousAccount, previousThread).path, guestWorkspacePath, goal = goalThread != null)
-                        if (!handoff.hasPlanMode(handoffKey)) handoff.savePlanMode(handoffKey, "$projectId:${owner.chatId}", prefs.codexPlanMode(projectId, previousScope))
-                    } else require(conversationHistory.count { it.fromUser } <= 1) {
-                        "This older chat has no native Codex context that can be transferred completely. Start a new chat to retain its history, or use /clear to reset."
+                val managedContext = handoffKey != null
+                val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
+                val previous = owner?.let { supervisor.stateStore.getLatestTaskForChatAnyAgent(projectId, it.chatId, it.taskId) }
+                if (managedContext) {
+                    val key = handoffKey!!
+                    handoff.recoverInterrupted(key) { pending ->
+                        val task = supervisor.stateStore.get(pending)
+                        task?.status?.isTerminal == true && !supervisor.processSupervisor.isAlive(pending) &&
+                            (task.pid == null || !supervisor.processSupervisor.isProcessAlive(task.pid))
+                    }
+                    if (handoff.owner(key) != null && previous?.taskId != handoff.completedTask(key)) {
+                        handoff.continueFromHistory(key)
+                    }
+                    if (handoff.owner(key) == null && handoff.goalOwner(key) == null && !handoff.wasReset(key) && !handoff.needsHistory(key)) {
+                        val adopted = runCatching {
+                            val previousId = previous?.takeIf { it.agentKind == AgentKind.CODEX.name }?.providerJson?.let(CodexAccounts::taskAccount)
+                                ?: return@runCatching false
+                            check(previous.status in setOf(com.jarves.mh.runtime.task.TaskExecutionStatus.COMPLETED,
+                                com.jarves.mh.runtime.task.TaskExecutionStatus.UNVERIFIED))
+                            check(!supervisor.processSupervisor.isAlive(previous.taskId) &&
+                                (previous.pid == null || !supervisor.processSupervisor.isProcessAlive(previous.pid)))
+                            val previousAccount = accounts.requireUsable(previousId)
+                            val previousScope = NativeConversationScope.key(owner!!.chatId, workspace, provider, "codex-account:${previousAccount.id}:${previousAccount.scope}")
+                            val previousThread = prefs.loadAgentConversation(AgentKind.CODEX, projectId, previousScope)
+                                ?: return@runCatching false
+                            handoff.adopt(key, "$projectId:${owner.chatId}", previousAccount, previousThread,
+                                handoff.findRollout(previousAccount, previousThread).path, guestWorkspacePath,
+                                goal = prefs.loadCodexGoalThread(projectId, previousScope) != null, completedTask = previous.taskId)
+                            if (!handoff.hasPlanMode(key)) handoff.savePlanMode(key, "$projectId:${owner.chatId}", prefs.codexPlanMode(projectId, previousScope))
+                            true
+                        }.getOrDefault(false)
+                        if (!adopted && conversationHistory.count { it.fromUser } > 1) handoff.continueFromHistory(key)
+                    }
+                    val pinned = handoff.goalOwner(key) ?: handoff.childThreadOwner(key)
+                    if (pinned != null && (pinned != account!!.id || handoff.owner(key)?.accountScope?.let { it != account.scope } == true)) {
+                        handoff.continueFromHistory(key)
                     }
                 }
                 val savedId = if (managedContext) {
                     val key = handoffKey!!
+                    require(nativeControl?.kind !in setOf("goalStatus", "goalPause", "goalClear", "goalResume") ||
+                        !handoff.needsHistory(key) && handoff.savedGoalOwner(key) != null) {
+                        "The saved native goal is unavailable in this context. Continue this chat normally or set a new goal; your history and workspace are retained."
+                    }
                     handoff.claim(key, owner!!.taskId, account!!, guestWorkspacePath, "$projectId:${owner.chatId}",
                         goal = nativeControl?.kind == "goalSet", goalControl = nativeControl?.goalControl == true || nativeControl?.kind == "goalResume")
+                    contextClaim = key to owner.taskId
                     if (nativeControl?.kind == "goalResume" && handoff.goalOwner(key) == null) {
                         val imported = handoff.importForTask(key, owner.taskId, account, guestWorkspacePath)
                         require(imported != null && imported == conversationScope?.let { prefs.loadCodexGoalThread(projectId, it) }) {
@@ -191,14 +213,34 @@ class CodexRuntimeBridge(
                     }
                     if (nativeControl?.kind in setOf("goalStatus", "goalPause", "goalClear", "goalResume") || handoff.goalOwner(key) != null)
                         conversationScope?.let { prefs.loadCodexGoalThread(projectId, it) } ?: handoff.owner(key)?.threadId
-                    else handoff.importForTask(key, owner.taskId, account, guestWorkspacePath)
+                    else try {
+                        handoff.importForTask(key, owner.taskId, account, guestWorkspacePath)
+                    } catch (_: IllegalArgumentException) {
+                        handoff.continueFromHistory(key, owner.taskId)
+                        null
+                    } catch (_: IllegalStateException) {
+                        handoff.continueFromHistory(key, owner.taskId)
+                        null
+                    } catch (_: java.io.IOException) {
+                        handoff.continueFromHistory(key, owner.taskId)
+                        null
+                    }
                 } else conversationScope?.let { scope ->
                     if (nativeControl?.kind in setOf("goalStatus", "goalPause", "goalClear", "goalResume"))
                         prefs.loadCodexGoalThread(projectId, scope) ?: prefs.loadAgentConversation(AgentKind.CODEX, projectId, scope)
                     else prefs.consumeAgentConversation(AgentKind.CODEX, projectId, scope)
                 }
-                val resumeId = if (nativeControl != null || owner?.retryCount == 0)
+                val latestContext = if (managedContext) !handoff.needsHistory(handoffKey!!)
+                    else NativeConversationScope.mayResumeFrom(previous, owner, AgentKind.CODEX)
+                require(latestContext || nativeControl?.kind !in setOf("goalStatus", "goalPause", "goalClear", "goalResume")) {
+                    "The saved native goal is unavailable after switching context. Continue this chat normally or set a new goal."
+                }
+                val resumeId = if (latestContext && (nativeControl != null || owner?.retryCount == 0))
                     NativeConversationScope.validId(savedId) else null
+                if (resumeId == null && conversationHistory.count { it.fromUser } > 1) {
+                    eventBus.emit(RuntimeEvent.RuntimeLog(sessionId, "Continuing saved chat",
+                        "Continuing in a new native thread using saved chat history and the current workspace. Older messages may be bounded; native tool, goal and subagent state may be unavailable."))
+                }
                 val planMode = if (managedContext && handoff.hasPlanMode(handoffKey!!)) handoff.planMode(handoffKey)
                     else conversationScope?.let { prefs.codexPlanMode(projectId, it) } == true
                 if (nativeControl?.kind == "planTurn" && conversationScope != null) {
@@ -247,6 +289,9 @@ class CodexRuntimeBridge(
                     inspectionTools = installer.ensureInspectionTools(installed.rootfs), skillConfig = skillConfig)
                 val environment = CodexLaunchBuilder.environment(route, secret)
                 Log.d(TAG, "Route: ${route::class.simpleName}, Model: ${route.model.ifBlank { "default" }}")
+                if (account != null) check(accounts.requireUsable(account.id).scope == account.scope) {
+                    "This task's ChatGPT account changed before launch. Send your message again to continue."
+                }
                 val process = installer.process(
                     installed.proot,
                     installed.rootfs,
@@ -315,7 +360,17 @@ class CodexRuntimeBridge(
                     if (nativeControl?.goalControl == true && !releasesActiveGoal) handoff.completeControl(handoffKey, owner!!.taskId, result.goalStatus)
                     else {
                         val id = result.threadId ?: error("Codex did not return its completed context thread.")
-                        handoff.complete(handoffKey, owner!!.taskId, account!!, id, handoff.findRollout(account, id).path, guestWorkspacePath, result.goalStatus)
+                        try {
+                            handoff.complete(handoffKey, owner!!.taskId, account!!, id, handoff.findRollout(account, id).path, guestWorkspacePath, result.goalStatus)
+                        } catch (_: IllegalArgumentException) {
+                            handoff.releaseInterrupted(handoffKey, owner!!.taskId)
+                            eventBus.emit(RuntimeEvent.RuntimeLog(sessionId, "Chat history retained",
+                                "Codex finished, but its native context could not be saved for transfer. The next message will continue from saved chat history and the workspace."))
+                        } catch (_: java.io.IOException) {
+                            handoff.releaseInterrupted(handoffKey, owner!!.taskId)
+                            eventBus.emit(RuntimeEvent.RuntimeLog(sessionId, "Chat history retained",
+                                "Codex finished, but its native context could not be saved for transfer. The next message will continue from saved chat history and the workspace."))
+                        }
                     }
                 }
                 if (result.goalStatus == "cleared") conversationScope?.let { prefs.clearCodexGoalThread(projectId, it) }
@@ -343,6 +398,9 @@ class CodexRuntimeBridge(
         } finally {
             // Runs on every outcome, including a throwing failure path, so no process or log leaks.
             cleanupSession(sessionId, outputFile)
+            if (activeSessionId != sessionId) contextClaim?.let { (key, claimTask) ->
+                CodexConversationHandoff(installer.rootfs).releaseInterrupted(key, claimTask)
+            }
         }
         sessionId
     }

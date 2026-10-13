@@ -129,6 +129,10 @@ class TaskStateStore(private val db: BrainDatabase) {
         db.driver.query("SELECT * FROM durable_task_states WHERE project_id = ? AND chat_id = ? AND agent_kind = ? AND task_id != ? ORDER BY created_at DESC LIMIT 1",
             listOf(projectId, chatId, agentKind, excludingTaskId), ::mapRow).firstOrNull()
 
+    fun getLatestTaskForChatAnyAgent(projectId: String, chatId: String, excludingTaskId: String = ""): DurableTaskRecord? =
+        db.driver.query("SELECT * FROM durable_task_states WHERE project_id = ? AND chat_id = ? AND task_id != ? ORDER BY created_at DESC LIMIT 1",
+            listOf(projectId, chatId, excludingTaskId), ::mapRow).firstOrNull()
+
     /**
      * Safely executes a centralized state transition with validation.
      * Throws IllegalStateException if transition is contradictory.

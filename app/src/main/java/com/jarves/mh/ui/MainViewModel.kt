@@ -2522,17 +2522,33 @@ class MainViewModel(
         val workspace = WorkspaceCheckpoints(getApplication<Application>().filesDir).ensureWorkspace(project.id)
         val key = NativeConversationScope.key(chatId, workspace, provider, "codex-account-pool")
         val handoff = CodexConversationHandoff(installer.rootfs)
-        if (!codexAuthController.accounts.balancingEnabled && !handoff.hasState(key)) return null
+        val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication())
+        handoff.recoverInterrupted(key) { taskId ->
+            val task = supervisor.stateStore.get(taskId)
+            task?.status?.isTerminal == true && !supervisor.processSupervisor.isAlive(taskId) &&
+                (task.pid == null || !supervisor.processSupervisor.isProcessAlive(task.pid))
+        }
+        val pinned = handoff.goalOwner(key) ?: handoff.childThreadOwner(key)
+        if (pinned != null) {
+            val usable = runCatching { codexAuthController.accounts.requireUsable(pinned) }.getOrNull()
+            val explicitlySwitched = !codexAuthController.accounts.balancingEnabled &&
+                runCatching { codexAuthController.accounts.selected().id != pinned }.getOrDefault(false)
+            if (usable == null || explicitlySwitched || handoff.owner(key)?.let { it.accountScope != usable.scope } == true) {
+                handoff.continueFromHistory(key)
+            }
+        }
         if (control?.kind in setOf("goalStatus", "goalPause", "goalClear", "goalResume")) handoff.savedGoalOwner(key)?.let { return it }
         handoff.goalOwner(key)?.let { return it }
         handoff.requireReady(key)
         handoff.childThreadOwner(key)?.let { return it }
-        if (control != null && control.kind != "planTurn") handoff.owner(key)?.let { return it.accountId }
-        if (handoff.owner(key) != null || handoff.wasReset(key)) return null
+        if (control != null && control.kind != "planTurn") handoff.owner(key)?.let { owner ->
+            if (runCatching { codexAuthController.accounts.requireUsable(owner.accountId) }.isSuccess) return owner.accountId
+        }
+        if (handoff.owner(key) != null || handoff.wasReset(key) || handoff.needsHistory(key)) return null
         val latest = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).stateStore
             .getLatestTaskForChat(project.id, chatId, AgentKind.CODEX.name) ?: return null
         val id = CodexAccounts.taskAccount(latest.providerJson) ?: return null
-        val account = codexAuthController.accounts.requireUsable(id)
+        val account = runCatching { codexAuthController.accounts.requireUsable(id) }.getOrNull() ?: return null
         val scope = NativeConversationScope.key(chatId, workspace, provider, "codex-account:${account.id}:${account.scope}")
         return id.takeIf { control != null && control.kind != "planTurn" || preferences.loadCodexGoalThread(project.id, scope) != null }
     }

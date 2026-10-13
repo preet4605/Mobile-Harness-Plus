@@ -538,7 +538,16 @@ class AntigravityRuntimeBridge(
             }
 
             val attemptedAccountIds = mutableSetOf<String>()
-            val existingConvId = conversationId(projectId)
+            val taskSupervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
+            val owner = taskId?.let { taskSupervisor.stateStore.get(it) }
+            val previousChatTask = owner?.let {
+                taskSupervisor.stateStore.getLatestTaskForChatAnyAgent(projectId, it.chatId, it.taskId)
+            }
+            val canResumeNativeConversation = NativeConversationScope.mayResumeFrom(
+                previousChatTask, owner, com.jarves.mh.model.AgentKind.ANTIGRAVITY,
+            )
+            var currentConversationId = if (canResumeNativeConversation) conversationId(projectId) else null
+            val existingConvId = currentConversationId
             val initialStickyAccountId = if (!existingConvId.isNullOrBlank()) conversationAccount?.invoke(projectId) else null
             var currentStickyAccountId = initialStickyAccountId
             var sessionCompleted = false
@@ -571,7 +580,7 @@ class AntigravityRuntimeBridge(
                 } else "/root"
                 val env = if (useAccount) mapOf("HOME" to guestHome) else emptyMap()
 
-                val currentConvId = conversationId(projectId) ?: existingConvId
+                val currentConvId = currentConversationId
                 val isStickyTurn = (useAccount && account!!.id == currentStickyAccountId && !currentConvId.isNullOrBlank())
                 val targetConvId = if (isStickyTurn) currentConvId else null
                 val effectivePrompt = if (!isStickyTurn && conversationHistory.isNotEmpty()) {
@@ -638,6 +647,7 @@ class AntigravityRuntimeBridge(
                         AntigravityEventParser.parseEvents(line).forEach { event ->
                             when (event) {
                                 is AntigravityParsedEvent.Initialized -> {
+                                    currentConversationId = event.conversationId
                                     saveConversationId(projectId, event.conversationId)
                                     if (useAccount) saveConversationAccount?.invoke(projectId, account!!.id)
                                 }
@@ -664,6 +674,7 @@ class AntigravityRuntimeBridge(
                                 is AntigravityParsedEvent.TokenUsage -> eventBus.emit(RuntimeEvent.TokenUsageUpdated(sessionId, event.metrics))
                                 is AntigravityParsedEvent.Result -> {
                                     event.conversationId?.let {
+                                        currentConversationId = it
                                         saveConversationId(projectId, it)
                                         if (useAccount) saveConversationAccount?.invoke(projectId, account!!.id)
                                     }
@@ -772,6 +783,7 @@ class AntigravityRuntimeBridge(
                         accountManager?.selectAccountForTurn(excludeAccountIds = attemptedAccountIds) != null
 
                     if (!userStopRequested && !retryBlockedByChanges && (isQuota || isAuth) && hasMoreAccounts) {
+                        currentConversationId = null
                         currentStickyAccountId = null
                         activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
                         activeProcess = null

@@ -1,12 +1,26 @@
 package com.jarves.mh.runtime
 
 import com.jarves.mh.model.ProviderProfile
+import com.jarves.mh.model.AgentKind
+import com.jarves.mh.runtime.task.DurableTaskRecord
 import java.io.File
 import java.security.MessageDigest
 import org.json.JSONArray
 
 /** Resume IDs are indexed by the durable chat owner and the exact launch route/workspace. */
 internal object NativeConversationScope {
+    fun mayResumeFrom(
+        previousTask: DurableTaskRecord?,
+        currentTask: DurableTaskRecord?,
+        agentKind: AgentKind,
+    ): Boolean = previousTask != null && currentTask != null &&
+        previousTask.taskId != currentTask.taskId &&
+        previousTask.projectId == currentTask.projectId &&
+        previousTask.chatId == currentTask.chatId &&
+        previousTask.agentKind == agentKind.name &&
+        currentTask.agentKind == agentKind.name &&
+        previousTask.providerJson == currentTask.providerJson
+
     fun key(chatId: String, workspace: File, provider: ProviderProfile, credentialIdentity: String): String {
         val inputs = JSONArray(listOf(workspace.canonicalPath, provider.kind.name, provider.profileId,
             provider.baseUrl, provider.model, provider.dshApi, provider.claudeAuthMode.name, credentialIdentity))

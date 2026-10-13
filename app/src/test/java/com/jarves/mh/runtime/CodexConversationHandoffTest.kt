@@ -57,11 +57,11 @@ class CodexConversationHandoffTest {
         assertThrows(IllegalArgumentException::class.java) { store.adopt(key, "project:chat", a, thread, source.path, workspace) }
         assertFalse(rolloutFile(accounts, b).exists())
     }
-    @Test fun reconnectGenerationBlocksTransferFromOldCredentialsScope() = fixture { _, accounts, a, b, store ->
+    @Test fun reconnectKeepsCompletedCredentialFreeSnapshotPortable() = fixture { _, accounts, a, b, store ->
         store.adopt(key, "project:chat", a, thread, rollout(accounts, a).path, workspace)
         accounts.complete(a.id, "Reconnected A")
         store.claim(key, "task", b, workspace)
-        assertThrows(IllegalArgumentException::class.java) { store.importForTask(key, "task", b, workspace) }
+        assertEquals(thread, store.importForTask(key, "task", b, workspace))
     }
     @Test fun planAndGoalAffinitySurviveRestartAndClearOnlyTheirChat() = fixture { root, _, a, b, store ->
         store.claim(key, "task", a, workspace, chatKey = "project:chat", goal = true)
@@ -178,6 +178,39 @@ class CodexConversationHandoffTest {
         store.claim(key, "uncertain", b, workspace)
         assertThrows(IllegalStateException::class.java) { CodexConversationHandoff(root).claim(key, "status", a, workspace, goalControl = true) }
         assertThrows(IllegalStateException::class.java) { store.requireReady(key) }
+    }
+
+    @Test fun stoppedInterruptedTaskContinuesHistoryWithoutOverwritingNativeWork() = fixture { root, accounts, a, b, store ->
+        val source = rollout(accounts, a, "verified")
+        store.adopt(key, "project:chat", a, thread, source.path, workspace)
+        store.claim(key, "interrupted", a, workspace)
+        source.appendText("{\"type\":\"response_item\",\"payload\":{\"text\":\"uncertain latest work\"}}\n")
+        val reopened = CodexConversationHandoff(root)
+        assertThrows(IllegalStateException::class.java) { reopened.recoverInterrupted(key) { false } }
+        reopened.recoverInterrupted(key) { it == "interrupted" }
+        assertTrue(reopened.needsHistory(key))
+        reopened.claim(key, "next", b, workspace)
+        assertNull(reopened.importForTask(key, "next", b, workspace))
+        assertTrue(source.readText().contains("uncertain latest work"))
+        assertTrue(File(root, "root/.codex-harness-conversations").walkTopDown().any { it.extension == "jsonl" })
+        assertThrows(IllegalStateException::class.java) { reopened.complete(key, "interrupted", a, thread, source.path, workspace) }
+    }
+    @Test fun removedSourceAccountDoesNotInvalidateCompletedSnapshot() = fixture { _, accounts, a, b, store ->
+        store.adopt(key, "project:chat", a, thread, rollout(accounts, a).path, workspace)
+        accounts.remove(a.id)
+        store.claim(key, "next", b, workspace)
+        assertEquals(thread, store.importForTask(key, "next", b, workspace))
+    }
+    @Test fun failedClaimReleaseIsOwnedAndHistoryModeSurvivesRestart() = fixture { root, _, a, b, store ->
+        store.claim(key, "failed", a, workspace)
+        store.releaseInterrupted(key, "old")
+        assertThrows(IllegalStateException::class.java) { store.requireReady(key) }
+        store.releaseInterrupted(key, "failed")
+        val reopened = CodexConversationHandoff(root)
+        reopened.requireReady(key)
+        assertTrue(reopened.needsHistory(key))
+        reopened.claim(key, "next", b, workspace)
+        assertNull(reopened.importForTask(key, "next", b, workspace))
     }
 
 }

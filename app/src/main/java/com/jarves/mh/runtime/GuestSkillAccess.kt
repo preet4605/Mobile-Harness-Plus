@@ -47,7 +47,8 @@ internal class GuestSkillAccess(private val appFiles: File) {
                         check(mapped(source, origin, "") != null)
                         snapshot(source, linkedDirectory(appFiles, workspace))
                     }
-                    SkillSource.OTHER_PROJECT -> null
+                    // Mods provide explicitly invoked bodies through ModContributionSet, not guest paths.
+                    SkillSource.MOD, SkillSource.OTHER_PROJECT -> null
                 }
             }.getOrNull()
             skill.copy(guestFilePath = guestPath)
