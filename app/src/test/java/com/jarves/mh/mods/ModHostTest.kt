@@ -51,6 +51,8 @@ class ModHostTest {
             followUps += text
             return true
         }
+        val opened = CopyOnWriteArrayList<String>()
+        override fun openUrl(mod: InstalledMod, url: String): Boolean { opened += url; return true }
         val undone = CopyOnWriteArrayList<String>()
         override fun pendingChanges(context: ModEventContext): JSONArray? =
             JSONArray().put(JSONObject().put("path", "src/a.kt")).put(JSONObject().put("path", "secrets/key.txt"))
@@ -94,6 +96,14 @@ class ModHostTest {
         return registry.install(staged, granted, ModTrust.IMPORTED, "test.mhmod")
     }
 
+    private val secretValues = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val secretStore = object : ModSecretStore {
+        override fun get(modId: String, key: String): String? = secretValues["$modId:$key"]
+        override fun set(modId: String, key: String, value: String?) {
+            if (value == null) secretValues.remove("$modId:$key") else secretValues["$modId:$key"] = value
+        }
+    }
+
     private fun host(registry: ModRegistry, limits: ModHostLimits = LIMITS): ModHost =
         ModHost(
             registry = registry,
@@ -101,6 +111,7 @@ class ModHostTest {
             shimSource = { File("src/main/assets/mods/mh-shim.js").readText() },
             dataDir = registry::dataDir,
             limits = limits,
+            secrets = secretStore,
         ).also {
             it.effects = effects
             it.start()
@@ -651,5 +662,62 @@ class ModHostTest {
         assertTrue(broken.text, broken.isError && "nope" in broken.text)
         assertTrue(host.callTool("mod_dict_missing", JSONObject()).isError)
         assertTrue(registry.readAudit("dev.test.dict").any { it.op == "tool lookup" })
+    }
+
+    @Test
+    fun `files, secrets and pages stay inside what the mod was given`() = runBlocking {
+        val root = temp.newFolder("project")
+        File(root, "src").mkdirs()
+        File(root, "src/a.txt").writeText("alpha")
+        File(root, "notes.md").writeText("keep")
+        File(root, ".claude").mkdirs()
+        File(root, ".claude/settings.json").writeText("{}")
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('run.end', async ($) => {
+                const r = (p) => p.then(v => JSON.stringify(v), err => 'refused: ' + err.message)
+                console.log('read ' + await r($.fs.read('src/a.txt')))
+                console.log('list ' + await r($.fs.list('').then(l => l.map(f => f.path).join(','))))
+                console.log('outside ' + await r($.fs.read('notes.md')))
+                console.log('settings ' + await r($.fs.read('.claude/settings.json')))
+                console.log('stat ' + await r($.fs.stat('src/missing.txt')))
+                console.log('write ' + await r($.fs.write('src/out.txt', 'hello')))
+                console.log('overwrite ' + await r($.fs.write('notes.md', 'x')))
+                await $.secrets.set('token', 's3cret')
+                console.log('secret ' + await $.secrets.get('token'))
+                console.log('plain ' + await r($.browser.open('http://example.com')))
+                console.log('page ' + await r($.browser.open('https://example.com/docs')))
+                console.log('done')
+              })
+            }
+        """.trimIndent(), permissions = listOf("files.read", "files.write", "secrets", "browser.open")) {
+            put("permissions", JSONArray(listOf(
+                permission("files.read").put("scope", JSONObject().put("paths", JSONArray().put("src/**"))),
+                permission("files.write").put("scope", JSONObject().put("paths", JSONArray().put("src/out.txt"))),
+                permission("secrets"),
+                permission("browser.open"),
+            )))
+        }
+        val host = host(registry)
+        host.updateContext(ModEventContext("p1", "Demo", { root }, "c1", AgentKind.CODEX), taskIsRunning = false)
+        waitFor("the mod to start") { host.info()?.state == ModRunState.RUNNING }
+        host.emit("run.end", JSONObject().put("status", "completed"))
+        waitFor("the calls") { "info: done" in host.logText() }
+        val log = host.logText()
+        assertTrue(log, "read \"alpha\"" in log)
+        assertTrue(log, "list src\n" in log || "list \"src\"" in log)
+        assertTrue(log, "outside refused: notes.md is outside the mod's files.read scope" in log)
+        assertTrue(log, "settings refused:" in log)
+        assertTrue(log, "stat null" in log)
+        assertTrue(log, "write 5" in log)
+        assertTrue(log, "overwrite refused: notes.md is outside the mod's files.write scope" in log)
+        assertTrue(log, "secret s3cret" in log)
+        assertTrue(log, "plain refused:" in log)
+        assertTrue(log, "page true" in log)
+        assertEquals("hello", File(root, "src/out.txt").readText())
+        assertEquals("keep", File(root, "notes.md").readText())
+        assertEquals("s3cret", secretValues["dev.test.sample:token"])
+        assertEquals(listOf("https://example.com/docs"), effects.opened.toList())
     }
 }

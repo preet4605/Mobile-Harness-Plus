@@ -1,8 +1,19 @@
 # Tasks and progress
 
+## More mod calls: files, secrets, messages, pages — 2026-10-13
+
+COMPLETE: the remaining non-network `$` calls from spec v2 §6.1.
+
+- `$.fs.read/list/stat/exists` (`files.read`; the whole project when the permission names no `scope.paths`, else only those globs) and `$.fs.write(path, text)` (`files.write`, which needs `scope.paths`; atomic replace, 1 MB). Agent, git and app settings files stay closed and links are never followed (ModPaths). Writes are audited and logged.
+- `$.secrets.get/set` (`secrets`): encrypted in ApiKeyVault under `mod:<id>:<key>` (ModSecrets), at most 32 per mod, removed with the mod. Secret settings can now be entered on the mod's Controls tab (a hidden field) and read the same way; they never reach `options`. Like other vault entries, whitespace is stripped.
+- `$.prompt.send(text)` (`prompt.send`) shares the follow-up rules: the open chat only, at most 3 after each message from the user. `$.browser.open(url)` (`browser.open`) opens https pages, at most one per 5 s.
+- Default taken: `$.fs.write` makes no checkpoint of its own (spec asked for one); a mod write is not in the agent's undo list.
+- VERIFIED: all 60 mods tests passed, including `ModHostTest` (read inside scope, refused outside and for agent settings, list filtered by scope, stat of a missing file, write inside and refused outside, secrets round trip, http refused, https opened).
+- NOT RUN: the secret field and calls on a device.
+
 ## Mod tools for the agents (spec v2 phase P8) — 2026-10-13
 
-COMPLETE: a mod can give every harness a tool it answers.
+COMPLETE (pushed to harness-dev as d4f7fa7): a mod can give every harness a tool it answers.
 
 - `$.tool.register({ name, description, inputSchema })` (permission `tools.provide`, HIGH; at most 16 per mod, schema up to 8 KB) adds a tool named `mod_<last id part>_<name>`, answered by the mod's `tool.call` hook matched by `{ tool: name }` (5 s own time, 25 s in all; string, `{text}`, `{error}` or JSON). Calls are audited.
 - Reach: the native inspection bridge has `mod_tools` (list) and `mod_tool` (call, 30 s). `harness-tools.cjs` adds mod tools to its MCP list (Codex already loads it), has a mods-only MCP mode for Claude (`--mcp-config /opt/pocket/harness/mods.mcp.json`, passed only while a running mod gives tools; `mcp__mods` is in Claude's allow list) and a `harness-tools mod <name> '<json>'` command that DeepSeek and Antigravity are told about in their instructions.

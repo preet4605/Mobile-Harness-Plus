@@ -33,6 +33,9 @@ interface ModHostEffects : ModHookEffects {
     /** The newest [limit] messages of [context]'s chat, oldest first, as (from, text); null when that chat is not open. */
     fun chatMessages(context: ModEventContext, limit: Int): List<Pair<String, String>>?
 
+    /** Opens an https page in the browser; false when it can't. */
+    fun openUrl(mod: InstalledMod, url: String): Boolean
+
     /** The plan of the task in [context]'s chat, when the app made one. */
     fun currentPlan(context: ModEventContext): ExecutionPlan?
 
@@ -199,6 +202,7 @@ class ModHost(
     private val wallClock: () -> Long = System::currentTimeMillis,
     private val hostContext: CoroutineContext = Dispatchers.Default.limitedParallelism(1),
     private val ioContext: CoroutineContext = Dispatchers.IO,
+    private val secrets: ModSecretStore? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + hostContext + CoroutineExceptionHandler { _, error ->
         runCatching { android.util.Log.w(TAG, "Mod host error", error) }
@@ -1208,6 +1212,56 @@ class ModHost(
                 setInfo(mod.id) { it.copy(tools = loaded.provided.values.toList()) }
                 removed
             }
+            ModOp.FS_READ, ModOp.FS_LIST, ModOp.FS_STAT, ModOp.FS_EXISTS -> {
+                val root = scoped?.projectRoot?.invoke() ?: error("No project is open")
+                val scope = mod.manifest.permission(ModCapability.FILES_READ)?.paths.orEmpty()
+                val path = if (args.isNull(0)) "" else args.optString(0)
+                withContext(ioContext) {
+                    when (op) {
+                        ModOp.FS_READ -> ModFiles.read(root, path, scope)
+                        ModOp.FS_LIST -> ModFiles.list(root, path, scope)
+                        ModOp.FS_STAT -> ModFiles.stat(root, path, scope) ?: JSONObject.NULL
+                        else -> ModFiles.exists(root, path, scope)
+                    }
+                }
+            }
+            ModOp.FS_WRITE -> {
+                val root = scoped?.projectRoot?.invoke() ?: error("No project is open")
+                val scope = mod.manifest.permission(ModCapability.FILES_WRITE)?.paths.orEmpty()
+                require(scope.isNotEmpty()) { "files.write needs scope.paths" }
+                val path = args.optString(0).trim().trim('/')
+                require(!args.isNull(1) && args.opt(1) is String) { "\$.fs.write(path, text) needs text" }
+                val written = withContext(ioContext) { ModFiles.write(root, path, args.getString(1), scope) }
+                registry.recordCall(mod.id, "fs.write $path", ModCapability.FILES_WRITE, "allowed", null)
+                addLog(mod.id, "info", "Wrote $path ($written bytes)")
+                written
+            }
+            ModOp.SECRETS_GET -> {
+                val store = secrets ?: error("Secrets aren't available here")
+                withContext(ioContext) { store.get(mod.id, args.optString(0)) } ?: JSONObject.NULL
+            }
+            ModOp.SECRETS_SET -> {
+                val store = secrets ?: error("Secrets aren't available here")
+                val value = if (args.isNull(1)) null else args.opt(1) as? String ?: error("\$.secrets.set(key, value) takes a string, or null to remove it")
+                withContext(ioContext) { store.set(mod.id, args.optString(0), value) }
+                null
+            }
+            ModOp.PROMPT_SEND -> {
+                val text = text(args).trim().take(MAX_TEXT)
+                require(text.isNotEmpty()) { "\$.prompt.send(text) needs text" }
+                val e = effects ?: error("The app screen is closed")
+                // Same limits as run.end follow-ups: the open chat only, at most 3 after a message from the user.
+                if (!e.followUp(mod, text, scoped!!)) error("The message wasn't sent: its chat isn't open, or mods already sent 3 since the user's last message")
+                registry.recordCall(mod.id, "prompt.send", ModCapability.PROMPT_SEND, "allowed", null)
+                true
+            }
+            ModOp.BROWSER_OPEN -> {
+                val url = text(args).trim()
+                val parsed = runCatching { java.net.URI(url) }.getOrNull()
+                require(url.length <= 2_000 && parsed?.scheme == "https" && !parsed.host.isNullOrBlank()) { "\$.browser.open(url) opens https:// pages only" }
+                if (!throttle("browser:${mod.id}", 5_000)) false
+                else (effects ?: error("The app screen is closed")).openUrl(mod, url)
+            }
             ModOp.AGENT_LIST -> (effects ?: error("The app screen is closed")).agents()
             ModOp.AGENT_ASK -> {
                 val spec = args.optJSONObject(0) ?: JSONObject().put("prompt", text(args))
@@ -1602,6 +1656,7 @@ class ModHost(
                     engineFactory = { JsSandboxEngine(app) },
                     shimSource = { app.assets.open("mods/mh-shim.js").bufferedReader().use { it.readText() } },
                     dataDir = registry::dataDir,
+                    secrets = ModSecrets(app),
                 ).also {
                     it.start()
                     instance = it

@@ -503,7 +503,8 @@ private fun ModPage(
     }
 
     editing?.let { setting ->
-        var value by remember(setting.key) { mutableStateOf(mod.settingValue(setting.key)?.let(::formatSetting).orEmpty()) }
+        val secret = setting.type == ModSettingType.SECRET
+        var value by remember(setting.key) { mutableStateOf(if (secret) "" else mod.settingValue(setting.key)?.let(::formatSetting).orEmpty()) }
         val number = setting.type == ModSettingType.NUMBER
         val parsed: Any? = if (number) value.trim().toDoubleOrNull()?.takeIf { it.isFinite() } else value
         val valid = parsed != null && (number || value.length <= (setting.maxLength ?: 1024))
@@ -514,7 +515,9 @@ private fun ModPage(
             leading = { SheetTextButton("Cancel", { editing = null }) },
             trailing = {
                 SheetTextButton("Save", {
-                    parsed?.let { viewModel.setSetting(mod.id, setting.key, it) }
+                    // A secret is kept encrypted for the mod's code ($.secrets.get), never in its settings.
+                    if (secret) viewModel.setSecret(mod.id, setting.key, value.trim().ifEmpty { null })
+                    else parsed?.let { viewModel.setSetting(mod.id, setting.key, it) }
                     editing = null
                 }, emphasized = true, enabled = valid)
             },
@@ -523,7 +526,8 @@ private fun ModPage(
                 PocketTextField(
                     value = value,
                     onValueChange = { value = it },
-                    helper = setting.description,
+                    helper = if (secret) "Saved encrypted on this device. Leave empty and save to remove it." else setting.description,
+                    secure = secret,
                     error = if (!valid && value.isNotEmpty()) (if (number) "Enter a number." else "Too long.") else null,
                     keyboardOptions = if (number) KeyboardOptions(keyboardType = KeyboardType.Decimal) else KeyboardOptions.Default,
                 )
@@ -815,8 +819,10 @@ private fun SettingRow(mod: InstalledMod, setting: ModSetting, viewModel: ModsVi
         )
         ModSettingType.SECRET -> ListRow(
             title = setting.title,
-            subtitle = "Mod code can use secrets in a coming update.",
-            enabled = false,
+            subtitle = setting.description,
+            value = if (viewModel.hasSecret(mod.id, setting.key)) "Saved" else "Not set",
+            accessory = ListRowAccessory.Chevron,
+            onClick = { onEdit(setting) },
         )
     }
 }

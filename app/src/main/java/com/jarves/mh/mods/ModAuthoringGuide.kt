@@ -249,6 +249,11 @@ object ModAuthoringGuide {
         | `${'$'}.chat.messages(n)` | `chat.read` | The newest messages of the open chat (`from`, `text`), up to 50 |
         | `${'$'}.chat.append(text)` | `chat.post` | Adds the mod's own message to the chat; the agent never sees it |
         | `${'$'}.prompt.draft(text)` | `prompt.draft` | Fills an empty message box; never sends |
+        | `${'$'}.fs.read(path)` / `${'$'}.fs.list(dir)` / `${'$'}.fs.stat(path)` / `${'$'}.fs.exists(path)` | `files.read` | The open project's files (1 MB per read, 500 entries per list), only paths in the permission's `scope.paths` when it has any |
+        | `${'$'}.fs.write(path, text)` | `files.write` | Replaces or creates a file (1 MB) inside `scope.paths`, which this permission needs |
+        | `${'$'}.secrets.get(key)` / `${'$'}.secrets.set(key, value)` | `secrets` | The mod's own encrypted secrets, including its secret settings; `null` removes one |
+        | `${'$'}.prompt.send(text)` | `prompt.send` | Sends a message to the agent in the open chat (at most 3 after each message from the user) |
+        | `${'$'}.browser.open(url)` | `browser.open` | Opens an https page in the browser |
         | `${'$'}.changes.list()` | `changes.read` | The agent's file changes the user hasn't kept or undone: `{ path, additions, deletions, binary }` |
         | `${'$'}.changes.undo(path)` | `changes.undo` | Undoes the agent's change to one file from its checkpoint; `true` when undone. Only paths in the permission's `scope.paths`, when it has any |
         | `${'$'}.tool.register({ name, description, inputSchema })` | `tools.provide` | Gives the agents a tool; resolves to the name they see (see "Tools for the agents") |

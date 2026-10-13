@@ -602,6 +602,11 @@ class MainViewModel(
             undone
         }
 
+        override fun openUrl(mod: InstalledMod, url: String): Boolean {
+            openExternalUrlOnce(url)
+            return true
+        }
+
         override fun followUp(mod: InstalledMod, text: String, context: ModEventContext): Boolean {
             val current = _state.value
             val project = current.activeProject ?: return false

@@ -250,9 +250,19 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun leaveSafeMode() = work("Could not turn mods back on") { registry.await().leaveSafeMode() }
 
+    private val secrets by lazy { com.jarves.mh.mods.ModSecrets(application) }
+
+    fun hasSecret(id: String, key: String): Boolean = runCatching { secrets.has(id, key) }.getOrDefault(false)
+
+    fun setSecret(id: String, key: String, value: String?) = work("Could not save the secret") {
+        withContext(Dispatchers.IO) { secrets.set(id, key, value) }
+        _messages.emit(if (value.isNullOrBlank()) "Secret removed." else "Secret saved.")
+    }
+
     fun remove(id: String, deleteData: Boolean) = work("Could not remove the mod") {
         val name = snapshot.value.mods.firstOrNull { it.id == id }?.manifest?.name ?: id
         registry.await().remove(id, deleteData)
+        withContext(Dispatchers.IO) { runCatching { secrets.removeAll(id) } }
         _messages.emit("Removed $name.")
     }
 

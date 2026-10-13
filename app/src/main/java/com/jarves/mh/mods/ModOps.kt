@@ -44,6 +44,15 @@ enum class ModOp(
     CHANGES_UNDO("changes.undo", ModCapability.CHANGES_UNDO, needsProject = true, slow = true),
     TOOL_REGISTER("tool.register", ModCapability.TOOLS_PROVIDE),
     TOOL_UNREGISTER("tool.unregister", ModCapability.TOOLS_PROVIDE),
+    FS_READ("fs.read", ModCapability.FILES_READ, needsProject = true),
+    FS_LIST("fs.list", ModCapability.FILES_READ, needsProject = true),
+    FS_STAT("fs.stat", ModCapability.FILES_READ, needsProject = true),
+    FS_EXISTS("fs.exists", ModCapability.FILES_READ, needsProject = true),
+    FS_WRITE("fs.write", ModCapability.FILES_WRITE, needsProject = true),
+    SECRETS_GET("secrets.get", ModCapability.SECRETS),
+    SECRETS_SET("secrets.set", ModCapability.SECRETS),
+    PROMPT_SEND("prompt.send", ModCapability.PROMPT_SEND, needsProject = true),
+    BROWSER_OPEN("browser.open", ModCapability.BROWSER_OPEN),
     AGENT_LIST("agent.list", ModCapability.AGENT_ASK),
     AGENT_ASK("agent.ask", ModCapability.AGENT_ASK, needsProject = true, slow = true),
     ;
@@ -87,6 +96,12 @@ data class ModTool(
 
 /** What a mod tool answered: the text the agent reads, and whether it is an error. */
 data class ModToolResult(val text: String, val isError: Boolean = false)
+
+/** Where a mod's secrets live ([ModSecrets] on the device). */
+interface ModSecretStore {
+    fun get(modId: String, key: String): String?
+    fun set(modId: String, key: String, value: String?)
+}
 
 /** What a mod command's `command.run` hook answered. */
 sealed interface ModCodeCommandOutcome {
