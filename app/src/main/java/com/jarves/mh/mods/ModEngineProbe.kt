@@ -54,6 +54,11 @@ data class EngineReport(val checks: List<EngineCheck>, val ready: Boolean, val v
  * when the user taps Run, every step has a time limit, and the sandbox is closed at the end. A
  * test that can't be done safely on this phone (a stuck script it couldn't stop, memory it
  * couldn't cap) is skipped and reported, never attempted. No mod code runs here.
+ *
+ * The sandbox is one process for the whole app, and a mod that passes its memory cap takes that
+ * process down with every other mod in it (documented for [IsolateStartupParameters.setMaxHeapSizeBytes]).
+ * So the memory check runs last, passes when the greedy mod is named as the cause, and is followed
+ * by a recovery check that restarts the sandbox and loads a mod again.
  */
 class ModEngineProbe(context: Context) {
     private val appContext = context.applicationContext
@@ -172,36 +177,22 @@ class ModEngineProbe(context: Context) {
                     (if (text == null) "No log arrived" else yesNo(text == "mh-probe")) to (text == "mh-probe")
                 }
             }
-            if (JavaScriptSandbox.JS_FEATURE_ISOLATE_MAX_HEAP_SIZE in features) {
-                step(SAFETY, "Memory cap stops a greedy mod", timeoutMs = MEMORY_TIMEOUT_MS) {
-                    val engine = isolate(IsolateStartupParameters().apply { setMaxHeapSizeBytes(HEAP_LIMIT_BYTES) })
-                    val terminated = CompletableDeferred<TerminationInfo>()
-                    engine.addOnTerminatedCallback(Runnable::run) { terminated.complete(it) }
-                    val start = System.nanoTime()
-                    val failure = outcome { engine.evaluateJavaScriptAsync(GREEDY_SCRIPT).await() }.exceptionOrNull()
-                        ?: error("The script finished instead of being stopped")
-                    val ms = (System.nanoTime() - start) / 1_000_000
-                    val info = withTimeoutOrNull(CONSOLE_WAIT_MS) { terminated.await() }
-                    val stopped = failure is MemoryLimitExceededException || info?.status == TerminationInfo.STATUS_MEMORY_LIMIT_EXCEEDED
-                    val alive = sandboxAnswers(connected)
-                    val detail = "${if (stopped) "Stopped" else "Ended with ${failure.javaClass.simpleName}"} after $ms ms; " +
-                        "sandbox ${if (alive) "still works" else "died"}"
-                    detail to (stopped && alive)
-                }
-            } else {
-                add(SAFETY, "Memory cap stops a greedy mod", "Skipped: memory can't be capped here", false)
-            }
+            // A stuck mod must stop without taking the others down; other isolates are checked while it spins.
             if (JavaScriptSandbox.JS_FEATURE_ISOLATE_TERMINATION in features) {
                 step(SAFETY, "Stuck mod is stopped") {
+                    val bystander = isolate()
                     val engine = isolate()
                     val pending = engine.evaluateJavaScriptAsync("while (true) {}")
                     delay(STUCK_RUN_MS)
+                    val othersDuring = withTimeoutOrNull(CONSOLE_WAIT_MS) { bystander.evaluateJavaScriptAsync("'ok'").await() } == "ok"
                     val start = System.nanoTime()
                     engine.close()
                     val rejected = outcome { pending.await() }.isFailure
                     val ms = (System.nanoTime() - start) / 1_000_000
-                    val alive = sandboxAnswers(connected)
-                    "Stopped in $ms ms; sandbox ${if (alive) "still works" else "died"}" to (rejected && alive)
+                    val othersAfter = withTimeoutOrNull(CONSOLE_WAIT_MS) { bystander.evaluateJavaScriptAsync("'ok'").await() } == "ok"
+                    val detail = "Stopped in $ms ms; other mods ${if (othersDuring) "kept running" else "waited"} while it was stuck " +
+                        "and ${if (othersAfter) "still work" else "stopped too"}"
+                    detail to (rejected && othersAfter)
                 }
             } else {
                 add(SAFETY, "Stuck mod is stopped", "Skipped: a stuck script can't be stopped here", false)
@@ -214,14 +205,44 @@ class ModEngineProbe(context: Context) {
                 }
                 "$ms ms" to true
             }
-            step(SPEED, "Restart the sandbox") {
-                runCatching { connected.close() }
+            // Runs last: by design, a mod that passes its memory cap takes the whole sandbox down. The
+            // greedy isolate is named as the cause and every other isolate reports the sandbox as dead.
+            if (JavaScriptSandbox.JS_FEATURE_ISOLATE_MAX_HEAP_SIZE in features) {
+                step(SAFETY, "Memory cap stops a greedy mod", timeoutMs = MEMORY_TIMEOUT_MS) {
+                    val bystander = isolate()
+                    val bystanderEnded = CompletableDeferred<TerminationInfo>()
+                    bystander.addOnTerminatedCallback(Runnable::run) { bystanderEnded.complete(it) }
+                    check(bystander.evaluateJavaScriptAsync("'ok'").await() == "ok")
+                    val engine = isolate(IsolateStartupParameters().apply { setMaxHeapSizeBytes(HEAP_LIMIT_BYTES) })
+                    val terminated = CompletableDeferred<TerminationInfo>()
+                    engine.addOnTerminatedCallback(Runnable::run) { terminated.complete(it) }
+                    val start = System.nanoTime()
+                    val failure = outcome { engine.evaluateJavaScriptAsync(GREEDY_SCRIPT).await() }.exceptionOrNull()
+                        ?: error("The script finished instead of being stopped")
+                    val ms = (System.nanoTime() - start) / 1_000_000
+                    val info = withTimeoutOrNull(CONSOLE_WAIT_MS) { terminated.await() }
+                    val blamed = failure is MemoryLimitExceededException || info?.status == TerminationInfo.STATUS_MEMORY_LIMIT_EXCEEDED
+                    val others = withTimeoutOrNull(CONSOLE_WAIT_MS) { bystanderEnded.await() }
+                    val othersText = when (others?.status) {
+                        null -> "other mods kept running"
+                        TerminationInfo.STATUS_SANDBOX_DEAD -> "the sandbox went down with it"
+                        else -> "other mods ended: ${others.statusString}"
+                    }
+                    val detail = "${if (blamed) "Stopped and named as the cause" else "Ended with ${failure.javaClass.simpleName}"} " +
+                        "after $ms ms; $othersText"
+                    detail to blamed
+                }
+            } else {
+                add(SAFETY, "Memory cap stops a greedy mod", "Skipped: memory can't be capped here", false)
+            }
+            step(SAFETY, RECOVER) {
+                runCatching { sandbox?.close() }
                 sandbox = null
                 val ms = timed {
                     sandbox = JavaScriptSandbox.createConnectedInstanceAsync(appContext).await()
-                    check(isolate().evaluateJavaScriptAsync("'ok'").await() == "ok")
+                    check(isolate().evaluateJavaScriptAsync(TRAMPOLINE_SHIM).await() == "ready")
                 }
-                "$ms ms" to true
+                "Sandbox back with a mod loaded in $ms ms" to true
             }
         } finally {
             closeIsolates()
@@ -229,13 +250,6 @@ class ModEngineProbe(context: Context) {
         }
         report(checks, features, passedTests)
     }
-
-    private suspend fun sandboxAnswers(sandbox: JavaScriptSandbox): Boolean = outcome {
-        withTimeoutOrNull(CONSOLE_WAIT_MS) {
-            val probe = sandbox.createIsolate()
-            try { probe.evaluateJavaScriptAsync("'ok'").await() == "ok" } finally { runCatching { probe.close() } }
-        }
-    }.getOrNull() == true
 
     private fun report(checks: List<EngineCheck>, features: Set<String>, passedTests: Set<String>): EngineReport {
         val missing = buildList {
@@ -284,7 +298,8 @@ class ModEngineProbe(context: Context) {
             JavaScriptSandbox.JS_FEATURE_ISOLATE_MAX_HEAP_SIZE,
             JavaScriptSandbox.JS_FEATURE_CONSOLE_MESSAGING,
         )
-        private val REQUIRED_TESTS = listOf("Mod call to the app and back", "Memory cap stops a greedy mod", "Stuck mod is stopped")
+        private const val RECOVER = "Recover after the sandbox goes down"
+        private val REQUIRED_TESTS = listOf("Mod call to the app and back", "Stuck mod is stopped", "Memory cap stops a greedy mod", RECOVER)
 
         /**
          * The §3.2 trampoline in miniature: a hook that awaits [TRAMPOLINE_OPS] host calls. Each
