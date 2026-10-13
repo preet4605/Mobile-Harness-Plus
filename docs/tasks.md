@@ -1,5 +1,17 @@
 # Tasks and progress
 
+## Mod dashboards and panels (spec v2 phase P5) — 2026-10-13
+
+IN PROGRESS (uncommitted; the user chose "Dashboards first" before the harness-task op): mod code draws its own screens.
+
+- Mods answer `ui.render` with a tree built by `h(type, props, ...children)`. ModTree checks it (16 elements, known props only, 2,000 elements, depth 32, 100,000 characters, images from the mod's folder or data URLs up to 512 KB) and ModSurfaces draws it with the app's kit components. Function props become handler keys; a tap runs the mod's function and redraws. Atoms read while drawing redraw the surface when they change, at most 10 times a second. A refused tree shows its reason and goes to the mod log.
+- Surfaces are drawn only while shown. The mod page's Dashboard tab shows the manifest's `dashboard.pane` (or panes opened with `$.ui.open`), a pane switcher and `dashboard.actions` as command rows. Inside projects, per-mod switches in Controls (off by default, saved in the registry as `shownIn`) add a status chip and a row above the message box (`ui.band`) and a workspace Mods tab for panes (`ui.pane`); the tab appears only while one is switched on.
+- `plan.update` fires when the open chat's task plan is saved (plan only with `project.info`). `run.log` batches the agent's reply text, tool progress and runtime logs once a second, up to 200 lines, only to mods with `events.subscribe` while one of their surfaces shows.
+- Not done here: the dashboard project picker (dashboards show the open project's data), web panes (P11, needs D2), host gates (P6).
+- VERIFIED: full `testOnlineDebugUnitTest` ran 1490 tests with one failure: a source-scan layout check counting views that start below the workspace bar. The new Mods view follows that rule on purpose, so the expected count went from 2 to 3, and that class plus ModHostTest then passed. ModHostTest passed 3 further reruns. New tests cover tree checks and limits, dashboard drawing, taps, atom redraws, band permission and switch, refused trees, `run.log` gating, and saving `shownIn`.
+- VERIFIED: the first APK build found a Compose `return@key` in the band strip that D8 cannot convert; it now uses an `if`. `assembleOnlineDebug assembleOnlineRelease` then succeeded (6m 27s, `--no-daemon --max-workers=2` after a daemon was killed for memory). Both root APKs are signed with the user's key (SHA-1 `0a4ca212ef6f776a7410130beb3810c81de06d26`) and pass `apksigner verify`: dev 78,921,437 bytes, MD5 `cbdcc2bb431079e44c7065b5d1578e6c`; stable 58,410,579 bytes, MD5 `07f848162134f4fc2e7a0ea1327f7132`.
+- NOT RUN: drawing on a device, Compose UI tests for the renderer, a 2,000-element smoothness check, lint.
+
 ## Mod code (spec v2 phase P4) — 2026-10-13
 
 IN PROGRESS (uncommitted until the user asks to push): mods can now ship a `hooks` module that runs in the JavaScriptSandbox engine the device probe accepted ("Ready for mod code").

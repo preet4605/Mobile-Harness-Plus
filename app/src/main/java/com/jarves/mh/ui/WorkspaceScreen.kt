@@ -281,6 +281,8 @@ internal enum class WorkspaceTab(val label: String, val icon: ImageVector) {
     FILES("Files", Icons.Outlined.Folder),
     TERMINAL("Terminal", Icons.Outlined.Terminal),
     PREVIEW("Preview", Icons.Outlined.Preview),
+    /** Shown only while a mod has a panel switched on for projects. */
+    MODS("Mods", Icons.Outlined.Extension),
 }
 
 /** The composer never gets shorter than this, so it stays an easy target while typing. */
@@ -444,6 +446,7 @@ private fun BarRow(
  */
 @Composable
 private fun WorkspaceTabBar(
+    tabs: List<WorkspaceTab>,
     selected: WorkspaceTab,
     onSelect: (WorkspaceTab) -> Unit,
     onFootprint: (Dp) -> Unit,
@@ -467,12 +470,12 @@ private fun WorkspaceTabBar(
                 .padding(horizontal = PocketSpacing.lg, vertical = PocketSpacing.xs),
         ) {
             FloatingTabBar(
-                tabs = WorkspaceTab.entries.map {
+                tabs = tabs.map {
                     TabItem(it.label, it.icon, badge = if (it == WorkspaceTab.FILES) changeCount else 0,
                         badgeDescription = if (it == WorkspaceTab.FILES && changeCount > 0) "$changeCount files awaiting review" else null)
                 },
-                selectedIndex = selected.ordinal,
-                onSelect = { onSelect(WorkspaceTab.entries[it]) },
+                selectedIndex = tabs.indexOf(selected).coerceAtLeast(0),
+                onSelect = { onSelect(tabs[it]) },
                 modifier = Modifier.onGloballyPositioned { coordinates ->
                     val screen = coordinates.findRootCoordinates().size.height
                     onFootprint(with(density) { (screen - coordinates.positionInRoot().y).toDp() })
@@ -749,6 +752,9 @@ internal fun WorkspaceScreen(
     }
 
     var selectedTab by rememberSaveable { mutableStateOf(initialTab) }
+    val modPanes = rememberModPanesAvailable()
+    val tabs = WorkspaceTab.entries.filter { it != WorkspaceTab.MODS || modPanes }
+    if (selectedTab !in tabs) selectedTab = WorkspaceTab.CHAT
     var showChats by rememberSaveable { mutableStateOf(false) }
     var showViews by rememberSaveable { mutableStateOf(false) }
     val viewsAnchor = rememberOverlayAnchor()
@@ -1150,6 +1156,17 @@ internal fun WorkspaceScreen(
                                         PreviewTab(state.previewReady, state.previewUrl, state.activeProject)
                                     }
                                 }
+                                WorkspaceTab.MODS -> Box(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .hostBackdropSource()
+                                        .background(MaterialTheme.colorScheme.background)
+                                        .padding(top = top)
+                                        .windowInsetsPadding(bottomInsets)
+                                        .clipToBounds(),
+                                ) {
+                                    ModWorkspacePanes()
+                                }
                             }
                         }
                     }
@@ -1177,6 +1194,7 @@ internal fun WorkspaceScreen(
                         },
                     )
                     WorkspaceTabBar(
+                        tabs = tabs,
                         selected = selectedTab,
                         onSelect = selectView,
                         onFootprint = { if (it != tabBarFootprint) tabBarFootprint = it },
@@ -1188,7 +1206,7 @@ internal fun WorkspaceScreen(
                             Text(activeChat?.title ?: "Chat", Modifier.padding(horizontal = PocketSpacing.lg, vertical = PocketSpacing.sm), style = PocketType.headline)
                             Text("${state.activeProject?.name.orEmpty()} · $engine", Modifier.padding(horizontal = PocketSpacing.lg, vertical = PocketSpacing.sm), style = PocketType.footnote, color = PocketColors.current.secondaryLabel)
                             GlassMenuDivider()
-                            WorkspaceTab.entries.forEach { tab ->
+                            tabs.forEach { tab ->
                                 GlassMenuItem(tab.label, { selectView(tab) }, checked = tab == selectedTab)
                             }
                         }
@@ -2472,6 +2490,8 @@ private fun ChatTab(
                         }
                     }
                 }
+
+                ModProjectStrip()
 
                 if (slashCommandsVisible) {
                     SlashCommandMenu(

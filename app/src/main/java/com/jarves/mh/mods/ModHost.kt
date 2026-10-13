@@ -74,6 +74,30 @@ data class ModHostSnapshot(
 
 data class ModLogEntry(val time: Long, val level: String, val text: String)
 
+/** A panel a mod draws: its dashboard (manifest `dashboard.pane`) or one it opened with `$.ui.open`. */
+data class ModPane(val id: String, val title: String) {
+    val surface: String get() = ModHost.paneSurface(id)
+}
+
+/** What one surface shows: the mod's last tree, or why there is none. */
+data class ModDrawing(val tree: ModNode? = null, val message: String? = null, val drawn: Boolean = false)
+
+/** One logic mod's surfaces (spec v2 §4.4, §6.6), for the Mods screen and for projects. */
+data class ModSurfaces(
+    val modId: String,
+    val name: String,
+    /** The mod's folder; Image elements load files from it. */
+    val dir: File,
+    /** The dashboard pane first, then panes the mod opened. */
+    val panes: List<ModPane>,
+    val dashboard: String?,
+    /** By surface key ([ModHost.paneSurface] or [ModHost.BAND]). */
+    val drawings: Map<String, ModDrawing>,
+    /** Places it shows inside projects, switched on and allowed. */
+    val shownIn: Set<ModPlace>,
+    val status: String?,
+)
+
 /** Time limits; tests shorten them. */
 data class ModHostLimits(
     /** A call into the isolate must return within this, or the isolate is stuck. */
@@ -85,6 +109,10 @@ data class ModHostLimits(
     val endBudgetMs: Long = 1_500,
     val eventBudgetMs: Long = 10_000,
     val quickBudgetMs: Long = 1_000,
+    /** Own time for one `ui.render` (spec v2 §4.2). */
+    val renderBudgetMs: Long = 250,
+    /** At most this often per surface: 10 redraws a second. */
+    val redrawGapMs: Long = 100,
     val backoffMs: List<Long> = listOf(1_000, 5_000, 30_000),
     val heapBytes: Long = 16L * 1024 * 1024,
 )
@@ -128,6 +156,9 @@ class ModHost(
 
     private val _snapshot = MutableStateFlow(ModHostSnapshot())
     val snapshot: StateFlow<ModHostSnapshot> = _snapshot.asStateFlow()
+    private val _surfaces = MutableStateFlow<Map<String, ModSurfaces>>(emptyMap())
+    /** Logic mods' panels and drawings, by mod id. */
+    val surfaces: StateFlow<Map<String, ModSurfaces>> = _surfaces.asStateFlow()
     private val _logVersion = MutableStateFlow(0)
     /** Changes whenever a mod log gains a line; read the lines with [log]. */
     val logVersion: StateFlow<Int> = _logVersion.asStateFlow()
@@ -163,6 +194,20 @@ class ModHost(
     private var started = false
     private var syncJob: Job? = null
     private var syncAgain = false
+    private val panes = HashMap<String, LinkedHashMap<String, String>>()
+    private val slots = HashMap<Pair<String, String>, Slot>()
+    private val drawings = HashMap<String, HashMap<String, ModDrawing>>()
+    private val runLog = ArrayDeque<JSONObject>()
+    private var runLogDropped = 0
+    private var runLogJob: Job? = null
+
+    /** One surface of one mod: who shows it, and its render loop. */
+    private class Slot {
+        val holders = HashSet<String>()
+        var job: Job? = null
+        var again = false
+        var lastAt = Long.MIN_VALUE / 2
+    }
 
     private class Dispatch(
         val id: Long,
@@ -202,6 +247,8 @@ class ModHost(
         registry.snapshot.collect { snapshot ->
             mods = snapshot
             reconcile()
+            // Grants and places may have changed what a shown surface may draw.
+            slots.filterValues { it.holders.isNotEmpty() }.keys.forEach { (id, surface) -> requestRender(id, surface) }
         }
     }
 
@@ -311,6 +358,71 @@ class ModHost(
 
     /** The newest lines of [modId]'s log, oldest first. */
     fun log(modId: String): List<ModLogEntry> = synchronized(logsLock) { logs[modId]?.toList().orEmpty() }
+
+    /** [holder] shows or stops showing [surface] of [modId]; only shown surfaces are drawn. */
+    fun show(modId: String, surface: String, holder: String, visible: Boolean) = scope.launch {
+        val key = modId to surface
+        val slot = slots.getOrPut(key) { Slot() }
+        val wasShown = slot.holders.isNotEmpty()
+        if (visible) slot.holders += holder else slot.holders -= holder
+        when {
+            !wasShown && slot.holders.isNotEmpty() -> requestRender(modId, surface)
+            wasShown && slot.holders.isEmpty() -> {
+                slot.job?.cancel()
+                slots.remove(key)
+                running[modId]?.takeIf { it.ready }?.let { call(it, "__mh.forget(${JSONObject.quote(surface)})") }
+            }
+        }
+    }
+
+    /** A tap or an edit in a drawn tree: runs the mod's function behind [handler], then redraws. */
+    fun press(modId: String, surface: String, handler: String, value: Any?) = scope.launch {
+        val loaded = running[modId]?.takeIf { it.ready } ?: return@launch
+        val result = CompletableDeferred<JSONObject?>()
+        dispatch(loaded, "ui.press", JSONObject(), limits.eventBudgetMs, result = result) { id, _ ->
+            "__mh.press($id, ${JSONObject.quote(surface)}, ${JSONObject.quote(handler)}, ${ModJson.literal(value)})"
+        }
+        val answer = result.await()
+        if (answer == null || answer.has("error")) {
+            effects?.let { e -> runCatching { e.toast(loaded.mod, "${loaded.mod.manifest.name}: that action failed. Its log says why.") } }
+        }
+        requestRender(modId, surface)
+    }
+
+    /**
+     * A line of the running task's live output (spec v2 §6.9 `run.log`): batched, at most once a
+     * second and 200 lines, for mods allowed to watch it while one of their surfaces is showing.
+     */
+    fun emitRunLog(kind: String, text: String) {
+        if (!listens("run.log") || text.isEmpty()) return
+        val time = wallClock()
+        scope.launch {
+            val last = runLog.lastOrNull()
+            if (kind == "reply" && last?.optString("kind") == "reply" && last.optString("text").length < MAX_TEXT) {
+                last.put("text", (last.optString("text") + text).take(MAX_TEXT))
+            } else {
+                runLog.addLast(JSONObject().put("kind", kind).put("text", text.take(MAX_TEXT)).put("time", time))
+                while (runLog.size > MAX_RUN_LOG_LINES) {
+                    runLog.removeFirst()
+                    runLogDropped++
+                }
+            }
+            if (runLogJob?.isActive == true) return@launch
+            runLogJob = scope.launch {
+                delay(COALESCE_MS)
+                val lines = JSONArray(runLog.toList())
+                val dropped = runLogDropped
+                runLog.clear()
+                runLogDropped = 0
+                running.values.filter { loaded ->
+                    loaded.ready && "run.log" in loaded.events && allowed(currentMod(loaded), ModCapability.EVENTS_SUBSCRIBE) &&
+                        slots.any { (key, slot) -> key.first == loaded.id && slot.holders.isNotEmpty() }
+                }.forEach { loaded ->
+                    dispatch(loaded, "run.log", JSONObject().put("lines", JSONArray(lines.toString())).put("dropped", dropped), limits.eventBudgetMs)
+                }
+            }
+        }
+    }
 
     // ---- lifecycle -----------------------------------------------------------------------
 
@@ -479,6 +591,7 @@ class ModHost(
         setInfo(mod.id) { it.copy(state = ModRunState.RUNNING, message = null, commands = loaded.commands.values.toList()) }
         refreshListening()
         dispatch(loaded, "session.start", JSONObject(), limits.eventBudgetMs)
+        slots.filter { (key, slot) -> key.first == mod.id && slot.holders.isNotEmpty() }.keys.forEach { requestRender(it.first, it.second) }
     }
 
     /** Ends [loaded]: optional `session.end`, then timers, pending calls and the isolate. Host thread. */
@@ -502,6 +615,7 @@ class ModHost(
         loaded.consumer?.cancel()
         runCatching { loaded.isolate.close() }
         refreshListening()
+        drawings.remove(loaded.id)
         setInfo(loaded.id) { it.copy(state = ModRunState.WAITING, commands = emptyList()) }
     }
 
@@ -618,12 +732,14 @@ class ModHost(
         budgetMs: Long,
         eventScope: Any = scopeOf(context),
         result: CompletableDeferred<JSONObject?>? = null,
+        /** The entry point to call instead of `__mh.dispatch`; the event need not be hooked. */
+        script: ((Long, JSONObject) -> String)? = null,
     ) {
         if (!loaded.ready || loaded.closed) {
             result?.complete(null)
             return
         }
-        if (event != "clock.tick" && event !in loaded.events) {
+        if (script == null && event != "clock.tick" && event !in loaded.events) {
             result?.complete(JSONObject().put("value", JSONObject.NULL))
             return
         }
@@ -632,7 +748,7 @@ class ModHost(
         val dispatch = Dispatch(nextDispatch++, event, budgetMs, clock(), result)
         loaded.dispatches[dispatch.id] = dispatch
         dispatch.watchdog = scope.launch { watch(loaded, dispatch) }
-        call(loaded, "__mh.dispatch(${dispatch.id}, ${JSONObject.quote(event)}, $payload)")
+        call(loaded, script?.invoke(dispatch.id, payload) ?: "__mh.dispatch(${dispatch.id}, ${JSONObject.quote(event)}, $payload)")
     }
 
     /** Skips a dispatch that runs past its budget of the mod's own time. */
@@ -711,6 +827,9 @@ class ModHost(
                 dispatch.result?.complete(message)
             }
             "op" -> handleCall(loaded, message)
+            "redraw" -> message.optJSONArray("surfaces")?.let { list ->
+                (0 until minOf(list.length(), MAX_PANES + 1)).forEach { requestRender(loaded.id, list.optString(it)) }
+            }
         }
     }
 
@@ -802,6 +921,20 @@ class ModHost(
                 else if (!e.notify(mod, title, body)) error("Notifications are off for this app")
                 else true
             }
+            ModOp.UI_OPEN -> openPane(loaded, args)
+            ModOp.UI_CLOSE -> {
+                val id = args.optJSONObject(0)?.optString("id") ?: args.optString(0)
+                val removed = panes[mod.id]?.remove(id) != null
+                if (removed) drawings[mod.id]?.remove(paneSurface(id))
+                publish()
+                removed
+            }
+            ModOp.UI_REDRAW -> {
+                val id = args.optString(0).takeIf { !args.isNull(0) && it.isNotBlank() }
+                slots.filter { (key, slot) -> key.first == mod.id && slot.holders.isNotEmpty() && (id == null || key.second == paneSurface(id)) }
+                    .keys.forEach { requestRender(it.first, it.second) }
+                null
+            }
             ModOp.COMMAND_REGISTER -> registerCommand(loaded, args.optJSONObject(0) ?: error("\$.command.register({ name, description }) needs an object"))
             ModOp.COMMAND_UNREGISTER -> {
                 val removed = loaded.commands.remove(args.optString(0)) != null
@@ -861,6 +994,89 @@ class ModHost(
         addLog(loaded.id, "debug", "Timer $timer set: $name $ms ms")
         return true
     }
+
+    private fun openPane(loaded: Loaded, args: JSONArray): JSONObject {
+        val spec = args.optJSONObject(0) ?: JSONObject().put("id", args.optString(0)).put("title", args.optString(1))
+        val id = spec.optString("id")
+        require(PANE_ID.matches(id)) { "\$.ui.open({ id, title }): id must be 1 to 40 lowercase letters, digits or dashes." }
+        val title = ModHookRunner.clean(spec.optString("title").take(MAX_LINE)).ifBlank { id }
+        val list = panes.getOrPut(loaded.id) { LinkedHashMap() }
+        require(id in list || list.size < MAX_PANES) { "A mod can have at most $MAX_PANES panes open." }
+        list[id] = title
+        publish()
+        val placed = slots[loaded.id to paneSurface(id)]?.holders?.isNotEmpty() == true
+        if (placed) requestRender(loaded.id, paneSurface(id))
+        return JSONObject().put("isPlaced", placed)
+    }
+
+    /** Draws [surface] again soon if someone shows it, at most every [ModHostLimits.redrawGapMs]. */
+    private fun requestRender(modId: String, surface: String) {
+        val slot = slots[modId to surface]?.takeIf { it.holders.isNotEmpty() } ?: return
+        if (slot.job?.isActive == true) {
+            slot.again = true
+            return
+        }
+        slot.job = scope.launch {
+            do {
+                slot.again = false
+                val wait = slot.lastAt + limits.redrawGapMs - clock()
+                if (wait > 0) delay(wait)
+                slot.lastAt = clock()
+                render(modId, surface)
+            } while (slot.again && slot.holders.isNotEmpty())
+        }
+    }
+
+    private suspend fun render(modId: String, surface: String) {
+        val loaded = running[modId]?.takeIf { it.ready }
+        val mod = loaded?.let(::currentMod)
+        val paneId = surface.removePrefix(PANE_PREFIX).takeIf { surface.startsWith(PANE_PREFIX) }
+        val blocked = when {
+            loaded == null || mod == null -> "Not running right now."
+            paneId == null && surface != BAND -> "Unknown surface."
+            paneId != null && !allowed(mod, ModCapability.UI_PANE) -> "Needs the “${ModCapability.UI_PANE.summary}” permission."
+            surface == BAND && !mod.shows(ModPlace.BAND) -> "Off."
+            "ui.render" !in loaded.events -> "This mod's code has no ui.render hook, so it draws nothing."
+            else -> null
+        }
+        if (blocked != null || loaded == null) {
+            setDrawing(modId, surface, ModDrawing(message = blocked))
+            return
+        }
+        val payload = if (paneId != null) {
+            JSONObject().put("component", "Pane").put("requestId", paneId).put("title", paneTitle(modId, paneId))
+        } else {
+            JSONObject().put("component", "AbovePrompt")
+        }
+        payload.put("surface", "mobile")
+        val result = CompletableDeferred<JSONObject?>()
+        dispatch(loaded, "ui.render", payload, limits.renderBudgetMs, result = result) { id, body ->
+            "__mh.render($id, ${JSONObject.quote(surface)}, $body)"
+        }
+        val answer = result.await()
+        val component = if (paneId != null) "Pane" else "AbovePrompt"
+        val previous = drawings[modId]?.get(surface)?.tree
+        val drawing = when {
+            answer == null -> ModDrawing(previous, "It took too long to draw.", drawn = true)
+            answer.has("error") -> ModDrawing(previous, "It couldn't draw: ${firstLine(answer.optString("error"))}", drawn = true)
+            else -> try {
+                ModDrawing(ModTree.parse(answer.opt("value")), drawn = true)
+            } catch (e: ModTreeException) {
+                addLog(modId, "error", "ui.render ($component) refused: ${e.message}")
+                ModDrawing(null, "It drew something the app can't show: ${e.message}", drawn = true)
+            }
+        }
+        setDrawing(modId, surface, drawing)
+    }
+
+    private fun setDrawing(modId: String, surface: String, drawing: ModDrawing) {
+        if (running[modId] == null && drawing.drawn) return
+        drawings.getOrPut(modId) { HashMap() }[surface] = drawing
+        publish()
+    }
+
+    private fun paneTitle(modId: String, paneId: String): String =
+        panes[modId]?.get(paneId) ?: mods.mods.firstOrNull { it.id == modId }?.manifest?.name ?: paneId
 
     private fun registerCommand(loaded: Loaded, spec: JSONObject): Boolean {
         val name = spec.optString("name").lowercase(Locale.ROOT)
@@ -942,6 +1158,26 @@ class ModHost(
             mod.id to adjusted
         }
         _snapshot.value = ModHostSnapshot(engineState, engineMessage, shown)
+        panes.keys.retainAll(logicIds)
+        drawings.keys.retainAll(logicIds)
+        _surfaces.value = logic.associate { mod ->
+            val dashboard = mod.manifest.dashboard?.pane
+            val opened = panes[mod.id].orEmpty()
+            val list = buildList {
+                if (dashboard != null) add(ModPane(dashboard, opened[dashboard] ?: "Dashboard"))
+                opened.forEach { (id, title) -> if (id != dashboard) add(ModPane(id, title)) }
+            }
+            mod.id to ModSurfaces(
+                modId = mod.id,
+                name = mod.manifest.name,
+                dir = mod.dir,
+                panes = list,
+                dashboard = dashboard,
+                drawings = drawings[mod.id]?.toMap().orEmpty(),
+                shownIn = ModPlace.entries.filter(mod::shows).toSet(),
+                status = shown[mod.id]?.status,
+            )
+        }
     }
 
     companion object {
@@ -964,6 +1200,16 @@ class ModHost(
         private const val MAX_LOG_TEXT = 2_000
         private const val COALESCE_MS = 1_000L
         private const val WATCH_MIN_MS = 50L
+        private const val MAX_PANES = 8
+        private const val MAX_RUN_LOG_LINES = 200
+        private const val PANE_PREFIX = "pane:"
+        private val PANE_ID = Regex("^[a-z0-9][a-z0-9-]{0,39}$")
+
+        /** The surface above the message box in a project. */
+        const val BAND = "band"
+
+        /** The surface key of pane [id]. */
+        fun paneSurface(id: String) = "$PANE_PREFIX$id"
 
         private fun firstLine(text: String) = text.lineSequence().firstOrNull { it.isNotBlank() }?.trim()?.take(300) ?: text.take(300)
 
@@ -974,6 +1220,9 @@ class ModHost(
         private val ERROR_NAME = Regex("^\\s*(?:Uncaught\\s+)?\\w*Error\\b")
 
         @Volatile private var instance: ModHost? = null
+        private val _current = MutableStateFlow<ModHost?>(null)
+        /** The app's mod host once something created it; screens inside projects read surfaces from it. */
+        val current: StateFlow<ModHost?> = _current.asStateFlow()
 
         /** The app's mod host. The first call reads the mod registry, so call it off Main. */
         fun getInstance(context: Context): ModHost = instance ?: synchronized(this) {
@@ -988,6 +1237,7 @@ class ModHost(
                 ).also {
                     it.start()
                     instance = it
+                    _current.value = it
                 }
             }
         }

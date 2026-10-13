@@ -11,6 +11,10 @@
  *               {t:'done', d, value|error}  a dispatch finished
  *               {t:'error', d, event, error} a hook threw (the app counts a strike)
  *               {t:'log', level, text}      console.* and $.log
+ *               {t:'redraw', surfaces}       atoms a drawn surface read have changed
+ * Drawing (spec v2 §4.4): `__mh.render(d, surface, e)` runs the `ui.render` hooks and answers with
+ * the tree as plain data; each function prop becomes a handler key, and `__mh.press(d, surface,
+ * key, value)` runs that function later. Atoms read while drawing redraw the surface when they change.
  * Each call from the app returns at once, so the app never waits on a script that may not finish.
  */
 (function () {
@@ -32,6 +36,17 @@
   var atoms = Object.create(null);
   var nextCall = 1;
   var nextTimer = 1;
+  var ELEMENTS = ['Column', 'Row', 'Box', 'Text', 'Markdown', 'Code', 'Button', 'Toggle', 'TextField',
+    'Select', 'Progress', 'Divider', 'Spacer', 'Image', 'List', 'Chip'];
+  var TABLE = {};
+  ELEMENTS.forEach(function (name) { TABLE[name] = name; });
+  Object.freeze(TABLE);
+  var MAX_TREE_NODES = 5000;
+  var MAX_TREE_DEPTH = 40;
+  var handlers = Object.create(null); // surface -> { key: function }
+  var deps = Object.create(null);     // surface -> { atom ref: true }
+  var drawing = null;                 // the surface whose ui.render hooks are running now
+  var dirty = null;
 
   function post(message) {
     var text;
@@ -133,6 +148,7 @@
       case 'clock.after': return addTimer(d, args, false);
       case 'clock.every': return addTimer(d, args, true);
       case 'clock.cancel': return cancelTimer(d, args[0]);
+      case 'ui.resolve': return TABLE;
       default: return hostCall(d, path, args);
     }
   }
@@ -253,13 +269,83 @@
     return Object.freeze({ ref: ref, initial: initial });
   };
   globalThis.read = function ($, a) {
+    if (drawing !== null) deps[drawing][a.ref] = true;
     return a.ref in atoms ? atoms[a.ref] : a.initial;
   };
   globalThis.update = function ($, a, fn) {
-    var value = typeof fn === 'function' ? fn(globalThis.read($, a)) : fn;
+    var value = typeof fn === 'function' ? fn(a.ref in atoms ? atoms[a.ref] : a.initial) : fn;
     atoms[a.ref] = value;
+    for (var surface in deps) {
+      if (!deps[surface][a.ref]) continue;
+      if (dirty === null) {
+        dirty = Object.create(null);
+        Promise.resolve().then(function () {
+          var list = Object.keys(dirty);
+          dirty = null;
+          if (port) post({ t: 'redraw', surfaces: list });
+        });
+      }
+      dirty[surface] = true;
+    }
     return value;
   };
+
+  // ---- drawing ------------------------------------------------------------------------
+
+  /** `h(type, props, ...children)`, what JSX compiles to. A function type is a component. */
+  globalThis.h = function (type, props) {
+    var children = [];
+    for (var i = 2; i < arguments.length; i++) children.push(arguments[i]);
+    if (typeof type === 'function') {
+      var given = {};
+      for (var k in (props || {})) given[k] = props[k];
+      given.children = children;
+      return type(given);
+    }
+    return { type: type, props: props || {}, children: children };
+  };
+
+  /** The tree as plain data; functions become handler keys kept for [surface]. */
+  function serialize(surface, tree) {
+    var table = Object.create(null);
+    var count = 0;
+    var nextKey = 1;
+    function walk(node, depth) {
+      if (depth > MAX_TREE_DEPTH) throw new Error('The tree nests too deep');
+      if (++count > MAX_TREE_NODES) throw new Error('The tree has too many elements');
+      if (node === null || node === undefined || node === false || node === true) return null;
+      if (typeof node === 'string' || typeof node === 'number') return { type: '#text', text: String(node) };
+      if (Array.isArray(node)) throw new Error('A list of elements must be inside an element');
+      if (typeof node !== 'object' || typeof node.type !== 'string') throw new Error('ui.render returned something that is not an element');
+      var props = {};
+      var source = node.props || {};
+      for (var name in source) {
+        var v = source[name];
+        if (name === 'children' || v === undefined) continue;
+        if (typeof v === 'function') {
+          var key = 'h' + nextKey++;
+          table[key] = v;
+          props[name] = key;
+        } else {
+          props[name] = v;
+        }
+      }
+      var out = [];
+      (function add(list) {
+        for (var i = 0; i < list.length; i++) {
+          if (Array.isArray(list[i])) add(list[i]);
+          else {
+            var child = walk(list[i], depth + 1);
+            if (child) out.push(child);
+          }
+        }
+      })(node.children || []);
+      return { type: node.type, props: props, children: out };
+    }
+    var data = walk(tree, 1);
+    handlers[surface] = table;
+    return data;
+  }
 
   // ---- entry points for the app -------------------------------------------------------
 
@@ -309,6 +395,45 @@
       var list = (hooks[event] || []).filter(function (h) { return matches(h.matcher, e); });
       var input = freeze(e);
       finish(d, chain(d, dollar(d), list, 0, input));
+      return 'ok';
+    },
+
+    /** Runs the `ui.render` hooks for [surface] and answers with the tree, or null for nothing. */
+    render: function (d, surface, e) {
+      var list = (hooks['ui.render'] || []).filter(function (h) { return matches(h.matcher, e); });
+      deps[surface] = Object.create(null);
+      drawing = surface;
+      var run;
+      try {
+        run = chain(d, dollar(d), list, 0, freeze(e));
+      } finally {
+        drawing = null;
+      }
+      finish(d, run.then(function (tree) {
+        if (tree === null || tree === undefined) {
+          delete handlers[surface];
+          return null;
+        }
+        return serialize(surface, tree);
+      }));
+      return 'ok';
+    },
+
+    /** A tap or an edit on [surface]: runs the function behind handler [key] with ([value], $). */
+    press: function (d, surface, key, value) {
+      var fn = handlers[surface] && handlers[surface][key];
+      if (!fn) {
+        post({ t: 'done', d: d, value: null });
+        return 'gone';
+      }
+      finish(d, invoke(fn, [value, dollar(d)]).then(function () { return null; }));
+      return 'ok';
+    },
+
+    /** [surface] is no longer drawn: forget its handlers and what it read. */
+    forget: function (surface) {
+      delete handlers[surface];
+      delete deps[surface];
       return 'ok';
     },
 

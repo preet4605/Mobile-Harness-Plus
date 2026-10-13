@@ -307,6 +307,111 @@ class ModHostTest {
         assertFalse(host.listens("session.start"))
     }
 
+    private fun ModHost.drawing(surface: String, id: String = "dev.test.sample") = surfaces.value[id]?.drawings?.get(surface)
+
+    private fun ModNode.all(): List<ModNode> = listOf(this) + children.flatMap { it.all() }
+
+    private fun ModNode.texts(): String = all().filter { it.type == ModNode.TEXT }.joinToString("|") { it.text.orEmpty() }
+
+    @Test
+    fun `a dashboard draws, a tap runs its function, and atoms redraw it`() {
+        val registry = registry()
+        install(registry, """
+            const count = atom('count', 0)
+            export function register(on) {
+              on('session.start', async (${'$'}, e, next) => { await ${'$'}.ui.open({ id: 'extra', title: 'More' }); return next(e) })
+              on('ui.render', { component: 'Pane', requestId: 'main' }, (${'$'}, e) => {
+                const { Column, Text, Button } = ${'$'}.ui.resolve(e)
+                return h(Column, { gap: 12 },
+                  h(Text, { style: 'title2' }, 'Pressed ' + read(${'$'}, count)),
+                  [1, 2].map((n) => h(Text, { key: 'n' + n }, 'row ' + n)),
+                  h(Button, { onPress: () => update(${'$'}, count, (n) => n + 1) }, 'Press'))
+              })
+              on('command.run', { name: 'bump' }, (${'$'}) => { update(${'$'}, count, (n) => n + 10); return { text: 'ok' } })
+            }
+        """.trimIndent(), permissions = listOf("ui.pane")) {
+            put("dashboard", JSONObject().put("pane", "main"))
+        }
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod to run") { host.info()?.state == ModRunState.RUNNING }
+        waitFor("the opened pane") { host.surfaces.value["dev.test.sample"]?.panes?.map { it.id } == listOf("main", "extra") }
+        assertEquals("Dashboard", host.surfaces.value["dev.test.sample"]?.panes?.first()?.title)
+
+        // Nothing is drawn until something shows the pane.
+        assertEquals(null, host.drawing("pane:main"))
+        host.show("dev.test.sample", "pane:main", "test", true)
+        waitFor("the first drawing") { host.drawing("pane:main")?.tree != null }
+        val tree = host.drawing("pane:main")!!.tree!!
+        assertEquals("Column", tree.type)
+        assertEquals("Pressed 0|row 1|row 2|Press", tree.texts())
+        val button = tree.all().first { it.type == "Button" }.handler("onPress")!!
+
+        host.press("dev.test.sample", "pane:main", button, null)
+        waitFor("the tap to redraw") { host.drawing("pane:main")?.tree?.texts()?.startsWith("Pressed 1") == true }
+
+        // An atom the drawing read changes in another hook: the pane redraws by itself.
+        kotlinx.coroutines.runBlocking { host.runCommand("dev.test.sample", "bump", "") }
+        waitFor("the atom to redraw") { host.drawing("pane:main")?.tree?.texts()?.startsWith("Pressed 11") == true }
+
+        // A pane with no hook for it draws nothing; hiding stops drawing.
+        host.show("dev.test.sample", "pane:extra", "test", true)
+        waitFor("the empty pane") { host.drawing("pane:extra")?.drawn == true }
+        assertEquals(null, host.drawing("pane:extra")?.tree)
+        host.show("dev.test.sample", "pane:main", "test", false)
+    }
+
+    @Test
+    fun `the band needs its permission and switch, and bad trees are refused with a reason`() {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('ui.render', { component: 'AbovePrompt' }, () => h('Text', { style: 'footnote' }, 'band'))
+              on('ui.render', { component: 'Pane' }, () => h('Blink', {}, 'no'))
+            }
+        """.trimIndent(), permissions = listOf("ui.band", "ui.pane"), granted = setOf(ModCapability.UI_PANE))
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod to run") { host.info()?.state == ModRunState.RUNNING }
+
+        host.show("dev.test.sample", ModHost.BAND, "test", true)
+        waitFor("the band to be off") { host.drawing(ModHost.BAND)?.message == "Off." }
+        registry.setGranted("dev.test.sample", ModCapability.UI_BAND, true)
+        registry.setShownIn("dev.test.sample", ModPlace.BAND, true)
+        waitFor("the band") { host.drawing(ModHost.BAND)?.tree?.texts() == "band" }
+        assertEquals(setOf(ModPlace.BAND), host.surfaces.value["dev.test.sample"]?.shownIn)
+
+        host.show("dev.test.sample", "pane:x", "test", true)
+        waitFor("the refusal") { host.drawing("pane:x")?.message != null }
+        assertTrue(host.drawing("pane:x")?.message.orEmpty(), "\"Blink\" is not an element" in host.drawing("pane:x")?.message.orEmpty())
+        assertTrue(host.logText(), "ui.render (Pane) refused" in host.logText())
+    }
+
+    @Test
+    fun `run log reaches a mod only while its surface shows and it may watch`() {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('run.log', async (${'$'}, e) => { await ${'$'}.ui.status(e.lines.map((l) => l.kind + ':' + l.text).join('/')) })
+              on('ui.render', () => h('Text', {}, 'x'))
+            }
+        """.trimIndent(), permissions = listOf("events.subscribe", "ui.pane", "ui.status"))
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = true)
+        waitFor("the mod to run") { host.info()?.state == ModRunState.RUNNING && host.listens("run.log") }
+
+        host.emitRunLog("reply", "hidden")
+        Thread.sleep(1_500)
+        assertEquals(null, host.info()?.status)
+
+        host.show("dev.test.sample", "pane:main", "test", true)
+        waitFor("the pane") { host.drawing("pane:main")?.tree != null }
+        host.emitRunLog("reply", "Hel")
+        host.emitRunLog("reply", "lo")
+        host.emitRunLog("tool", "Bash: ls")
+        waitFor("the batch") { host.info()?.status == "reply:Hello/tool:Bash: ls" }
+    }
+
     companion object {
         private val LIMITS = ModHostLimits(
             evalTimeoutMs = 500,
@@ -317,6 +422,8 @@ class ModHostTest {
             eventBudgetMs = 800,
             quickBudgetMs = 300,
             backoffMs = listOf(100, 200, 300),
+            renderBudgetMs = 800,
+            redrawGapMs = 50,
         )
     }
 }

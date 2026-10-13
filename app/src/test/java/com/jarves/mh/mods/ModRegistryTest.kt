@@ -49,6 +49,30 @@ class ModRegistryTest {
     }
 
     @Test
+    fun `where a mod shows in projects is saved, kept on update, and needs its permission to show`() {
+        val code = mapOf("hooks/register.js" to "export function register(on) {}")
+        fun manifest(version: String) = ModTestKit.manifest(code) {
+            put("version", version)
+            put("hooks", JSONObject().put("module", "hooks/register.js"))
+            put("permissions", JSONArray().put(JSONObject().put("capability", "ui.band").put("reason", "test")))
+        }
+        val registry = registry()
+        val id = registry.install(stageZip(registry, ModTestKit.modZip(manifest("1.0.0"), code)), emptySet(), ModTrust.IMPORTED, "a.mhmod").id
+        registry.setShownIn(id, ModPlace.BAND, true)
+        var mod = registry.snapshot.value.mods.single()
+        assertEquals(setOf(ModPlace.BAND), mod.shownIn)
+        assertFalse(mod.shows(ModPlace.BAND))
+        registry.setGranted(id, ModCapability.UI_BAND, true)
+        assertTrue(registry.snapshot.value.mods.single().shows(ModPlace.BAND))
+
+        registry.install(stageZip(registry, ModTestKit.modZip(manifest("1.1.0"), code)), setOf(ModCapability.UI_BAND), ModTrust.IMPORTED, "a.mhmod")
+        mod = registry().snapshot.value.mods.single()
+        assertEquals("1.1.0", mod.manifest.version)
+        assertEquals(setOf(ModPlace.BAND), mod.shownIn)
+        assertTrue(mod.shows(ModPlace.BAND))
+    }
+
+    @Test
     fun `import installs, turns on and keeps only grants it may hold`() {
         val registry = registry()
         val staged = stageZip(registry, ModTestKit.modZip(toastManifest(extraPermissions = listOf("net.fetch")), files))

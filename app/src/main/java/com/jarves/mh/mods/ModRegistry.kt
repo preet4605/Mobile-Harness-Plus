@@ -22,6 +22,18 @@ enum class ModTrust(val id: String, val label: String) {
     BUILT("built", "Built in Mod Studio"),
 }
 
+/** Where a mod with code also shows inside projects (spec v2 §6.6, D9); each is off until switched on. */
+enum class ModPlace(val id: String, val label: String, val capability: ModCapability) {
+    BAND("band", "Row above the message box", ModCapability.UI_BAND),
+    STATUS("status", "Status chip", ModCapability.UI_STATUS),
+    WORKSPACE("workspace", "Panel in the Mods tab", ModCapability.UI_PANE),
+    ;
+
+    companion object {
+        fun fromId(id: String): ModPlace? = entries.firstOrNull { it.id == id }
+    }
+}
+
 enum class ModStatus(val label: String) {
     ON("On"),
     OFF("Off"),
@@ -43,12 +55,18 @@ data class InstalledMod(
     val enabledSkills: Set<String>,
     val disabledHooks: Set<String>,
     val installedAt: Long,
+    /** Where it shows inside projects; see [shows]. */
+    val shownIn: Set<ModPlace> = emptySet(),
     /** Why the mod cannot run until it is reviewed again, for example files changed on disk. */
     val problem: String? = null,
 ) {
     val id: String get() = manifest.id
 
     fun settingValue(key: String): Any? = settings[key] ?: manifest.settings.firstOrNull { it.key == key }?.default
+
+    /** Switched on for [place] and allowed to draw there. */
+    fun shows(place: ModPlace): Boolean =
+        place in shownIn && manifest.hooksModule != null && place.capability in granted && canHold(place.capability)
 
     fun canHold(capability: ModCapability): Boolean =
         capability.usable && capability in manifest.requested &&
@@ -179,6 +197,7 @@ class ModRegistry(
                 enabledSkills = previous?.enabledSkills.orEmpty().filter { id -> manifest.skills.any { it.id == id } }.toSet(),
                 disabledHooks = emptySet(),
                 installedAt = clock(),
+                shownIn = previous?.shownIn.orEmpty(),
                 manifestSha = ModPackage.sha256(File(target, ModPackage.MANIFEST)),
             )
             problems.remove(manifest.id)
@@ -255,6 +274,10 @@ class ModRegistry(
         val setting = mod.manifest.settings.firstOrNull { it.key == key } ?: return@update record
         if (!settingAccepts(setting, value)) return@update record
         record.copy(settings = record.settings + (key to value))
+    }
+
+    fun setShownIn(id: String, place: ModPlace, shown: Boolean) = update(id, if (shown) "show" else "hide", detail = place.id) { record, _ ->
+        record.copy(shownIn = if (shown) record.shownIn + place else record.shownIn - place)
     }
 
     fun setHookEnabled(id: String, hookId: String, enabled: Boolean) = update(id, if (enabled) "hook.on" else "hook.off", detail = hookId) { record, _ ->
@@ -413,6 +436,7 @@ class ModRegistry(
         enabledSkills = record.enabledSkills,
         disabledHooks = record.disabledHooks,
         installedAt = record.installedAt,
+        shownIn = record.shownIn,
         problem = problems[manifest.id],
     )
 
@@ -508,6 +532,7 @@ private data class PersistedMod(
     val installedAt: Long,
     /** SHA-256 of mod.json at install; `integrity` cannot cover the manifest itself. */
     val manifestSha: String = "",
+    val shownIn: Set<ModPlace> = emptySet(),
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("version", version)
@@ -522,6 +547,7 @@ private data class PersistedMod(
         .put("disabledHooks", JSONArray(disabledHooks.sorted()))
         .put("installedAt", installedAt)
         .put("manifestSha", manifestSha)
+        .put("shownIn", JSONArray(shownIn.map { it.id }.sorted()))
 
     companion object {
         fun fromJson(o: JSONObject): PersistedMod = PersistedMod(
@@ -544,6 +570,7 @@ private data class PersistedMod(
             disabledHooks = o.optJSONArray("disabledHooks").strings().toSet(),
             installedAt = o.optLong("installedAt"),
             manifestSha = o.optString("manifestSha"),
+            shownIn = o.optJSONArray("shownIn").strings().mapNotNull(ModPlace::fromId).toSet(),
         )
     }
 }

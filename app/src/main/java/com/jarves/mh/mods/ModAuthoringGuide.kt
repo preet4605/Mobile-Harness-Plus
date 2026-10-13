@@ -54,8 +54,11 @@ object ModAuthoringGuide {
         appendLine("- **Mod code**: one JavaScript file with hooks for app events, its own saved data, timers,")
         appendLine("  a status line, and commands that answer in code. See \"Mod code\" below. Use it only")
         appendLine("  when the simple parts above can't do the job.")
+        appendLine("- **Dashboards and panels** drawn by mod code with the app's own text, buttons, switches, lists,")
+        appendLine("  progress bars and images: on the mod's page, in a project's Mods tab, and as a row above the message box.")
+        appendLine("  See \"Drawing\" below.")
         appendLine()
-        appendLine("Not supported yet, so never add them: `types`, `dashboard`, `contributes.panels`,")
+        appendLine("Not supported yet, so never add them: `types`, `contributes.panels` (web panels),")
         appendLine("`contributes.guestTools`, `contributes.mcpServers`.")
         appendLine()
         appendLine("## Files")
@@ -88,6 +91,7 @@ object ModAuthoringGuide {
         appendLine("| `permissions` | One entry per capability the mod uses: `capability`, a short `reason`, and for `files.write` a `scope.paths` list of globs. |")
         appendLine("| `contributes` | The parts below. |")
         appendLine("| `hooks` | Optional: `{ \"module\": \"hooks/register.js\" }`, the mod code file (`.js` or `.mjs`, at most 512 KB). |")
+        appendLine("| `dashboard` | Optional, needs `hooks`: `{ \"pane\": \"main\", \"actions\": [\"refresh\"] }`. The pane id the mod's page shows first, and up to 8 of the mod's commands shown as buttons under it. |")
         appendLine()
         appendLine("### contributes")
         appendLine()
@@ -218,6 +222,9 @@ object ModAuthoringGuide {
         | `build.end` | An Android build ended | `status`, `detail` |
         | `app.foreground`, `app.background` | The app is shown or hidden | |
         | `command.run` | The user ran one of the mod's commands | `name`, `args` |
+        | `plan.update` | The open chat's task plan changed | `taskId`, `plan` (`title`, `status`, `current`, `steps`; only with `project.info`) |
+        | `run.log` | The running task's live output, batched once a second, only while one of the mod's surfaces is showing | `lines` (`kind`: `reply`, `tool` or `log`; `text`; `time`), `dropped`. Needs `events.subscribe` |
+        | `ui.render` | The app needs a surface drawn (see "Drawing") | `component`, `requestId`, `title`, `surface` |
 
         ### `${'$'}` for mod code
 
@@ -236,11 +243,65 @@ object ModAuthoringGuide {
         | `${'$'}.chat.messages(n)` | `chat.read` | The newest messages of the open chat (`from`, `text`), up to 50 |
         | `${'$'}.chat.append(text)` | `chat.post` | Adds the mod's own message to the chat; the agent never sees it |
         | `${'$'}.prompt.draft(text)` | `prompt.draft` | Fills an empty message box; never sends |
+        | `${'$'}.ui.open({ id, title })`, `${'$'}.ui.close(id)` | `ui.pane` | Adds a panel (8 at most; `id` is lowercase letters, digits, dashes) or removes one; `open` returns `{ isPlaced }`, whether it is on screen now |
+        | `${'$'}.ui.redraw(id?)` | none | Draws the mod's shown surfaces again (or just pane `id`) |
+        | `${'$'}.ui.resolve(e)` | none | The element names, so `const { Column, Text } = ${'$'}.ui.resolve(e)` works as in other mod systems |
 
         A `command.run` hook answers with `{ text }`, shown in the chat as the mod's reply (the agent
         never sees it), or `{ prompt }`, sent to the agent as if the user typed it. Declare commands in
         `contributes.slashCommands` without a `template`, or add them with `${'$'}.command.register`.
         A `${'$'}` call without its permission throws an error that names the permission.
+
+        ### Drawing: dashboards, panels and the row above the message box
+
+        A mod draws by answering `ui.render` with a tree built by `h(type, props, ...children)` (what JSX
+        compiles to; the module itself is plain JavaScript, so call `h` directly). The app draws the tree
+        with its own components; no mod script runs on screen. Return `null` to draw nothing.
+
+        ```js
+        const count = atom('count', 0)
+        export function register(on) {
+          on('session.start', async (${'$'}, e, next) => { await ${'$'}.ui.open({ id: 'main', title: 'Counter' }); return next(e) })
+          on('ui.render', { component: 'Pane', requestId: 'main' }, (${'$'}) =>
+            h('Column', { gap: 12 },
+              h('Text', { style: 'title2' }, 'Pressed ' + read(${'$'}, count) + ' times'),
+              h('Button', { onPress: () => update(${'$'}, count, (n) => n + 1) }, 'Press')))
+          on('ui.render', { component: 'AbovePrompt' }, (${'$'}) => h('Text', { style: 'footnote' }, 'Count: ' + read(${'$'}, count)))
+        }
+        ```
+
+        - Surfaces: a pane (`component: 'Pane'`, `requestId` = its id; needs `ui.pane`) on the mod's
+          Dashboard page and, when the user switches it on, in a project's Mods tab; the row above the
+          message box (`component: 'AbovePrompt'`; needs `ui.band`, and the user switches it on). Set
+          `"dashboard": { "pane": "<id>" }` in `mod.json` so the page opens on that pane.
+        - `ui.render` hooks must be synchronous and quick: 250 ms of the mod's own time. Read data that
+          comes from `${'$'}` calls in other hooks, keep it in atoms, and only `read` it while drawing. An
+          atom read while drawing redraws the surface when `update` changes it (at most 10 times a second).
+          After a tap's function finishes, its surface is drawn again too.
+        - Functions in props run on taps: `onPress()` for Button and Chip, `onChange(value)` for Toggle,
+          TextField (after a short pause) and Select, `onSubmit(value)` for TextField. Each gets
+          `(value, ${'$'})` and may be async.
+        - Limits: 2,000 elements, 32 levels deep, 100,000 characters of text. A tree the app can't draw
+          shows a message on the surface, and the mod log says why.
+
+        | Element | Props (all optional) | Children |
+        | --- | --- | --- |
+        | `Column`, `List`, `Box` | `gap`, `padding` (dp, up to 48), `align` (`start`, `center`, `end`), `card` (a rounded background) | elements |
+        | `Row` | the same, plus `scroll` (scrolls sideways); a child with `grow: true` takes the free width | elements |
+        | `Text` | `style` (`largeTitle`, `title`, `title2`, `title3`, `headline`, `body`, `callout`, `subheadline`, `footnote`, `caption`), `color`, `bold`, `mono`, `maxLines`, `align` | text |
+        | `Markdown` | | text |
+        | `Code` | `format` (`plain` or `diff`), `maxLines` | text |
+        | `Button` | `onPress`, `style` (`filled`, `tinted`, `gray`, `plain`, `glass`), `destructive`, `disabled` | text |
+        | `Chip` | `onPress`, `color`, `selected` | text |
+        | `Toggle` | `label`, `value`, `onChange`, `disabled` | none |
+        | `TextField` | `label`, `value`, `placeholder`, `onChange`, `onSubmit`, `multiline`, `disabled` | none |
+        | `Select` | `label`, `value`, `options` (text, or `{ value, label }`), `onChange`, `disabled` | none |
+        | `Progress` | `value` (0 to 1; leave out to spin), `label`, `color` | none |
+        | `Divider`, `Spacer` (`size`) | | none |
+        | `Image` | `src` (a PNG/JPEG/WebP file in the mod such as `assets/chart.png`, or a PNG/JPEG data URL up to 512 KB), `height`, `description`, `fit` (`fit` or `fill`) | none |
+
+        Colors: `primary`, `secondary`, `tertiary`, `accent`, `red`, `orange`, `yellow`, `green`, `blue`,
+        `purple`, `pink`, `gray`. Every element also takes `key` (keeps list rows steady) and `grow`.
     """
 
     private const val EXAMPLE = """

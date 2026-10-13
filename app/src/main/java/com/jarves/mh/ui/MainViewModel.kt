@@ -492,6 +492,24 @@ class MainViewModel(
     @Volatile private var modHooks: ModHookRunner? = null
     /** Runs mod code (spec v2 P4); app-wide, so it outlives this screen. */
     @Volatile private var modHost: ModHost? = null
+    /** The last plan sent to mods as `plan.update`, so an unchanged save sends nothing. */
+    @Volatile private var lastModPlan: String? = null
+    /** Tells mod code when the open chat's task plan changes (spec v2 §6.9). */
+    private val modPlanListener: (com.jarves.mh.model.brain.CanonicalTask) -> Unit = { task ->
+        val host = modHost
+        if (host != null && host.listens("plan.update") && task.taskId == activeUiTaskId && task.plan.steps.isNotEmpty()) {
+            val plan = com.jarves.mh.mods.ModJson.plan(task.plan)
+            val text = plan.toString()
+            if (text != lastModPlan) {
+                lastModPlan = text
+                host.emit(
+                    "plan.update",
+                    JSONObject().put("taskId", task.taskId).put("plan", plan),
+                    mapOf("plan" to com.jarves.mh.mods.ModCapability.PROJECT_INFO),
+                )
+            }
+        }
+    }
     /** Mod chat posts that arrived while a task ran; they join the chat when it ends. Main thread only. */
     private val pendingModPosts = mutableListOf<Pair<ChatMessage, ModEventContext>>()
     /** What the composer holds now, so a mod's draft never replaces the user's typing. */
@@ -2691,6 +2709,9 @@ class MainViewModel(
                 .getOrNull()?.let { host ->
                     host.effects = modEffects
                     modHost = host
+                    runCatching {
+                        com.jarves.mh.runtime.task.TaskSupervisor.getInstance(application).canonicalTaskRepository.addSavedListener(modPlanListener)
+                    }
                     launch {
                         _state.map { ModScope(it.activeProject?.id, it.activeProject?.name, it.agentKind, it.activeChatId, it.isRunning) }
                             .distinctUntilChanged()
@@ -7201,6 +7222,10 @@ class MainViewModel(
                         .put("canGate", false).put("sessionId", event.sessionId).put("taskId", activeUiTaskId ?: JSONObject.NULL))
                 }
             }
+            // The live output reaches mods only as the batched run.log (spec v2 §4.2).
+            is RuntimeEvent.AssistantDelta -> modHost?.emitRunLog("reply", event.text)
+            is RuntimeEvent.ToolProgress -> modHost?.emitRunLog("tool", "${event.toolName}: ${event.detail}".take(2000))
+            is RuntimeEvent.RuntimeLog -> modHost?.emitRunLog("log", listOf(event.title, event.detail).filter { it.isNotBlank() }.joinToString(": ").take(2000))
             is RuntimeEvent.TokenUsageUpdated -> modHost?.takeIf { it.listens("usage.update") }?.let { host ->
                 val metrics = event.metrics
                 runCatching {
@@ -7448,6 +7473,10 @@ class MainViewModel(
 
     override fun onCleared() {
         modHost?.let { host ->
+            // Registered with the host in loadMods, so the supervisor already exists.
+            runCatching {
+                com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).canonicalTaskRepository.removeSavedListener(modPlanListener)
+            }
             // This screen is gone for good: nothing reports the project or a running task any more.
             if (host.effects === modEffects) host.effects = null
             host.updateContext(null, taskIsRunning = false)

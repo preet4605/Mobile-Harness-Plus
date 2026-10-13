@@ -139,9 +139,9 @@ class ChatLiquidGlassRegressionTest {
     @Test
     fun workspaceTabs_scrollingViewsAreSources_othersStartBelowTheBar() {
         assertEquals("Files list is its view's one source", 1, Regex("""hostBackdropSource\(\)""").findAll(functionBody("FilesTab")).count())
-        assertEquals("Terminal and Preview start below the bar", 2, Regex("""\.padding\(top = top\)""").findAll(workspace).count())
+        assertEquals("Terminal, Preview and Mods start below the bar", 3, Regex("""\.padding\(top = top\)""").findAll(workspace).count())
         assertTrue(workspace.contains("topClearance = top"))
-        assertEquals("Terminal and Preview end above the tab bar", 2, Regex("""\.windowInsetsPadding\(bottomInsets\)""").findAll(workspace).count())
+        assertEquals("Terminal, Preview and Mods end above the tab bar", 3, Regex("""\.windowInsetsPadding\(bottomInsets\)""").findAll(workspace).count())
         assertEquals("Chat and Files clear the tab bar", 2, Regex("""(bottomBarClearance|bottomClearance) = bottomBar""").findAll(workspace).count())
         assertTrue("The bar is measured, not guessed", workspace.contains("Modifier.onSizeChanged(onBarSize)"))
     }

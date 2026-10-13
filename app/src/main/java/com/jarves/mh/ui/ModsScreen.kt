@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,6 +55,8 @@ import com.jarves.mh.mods.ModEngineState
 import com.jarves.mh.mods.ModEvent
 import com.jarves.mh.mods.ModHostSnapshot
 import com.jarves.mh.mods.ModLogEntry
+import com.jarves.mh.mods.ModPlace
+import com.jarves.mh.mods.ModSurfaces
 import com.jarves.mh.mods.ModRunState
 import com.jarves.mh.mods.ModRuntimeInfo
 import com.jarves.mh.mods.ModHookAction
@@ -95,6 +98,7 @@ fun ModsScreen(
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     val drafts by viewModel.drafts.collectAsStateWithLifecycle()
     val host by viewModel.hostSnapshot.collectAsStateWithLifecycle()
+    val surfaces by viewModel.surfaces.collectAsStateWithLifecycle()
     DisposableEffect(viewModel) {
         viewModel.setVisible(true)
         onDispose { viewModel.setVisible(false) }
@@ -127,7 +131,7 @@ fun ModsScreen(
                 onEngineTest = { openId = ENGINE_TEST_PAGE },
                 viewModel = viewModel,
             )
-            else -> ModPage(shown, snapshot, host.mods[shown.id], bottomBarPadding, onBack = { openId = null }, viewModel)
+            else -> ModPage(shown, snapshot, host.mods[shown.id], surfaces[shown.id], bottomBarPadding, onBack = { openId = null }, viewModel)
         }
     }
 
@@ -402,14 +406,25 @@ private fun ModPage(
     mod: InstalledMod,
     snapshot: ModsSnapshot,
     runtime: ModRuntimeInfo?,
+    surfaces: ModSurfaces?,
     bottomBarPadding: Dp,
     onBack: () -> Unit,
     viewModel: ModsViewModel,
 ) {
     val listState = rememberLazyListState()
     val collapse by rememberTitleCollapse(listState)
-    val tabs = ModPageTab.entries.filter { it != ModPageTab.DASHBOARD || mod.manifest.dashboard != null }
-    var tab by rememberSaveable(mod.id) { mutableStateOf(ModPageTab.CONTROLS) }
+    val hasDashboard = mod.manifest.hooksModule != null && (mod.manifest.dashboard != null || !surfaces?.panes.isNullOrEmpty())
+    val tabs = ModPageTab.entries.filter { it != ModPageTab.DASHBOARD || hasDashboard }
+    var tab by rememberSaveable(mod.id) { mutableStateOf(if (mod.manifest.dashboard != null) ModPageTab.DASHBOARD else ModPageTab.CONTROLS) }
+    if (tab !in tabs) tab = ModPageTab.CONTROLS
+    val panes = surfaces?.panes.orEmpty()
+    var paneId by rememberSaveable(mod.id) { mutableStateOf<String?>(null) }
+    val pane = panes.firstOrNull { it.id == paneId } ?: panes.firstOrNull()
+    val shownSurface = pane?.surface?.takeIf { tab == ModPageTab.DASHBOARD && snapshot.status(mod) == ModStatus.ON }
+    DisposableEffect(mod.id, shownSurface) {
+        shownSurface?.let { viewModel.showSurface(mod.id, it, true) }
+        onDispose { shownSurface?.let { viewModel.showSurface(mod.id, it, false) } }
+    }
     var preview by remember { mutableStateOf<Pair<String, String>?>(null) }
     var editing by remember { mutableStateOf<ModSetting?>(null) }
     var confirmHigh by remember { mutableStateOf<ModCapability?>(null) }
@@ -452,7 +467,7 @@ private fun ModPage(
                 }
             }
             when (tab) {
-                ModPageTab.DASHBOARD -> dashboardTab(mod)
+                ModPageTab.DASHBOARD -> dashboardTab(mod, shownRuntime, surfaces, pane?.id, onSelectPane = { paneId = it }, viewModel)
                 ModPageTab.CONTROLS -> controlsTab(mod, shownRuntime, viewModel, onPreview = showText, onEdit = { editing = it })
                 ModPageTab.PERMISSIONS -> permissionsTab(mod, viewModel, onConfirmHigh = { confirmHigh = it })
                 ModPageTab.ACTIVITY -> activityTab(mod, audit, log, viewModel)
@@ -558,10 +573,68 @@ private fun ModPage(
     }
 }
 
-private fun LazyListScope.dashboardTab(mod: InstalledMod) {
-    item(key = "dashboard") {
-        ListSection(footer = "Mod code draws dashboards in a coming update. This mod's code already runs: its status is in Controls and its log in Activity.") {
-            ListRow("Dashboard “${mod.manifest.dashboard?.pane}”", subtitle = "Not available in this version")
+private fun LazyListScope.dashboardTab(
+    mod: InstalledMod,
+    runtime: ModRuntimeInfo?,
+    surfaces: ModSurfaces?,
+    paneId: String?,
+    onSelectPane: (String) -> Unit,
+    viewModel: ModsViewModel,
+) {
+    val panes = surfaces?.panes.orEmpty()
+    val pane = panes.firstOrNull { it.id == paneId }
+    if (panes.size > 1) {
+        item(key = "panes") {
+            Column(Modifier.padding(horizontal = ListInset)) {
+                if (panes.size <= 4) {
+                    SegmentedControl(panes.map { it.id }, pane?.id ?: panes.first().id, onSelectPane, label = { id -> panes.first { it.id == id }.title })
+                } else {
+                    androidx.compose.foundation.layout.Row(
+                        Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
+                    ) {
+                        panes.forEach { p ->
+                            PocketButton(p.title, { onSelectPane(p.id) }, style = if (p.id == pane?.id) PocketButtonStyle.Filled else PocketButtonStyle.Gray, size = PocketButtonSize.Small)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (runtime?.state != ModRunState.RUNNING || pane == null || surfaces == null) {
+        item(key = "dashboard-off") {
+            ListSection(footer = "The dashboard shows while the mod's code runs. Controls says why it isn't running.") {
+                ListRow(
+                    title = pane?.title ?: "Dashboard",
+                    subtitle = runtime?.message ?: if (mod.enabled) "Starting…" else "This mod is off.",
+                    value = runtime?.state?.label ?: "Off",
+                    subtitleMaxLines = 4,
+                )
+            }
+        }
+    } else {
+        modPaneItems(
+            keyPrefix = "pane-${pane.id}",
+            drawing = surfaces.drawings[pane.surface],
+            dir = surfaces.dir,
+            onEvent = { handler, value -> viewModel.press(mod.id, pane.surface, handler, value) },
+            itemModifier = Modifier.padding(horizontal = ListInset),
+        )
+    }
+    val actions = mod.manifest.dashboard?.actions.orEmpty()
+    if (actions.isNotEmpty() && runtime?.state == ModRunState.RUNNING) {
+        item(key = "actions") {
+            ListSection(header = "Actions") {
+                actions.forEach { name ->
+                    val command = runtime.commands.firstOrNull { it.name == name }
+                    ListRow(
+                        title = "/$name",
+                        subtitle = command?.description?.ifBlank { null },
+                        enabled = command != null,
+                        onClick = { viewModel.runAction(mod.id, name) },
+                    )
+                }
+            }
         }
     }
 }
@@ -681,6 +754,25 @@ private fun LazyListScope.controlsTab(
                 }
                 runtime?.commands?.filter { it.name !in declared }?.forEach { command ->
                     ListRow(title = "/${command.name}", subtitle = command.description.ifBlank { null }, value = command.argumentHint)
+                }
+            }
+        }
+        item(key = "places") {
+            ListSection(header = "In projects", footer = "Where this mod also shows while a project is open. Each is off until you turn it on.") {
+                ModPlace.entries.forEach { place ->
+                    val requested = place.capability in manifest.requested
+                    val granted = place.capability in mod.granted
+                    ToggleRow(
+                        title = place.label,
+                        subtitle = when {
+                            !requested -> "This mod doesn't ask to show here."
+                            !granted -> "Turn on “${place.capability.summary}” in Permissions first."
+                            else -> null
+                        },
+                        checked = place in mod.shownIn && requested,
+                        enabled = requested,
+                        onCheckedChange = { viewModel.setShownIn(mod.id, place, it) },
+                    )
                 }
             }
         }

@@ -12,12 +12,15 @@ import com.jarves.mh.mods.InstalledMod
 import com.jarves.mh.mods.ModAuthoringGuide
 import com.jarves.mh.mods.ModAuditEntry
 import com.jarves.mh.mods.ModCapability
+import com.jarves.mh.mods.ModCodeCommandOutcome
 import com.jarves.mh.mods.ModEngineProbe
 import com.jarves.mh.mods.ModHost
 import com.jarves.mh.mods.ModHostSnapshot
 import com.jarves.mh.mods.ModLogEntry
 import com.jarves.mh.mods.ModInstallException
+import com.jarves.mh.mods.ModPlace
 import com.jarves.mh.mods.ModRegistry
+import com.jarves.mh.mods.ModSurfaces
 import com.jarves.mh.mods.ModTrust
 import com.jarves.mh.mods.ModsSnapshot
 import com.jarves.mh.mods.StagedMod
@@ -89,12 +92,43 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     private val _logVersion = MutableStateFlow(0)
     /** Changes when a mod log gains a line; read the lines with [modLog]. */
     val logVersion: StateFlow<Int> = _logVersion.asStateFlow()
+    private val _surfaces = MutableStateFlow<Map<String, ModSurfaces>>(emptyMap())
+    /** Each logic mod's panes and what they show now. */
+    val surfaces: StateFlow<Map<String, ModSurfaces>> = _surfaces.asStateFlow()
 
     init {
         viewModelScope.launch { registry.await().snapshot.collect { _snapshot.value = it } }
         viewModelScope.launch { host.await()?.also { hostRef = it }?.snapshot?.collect { _hostSnapshot.value = it } }
         viewModelScope.launch { host.await()?.logVersion?.collect { _logVersion.value = it } }
+        viewModelScope.launch { host.await()?.surfaces?.collect { _surfaces.value = it } }
     }
+
+    /** A mod page shows [surface]; the host draws it only while shown. */
+    fun showSurface(modId: String, surface: String, visible: Boolean) {
+        viewModelScope.launch { host.await()?.show(modId, surface, PAGE_HOLDER, visible) }
+    }
+
+    /** A tap or an edit inside a mod's pane. */
+    fun press(modId: String, surface: String, handler: String, value: Any?) {
+        hostRef?.press(modId, surface, handler, value)
+    }
+
+    /** A dashboard action: runs the mod's command and shows what it answered. */
+    fun runAction(modId: String, name: String) {
+        viewModelScope.launch {
+            val outcome = host.await()?.runCommand(modId, name, "") ?: return@launch
+            val text = when (outcome) {
+                is ModCodeCommandOutcome.Reply -> outcome.text
+                is ModCodeCommandOutcome.Failed -> outcome.message
+                is ModCodeCommandOutcome.Prompt -> "/$name writes a message for the agent. Use it in a project's chat."
+                ModCodeCommandOutcome.Nothing -> null
+            }
+            text?.let { _messages.emit(it.take(300)) }
+        }
+    }
+
+    fun setShownIn(id: String, place: ModPlace, shown: Boolean) =
+        work("Could not change where the mod shows") { registry.await().setShownIn(id, place, shown) }
 
     /** The Mods screen is showing: mod code runs while it is, so pages show live state (spec v2 §3.3 app scope). */
     fun setVisible(visible: Boolean) {
@@ -261,6 +295,7 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val SCREEN_KEY = "mods-screen"
+        const val PAGE_HOLDER = "mods-page"
     }
 
     private suspend fun existing(id: String): InstalledMod? = registry.await().snapshot.value.mods.firstOrNull { it.id == id }
