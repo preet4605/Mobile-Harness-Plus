@@ -109,23 +109,23 @@ sealed interface ModHookAction {
 }
 
 /** Events a declarative hook can name; [vars] are the template variables each one provides. */
-enum class ModEvent(val id: String, val vars: Set<String>, val statuses: Set<String> = emptySet()) {
-    TASK_STARTED("task.started", setOf("task.prompt")),
-    TASK_FINISHED("task.finished", setOf("task.status", "task.duration", "task.error"), setOf("completed", "failed", "stopped")),
-    SESSION_COMPLETED("session.completed", emptySet()),
-    SESSION_FAILED("session.failed", setOf("session.error")),
-    FILES_CHANGED("files.changed", setOf("files.count", "files.paths")),
-    TOOL_COMPLETED("tool.completed", setOf("tool.name", "tool.summary")),
-    TOOL_REQUESTED("tool.requested", setOf("tool.name", "tool.risk")),
-    TERMINAL_COMMAND_FINISHED("terminal.command.finished", setOf("terminal.command", "terminal.exitCode")),
-    ASSISTANT_MESSAGE_COMPLETED("assistant.message.completed", setOf("message.text")),
-    PROJECT_OPENED("project.opened", emptySet()),
-    PROJECT_CLOSED("project.closed", emptySet()),
-    CHAT_SWITCHED("chat.switched", setOf("chat.title")),
-    APP_RESUMED("app.resumed", emptySet()),
-    RUN_STARTED("run.started", emptySet()),
-    RUN_FINISHED("run.finished", setOf("run.status", "run.error"), setOf("completed", "failed")),
-    BUILD_FINISHED("build.finished", setOf("build.status", "build.detail"), setOf("completed", "failed", "stopped")),
+enum class ModEvent(val id: String, val vars: Set<String>, val statuses: Set<String> = emptySet(), val label: String) {
+    TASK_STARTED("task.started", setOf("task.prompt"), label = "When a task starts"),
+    TASK_FINISHED("task.finished", setOf("task.status", "task.duration", "task.error"), setOf("completed", "failed", "stopped"), "When a task finishes"),
+    SESSION_COMPLETED("session.completed", emptySet(), label = "When an agent attempt completes"),
+    SESSION_FAILED("session.failed", setOf("session.error"), label = "When an agent attempt fails"),
+    FILES_CHANGED("files.changed", setOf("files.count", "files.paths"), label = "When the agent changes files"),
+    TOOL_COMPLETED("tool.completed", setOf("tool.name", "tool.summary"), label = "When an agent tool finishes"),
+    TOOL_REQUESTED("tool.requested", setOf("tool.name", "tool.risk"), label = "When the agent asks for approval"),
+    TERMINAL_COMMAND_FINISHED("terminal.command.finished", setOf("terminal.command", "terminal.exitCode"), label = "When a terminal command finishes"),
+    ASSISTANT_MESSAGE_COMPLETED("assistant.message.completed", setOf("message.text"), label = "When the agent finishes its reply"),
+    PROJECT_OPENED("project.opened", emptySet(), label = "When a project opens"),
+    PROJECT_CLOSED("project.closed", emptySet(), label = "When a project closes"),
+    CHAT_SWITCHED("chat.switched", setOf("chat.title"), label = "When you switch chats"),
+    APP_RESUMED("app.resumed", emptySet(), label = "When you return to the app"),
+    RUN_STARTED("run.started", emptySet(), label = "When you build and run the Android app"),
+    RUN_FINISHED("run.finished", setOf("run.status", "run.error"), setOf("completed", "failed"), "When build and run ends"),
+    BUILD_FINISHED("build.finished", setOf("build.status", "build.detail"), setOf("completed", "failed", "stopped"), "When an Android build finishes"),
     ;
 
     companion object {

@@ -132,6 +132,7 @@ import com.jarves.mh.model.SlashCommand
 import com.jarves.mh.model.SubagentInfo
 import com.jarves.mh.runtime.DiagnosticsHelper
 import com.jarves.mh.mods.InstalledMod
+import com.jarves.mh.mods.ModAuthoringGuide
 import com.jarves.mh.mods.ModCommandResult
 import com.jarves.mh.mods.ModContributionSet
 import com.jarves.mh.mods.ModEvent
@@ -3514,7 +3515,9 @@ class MainViewModel(
 
     fun consumeToast() = _state.update { it.copy(toastMessage = null) }
 
-    fun createProject(name: String) {
+    fun createProject(name: String) = createProject(name, "Starter web project", "TypeScript")
+
+    private fun createProject(name: String, description: String, language: String) {
         if (name.isBlank()) return
         if (_state.value.isRunning || _state.value.projectTerminalRunning || _state.value.androidBuildRunning) {
             _state.update { it.copy(toastMessage = "Stop the background task before creating another project") }
@@ -3527,8 +3530,8 @@ class MainViewModel(
             .first { it !in usedSlugs }
         val project = Project(
             name = name.trim(),
-            description = "Starter web project",
-            language = "TypeScript",
+            description = description,
+            language = language,
             slug = slug,
         )
         configureBridgeRoots(project.id, project.rootPath)
@@ -3573,6 +3576,41 @@ class MainViewModel(
         preferences.saveProjectChats(project.id, listOf(firstChat))
         _state.update { it.copy(projectChats = listOf(firstChat), activeChatId = firstChat.id) }
         refreshProjectFiles()
+    }
+
+    /**
+     * Mod Studio: a new project holding a starting `mod.json` and the authoring guide, opened with
+     * [agent] and a first prompt in the message box. Nothing is sent until the user sends it.
+     */
+    fun createModDraft(name: String, idea: String, agent: AgentKind) {
+        val modName = name.trim().take(60)
+        if (modName.isBlank()) return
+        if (agent != _state.value.agentKind) selectAgent(agent)
+        if (_state.value.agentKind != agent) return
+        val before = _state.value.activeProject?.id
+        createProject("Mod $modName", "Mod Studio draft", "Mod")
+        val project = _state.value.activeProject?.takeIf { it.id != before } ?: return
+        val slug = modName.lowercase(Locale.ROOT).replace(Regex("[^a-z0-9]+"), "-").trim('-').take(24).ifBlank { "mod" }
+        val modId = "studio.local.$slug-${UUID.randomUUID().toString().take(4)}"
+        viewModelScope.launch {
+            val written = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = projectWorkspaceRoot(project)
+                    File(root, "mod.json").takeUnless { it.exists() }
+                        ?.writeText(ModAuthoringGuide.starterManifest(modId, modName, idea.trim()))
+                    File(root, ModAuthoringGuide.GUIDE_FILE).writeText(ModAuthoringGuide.markdown())
+                    ModAuthoringGuide.POINTER_FILES.forEach { name ->
+                        File(root, name).takeUnless { it.exists() }?.writeText(ModAuthoringGuide.pointer())
+                    }
+                }.isSuccess
+            }
+            if (_state.value.activeProject?.id != project.id) return@launch
+            refreshProjectFiles()
+            _state.update {
+                if (!written) it.copy(toastMessage = "Could not set up the mod draft.")
+                else it.copy(composerDraft = if (idea.isBlank()) null else ModAuthoringGuide.firstPrompt(idea))
+            }
+        }
     }
 
     fun createQuickProject() {

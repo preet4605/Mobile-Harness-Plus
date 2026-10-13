@@ -131,6 +131,9 @@ class ModRegistry(
     /** Copies and checks a mod folder, such as a Mod Studio draft. Throws [ModInstallException]. */
     fun stageDirectory(source: File): StagedMod = ModPackage.stageDirectory(source, newStagingDir(), appVersionCode)
 
+    /** A Mod Studio draft folder; see [ModPackage.stageDraft]. */
+    fun stageDraft(source: File): StagedMod = ModPackage.stageDraft(source, newStagingDir(), appVersionCode)
+
     fun discard(staged: StagedMod) {
         if (staged.dir.canonicalFile.toPath().startsWith(stagingRoot.canonicalFile.toPath())) staged.dir.deleteRecursively()
     }

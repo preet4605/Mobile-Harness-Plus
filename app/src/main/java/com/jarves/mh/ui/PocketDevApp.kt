@@ -510,7 +510,14 @@ private fun RootScreenHost(
                     onLogoutCodex = viewModel::logoutCodex,
                     onRefreshCodexAuth = viewModel::refreshCodexAuthStatus,
                 )
-                RootScreen.MODS -> ModsScreen(bottomBarPadding = floatingNavClearance)
+                RootScreen.MODS -> ModsScreen(
+                    bottomBarPadding = floatingNavClearance,
+                    projects = state.projects,
+                    agents = AgentKind.entries.filter { it == state.agentKind || it in state.installedAgentVersions },
+                    currentAgent = state.agentKind,
+                    onBuildMod = viewModel::createModDraft,
+                    onOpenProject = viewModel::openProject,
+                )
                 RootScreen.SETTINGS -> Box(
                     modifier = Modifier.fillMaxSize(),
                 ) {

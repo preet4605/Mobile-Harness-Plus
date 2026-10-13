@@ -5,7 +5,9 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.jarves.mh.model.Project
 import com.jarves.mh.mods.InstalledMod
+import com.jarves.mh.mods.ModAuthoringGuide
 import com.jarves.mh.mods.ModAuditEntry
 import com.jarves.mh.mods.ModCapability
 import com.jarves.mh.mods.ModInstallException
@@ -24,6 +26,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import org.json.JSONObject
 
 /** What the review sheet shows: a checked package, or why it could not be read. */
 data class ModReview(
@@ -33,6 +36,15 @@ data class ModReview(
     val existing: InstalledMod? = null,
     val error: String? = null,
     val problems: List<String> = emptyList(),
+)
+
+/** A Mod Studio draft: a project whose folder holds `mod.json` and the Studio guide. */
+data class ModDraft(
+    val project: Project,
+    val folder: File,
+    val modName: String,
+    val version: String,
+    val modId: String,
 )
 
 /**
@@ -49,6 +61,8 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
+    private val _drafts = MutableStateFlow<List<ModDraft>>(emptyList())
+    val drafts: StateFlow<List<ModDraft>> = _drafts.asStateFlow()
 
     init {
         viewModelScope.launch { registry.await().snapshot.collect { _snapshot.value = it } }
@@ -67,10 +81,35 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
         _review.value = ModReview(staged, label, ModTrust.IMPORTED, existing = existing(staged.manifest.id))
     }
 
-    /** A Mod Studio draft folder, built by an agent. Installed as T2 ([ModTrust.BUILT]). */
-    fun reviewDraft(folder: File, label: String) = work("Could not read the draft") {
+    /** Finds the Studio drafts among [projects], reading only each folder's mod.json. */
+    fun refreshDrafts(projects: List<Project>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val workspaces = File(getApplication<Application>().filesDir, "workspaces")
+            _drafts.value = projects.mapNotNull { project -> runCatching { readDraft(workspaces, project) }.getOrNull() }
+        }
+    }
+
+    private fun readDraft(workspaces: File, project: Project): ModDraft? {
+        val base = File(workspaces, project.id)
+        val folder = if (project.rootPath.isBlank()) base else File(base, project.rootPath)
+        if (!folder.canonicalFile.toPath().startsWith(base.canonicalFile.toPath())) return null
+        val manifest = File(folder, "mod.json")
+        if (!manifest.isFile || !File(folder, ModAuthoringGuide.GUIDE_FILE).isFile || manifest.length() > 64 * 1024) return null
+        val json = runCatching { JSONObject(manifest.readText()) }.getOrNull()
+        return ModDraft(
+            project = project,
+            folder = folder,
+            modName = json?.optString("name")?.takeIf { it.isNotBlank() } ?: project.name,
+            version = json?.optString("version").orEmpty(),
+            modId = json?.optString("id").orEmpty(),
+        )
+    }
+
+    /** A Mod Studio draft, built by an agent. Installed as T2 ([ModTrust.BUILT]). */
+    fun reviewDraft(draft: ModDraft) = work("Could not read the draft") {
+        val label = "Studio draft · ${draft.project.name}"
         val staged = try {
-            registry.await().stageDirectory(folder)
+            registry.await().stageDraft(draft.folder)
         } catch (e: ModInstallException) {
             _review.value = ModReview(null, label, ModTrust.BUILT, error = e.message, problems = e.problems)
             return@work

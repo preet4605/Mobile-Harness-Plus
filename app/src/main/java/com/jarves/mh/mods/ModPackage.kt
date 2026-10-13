@@ -3,6 +3,7 @@ package com.jarves.mh.mods
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream
 import org.apache.commons.compress.archivers.zip.ZipFile
+import org.json.JSONObject
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -113,6 +114,75 @@ object ModPackage {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Packs a Mod Studio draft, a project folder with `mod.json` at its top, into [stagingDir].
+     * Only the mod's own files are taken (`mod.json`, the files it names, its skill folders,
+     * `README.md` and `assets/`), never the rest of the project, and `integrity` is filled in
+     * from them: the draft is the user's own, so its files are the reference.
+     */
+    fun stageDraft(source: File, stagingDir: File, appVersionCode: Int): StagedMod {
+        try {
+            require(source.isDirectory && !Files.isSymbolicLink(source.toPath())) { "The draft folder is missing." }
+            val manifestFile = File(source, MANIFEST)
+            if (!manifestFile.isFile || Files.isSymbolicLink(manifestFile.toPath())) throw ModInstallException("The draft has no mod.json yet.")
+            if (manifestFile.length() > ModManifestParser.MAX_MANIFEST_BYTES) throw ModInstallException("mod.json is larger than 64 KB.")
+            val json = try {
+                JSONObject(manifestFile.readText())
+            } catch (e: Exception) {
+                throw ModInstallException("mod.json is not valid JSON: ${e.message}")
+            }
+            json.remove("integrity")
+            val manifest = try {
+                ModManifestParser.parse(json.toString(), appVersionCode)
+            } catch (e: ModManifestException) {
+                throw ModInstallException("mod.json has ${e.problems.size} problem(s).", e.problems)
+            }
+            val wanted = linkedSetOf<String>()
+            wanted += manifest.referencedFiles
+            if (File(source, "README.md").isFile) wanted += "README.md"
+            (manifest.skills.map { it.dir } + "assets").forEach { dir ->
+                val folder = File(source, dir)
+                if (!plainPath(source, dir) || !folder.isDirectory) return@forEach
+                folder.walkTopDown().onEnter { !Files.isSymbolicLink(it.toPath()) }.filter { it.isFile }.forEach { file ->
+                    wanted += file.relativeTo(source).invariantSeparatorsPath
+                }
+            }
+            if (wanted.size > MAX_FILES) throw ModInstallException("A mod can contain at most $MAX_FILES files.")
+            stagingDir.mkdirs()
+            val integrity = JSONObject()
+            var total = 0L
+            wanted.sorted().forEach { relative ->
+                if (!ModManifestParser.isSafeRelativePath(relative)) throw ModInstallException("Unsafe file name: $relative")
+                if (!plainPath(source, relative)) throw ModInstallException("$relative is a link; mods cannot contain links.")
+                val file = File(source, relative)
+                if (!file.isFile) return@forEach // check() names what is missing
+                val target = File(stagingDir, relative)
+                target.parentFile?.mkdirs()
+                file.inputStream().use { input ->
+                    target.outputStream().use { total += copyBounded(input, it, MAX_UNPACKED_BYTES - total, "A mod can be at most 20 MB.") }
+                }
+                integrity.put(relative, sha256(target))
+            }
+            File(stagingDir, MANIFEST).writeText(json.put("integrity", integrity).toString(2))
+        } catch (e: ModInstallException) {
+            stagingDir.deleteRecursively()
+            throw e
+        } catch (e: Exception) {
+            stagingDir.deleteRecursively()
+            throw ModInstallException("Could not read the draft (${e.message ?: e.javaClass.simpleName}).")
+        }
+        return check(stagingDir, appVersionCode)
+    }
+
+    /** True when no part of [relative] under [root] is a link. */
+    private fun plainPath(root: File, relative: String): Boolean {
+        var current = root
+        return relative.split('/').none { segment ->
+            current = File(current, segment)
+            Files.isSymbolicLink(current.toPath())
         }
     }
 

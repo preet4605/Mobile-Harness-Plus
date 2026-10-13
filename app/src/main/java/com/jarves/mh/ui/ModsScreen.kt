@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.MoreHoriz
@@ -37,9 +38,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jarves.mh.model.AgentKind
+import com.jarves.mh.model.Project
 import com.jarves.mh.model.RiskLevel
 import com.jarves.mh.mods.InstalledMod
 import com.jarves.mh.mods.ModAuditEntry
@@ -57,6 +61,7 @@ import com.jarves.mh.ui.theme.PocketColors
 import com.jarves.mh.ui.theme.PocketSpacing
 import com.jarves.mh.ui.theme.PocketTransitions
 import com.jarves.mh.ui.theme.PocketType
+import com.jarves.mh.ui.theme.emphasized
 import com.jarves.mh.ui.theme.glass.hostBackdropSource
 import java.time.Instant
 import java.time.ZoneId
@@ -65,16 +70,26 @@ import java.util.Locale
 
 /**
  * The Mods root tab (spec v2 §6.6): installed mods, each with its own page, plus import, export,
- * the review sheet and the kill switch. The app ships no mods, so it starts empty.
+ * the review sheet and the kill switch; and Mod Studio, where an agent the user has set up builds
+ * a mod as a draft project the user installs from here. The app ships no mods, so it starts empty.
  */
 @Composable
 fun ModsScreen(
     bottomBarPadding: Dp,
+    projects: List<Project> = emptyList(),
+    agents: List<AgentKind> = emptyList(),
+    currentAgent: AgentKind = AgentKind.CLAUDE_CODE,
+    onBuildMod: (name: String, idea: String, agent: AgentKind) -> Unit = { _, _, _ -> },
+    onOpenProject: (Project) -> Unit = {},
     viewModel: ModsViewModel = viewModel(),
 ) {
     val snapshot by viewModel.snapshot.collectAsStateWithLifecycle()
     val review by viewModel.review.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
+    val drafts by viewModel.drafts.collectAsStateWithLifecycle()
+    LaunchedEffect(projects) { viewModel.refreshDrafts(projects) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.refreshDrafts(projects) }
+    var building by rememberSaveable { mutableStateOf(false) }
     val banner = LocalBanner.current
     LaunchedEffect(viewModel, banner) {
         viewModel.messages.collect { banner?.show(it, bannerKindFor(it)) }
@@ -90,7 +105,13 @@ fun ModsScreen(
     AnimatedContent(targetState = openMod?.id, transitionSpec = { PocketTransitions.crossFade() }, label = "mods page") { shownId ->
         val shown = snapshot.mods.firstOrNull { it.id == shownId }
         if (shown == null) {
-            ModsList(snapshot, busy, bottomBarPadding, import, onOpen = { openId = it }, viewModel)
+            ModsList(
+                snapshot, drafts, busy, bottomBarPadding, import,
+                onOpen = { openId = it },
+                onBuild = { building = true },
+                onOpenDraft = { onOpenProject(it.project) },
+                viewModel = viewModel,
+            )
         } else {
             ModPage(shown, snapshot, bottomBarPadding, onBack = { openId = null }, viewModel)
         }
@@ -99,18 +120,35 @@ fun ModsScreen(
     review?.let { current ->
         ModReviewSheet(current, busy, onInstall = viewModel::confirmInstall, onDismiss = viewModel::dismissReview)
     }
+    if (building) {
+        NewModSheet(
+            agents = agents,
+            currentAgent = currentAgent,
+            onCreate = { name, idea, agent ->
+                building = false
+                onBuildMod(name, idea, agent)
+            },
+            onDismiss = { building = false },
+        )
+    }
 }
+
+private enum class ModsSection(val label: String) { INSTALLED("Installed"), STUDIO("Studio") }
 
 @Composable
 private fun ModsList(
     snapshot: ModsSnapshot,
+    drafts: List<ModDraft>,
     busy: Boolean,
     bottomBarPadding: Dp,
     onImport: () -> Unit,
     onOpen: (String) -> Unit,
+    onBuild: () -> Unit,
+    onOpenDraft: (ModDraft) -> Unit,
     viewModel: ModsViewModel,
 ) {
     val colors = PocketColors.current
+    var section by rememberSaveable { mutableStateOf(ModsSection.INSTALLED) }
     val listState = rememberLazyListState()
     val collapse by rememberTitleCollapse(listState)
     var menuOpen by remember { mutableStateOf(false) }
@@ -133,6 +171,15 @@ private fun ModsList(
             verticalArrangement = Arrangement.spacedBy(PocketSpacing.xl),
         ) {
             item(key = "title") { LargeTitle("Mods", subtitle = modsSubtitle(snapshot)) }
+            item(key = "sections") {
+                Column(Modifier.padding(horizontal = ListInset)) {
+                    SegmentedControl(ModsSection.entries, section, { section = it }, label = { it.label })
+                }
+            }
+            if (section == ModsSection.STUDIO) {
+                studioSection(drafts, busy, onBuild, onOpenDraft, onImport, viewModel)
+                return@LazyColumn
+            }
             if (snapshot.safeMode) {
                 item(key = "safe") {
                     ListSection(footer = "The app restarted several times in a row without settling, so mods are paused for this run.") {
@@ -165,9 +212,9 @@ private fun ModsList(
                     EmptyState(
                         icon = Icons.Outlined.Extension,
                         title = "No mods yet",
-                        message = "Mods add commands, rules, skills and automatic actions to your chats. Import a .mhmod file to add one.",
-                        actionLabel = "Import a mod",
-                        onAction = onImport,
+                        message = "Mods add commands, rules, skills and automatic actions to your chats. Build one with an agent in Studio, or import a .mhmod file.",
+                        actionLabel = "Build a mod",
+                        onAction = { section = ModsSection.STUDIO },
                         modifier = Modifier.fillMaxWidth().padding(vertical = PocketSpacing.xl),
                     )
                 }
@@ -207,6 +254,107 @@ private fun ModsList(
             icon = Icons.Outlined.PowerSettingsNew,
             destructive = snapshot.modsEnabled,
         )
+    }
+}
+
+private fun LazyListScope.studioSection(
+    drafts: List<ModDraft>,
+    busy: Boolean,
+    onBuild: () -> Unit,
+    onOpenDraft: (ModDraft) -> Unit,
+    onImport: () -> Unit,
+    viewModel: ModsViewModel,
+) {
+    item(key = "build") {
+        val colors = PocketColors.current
+        ListSection(footer = "Describe the mod and pick an agent you have set up. It writes the mod in a draft project; you install it from here when it is ready.") {
+            ListRow("Build a new mod", icon = Icons.Outlined.AutoAwesome, iconTile = colors.purple, onClick = onBuild)
+        }
+    }
+    item(key = "drafts") {
+        ListSection(
+            header = "Drafts",
+            footer = if (drafts.isEmpty()) "Drafts you build appear here." else "Tap a draft to keep working on it with its agent. Install checks it and shows what it asks for first.",
+        ) {
+            if (drafts.isEmpty()) {
+                ListRow("No drafts yet", subtitle = "Build a new mod to start one.")
+            }
+            drafts.forEach { draft ->
+                ListRow(
+                    title = draft.modName,
+                    subtitle = listOf(draft.version.ifBlank { "No version" }, draft.project.name).joinToString(" · "),
+                    subtitleMaxLines = 1,
+                    leading = { MonogramTile(monogram(draft.modName), modColor(draft.modId.ifBlank { draft.project.id }, PocketColors.current), tinted = true) },
+                    onClick = { onOpenDraft(draft) },
+                    trailing = {
+                        PocketButton(
+                            "Install",
+                            { viewModel.reviewDraft(draft) },
+                            style = PocketButtonStyle.Tinted,
+                            size = PocketButtonSize.Small,
+                            enabled = !busy,
+                        )
+                    },
+                )
+            }
+        }
+    }
+    item(key = "share") {
+        ListSection(header = "Share", footer = "Export an installed mod from its page, under About.") {
+            ListRow("Import a .mhmod file", icon = Icons.Outlined.FileDownload, iconTile = PocketColors.current.blue, onClick = onImport)
+        }
+    }
+}
+
+@Composable
+private fun NewModSheet(
+    agents: List<AgentKind>,
+    currentAgent: AgentKind,
+    onCreate: (name: String, idea: String, agent: AgentKind) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by rememberSaveable { mutableStateOf("") }
+    var idea by rememberSaveable { mutableStateOf("") }
+    var agent by rememberSaveable { mutableStateOf(if (currentAgent in agents) currentAgent else agents.firstOrNull()) }
+    val chosen = agent
+    val ready = name.isNotBlank() && idea.isNotBlank() && chosen != null
+    GlassSheet(
+        onDismiss = onDismiss,
+        title = "New mod",
+        detents = listOf(SheetDetent.Large),
+        leading = { SheetTextButton("Cancel", onDismiss) },
+        trailing = { SheetTextButton("Create", { if (chosen != null) onCreate(name.trim(), idea.trim(), chosen) }, emphasized = true, enabled = ready) },
+    ) {
+        Column(
+            Modifier.padding(horizontal = ListInset).padding(top = PocketSpacing.sm, bottom = PocketSpacing.xxl),
+            verticalArrangement = Arrangement.spacedBy(PocketSpacing.lg),
+        ) {
+            PocketTextField(value = name, onValueChange = { name = it.take(60) }, label = "Name", placeholder = "Build notes")
+            PocketTextField(
+                value = idea,
+                onValueChange = { idea = it.take(2000) },
+                label = "What should it do?",
+                placeholder = "Show a toast when a task finishes and add a /recap command.",
+                singleLine = false,
+                minLines = 3,
+            )
+            if (chosen == null) {
+                Text("Install an agent in the Agent tab first.", style = PocketType.footnote, color = PocketColors.current.red)
+            } else {
+                Text("Agent", style = PocketType.footnote.emphasized, color = PocketColors.current.secondaryLabel)
+                if (agents.size > 1) {
+                    SegmentedControl(agents, chosen, { agent = it }, label = { it.shortTitle() })
+                } else {
+                    Text(chosen.title, style = PocketType.body, color = MaterialTheme.colorScheme.onSurface)
+                }
+                Text(
+                    "A draft project opens with this agent and your idea in the message box. Send it to start; " +
+                        "commands, rules, skills and automatic actions are what it can build.",
+                    style = PocketType.footnote,
+                    color = PocketColors.current.secondaryLabel,
+                )
+            }
+        }
     }
 }
 
@@ -763,24 +911,7 @@ private fun contributionSummary(manifest: ModManifest): String {
     return parts.joinToString(", ").ifEmpty { "${manifest.permissions.size} permissions" }
 }
 
-internal fun eventLabel(event: ModEvent): String = when (event) {
-    ModEvent.TASK_STARTED -> "When a task starts"
-    ModEvent.TASK_FINISHED -> "When a task finishes"
-    ModEvent.SESSION_COMPLETED -> "When an agent run completes"
-    ModEvent.SESSION_FAILED -> "When an agent run fails"
-    ModEvent.FILES_CHANGED -> "When the agent changes files"
-    ModEvent.TOOL_COMPLETED -> "When an agent tool finishes"
-    ModEvent.TOOL_REQUESTED -> "When the agent asks for approval"
-    ModEvent.TERMINAL_COMMAND_FINISHED -> "When a terminal command finishes"
-    ModEvent.ASSISTANT_MESSAGE_COMPLETED -> "When the agent finishes a reply"
-    ModEvent.PROJECT_OPENED -> "When a project opens"
-    ModEvent.PROJECT_CLOSED -> "When a project closes"
-    ModEvent.CHAT_SWITCHED -> "When you switch chats"
-    ModEvent.APP_RESUMED -> "When you return to the app"
-    ModEvent.RUN_STARTED -> "When an agent run starts"
-    ModEvent.RUN_FINISHED -> "When an agent run ends"
-    ModEvent.BUILD_FINISHED -> "When an Android build finishes"
-}
+internal fun eventLabel(event: ModEvent): String = event.label
 
 internal fun actionLabel(action: ModHookAction): String = when (action) {
     is ModHookAction.Notify -> "Notify: ${action.title}"
