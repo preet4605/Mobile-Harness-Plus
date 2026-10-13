@@ -41,6 +41,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
@@ -76,8 +77,18 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
     val context = LocalContext.current
     val preferences = remember(context) { AppPreferences(context) }
     var reduceTransparency by remember(preferences) { mutableStateOf(preferences.reduceTransparency) }
-    val glassConfig = remember(reduceTransparency) {
-        LiquidGlassConfig.resolve(context, userPreference = reduceTransparency)
+    var glassConfig by remember(context, reduceTransparency) {
+        mutableStateOf(LiquidGlassConfig.resolve(context, userPreference = reduceTransparency))
+    }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, context, reduceTransparency) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                glassConfig = LiquidGlassConfig.resolve(context, userPreference = reduceTransparency)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     val setReduceTransparency = { on: Boolean ->
         preferences.reduceTransparency = on

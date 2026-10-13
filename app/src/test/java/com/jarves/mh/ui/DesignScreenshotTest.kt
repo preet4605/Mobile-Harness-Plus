@@ -13,11 +13,16 @@ import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.assertIsDisplayed
+import com.jarves.mh.model.WorkStatus
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.github.takahirom.roborazzi.captureScreenRoboImage
@@ -292,6 +297,58 @@ class DesignScreenshotTest {
     }
 
     private fun workspaceChat(dark: Boolean) = workspace("chat", dark, workspaceState)
+
+    private val polishState get() = workspaceState.copy(
+        activeProject = workspaceState.activeProject?.copy(name = "Mobile Harness · Android workspace"),
+        projectChats = listOf(chat.copy(title = "Select test UI branch and build the updated APK")),
+        changes = (1..120).map { ChangeItem("src/Changed$it.kt", 2, 1) },
+        messages = listOf(
+            ChatMessage(fromUser = true, text = "mobile-harness-dev.apk showing 71Mb"),
+            ChatMessage(fromUser = false, text = "", workedMillis = 12_000,
+                workItems = listOf(ActivityItem("Think", "Checking the exact size"),
+                    ActivityItem("Bash completed", "python3 -c 'from pathlib import Path; print(Path(\"mobile-harness-dev.apk\").stat().st_size)'", isCommand = true))),
+            ChatMessage(fromUser = false, text = "Yes, **71 MB** is the same updated APK.\n\nIts exact size is **74,420,281 bytes**.\n\n- Decimal: 74.42 MB\n- Binary: 70.97 MiB\n\nThe checksum matches the newly built Dev APK.", workedMillis = 62_000),
+            ChatMessage(fromUser = false, text = "", workedMillis = 62_000, workStatus = WorkStatus.COMPLETED,
+                workItems = listOf(ActivityItem("Result check", "Supervisor verification was requested."), ActivityItem("Task completed", "Runtime verification passed"))),
+        ),
+    )
+
+    @Test fun codexMultipleAccountsLargeText() = shot("codex-accounts", dark = true, fontScale = 2f) {
+        OverlayHost(Modifier.fillMaxSize()) {
+            CodexAccountCard(
+                auth = com.jarves.mh.runtime.CodexAuthState(status = com.jarves.mh.runtime.CodexAuthStatus.SIGNED_IN),
+                codexInstalled = true, busy = false, onSignIn = {}, onCancel = {}, onSignOut = {}, onRefresh = {},
+                accounts = listOf(
+                    com.jarves.mh.runtime.CodexAccount("legacy", "Personal account with a long label · plus"),
+                    com.jarves.mh.runtime.CodexAccount("work", "Work account · pro", needsSignIn = true),
+                ), selectedAccountId = "legacy", inUse = setOf("legacy"),
+            )
+        }
+    }
+
+    @Test fun polishedChatDark() = workspace("polished-chat", true, polishState)
+    @Test fun polishedChatLight() = workspace("polished-chat", false, polishState)
+    @Test fun polishedChatLargeText() = workspace("polished-chat", true, polishState, fontScale = 2f)
+
+    @Test fun activityDisclosureStaysExpandedWhenEventsAppend() {
+        var events by mutableStateOf(listOf(ActivityItem("Bash completed", "gradle assembleOnlineDebug", isCommand = true)))
+        shot("activity-collapsed", true) {
+            ClaudeActivityDisclosure(events, "View activity · 1s")
+        }
+        compose.onNodeWithText("gradle assembleOnlineDebug").assertDoesNotExist()
+        compose.onNodeWithText("View activity · 1s").performClick()
+        compose.onNodeWithText("gradle assembleOnlineDebug").assertIsDisplayed()
+        compose.runOnIdle { events = events + ActivityItem("Read", "Checked the build output") }
+        compose.onNodeWithText("gradle assembleOnlineDebug").assertIsDisplayed()
+        compose.onNodeWithText("Checked the build output").assertIsDisplayed()
+        compose.runOnIdle { events = (0..33).map { ActivityItem("Read", "event-$it") } }
+        compose.onNodeWithText("event-33").assertExists()
+        compose.onNodeWithText("event-0").assertDoesNotExist()
+        compose.onNodeWithText("Show earlier activity (2)").performClick()
+        compose.onNodeWithText("event-0").assertExists()
+        compose.onNodeWithText("View activity · 1s").performClick()
+        compose.onNodeWithText("event-0").assertDoesNotExist()
+    }
 
     @Test fun projectsLight() = projects(false)
     @Test fun projectsDark() = projects(true)

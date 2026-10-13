@@ -207,7 +207,14 @@ import com.jarves.mh.ui.kit.AlertAction
 import com.jarves.mh.ui.kit.AlertRole
 import com.jarves.mh.ui.kit.BannerKind
 import com.jarves.mh.ui.kit.BarHeight
-import com.jarves.mh.ui.kit.CappedTextScale
+import com.jarves.mh.model.WorkStatus
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.semantics.stateDescription
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import com.jarves.mh.ui.theme.glass.LocalLiquidGlassConfig
 import com.jarves.mh.ui.kit.EmptyState
 import com.jarves.mh.ui.kit.FloatingTabBar
 import com.jarves.mh.ui.kit.GlassMenu
@@ -280,10 +287,10 @@ internal enum class WorkspaceTab(val label: String, val icon: ImageVector) {
 private val ComposerMinHeight = 52.dp
 
 /**
- * The workspace's floating bar, one row: a glass back button, the title centred between the edges
+ * The workspace's floating bar, one row: a glass back button, the title between the actions
  * with a second line under it, and glass actions on the right. Tapping the title ([onTitleClick])
  * opens the view menu. Content scrolls beneath the bar and softens into the canvas once anything
- * is underneath; the bar has no fill or hairline.
+ * is underneath; the title's reading region has an opaque canvas backing.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -302,10 +309,10 @@ private fun WorkspaceBar(
     titleAnchor: OverlayAnchor? = null,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
-    CappedTextScale {
+    run {
         val colors = PocketColors.current
         Box(modifier.fillMaxWidth()) {
-            ScrollEdgeEffect(Modifier.matchParentSize(), fromTop = true, scrim = 1.3f, strength = scrolled)
+            ScrollEdgeEffect(Modifier.matchParentSize(), fromTop = true, protectContent = true, strength = scrolled)
             Column(
                 Modifier
                     .fillMaxWidth()
@@ -315,13 +322,14 @@ private fun WorkspaceBar(
                 BarRow(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(BarHeight)
+                        .heightIn(min = BarHeight)
                         .padding(horizontal = ListInset),
                     leading = { GlassToolbarButton(Icons.Outlined.ArrowBackIosNew, backLabel, onBack) },
                     center = {
-                        // Wraps the title, so BarRow can centre it on the row.
+                        // The title owns the space remaining between the actions.
                         Column(
                             Modifier
+                                .heightIn(min = LiquidGlassTokens.MinTouchTarget)
                                 .then(if (titleAnchor != null) Modifier.overlayAnchor(titleAnchor) else Modifier)
                                 .then(
                                     if (onTitleClick != null || onTitleLongPress != null) {
@@ -330,6 +338,7 @@ private fun WorkspaceBar(
                                             indication = null,
                                             role = Role.Button,
                                             onClickLabel = "Change view",
+                                            onLongClickLabel = "Show conversation details",
                                             onLongClick = onTitleLongPress,
                                             onClick = { onTitleClick?.invoke() },
                                         )
@@ -338,6 +347,7 @@ private fun WorkspaceBar(
                                     },
                                 ),
                             horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
                         ) {
                             Text(
                                 title,
@@ -364,7 +374,6 @@ private fun WorkspaceBar(
                                         overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.weight(1f, fill = false).then(leadModifier),
                                     )
-                                    Text(" · $subtitle", style = PocketType.caption1, color = colors.secondaryLabel, maxLines = 1)
                                 } else {
                                     Text(
                                         subtitle,
@@ -392,8 +401,8 @@ private fun WorkspaceBar(
 
 /**
  * The bar's single row. Leading and trailing slots sit at the edges. The centre slot is always
- * centred on the row: both sides reserve the width of the wider edge slot, so the title never
- * drifts toward the narrower one, and it ellipsizes once it fills that balanced gap.
+ * centred between the action slots; it uses the actual available width and grows vertically
+ * with system text size.
  */
 @Composable
 private fun BarRow(
@@ -410,38 +419,21 @@ private fun BarRow(
         },
         modifier = modifier,
     ) { measurables, constraints ->
-        val loose = constraints.copy(minWidth = 0)
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
         val leadingPlaceable = measurables[0].measure(loose)
         val trailingPlaceable = measurables[2].measure(loose)
         val gap = PocketSpacing.sm.roundToPx()
         val width = constraints.maxWidth
-        val reserve = maxOf(leadingPlaceable.width, trailingPlaceable.width) + gap
-        val start = reserve
-        val end = width - reserve
+        val start = leadingPlaceable.width + gap
+        val end = width - trailingPlaceable.width - gap
         val centerPlaceable = measurables[1].measure(loose.copy(maxWidth = (end - start).coerceAtLeast(0)))
         val height = maxOf(leadingPlaceable.height, centerPlaceable.height, trailingPlaceable.height).coerceIn(constraints.minHeight, constraints.maxHeight)
-        val x = (width - centerPlaceable.width) / 2
+        val x = start + ((end - start - centerPlaceable.width) / 2).coerceAtLeast(0)
         layout(width, height) {
             leadingPlaceable.placeRelative(0, (height - leadingPlaceable.height) / 2)
             centerPlaceable.placeRelative(x, (height - centerPlaceable.height) / 2)
             trailingPlaceable.placeRelative(width - trailingPlaceable.width, (height - trailingPlaceable.height) / 2)
         }
-    }
-}
-
-/** A small accent capsule with a count, over the top end of a toolbar symbol. */
-@Composable
-private fun CountBadge(count: Int, modifier: Modifier = Modifier) {
-    Box(
-        modifier
-            .clearAndSetSemantics { }
-            .defaultMinSize(minWidth = 14.dp, minHeight = 14.dp)
-            .clip(PocketShape.capsule)
-            .background(MaterialTheme.colorScheme.primary)
-            .padding(horizontal = 3.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(if (count > 99) "99+" else "$count", style = PocketType.caption2.emphasized, color = Color.White)
     }
 }
 
@@ -472,10 +464,13 @@ private fun WorkspaceTabBar(
             Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = PocketSpacing.lg, vertical = PocketSpacing.sm),
+                .padding(horizontal = PocketSpacing.lg, vertical = PocketSpacing.xs),
         ) {
             FloatingTabBar(
-                tabs = WorkspaceTab.entries.map { TabItem(it.label, it.icon, badge = if (it == WorkspaceTab.FILES) changeCount else 0) },
+                tabs = WorkspaceTab.entries.map {
+                    TabItem(it.label, it.icon, badge = if (it == WorkspaceTab.FILES) changeCount else 0,
+                        badgeDescription = if (it == WorkspaceTab.FILES && changeCount > 0) "$changeCount files awaiting review" else null)
+                },
                 selectedIndex = selected.ordinal,
                 onSelect = { onSelect(WorkspaceTab.entries[it]) },
                 modifier = Modifier.onGloballyPositioned { coordinates ->
@@ -939,7 +934,6 @@ internal fun WorkspaceScreen(
     }
 
     val engine = if (state.agentKind == AgentKind.ANTIGRAVITY) state.agentKind.title else state.provider.kind.title
-    val memoryCount = state.contextMemory.entries.size
 
     // An open file is pushed over the workspace and popped back to Files.
     AnimatedContent(
@@ -1026,6 +1020,8 @@ internal fun WorkspaceScreen(
                                     skills = state.filteredSkills,
                                     onPromptChanged = onPromptChanged,
                                     onOpenInspector = onOpenInspector,
+                                    onOpenMemoryViewer = onOpenMemoryViewer,
+                                    liveWorkStatus = if (state.isStopping) WorkStatus.STOPPING else state.liveWorkStatus,
                                     onOpenSkills = onOpenSkills,
                                     subagentsCount = state.subagents.count { it.state == SubagentState.RUNNING },
                                     tasksCount = state.backgroundTasks.count { it.status == BackgroundTaskStatus.RUNNING },
@@ -1168,20 +1164,9 @@ internal fun WorkspaceScreen(
                         working = state.isRunning,
                         titleAnchor = viewsAnchor,
                         onTitleClick = { showViews = true },
-                        onTitleLongPress = { banner(state.activeProject?.name.orEmpty(), BannerKind.Info) },
+                        onTitleLongPress = { banner("${activeChat?.title ?: "Chat"}\n${state.activeProject?.name.orEmpty()} · $engine", BannerKind.Info) },
                         actions = {
                             GlassToolbarGroup {
-                                Box {
-                                    GlassToolbarItem(
-                                        Icons.Outlined.Psychology,
-                                        if (memoryCount > 0) "Persistent memory, $memoryCount entries" else "Persistent memory",
-                                        onOpenMemoryViewer,
-                                        tint = if (memoryCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                    )
-                                    if (memoryCount > 0) {
-                                        CountBadge(memoryCount, Modifier.align(Alignment.TopEnd))
-                                    }
-                                }
                                 GlassToolbarItem(
                                     Icons.Outlined.Forum,
                                     "Project chats",
@@ -1199,8 +1184,13 @@ internal fun WorkspaceScreen(
                         modifier = Modifier.align(Alignment.BottomCenter),
                     )
                     GlassMenu(expanded = showViews, onDismiss = { showViews = false }, anchor = viewsAnchor) {
-                        WorkspaceTab.entries.forEach { tab ->
-                            GlassMenuItem(tab.label, { selectView(tab) }, checked = tab == selectedTab)
+                        Column(Modifier.verticalScroll(rememberScrollState())) {
+                            Text(activeChat?.title ?: "Chat", Modifier.padding(horizontal = PocketSpacing.lg, vertical = PocketSpacing.sm), style = PocketType.headline)
+                            Text("${state.activeProject?.name.orEmpty()} · $engine", Modifier.padding(horizontal = PocketSpacing.lg, vertical = PocketSpacing.sm), style = PocketType.footnote, color = PocketColors.current.secondaryLabel)
+                            GlassMenuDivider()
+                            WorkspaceTab.entries.forEach { tab ->
+                                GlassMenuItem(tab.label, { selectView(tab) }, checked = tab == selectedTab)
+                            }
                         }
                     }
                 }
@@ -2245,7 +2235,9 @@ private fun ChatTab(
     skills: List<SkillInfo> = emptyList(),
     onPromptChanged: (String) -> Unit = {},
     onOpenInspector: () -> Unit = {},
+    onOpenMemoryViewer: () -> Unit = {},
     onOpenSkills: () -> Unit = {},
+    liveWorkStatus: WorkStatus = WorkStatus.WORKING,
     subagentsCount: Int = 0,
     tasksCount: Int = 0,
     mentionMenuVisible: Boolean = false,
@@ -2377,14 +2369,14 @@ private fun ChatTab(
                     }
                 }
             }
-            if (liveProcess.isNotEmpty() || thinkingActive) {
+            if (isRunning || liveProcess.isNotEmpty() || thinkingActive) {
                 item(key = "live-claude-process") {
                     LiveClaudeProcess(
                         processItems = liveProcess,
                         isRunning = isRunning,
                         startedAtMillis = taskStartedAtMillis,
                         finishedAtMillis = taskFinishedAtMillis,
-                        thinkingActive = thinkingActive,
+                        status = liveWorkStatus,
                     )
                 }
             }
@@ -2440,7 +2432,7 @@ private fun ChatTab(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .then(bottomChromeModifier)
-                    .padding(start = PocketSpacing.lg, top = PocketSpacing.sm, end = PocketSpacing.lg, bottom = PocketSpacing.sm),
+                    .padding(start = PocketSpacing.lg, top = PocketSpacing.xs, end = PocketSpacing.lg, bottom = PocketSpacing.xs),
                 verticalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -2589,6 +2581,7 @@ private fun ChatTab(
                     },
                     onOpenSkills = onOpenSkills,
                     onOpenInspector = onOpenInspector,
+                    onOpenMemoryViewer = onOpenMemoryViewer,
                 )
             }
         }
@@ -2617,6 +2610,7 @@ private fun Composer(
     onToggleCommands: () -> Unit,
     onOpenSkills: () -> Unit,
     onOpenInspector: () -> Unit,
+    onOpenMemoryViewer: () -> Unit,
 ) {
     val colors = PocketColors.current
     val accent = MaterialTheme.colorScheme.primary
@@ -2660,7 +2654,7 @@ private fun Composer(
                     onValueChange = onInputChange,
                     modifier = Modifier
                         .weight(1f)
-                        .padding(vertical = 15.dp)
+                        .padding(vertical = PocketSpacing.md)
                         .heightIn(min = 22.dp, max = 132.dp),
                     minLines = 1,
                     maxLines = 6,
@@ -2683,7 +2677,7 @@ private fun Composer(
                     },
                 )
                 Spacer(Modifier.width(PocketSpacing.xs))
-                Row(Modifier.padding(vertical = PocketSpacing.xs)) {
+                Row(Modifier.padding(vertical = PocketSpacing.xxs)) {
                     if (isRunning) {
                         ComposerActionButton(
                             contentDescription = "Stop AI task",
@@ -2708,7 +2702,7 @@ private fun Composer(
                             Icon(
                                 Icons.Outlined.ArrowUpward,
                                 contentDescription = null,
-                                tint = if (canSend) Color.White else colors.secondaryLabel,
+                                tint = if (canSend) MaterialTheme.colorScheme.onPrimary else colors.secondaryLabel,
                                 modifier = Modifier.size(20.dp),
                             )
                         }
@@ -2722,12 +2716,13 @@ private fun Composer(
         GlassMenuItem("Attach files", onAttach, icon = Icons.Outlined.AttachFile, enabled = attachEnabled)
         GlassMenuItem("Commands", onToggleCommands, icon = Icons.Outlined.Code)
         GlassMenuItem("Skills", onOpenSkills, icon = Icons.Outlined.AutoAwesome)
+        GlassMenuItem("Memory", onOpenMemoryViewer, icon = Icons.Outlined.Psychology)
         GlassMenuDivider()
         GlassMenuItem(if (activeCount > 0) "Activity · $activeCount running" else "Activity", onOpenInspector, icon = Icons.Outlined.Layers)
     }
 }
 
-/** A 34 dp filled circle inside a 44 dp touch area that dips slightly while pressed. */
+/** A compact filled circle inside an Android-sized touch area. */
 @Composable
 private fun ComposerActionButton(
     contentDescription: String,
@@ -2886,71 +2881,53 @@ private fun LiveClaudeProcess(
     processItems: List<ActivityItem>,
     isRunning: Boolean,
     startedAtMillis: Long?,
-    @Suppress("UNUSED_PARAMETER") finishedAtMillis: Long?,
-    thinkingActive: Boolean,
+    finishedAtMillis: Long?,
+    status: WorkStatus,
 ) {
-    val elapsedSeconds = startedAtMillis?.let { rememberLiveElapsedSeconds(it).toLong() } ?: 0L
-    ClaudeActivityDisclosure(
-        items = processItems,
-        headline = activityHeadline(processItems, elapsedSeconds, thinkingActive),
-        isRunning = isRunning,
-    )
-}
-
-@Composable
-private fun WorkBlockCard(message: ChatMessage) {
-    val seconds = (message.workedMillis / 1_000L).coerceAtLeast(1L)
-    Column {
+    val elapsedSeconds = rememberLiveElapsedSeconds(startedAtMillis, finishedAtMillis, isRunning)
+    key(startedAtMillis) {
         ClaudeActivityDisclosure(
-            items = message.workItems,
-            headline = activityHeadline(message.workItems, seconds, message.workItems.isEmpty()),
+            items = processItems,
+            headline = "${if (isRunning) status.label else "View activity"} · ${formatDuration(elapsedSeconds)}",
+            isRunning = isRunning && status !in setOf(WorkStatus.WAITING_FOR_INPUT, WorkStatus.WAITING_FOR_APPROVAL),
+            liveDetail = processItems.lastOrNull()?.takeIf { isRunning && status == WorkStatus.WORKING }?.let(::compactActivityText),
         )
-        if (message.workItems.lastOrNull()?.title?.startsWith("Task stopped") == true) {
-            Text(
-                text = "Worked for ${formatDuration(seconds)}",
-                modifier = Modifier.padding(start = 29.dp, bottom = 6.dp),
-                style = PocketType.footnote,
-                color = PocketColors.current.secondaryLabel,
-            )
-        }
     }
 }
 
 @Composable
-private fun ClaudeActivityDisclosure(
+private fun WorkBlockCard(message: ChatMessage) {
+    ClaudeActivityDisclosure(items = message.workItems, headline = workBlockHeadline(message))
+}
+
+@Composable
+internal fun ClaudeActivityDisclosure(
     items: List<ActivityItem>,
     headline: String,
     isRunning: Boolean = false,
+    liveDetail: String? = null,
 ) {
-    var expandedItems by rememberSaveable { mutableStateOf(emptyList<Int>()) }
-    // Older saved chats may hold hundreds of polling steps; render only the latest window.
-    val visibleItems = remember(items) { items.takeLast(32) }
-    Column(Modifier.fillMaxWidth().padding(horizontal = PocketSpacing.xs, vertical = 6.dp)) {
-        if (visibleItems.isEmpty()) {
-            ActivitySummaryRow(
-                item = null,
-                text = headline,
-                expanded = 0 in expandedItems,
-                showProgress = isRunning,
-                onToggle = {
-                    expandedItems = if (0 in expandedItems) expandedItems - 0 else expandedItems + 0
-                },
-            )
-            ActivityDetailReveal(visible = 0 in expandedItems) {
-                ActivityExpandedDetail(null, "Reviewing the request and planning the next action.")
-            }
-        } else {
-            visibleItems.forEachIndexed { index, item ->
-                ActivitySummaryRow(
-                    item = item,
-                    text = compactActivityText(item),
-                    expanded = index in expandedItems,
-                    showProgress = isRunning && !item.isComplete,
-                    onToggle = {
-                        expandedItems = if (index in expandedItems) expandedItems - index else expandedItems + index
-                    },
-                )
-                ActivityDetailReveal(visible = index in expandedItems) {
+    // One disclosure per stable chat message: appending/trimming events cannot move expansion.
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    var visibleCount by rememberSaveable { mutableIntStateOf(32) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = PocketSpacing.xs, vertical = PocketSpacing.xs)) {
+        ActivitySummaryRow(
+            item = items.lastOrNull(), text = headline, expanded = expanded,
+            showProgress = isRunning, onToggle = { expanded = !expanded },
+        )
+        if (!expanded && liveDetail != null) {
+            Text(liveDetail, Modifier.padding(start = 24.dp, bottom = PocketSpacing.xs), style = PocketType.footnote,
+                color = PocketColors.current.secondaryLabel, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        ActivityDetailReveal(visible = expanded) {
+            Column {
+                if (items.isEmpty()) ActivityExpandedDetail(null, "Reviewing the request and planning the next action.")
+                if (items.size > visibleCount) {
+                    PocketButton("Show earlier activity (${items.size - visibleCount})", { visibleCount += 32 }, style = PocketButtonStyle.Plain)
+                }
+                items.takeLast(visibleCount).forEach { item ->
+                    Text(activityName(item), Modifier.padding(start = 24.dp, top = PocketSpacing.sm, bottom = PocketSpacing.xs),
+                        style = PocketType.footnote.emphasized, color = PocketColors.current.secondaryLabel)
                     ActivityExpandedDetail(item, activityDetail(item))
                 }
             }
@@ -2961,6 +2938,10 @@ private fun ClaudeActivityDisclosure(
 /** Expanded activity detail grows open and folds shut on a spring instead of popping in. */
 @Composable
 private fun ActivityDetailReveal(visible: Boolean, content: @Composable () -> Unit) {
+    if (LocalLiquidGlassConfig.current.reduceMotion) {
+        if (visible) content()
+        return
+    }
     AnimatedVisibility(
         visible = visible,
         enter = expandVertically(PocketMotion.spec(Token.Smooth, IntSize.VisibilityThreshold)) + fadeIn(PocketMotion.spec(Token.Quick)),
@@ -2973,6 +2954,11 @@ internal fun AnimatedThinkingDots(
     modifier: Modifier = Modifier,
     dotColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
 ) {
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
+    if (LocalLiquidGlassConfig.current.reduceMotion || !lifecycleState.isAtLeast(Lifecycle.State.STARTED)) {
+        Text("…", modifier, color = dotColor, style = PocketType.footnote)
+        return
+    }
     val transition = rememberInfiniteTransition(label = "thinking_dots")
     // Each dot lifts and brightens in turn, 180 ms apart, then rests until the next cycle.
     val offsets = listOf(0, 180, 360).map { delayMillis ->
@@ -3045,6 +3031,7 @@ private fun ActivitySummaryRow(
     Row(
         Modifier
             .fillMaxWidth()
+            .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" }
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -3052,13 +3039,13 @@ private fun ActivitySummaryRow(
                 onClickLabel = if (expanded) "Collapse activity" else "Expand activity",
                 onClick = onToggle,
             )
-            .heightIn(min = 32.dp)
-            .padding(vertical = 6.dp),
+            .heightIn(min = LiquidGlassTokens.MinTouchTarget)
+            .padding(vertical = PocketSpacing.xs),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(activityIcon(item), contentDescription = null, modifier = Modifier.size(16.dp), tint = muted)
-        Spacer(Modifier.width(9.dp))
-        Text(text, Modifier.weight(1f), style = PocketType.footnote, color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.width(PocketSpacing.sm))
+        Text(text, Modifier.weight(1f), style = PocketType.footnote, color = muted)
         if (showProgress) {
             AnimatedThinkingDots(dotColor = muted)
             Spacer(Modifier.width(6.dp))
@@ -3067,7 +3054,7 @@ private fun ActivitySummaryRow(
             Icons.AutoMirrored.Outlined.KeyboardArrowRight,
             contentDescription = null,
             modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = chevron },
-            tint = colors.tertiaryLabel,
+            tint = colors.secondaryLabel,
         )
     }
 }
@@ -3127,28 +3114,24 @@ private fun activityDetail(item: ActivityItem): String {
     return item.detail.ifBlank { item.title }
 }
 
-private fun activityHeadline(items: List<ActivityItem>, seconds: Long, thinking: Boolean): String {
-    val latest = items.lastOrNull()
-    if (latest == null) return "Think · Analyzing the request · ${formatDuration(seconds)}"
-    if (thinking && latest.title == "Think") return "Think · ${latest.detail} · ${formatDuration(seconds)}"
-    val detail = latest.detail.take(180).replace(Regex("\\s+"), " ").trim().ifBlank { latest.title }
-    return "${activityName(latest)} · ${detail.take(100)} · ${formatDuration(seconds)}"
-}
-
 private fun activityName(item: ActivityItem): String = item.title
     .removePrefix("Running ")
     .removeSuffix(" completed")
     .replaceFirstChar { it.uppercase() }
 
 @Composable
-private fun rememberLiveElapsedSeconds(startedAtMillis: Long): Int {
-    var seconds by remember(startedAtMillis) {
-        mutableIntStateOf(((System.currentTimeMillis() - startedAtMillis) / 1000L).toInt().coerceAtLeast(0))
+private fun rememberLiveElapsedSeconds(startedAtMillis: Long?, finishedAtMillis: Long?, isRunning: Boolean): Long {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var seconds by remember(startedAtMillis, finishedAtMillis, isRunning) {
+        mutableLongStateOf(startedAtMillis?.let { elapsedWorkSeconds(it, finishedAtMillis, System.currentTimeMillis()) } ?: 0L)
     }
-    LaunchedEffect(startedAtMillis) {
-        while (true) {
-            delay(1_000)
-            seconds = ((System.currentTimeMillis() - startedAtMillis) / 1000L).toInt().coerceAtLeast(0)
+    LaunchedEffect(startedAtMillis, finishedAtMillis, isRunning, lifecycle) {
+        if (startedAtMillis == null || finishedAtMillis != null || !isRunning) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                seconds = elapsedWorkSeconds(startedAtMillis, null, System.currentTimeMillis())
+                delay(1_000)
+            }
         }
     }
     return seconds
@@ -3238,7 +3221,7 @@ private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Uni
                     icon = if (isCopied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
                     contentDescription = if (isCopied) "Message copied to clipboard" else "Copy entire message",
                     onClick = copyAction,
-                    tint = if (isCopied) colors.green else colors.tertiaryLabel,
+                    tint = if (isCopied) colors.green else colors.secondaryLabel,
                     iconSize = 15.dp,
                 )
             }

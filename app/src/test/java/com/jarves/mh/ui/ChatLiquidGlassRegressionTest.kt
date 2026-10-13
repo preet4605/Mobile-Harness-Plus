@@ -74,7 +74,11 @@ class ChatLiquidGlassRegressionTest {
         assertTrue("Views switch from the menu on the chat title", workspace.contains("onTitleClick = { showViews = true }") && workspace.contains("GlassMenu(expanded = showViews"))
         assertTrue("Bar actions are one glass group", workspace.contains("GlassToolbarGroup {"))
         assertTrue("The bar softens content under it", functionBody("WorkspaceBar").contains("ScrollEdgeEffect("))
-        assertTrue("The title is centred on the row, with the wider edge reserved on both sides", functionBody("BarRow").contains("val x = (width - centerPlaceable.width) / 2"))
+        val bar = functionBody("BarRow")
+        assertTrue("The title uses the actual space between actions", bar.contains("val start = leadingPlaceable.width + gap") && bar.contains("val end = width - trailingPlaceable.width - gap"))
+        assertTrue("The header protects readable content", functionBody("WorkspaceBar").contains("protectContent = true"))
+        assertFalse("Header grows with system text size", functionBody("WorkspaceBar").contains("CappedTextScale"))
+        assertTrue("Memory remains reachable in the tools menu", composer.contains("GlassMenuItem(\"Memory\", onOpenMemoryViewer"))
         listOf("TopAppBar(", "Scaffold(", "NavigationBar(", "AlertDialog(", "ModalBottomSheet(", "Card(").forEach {
             assertFalse("Workspace must not fall back to Material $it", Regex("""(?<![A-Za-z])${Regex.escape(it)}""").containsMatchIn(source))
         }
@@ -188,14 +192,14 @@ class ChatLiquidGlassRegressionTest {
     }
 
     @Test
-    fun chatControls_keep44dpTouchTargets() {
+    fun chatControls_keep48dpTouchTargets() {
         assertTrue("Composer never compresses below 52dp", source.contains("private val ComposerMinHeight = 52.dp"))
         assertTrue(composer.contains(".heightIn(min = ComposerMinHeight)"))
         val action = functionBody("ComposerActionButton")
-        assertTrue("Send and stop take the touch from a 44dp box", action.indexOf(".size(LiquidGlassTokens.MinTouchTarget)") in 0 until action.indexOf(".clickable("))
+        assertTrue("Send and stop use the shared touch target", action.indexOf(".size(LiquidGlassTokens.MinTouchTarget)") in 0 until action.indexOf(".clickable("))
         listOf("ActivityCapsule", "FileRow").forEach {
-            assertTrue("$it rows are at least 44dp", functionBody(it).contains(".heightIn(min = LiquidGlassTokens.MinTouchTarget)"))
+            assertTrue("$it rows use the shared touch target", functionBody(it).contains(".heightIn(min = LiquidGlassTokens.MinTouchTarget)"))
         }
-        assertTrue("Latest pill is at least 44dp", chat.contains(".heightIn(min = LiquidGlassTokens.MinTouchTarget)"))
+        assertTrue("Latest pill uses the shared touch target", chat.contains(".heightIn(min = LiquidGlassTokens.MinTouchTarget)"))
     }
 }
