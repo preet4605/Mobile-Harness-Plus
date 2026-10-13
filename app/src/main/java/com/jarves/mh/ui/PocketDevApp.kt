@@ -11,6 +11,7 @@ import com.jarves.mh.ui.theme.heldWhileExiting
 import com.jarves.mh.ui.theme.isTransitionTarget
 import com.jarves.mh.ui.theme.glass.BackdropSourceScope
 import com.jarves.mh.ui.kit.*
+import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Settings
@@ -32,6 +33,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
@@ -63,6 +65,7 @@ import androidx.compose.material.icons.outlined.SmartToy
 private enum class RootScreen(val label: String, val icon: ImageVector, val selectedIcon: ImageVector) {
     PROJECTS("Projects", Icons.Outlined.Folder, Icons.Rounded.Folder),
     AGENT("Agent", Icons.Outlined.SmartToy, Icons.Rounded.SmartToy),
+    MODS("Mods", Icons.Outlined.Extension, Icons.Rounded.Extension),
     SETTINGS("Settings", Icons.Outlined.Settings, Icons.Rounded.Settings),
 }
 
@@ -506,6 +509,7 @@ private fun RootScreenHost(
                     onLogoutCodex = viewModel::logoutCodex,
                     onRefreshCodexAuth = viewModel::refreshCodexAuthStatus,
                 )
+                RootScreen.MODS -> ModsScreen(bottomBarPadding = floatingNavClearance)
                 RootScreen.SETTINGS -> Box(
                     modifier = Modifier.fillMaxSize(),
                 ) {
