@@ -1,8 +1,17 @@
 # Tasks and progress
 
+## Mod agent tasks — 2026-10-13
+
+COMPLETE: mod code can start tasks on a chosen harness (needed by the user's Super Harness mod: orchestrator, coder, reviewer and researcher on different harnesses).
+
+- `$.agent.ask({ harness, prompt, timeoutMs })` (permission `agent.ask`, HIGH) waits until the mod's chat is free, switches to the named harness, posts a mod note, sends the prompt as a normal turn (other harnesses see it in history), and resolves with `status`, the final reply `text`, `taskId`, `harness` and `error`. One mod task runs at a time; a timeout (default 30 min, 10 s to 2 h) answers `timeout` while the task continues. `$.agent.list()` lists harnesses with installed/current flags.
+- Slow `$` calls (`clock.sleep`, `agent.ask`) now run beside the mod's other messages, so a long task never blocks its drawing or logs; their waiting time stays outside the hook's budget. Each ask is written to the audit log.
+- VERIFIED: `ModHostTest` (12 tests) passed, including a two-step pipeline whose two 300 ms tasks pass a 400 ms hook budget with no strike, harness name checks and the audit entry.
+- NOT RUN: a real multi-harness pipeline on a device.
+
 ## Mod dashboards and panels (spec v2 phase P5) — 2026-10-13
 
-IN PROGRESS (uncommitted; the user chose "Dashboards first" before the harness-task op): mod code draws its own screens.
+COMPLETE (pushed to harness-dev as b7d2404; the user chose "Dashboards first" before the harness-task op): mod code draws its own screens.
 
 - Mods answer `ui.render` with a tree built by `h(type, props, ...children)`. ModTree checks it (16 elements, known props only, 2,000 elements, depth 32, 100,000 characters, images from the mod's folder or data URLs up to 512 KB) and ModSurfaces draws it with the app's kit components. Function props become handler keys; a tap runs the mod's function and redraws. Atoms read while drawing redraw the surface when they change, at most 10 times a second. A refused tree shows its reason and goes to the mod log.
 - Surfaces are drawn only while shown. The mod page's Dashboard tab shows the manifest's `dashboard.pane` (or panes opened with `$.ui.open`), a pane switcher and `dashboard.actions` as command rows. Inside projects, per-mod switches in Controls (off by default, saved in the registry as `shownIn`) add a status chip and a row above the message box (`ui.band`) and a workspace Mods tab for panes (`ui.pane`); the tab appears only while one is switched on.
@@ -14,7 +23,7 @@ IN PROGRESS (uncommitted; the user chose "Dashboards first" before the harness-t
 
 ## Mod code (spec v2 phase P4) — 2026-10-13
 
-IN PROGRESS (uncommitted until the user asks to push): mods can now ship a `hooks` module that runs in the JavaScriptSandbox engine the device probe accepted ("Ready for mod code").
+COMPLETE (pushed to harness-dev as fda11ed, after the engine-test fix 340790c): mods can now ship a `hooks` module that runs in the JavaScriptSandbox engine the device probe accepted ("Ready for mod code").
 
 - ModHost runs each logic mod in its own isolate (16 MB heap, at most 8 mods). The engine starts only while a logic mod is enabled and a task runs or the app is in the foreground with a project or the Mods screen open, and stops 60 s after that ends. Host calls and answers use one message port; scripts the host evaluates return at once, so a stuck mod cannot block the host.
 - Faults: each evaluation has a time limit, and hooks have own-time budgets that exclude host calls. A fault strikes the mod and restarts it after 1 s / 5 s / 30 s; 5 strikes in 10 minutes stop it (Crashed). When the engine dies, the mod over its memory cap takes the strike and the others reload; 3 deaths in 10 minutes pause mod code until the user resumes it. A broken mod is reported, never thrown into the app.

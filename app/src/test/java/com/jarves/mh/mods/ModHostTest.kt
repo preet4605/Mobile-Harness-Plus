@@ -39,6 +39,13 @@ class ModHostTest {
         override fun promptDraft(mod: InstalledMod, text: String, context: ModEventContext) = true
         override fun chatMessages(context: ModEventContext, limit: Int) = listOf("user" to "hi", "agent" to "hello")
         override fun currentPlan(context: ModEventContext): ExecutionPlan? = null
+        val asks = CopyOnWriteArrayList<String>()
+        override fun agents(): JSONArray = JSONArray().put(JSONObject().put("id", "codex").put("installed", true).put("current", true))
+        override suspend fun askAgent(mod: InstalledMod, harness: AgentKind?, prompt: String, context: ModEventContext, timeoutMs: Long): JSONObject {
+            asks += "${harness?.let(ModManifestParser::harnessId) ?: "current"}: $prompt"
+            kotlinx.coroutines.delay(300) // the task runs in the app, outside the mod's own time
+            return JSONObject().put("status", "completed").put("text", "done: $prompt").put("taskId", "t${asks.size}")
+        }
     }
 
     @Before
@@ -425,5 +432,36 @@ class ModHostTest {
             renderBudgetMs = 800,
             redrawGapMs = 50,
         )
+    }
+
+    @Test
+    fun `a mod runs agent tasks one after another on chosen harnesses`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('command.run', { name: 'pipeline' }, async ($, e) => {
+                const harnesses = (await $.agent.list()).map(a => a.id)
+                const plan = await $.agent.ask({ harness: 'codex', prompt: 'Plan ' + e.args })
+                const code = await $.agent.ask({ harness: 'antigravity', prompt: 'Build: ' + plan.text })
+                let refused = ''
+                try { await $.agent.ask({ harness: 'gpt', prompt: 'x' }) } catch (err) { refused = err.message }
+                return { text: [harnesses.join(), plan.status, code.text, refused].join(' | ') }
+              })
+            }
+        """.trimIndent(), permissions = listOf("agent.ask")) {
+            put("contributes", JSONObject().put("slashCommands", JSONArray().put(JSONObject().put("name", "pipeline").put("description", "Run the pipeline"))))
+        }
+        val host = host(registry, LIMITS.copy(eventBudgetMs = 400))
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod to start") { host.info()?.state == ModRunState.RUNNING }
+        // Two 300 ms tasks pass a 400 ms budget: only the mod's own time counts.
+        val outcome = host.runCommand("dev.test.sample", "pipeline", "a todo app")
+        assertEquals(
+            ModCodeCommandOutcome.Reply("codex | completed | done: Build: done: Plan a todo app | \$.agent.ask: harness must be claude, deepseek, antigravity or codex"),
+            outcome,
+        )
+        assertEquals(listOf("codex: Plan a todo app", "antigravity: Build: done: Plan a todo app"), effects.asks.toList())
+        assertEquals(0, host.info()?.strikes)
+        assertTrue(registry.snapshot.value.mods.first().let { mod -> registry.readAudit(mod.id).any { "agent.ask" in it.op } })
     }
 }

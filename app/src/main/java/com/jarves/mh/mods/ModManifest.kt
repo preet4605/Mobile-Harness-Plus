@@ -172,6 +172,9 @@ object ModManifestParser {
 
     fun harnessId(kind: AgentKind): String = HARNESS_IDS.entries.first { it.value == kind }.key
 
+    /** The harness a mod names with [id] (claude, deepseek, antigravity, codex), or null. */
+    fun harnessFromId(id: String): AgentKind? = HARNESS_IDS[id]
+
     /** A slash command name a mod may use: 2 to 31 lowercase letters, digits or dashes, starting with a letter. */
     fun isCommandName(name: String): Boolean = COMMAND_NAME.matches(name)
 

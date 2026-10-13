@@ -31,7 +31,7 @@ enum class ModCapability(
     NET_FETCH("net.fetch", RiskLevel.HIGH, "Connect to the internet"),
     SECRETS("secrets", RiskLevel.REVIEW, "Keep its own secrets"),
     MEMORY_READ("memory.read", RiskLevel.REVIEW, "Read project memory"),
-    AGENT_ASK("agent.ask", RiskLevel.HIGH, "Start agent tasks"),
+    AGENT_ASK("agent.ask", RiskLevel.HIGH, "Start agent tasks on any of your harnesses", usable = true),
     PROMPT_TRANSFORM("prompt.transform", RiskLevel.REVIEW, "Change your messages before they are sent"),
     UI_STATUS("ui.status", RiskLevel.SAFE, "Show a status line", usable = true),
     UI_BAND("ui.band", RiskLevel.SAFE, "Show a row above the message box", usable = true),

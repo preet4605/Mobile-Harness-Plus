@@ -2,6 +2,7 @@ package com.jarves.mh.mods
 
 import android.content.Context
 import com.jarves.mh.BuildConfig
+import com.jarves.mh.model.AgentKind
 import com.jarves.mh.model.brain.ExecutionPlan
 import com.jarves.mh.runtime.SlashCommandEngine
 import kotlinx.coroutines.CancellationException
@@ -34,6 +35,17 @@ interface ModHostEffects : ModHookEffects {
 
     /** The plan of the task in [context]'s chat, when the app made one. */
     fun currentPlan(context: ModEventContext): ExecutionPlan?
+
+    /** The harnesses, as `{ id, name, installed, current }`, for `$.agent.list()`. */
+    fun agents(): JSONArray
+
+    /**
+     * Runs [prompt] as a task in [context]'s chat on [harness] (null: the chat's current one),
+     * once the chat is free, and answers when the task ends: `{ status, text, taskId, harness }`.
+     * Fails when the chat closes or the task can't start; answers `status: "timeout"` after
+     * [timeoutMs] while the task goes on.
+     */
+    suspend fun askAgent(mod: InstalledMod, harness: AgentKind?, prompt: String, context: ModEventContext, timeoutMs: Long): JSONObject
 }
 
 enum class ModEngineState(val label: String) {
@@ -872,19 +884,9 @@ class ModHost(
             }
             answer(loaded, callId, result)
         }
-        if (op == ModOp.CLOCK_SLEEP) {
-            val ms = args.optLong(0, -1)
-            if (ms !in 0..MAX_SLEEP_MS) {
-                complete(Result.failure(IllegalArgumentException("\$.clock.sleep(ms) takes 0 to ${MAX_SLEEP_MS / 60_000} minutes.")))
-                return
-            }
-            scope.launch {
-                delay(ms)
-                complete(Result.success(null))
-            }
-            return
-        }
-        complete(runOp(loaded, mod, op, args, scoped))
+        // A slow call must not hold up the mod's other messages, which are handled one at a time.
+        if (op.slow) scope.launch { complete(runOp(loaded, mod, op, args, scoped)) }
+        else complete(runOp(loaded, mod, op, args, scoped))
     }
 
     private suspend fun runOp(loaded: Loaded, mod: InstalledMod, op: ModOp, args: JSONArray, scoped: ModEventContext?): Result<Any?> = try {
@@ -895,7 +897,12 @@ class ModHost(
             ModOp.STORE_KEYS -> withContext(ioContext) { JSONArray(loaded.store.keys()) }
             ModOp.CLOCK_AFTER, ModOp.CLOCK_EVERY -> addTimer(loaded, args.optLong(0), args.optLong(1, -1), op == ModOp.CLOCK_EVERY)
             ModOp.CLOCK_CANCEL -> loaded.timers.remove(args.optLong(0))?.cancel() != null
-            ModOp.CLOCK_SLEEP -> null
+            ModOp.CLOCK_SLEEP -> {
+                val ms = args.optLong(0, -1)
+                require(ms in 0..MAX_SLEEP_MS) { "\$.clock.sleep(ms) takes 0 to ${MAX_SLEEP_MS / 60_000} minutes." }
+                delay(ms)
+                null
+            }
             ModOp.UI_TOAST -> {
                 val text = ModHookRunner.clean(text(args).take(200))
                 require(text.isNotEmpty()) { "\$.ui.toast(text) needs text" }
@@ -954,6 +961,21 @@ class ModHost(
                 require(text.isNotEmpty()) { "\$.chat.append(text) needs text" }
                 val e = effects ?: error("The app screen is closed")
                 if (throttle("chat:${mod.id}", 2_000)) { e.chatPost(mod, text, scoped!!); true } else false
+            }
+            ModOp.AGENT_LIST -> (effects ?: error("The app screen is closed")).agents()
+            ModOp.AGENT_ASK -> {
+                val spec = args.optJSONObject(0) ?: JSONObject().put("prompt", text(args))
+                val prompt = spec.optString("prompt").trim()
+                require(prompt.isNotEmpty()) { "\$.agent.ask({ prompt }) needs a prompt" }
+                require(prompt.length <= MAX_PROMPT) { "\$.agent.ask: the prompt is longer than $MAX_PROMPT characters" }
+                val harnessId = spec.optString("harness").takeIf { it.isNotBlank() && !spec.isNull("harness") }
+                val harness = harnessId?.let {
+                    ModManifestParser.harnessFromId(it) ?: throw IllegalArgumentException("\$.agent.ask: harness must be claude, deepseek, antigravity or codex")
+                }
+                val timeout = spec.optLong("timeoutMs", DEFAULT_ASK_MS).coerceIn(MIN_ASK_MS, MAX_ASK_MS)
+                addLog(mod.id, "info", "Asked ${harnessId ?: "the current harness"} to work on: ${firstLine(prompt).take(120)}")
+                registry.recordCall(mod.id, "\$.agent.ask", ModCapability.AGENT_ASK, "allowed", harnessId)
+                (effects ?: error("The app screen is closed")).askAgent(mod, harness, prompt, scoped!!, timeout)
             }
             ModOp.PROMPT_DRAFT -> {
                 val text = text(args).trim().take(MAX_TEXT)
@@ -1202,6 +1224,10 @@ class ModHost(
         private const val WATCH_MIN_MS = 50L
         private const val MAX_PANES = 8
         private const val MAX_RUN_LOG_LINES = 200
+        private const val MAX_PROMPT = 20_000
+        private const val MIN_ASK_MS = 10_000L
+        private const val DEFAULT_ASK_MS = 30 * 60_000L
+        private const val MAX_ASK_MS = 2 * 60 * 60_000L
         private const val PANE_PREFIX = "pane:"
         private val PANE_ID = Regex("^[a-z0-9][a-z0-9-]{0,39}$")
 

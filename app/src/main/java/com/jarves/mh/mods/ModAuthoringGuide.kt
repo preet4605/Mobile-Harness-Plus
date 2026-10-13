@@ -243,6 +243,8 @@ object ModAuthoringGuide {
         | `${'$'}.chat.messages(n)` | `chat.read` | The newest messages of the open chat (`from`, `text`), up to 50 |
         | `${'$'}.chat.append(text)` | `chat.post` | Adds the mod's own message to the chat; the agent never sees it |
         | `${'$'}.prompt.draft(text)` | `prompt.draft` | Fills an empty message box; never sends |
+        | `${'$'}.agent.list()` | `agent.ask` | The harnesses: `{ id, name, installed, current }` |
+        | `${'$'}.agent.ask({ harness, prompt, timeoutMs })` | `agent.ask` | Runs a task in the open chat on a harness and resolves when it ends (see "Agent tasks") |
         | `${'$'}.ui.open({ id, title })`, `${'$'}.ui.close(id)` | `ui.pane` | Adds a panel (8 at most; `id` is lowercase letters, digits, dashes) or removes one; `open` returns `{ isPlaced }`, whether it is on screen now |
         | `${'$'}.ui.redraw(id?)` | none | Draws the mod's shown surfaces again (or just pane `id`) |
         | `${'$'}.ui.resolve(e)` | none | The element names, so `const { Column, Text } = ${'$'}.ui.resolve(e)` works as in other mod systems |
@@ -251,6 +253,32 @@ object ModAuthoringGuide {
         never sees it), or `{ prompt }`, sent to the agent as if the user typed it. Declare commands in
         `contributes.slashCommands` without a `template`, or add them with `${'$'}.command.register`.
         A `${'$'}` call without its permission throws an error that names the permission.
+
+        ### Agent tasks
+
+        `${'$'}.agent.ask` lets a mod hand work to any installed harness and read the answer, so one mod
+        can run a pipeline: plan on one harness, build on another, review on a third.
+
+        ```js
+        on('command.run', { name: 'ship' }, async (${'$'}, e) => {
+          const plan = await ${'$'}.agent.ask({ harness: 'codex', prompt: 'Plan this; no code yet: ' + e.args })
+          if (plan.status !== 'completed') return { text: 'Planning stopped: ' + (plan.error || plan.status) }
+          await ${'$'}.agent.ask({ harness: 'antigravity', prompt: 'Implement this plan:\n' + plan.text })
+          const review = await ${'$'}.agent.ask({ harness: 'claude', prompt: 'Review the changes strictly. Answer PASS or list each problem.' })
+          return { text: review.text }
+        })
+        ```
+
+        - It waits until the open chat is free (no task, queued message, terminal command or build),
+          switches to `harness` (`claude`, `deepseek`, `antigravity`, `codex`; leave it out for the
+          current one), and sends `prompt` there as a normal message, after a note saying the mod sent it.
+          The harness stays selected afterwards.
+        - It resolves when the task ends: `status` (`completed`, `failed`, `stopped`, or `timeout`),
+          `text` (the agent's final reply), `taskId`, `harness` and, on failure, `error`. `timeoutMs`
+          defaults to 30 minutes (10 s to 2 hours); on timeout the task keeps running.
+        - One mod task runs at a time; a second call waits its turn. Waiting does not count against the
+          hook's time. It throws when the chat closes or the harness can't start (for example, not
+          installed or not signed in).
 
         ### Drawing: dashboards, panels and the row above the message box
 

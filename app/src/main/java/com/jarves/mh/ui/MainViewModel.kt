@@ -556,7 +556,31 @@ class MainViewModel(
                 com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).canonicalTaskRepository.getTask(taskId)?.plan
             }.getOrNull()?.takeIf { it.steps.isNotEmpty() }
         }
+
+        override fun agents(): JSONArray {
+            val current = _state.value
+            return JSONArray(AgentKind.entries.map { kind ->
+                JSONObject()
+                    .put("id", com.jarves.mh.mods.ModManifestParser.harnessId(kind))
+                    .put("name", kind.title)
+                    .put("installed", kind == current.agentKind || kind in current.installedAgentVersions)
+                    .put("current", kind == current.agentKind)
+            })
+        }
+
+        override suspend fun askAgent(
+            mod: InstalledMod,
+            harness: AgentKind?,
+            prompt: String,
+            context: ModEventContext,
+            timeoutMs: Long,
+        ): JSONObject = runModAsk(mod, harness, prompt, context, timeoutMs)
     }
+    /** One mod agent task at a time; the next waits its turn. */
+    private val modAskLock = kotlinx.coroutines.sync.Mutex()
+    /** Mod agent tasks by task id, answered when the task ends. Main thread only. */
+    private val modAsks = HashMap<String, ModAsk>()
+    private class ModAsk(val done: kotlinx.coroutines.CompletableDeferred<JSONObject>, val projectId: String, val chatId: String?)
     private val antigravityAccountManager = AntigravityAccountManager(application, preferences)
     private val claudeRuntime = ClaudeRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
     private val dshRuntime = DshRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
@@ -6198,7 +6222,14 @@ class MainViewModel(
     }
 
     /** [fromQueue]: a queued follow-up being sent; it carries its own attachments and leaves the composer's alone. */
-    private fun sendPrompt(prompt: String, attachments: List<ChatAttachment>, fromQueue: Boolean, queuedCodexAccountId: String? = null) {
+    private fun sendPrompt(
+        prompt: String,
+        attachments: List<ChatAttachment>,
+        fromQueue: Boolean,
+        queuedCodexAccountId: String? = null,
+        /** Sent by a mod's `$.agent.ask`, not typed. */
+        fromMod: Boolean = false,
+    ) {
         val project = state.value.activeProject ?: return
         if (_state.value.agentKind == AgentKind.ANTIGRAVITY &&
             _state.value.antigravityAuth.status != AntigravityAuthStatus.SIGNED_IN) {
@@ -6549,8 +6580,86 @@ class MainViewModel(
         }
         val launchedTaskId = taskRecord.taskId
         job.invokeOnCompletion {
-            viewModelScope.launch { finishSupervisedTask(launchedTaskId) }
+            viewModelScope.launch {
+                finishSupervisedTask(launchedTaskId)
+                completeModAsk(launchedTaskId)
+            }
         }
+    }
+
+    /**
+     * `$.agent.ask` (spec v2 agent tasks): waits until the mod's chat is free, switches to
+     * [harness] when one is named, sends [prompt] there as a normal turn (so later turns and other
+     * harnesses see it), and answers with the task's status and final reply when it ends.
+     */
+    private suspend fun runModAsk(
+        mod: InstalledMod,
+        harness: AgentKind?,
+        prompt: String,
+        context: ModEventContext,
+        timeoutMs: Long,
+    ): JSONObject = withContext(Dispatchers.Main.immediate) {
+        var taskId: String? = null
+        val answer = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+            modAskLock.lock()
+            try {
+                fun sameChat(s: AppUiState) = s.activeProject?.id == context.projectId && s.activeChatId == context.chatId
+                val ready = _state.first { !sameChat(it) || modAskCanStart(it) }
+                check(sameChat(ready)) { "The mod's chat is no longer open." }
+                val kind = harness ?: ready.agentKind
+                if (kind != ready.agentKind) {
+                    check(kind in ready.installedAgentVersions) { "${kind.title} is not installed. Install it from Settings first." }
+                    selectAgent(kind)
+                    check(_state.value.agentKind == kind) { "Couldn't switch to ${kind.title}." }
+                }
+                postModMessage(ChatMessage(fromUser = false, text = "${mod.manifest.name} asked ${kind.title} to work on the next message.", origin = "mod:${mod.id}"), context)
+                val toastBefore = _state.value.toastMessage
+                sendPrompt(prompt, emptyList(), fromQueue = true, fromMod = true)
+                val started = activeUiTaskId?.takeIf { _state.value.isRunning }
+                    ?: error(_state.value.toastMessage?.takeIf { it != toastBefore } ?: "${kind.title} didn't start a task for it.")
+                taskId = started
+                val ask = ModAsk(kotlinx.coroutines.CompletableDeferred(), context.projectId.orEmpty(), context.chatId)
+                modAsks[started] = ask
+                ask.done.await().put("harness", com.jarves.mh.mods.ModManifestParser.harnessId(kind))
+            } finally {
+                modAskLock.unlock()
+            }
+        }
+        answer ?: JSONObject()
+            .put("status", "timeout")
+            .put("text", "")
+            .put("taskId", taskId ?: JSONObject.NULL)
+            .also { taskId?.let(modAsks::remove) }
+    }
+
+    private fun modAskCanStart(state: AppUiState): Boolean =
+        !state.isRunning && !state.isStopping && !state.chatLoading && !state.projectTerminalRunning &&
+            !state.androidBuildRunning && state.queuedFollowUps.isEmpty()
+
+    /** A mod's agent task ended: its `$.agent.ask` answers with the status and the task's final reply. */
+    private fun completeModAsk(taskId: String) {
+        val ask = modAsks.remove(taskId) ?: return
+        val record = runCatching {
+            com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).stateStore.get(taskId)
+        }.getOrNull()
+        val status = when (record?.status) {
+            com.jarves.mh.runtime.task.TaskExecutionStatus.COMPLETED,
+            com.jarves.mh.runtime.task.TaskExecutionStatus.UNVERIFIED -> "completed"
+            com.jarves.mh.runtime.task.TaskExecutionStatus.CANCELLED -> "stopped"
+            else -> "failed"
+        }
+        val current = _state.value
+        val reply = if (current.activeProject?.id == ask.projectId && current.activeChatId == ask.chatId) {
+            val lastUser = current.messages.indexOfLast { it.fromUser }
+            current.messages.drop(lastUser + 1).lastOrNull { !it.fromUser && it.origin == null && it.text.isNotBlank() }?.text.orEmpty()
+        } else ""
+        ask.done.complete(
+            JSONObject()
+                .put("status", status)
+                .put("text", reply.take(MAX_MOD_ASK_REPLY))
+                .put("taskId", taskId)
+                .put("error", if (status == "failed") record?.lastError ?: "The task failed." else JSONObject.NULL),
+        )
     }
 
     private fun appendNativeCommandResult(request: String, result: String) {
@@ -7481,6 +7590,8 @@ class MainViewModel(
             if (host.effects === modEffects) host.effects = null
             host.updateContext(null, taskIsRunning = false)
         }
+        modAsks.values.forEach { it.done.completeExceptionally(IllegalStateException("The app closed the chat before the task ended.")) }
+        modAsks.clear()
         flushPendingTranscriptWrite()
         super.onCleared()
     }
@@ -7576,6 +7687,7 @@ class MainViewModel(
         private const val CLAUDE_STATUS_RECHECK_MS = 30_000L
         private const val MOD_STABLE_AFTER_MS = 60_000L
         private const val MAX_PENDING_MOD_POSTS = 5
+        private const val MAX_MOD_ASK_REPLY = 50_000
         private const val DIAGNOSTICS_REFRESH_COOLDOWN_MS = 1_000L
         private const val RECENT_EXIT_CACHE_MS = 60_000L
         private const val LEGACY_GITHUB_TOKEN_KEY = "GITHUB_APP"

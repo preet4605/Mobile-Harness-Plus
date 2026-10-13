@@ -10,12 +10,18 @@ import java.util.Locale
  * needs. [needsProject] calls work only while a project is open (spec v2 §3.3 app scope).
  * `$.log` and `$.clock.now` are answered inside the mod's isolate and never reach the app.
  */
-enum class ModOp(val id: String, val capability: ModCapability?, val needsProject: Boolean = false) {
+enum class ModOp(
+    val id: String,
+    val capability: ModCapability?,
+    val needsProject: Boolean = false,
+    /** Waits on something outside the mod (a timer, an agent task), so it runs beside the mod's other calls. */
+    val slow: Boolean = false,
+) {
     STORE_GET("store.get", ModCapability.STORAGE),
     STORE_SET("store.set", ModCapability.STORAGE),
     STORE_DELETE("store.delete", ModCapability.STORAGE),
     STORE_KEYS("store.keys", ModCapability.STORAGE),
-    CLOCK_SLEEP("clock.sleep", null),
+    CLOCK_SLEEP("clock.sleep", null, slow = true),
     CLOCK_AFTER("clock.after", null),
     CLOCK_EVERY("clock.every", null),
     CLOCK_CANCEL("clock.cancel", null),
@@ -34,6 +40,8 @@ enum class ModOp(val id: String, val capability: ModCapability?, val needsProjec
     CHAT_MESSAGES("chat.messages", ModCapability.CHAT_READ, needsProject = true),
     CHAT_APPEND("chat.append", ModCapability.CHAT_POST, needsProject = true),
     PROMPT_DRAFT("prompt.draft", ModCapability.PROMPT_DRAFT, needsProject = true),
+    AGENT_LIST("agent.list", ModCapability.AGENT_ASK),
+    AGENT_ASK("agent.ask", ModCapability.AGENT_ASK, needsProject = true, slow = true),
     ;
 
     companion object {
