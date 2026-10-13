@@ -4,8 +4,8 @@ import com.jarves.mh.model.RiskLevel
 
 /**
  * What a mod may ask for (mod.schema.v2.json). Each capability has a fixed risk. [usable] marks
- * the ones this app version can act on; the rest belong to the mod engine, which is not built yet,
- * so they are shown in review but never granted.
+ * the ones this app version can act on, from simple hooks or mod code (`ModOp`); the rest come in
+ * later versions, so they are shown in review but never granted.
  */
 enum class ModCapability(
     val id: String,
@@ -13,10 +13,10 @@ enum class ModCapability(
     val summary: String,
     val usable: Boolean = false,
 ) {
-    APP_INFO("app.info", RiskLevel.SAFE, "Read the app version"),
-    PROJECT_INFO("project.info", RiskLevel.SAFE, "Read the open project's name and harness"),
+    APP_INFO("app.info", RiskLevel.SAFE, "Read the app version", usable = true),
+    PROJECT_INFO("project.info", RiskLevel.SAFE, "Read the open project's name, harness and plan", usable = true),
     UI_TOAST("ui.toast", RiskLevel.SAFE, "Show short messages at the top of the screen", usable = true),
-    STORAGE("storage", RiskLevel.SAFE, "Keep its own saved data"),
+    STORAGE("storage", RiskLevel.SAFE, "Keep its own saved data", usable = true),
     NOTIFY("notify", RiskLevel.REVIEW, "Post notifications", usable = true),
     CHAT_READ("chat.read", RiskLevel.REVIEW, "Read the current chat", usable = true),
     CHAT_POST("chat.post", RiskLevel.REVIEW, "Add its own messages to the chat (the agent does not see them)", usable = true),
@@ -33,7 +33,7 @@ enum class ModCapability(
     MEMORY_READ("memory.read", RiskLevel.REVIEW, "Read project memory"),
     AGENT_ASK("agent.ask", RiskLevel.HIGH, "Start agent tasks"),
     PROMPT_TRANSFORM("prompt.transform", RiskLevel.REVIEW, "Change your messages before they are sent"),
-    UI_STATUS("ui.status", RiskLevel.SAFE, "Show a status line"),
+    UI_STATUS("ui.status", RiskLevel.SAFE, "Show a status line", usable = true),
     UI_BAND("ui.band", RiskLevel.SAFE, "Show a row above the message box"),
     UI_PANE("ui.pane", RiskLevel.SAFE, "Show its own panels"),
     UI_WEBPANE("ui.webpane", RiskLevel.REVIEW, "Show web panels"),

@@ -1,5 +1,18 @@
 # Tasks and progress
 
+## Mod code (spec v2 phase P4) — 2026-10-13
+
+IN PROGRESS (uncommitted until the user asks to push): mods can now ship a `hooks` module that runs in the JavaScriptSandbox engine the device probe accepted ("Ready for mod code").
+
+- ModHost runs each logic mod in its own isolate (16 MB heap, at most 8 mods). The engine starts only while a logic mod is enabled and a task runs or the app is in the foreground with a project or the Mods screen open, and stops 60 s after that ends. Host calls and answers use one message port; scripts the host evaluates return at once, so a stuck mod cannot block the host.
+- Faults: each evaluation has a time limit, and hooks have own-time budgets that exclude host calls. A fault strikes the mod and restarts it after 1 s / 5 s / 30 s; 5 strikes in 10 minutes stop it (Crashed). When the engine dies, the mod over its memory cap takes the strike and the others reload; 3 deaths in 10 minutes pause mod code until the user resumes it. A broken mod is reported, never thrown into the app.
+- `$` calls: store (1 MB per mod, atomic file), clock (sleep/after/every/cancel), ui toast/status/summary/notify, command register/unregister, app/project info, current plan, chat read/append and prompt draft. Each call checks its permission and whether a project is open; non-routine calls are written to the mod's audit log.
+- Events: run.start/end, tool.call/result/approval, files.changed, terminal.end, message.end (reply text needs chat.read), chat.switch, build.end, usage.update (coalesced to 1/s), session.start and command.run. Mod slash commands show in the / menu and answer with a chat reply or a prompt for the agent.
+- Mods screen: engine row (paused/unavailable, Resume), per-mod run state, Restart, status, registered commands and a mod log. The authoring guide documents mod code; Engine test stops mod code while it runs.
+- VERIFIED: full `testOnlineDebugUnitTest` passed, 1484 tests with 0 failures/errors/skips. ModHostTest runs the real shim and host against a Node vm stand-in for the engine (start, saved data, commands, failing hooks, permissions, budgets, strikes, busy loop, memory-cap engine death, pause/resume, module errors, timers, idle stop). A timing race in its first test (waiting on the status but not the later log line) failed once in a rerun; after the fix, 4 further reruns passed.
+- VERIFIED: `assembleOnlineDebug assembleOnlineRelease` succeeded (10m 55s). Both root APKs are signed with the user's keystore (certificate SHA-1 `0a4ca212ef6f776a7410130beb3810c81de06d26`) and pass `apksigner verify`: `mobile-harness-dev.apk` `com.jarves.mh.dev` 1.0.4-dev (5), 78,708,445 bytes, MD5 `6d31707b6cddb08843e771245c75ca99`; `mobile-harness-stable.apk` `com.jarves.mh` 1.0.4 (5), 58,259,027 bytes, MD5 `7b3ca2ad57ef815ae1f3cff0d6fb6bf3`.
+- NOT RUN: mod code on a device in the real JavaScriptSandbox engine, process death while mod code runs, lint. Not yet built: starting a task on a chosen harness from mod code (needed by the Super Harness mod), panes/dashboard, host gates (`canGate` is false).
+
 ## Chat continuity recovery — 2026-10-13
 
 COMPLETE (source and focused verification): The earlier handoff path could leave a pending task blocking later chat turns, and required native resume state could block continuation after interruption, reconnect or account removal even when saved chat history remained available.

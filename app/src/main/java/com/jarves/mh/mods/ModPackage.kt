@@ -234,7 +234,7 @@ object ModPackage {
         if (problems.isNotEmpty()) throw ModInstallException("The mod's files do not match mod.json.", problems)
 
         val warnings = buildList {
-            if (manifest.hooksModule != null) add("This mod has a code part (${manifest.hooksModule}). This version of the app cannot run mod code yet, so only its commands, templates, rules, skills and simple hooks work.")
+            if (manifest.hooksModule != null) add("This mod has code (${manifest.hooksModule}). It runs in a locked-down sandbox with no access to your files or the internet, and can use only the permissions you allow.")
             val unusable = manifest.permissions.map { it.capability }.filterNot { it.usable }
             if (unusable.isNotEmpty()) add("It asks for ${unusable.joinToString { it.id }}, which this version of the app does not offer yet. They stay off.")
         }

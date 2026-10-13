@@ -68,6 +68,38 @@ class ModContributionSet(
         return ModCommandResult.Prompt(text, entry.mod.manifest.name)
     }
 
+    /**
+     * Commands that running mod code registered ([code]), for the `/` menu. A name already used by a
+     * built-in command, the user's skills or this set keeps its owner.
+     */
+    fun filterCodeCommands(code: List<ModCodeCommand>, rawQuery: String, userSkills: Collection<SkillInfo>): List<SlashCommand> {
+        if (code.isEmpty()) return emptyList()
+        val query = normalize(rawQuery)
+        val taken = takenNames(userSkills) + ownNames()
+        return code.distinctBy { it.name }.filter {
+            it.name !in taken && (query.isBlank() || it.name.contains(query) || it.description.lowercase(Locale.ROOT).contains(query))
+        }.map {
+            SlashCommand(
+                name = it.name,
+                description = it.description.ifBlank { "From ${it.modName}" },
+                category = SlashCommandCategory.MODS,
+                parameterHint = it.argumentHint,
+                source = it.modName,
+            )
+        }.sortedWith(compareBy({ !it.name.startsWith(query) }, { it.name }))
+    }
+
+    /** `/name args` for a command running mod code registered. Call after [resolveCommand] and [resolveSkill]. */
+    fun resolveCodeCommand(input: String, code: List<ModCodeCommand>): Pair<ModCodeCommand, String>? {
+        val (name, args) = splitCommand(input) ?: return null
+        if (name in ownNames()) return null
+        return code.firstOrNull { it.name == name }?.let { it to args }
+    }
+
+    private fun ownNames(): Set<String> =
+        commands.map { it.command.name }.toSet() + templates.map { it.name } + skills.map { it.name } +
+            com.jarves.mh.runtime.SlashCommandEngine.ALL_SLASH_COMMANDS.map { it.name }
+
     /** A mod skill named by `/name args`. Call after built-ins and the user's skills. */
     fun resolveSkill(input: String): Pair<SkillInfo, String>? {
         val (name, args) = splitCommand(input) ?: return null

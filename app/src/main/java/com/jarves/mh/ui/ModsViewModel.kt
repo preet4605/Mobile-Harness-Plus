@@ -13,6 +13,9 @@ import com.jarves.mh.mods.ModAuthoringGuide
 import com.jarves.mh.mods.ModAuditEntry
 import com.jarves.mh.mods.ModCapability
 import com.jarves.mh.mods.ModEngineProbe
+import com.jarves.mh.mods.ModHost
+import com.jarves.mh.mods.ModHostSnapshot
+import com.jarves.mh.mods.ModLogEntry
 import com.jarves.mh.mods.ModInstallException
 import com.jarves.mh.mods.ModRegistry
 import com.jarves.mh.mods.ModTrust
@@ -78,9 +81,42 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     private val _engineTest = MutableStateFlow(EngineTestState())
     val engineTest: StateFlow<EngineTestState> = _engineTest.asStateFlow()
     private var engineTestJob: Job? = null
+    private val host = viewModelScope.async(Dispatchers.IO) { runCatching { ModHost.getInstance(application) }.getOrNull() }
+    private val _hostSnapshot = MutableStateFlow(ModHostSnapshot())
+    /** How mod code is running: the engine and each mod with a hooks module. */
+    val hostSnapshot: StateFlow<ModHostSnapshot> = _hostSnapshot.asStateFlow()
+    @Volatile private var hostRef: ModHost? = null
+    private val _logVersion = MutableStateFlow(0)
+    /** Changes when a mod log gains a line; read the lines with [modLog]. */
+    val logVersion: StateFlow<Int> = _logVersion.asStateFlow()
 
     init {
         viewModelScope.launch { registry.await().snapshot.collect { _snapshot.value = it } }
+        viewModelScope.launch { host.await()?.also { hostRef = it }?.snapshot?.collect { _hostSnapshot.value = it } }
+        viewModelScope.launch { host.await()?.logVersion?.collect { _logVersion.value = it } }
+    }
+
+    /** The Mods screen is showing: mod code runs while it is, so pages show live state (spec v2 §3.3 app scope). */
+    fun setVisible(visible: Boolean) {
+        viewModelScope.launch { host.await()?.setScreenVisible(SCREEN_KEY, visible) }
+    }
+
+    /** The newest lines of a mod's log, oldest first. */
+    suspend fun modLog(id: String): List<ModLogEntry> = host.await()?.log(id).orEmpty()
+
+    /** Starts a crashed mod again with its strikes cleared. */
+    fun restartMod(id: String) {
+        viewModelScope.launch { host.await()?.restart(id) }
+    }
+
+    /** Resumes mod code after the engine crashed repeatedly. */
+    fun resumeModCode() {
+        viewModelScope.launch { host.await()?.restart(null) }
+    }
+
+    override fun onCleared() {
+        hostRef?.setScreenVisible(SCREEN_KEY, false)
+        super.onCleared()
     }
 
     fun importArchive(uri: Uri) = work("Could not read that file") {
@@ -207,7 +243,11 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
         _engineTest.value = EngineTestState(running = true)
         engineTestJob = viewModelScope.launch {
             val report = try {
-                ModEngineProbe(getApplication()).run { check -> _engineTest.update { it.copy(checks = it.checks + check) } }
+                // The app has one sandbox; running mods pause while the test uses it.
+                val probe = suspend {
+                    ModEngineProbe(getApplication()).run { check -> _engineTest.update { it.copy(checks = it.checks + check) } }
+                }
+                host.await()?.withEngineStopped { probe() } ?: probe()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 _engineTest.update { it.copy(running = false) }
                 throw e
@@ -217,6 +257,10 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
             }
             _engineTest.update { it.copy(running = false, report = report) }
         }
+    }
+
+    private companion object {
+        const val SCREEN_KEY = "mods-screen"
     }
 
     private suspend fun existing(id: String): InstalledMod? = registry.await().snapshot.value.mods.firstOrNull { it.id == id }

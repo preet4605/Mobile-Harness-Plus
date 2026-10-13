@@ -13,7 +13,7 @@ The application is primarily Kotlin with Jetpack Compose and native C/ASM integr
 | data/ | Preferences, paged chat storage, credential vault, project memory and SQLite-backed Brain/task repositories. |
 | model/ | Engine/provider models, task/context entities and subagent state. |
 | runtime/ and runtime/task/ | Installation, guest launch, engine bridges, process supervision, verification, recovery and checkpoints. |
-| mods/ | Mod manifests/packages, registry and permissions, explicit chat contributions, declarative event hooks and JavaScriptSandbox engine probe. |
+| mods/ | Mod manifests/packages, registry and permissions, explicit chat contributions, declarative event hooks, the JavaScriptSandbox engine probe, and the mod code host: [ModHost](../app/src/main/java/com/jarves/mh/mods/ModHost.kt) runs each enabled hooks module in its own isolate of one shared sandbox ([ModEngine](../app/src/main/java/com/jarves/mh/mods/ModEngine.kt)), with the hook chain in `assets/mods/mh-shim.js`, `$` calls checked against grants in [ModOps](../app/src/main/java/com/jarves/mh/mods/ModOps.kt), per-event budgets, strikes and crash recovery. |
 | network/, provider/, update/ | Provider HTTP access, routing and APK updates. |
 | ui/, ui/kit/, ui/theme/ | Compose screens, ViewModel state, controls, semantic tokens and glass rendering. |
 | app/src/main/cpp/, third_party/ | Native C/ASM source and vendored PRoot, libandroid-shmem and talloc. |

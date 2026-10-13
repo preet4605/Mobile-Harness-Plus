@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,7 +50,12 @@ import com.jarves.mh.model.RiskLevel
 import com.jarves.mh.mods.InstalledMod
 import com.jarves.mh.mods.ModAuditEntry
 import com.jarves.mh.mods.ModCapability
+import com.jarves.mh.mods.ModEngineState
 import com.jarves.mh.mods.ModEvent
+import com.jarves.mh.mods.ModHostSnapshot
+import com.jarves.mh.mods.ModLogEntry
+import com.jarves.mh.mods.ModRunState
+import com.jarves.mh.mods.ModRuntimeInfo
 import com.jarves.mh.mods.ModHookAction
 import com.jarves.mh.mods.ModManifest
 import com.jarves.mh.mods.ModSetting
@@ -88,6 +94,11 @@ fun ModsScreen(
     val review by viewModel.review.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     val drafts by viewModel.drafts.collectAsStateWithLifecycle()
+    val host by viewModel.hostSnapshot.collectAsStateWithLifecycle()
+    DisposableEffect(viewModel) {
+        viewModel.setVisible(true)
+        onDispose { viewModel.setVisible(false) }
+    }
     LaunchedEffect(projects) { viewModel.refreshDrafts(projects) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.refreshDrafts(projects) }
     var building by rememberSaveable { mutableStateOf(false) }
@@ -109,14 +120,14 @@ fun ModsScreen(
         when {
             shownId == ENGINE_TEST_PAGE -> ModEngineTestPage(bottomBarPadding, onBack = { openId = null }, viewModel)
             shown == null -> ModsList(
-                snapshot, drafts, busy, bottomBarPadding, import,
+                snapshot, host, drafts, busy, bottomBarPadding, import,
                 onOpen = { openId = it },
                 onBuild = { building = true },
                 onOpenDraft = { onOpenProject(it.project) },
                 onEngineTest = { openId = ENGINE_TEST_PAGE },
                 viewModel = viewModel,
             )
-            else -> ModPage(shown, snapshot, bottomBarPadding, onBack = { openId = null }, viewModel)
+            else -> ModPage(shown, snapshot, host.mods[shown.id], bottomBarPadding, onBack = { openId = null }, viewModel)
         }
     }
 
@@ -144,6 +155,7 @@ private const val ENGINE_TEST_PAGE = "#engine-test"
 @Composable
 private fun ModsList(
     snapshot: ModsSnapshot,
+    host: ModHostSnapshot,
     drafts: List<ModDraft>,
     busy: Boolean,
     bottomBarPadding: Dp,
@@ -200,6 +212,20 @@ private fun ModsList(
                     }
                 }
             }
+            if (host.engine == ModEngineState.PAUSED || host.engine == ModEngineState.UNAVAILABLE) {
+                item(key = "engine") {
+                    val paused = host.engine == ModEngineState.PAUSED
+                    ListSection(footer = host.engineMessage) {
+                        ListRow(
+                            title = if (paused) "Mod code is paused" else "Mod code can't run on this phone",
+                            icon = Icons.Outlined.Warning,
+                            iconTile = colors.orange,
+                            value = if (paused) "Resume" else null,
+                            onClick = if (paused) viewModel::resumeModCode else null,
+                        )
+                    }
+                }
+            }
             if (!snapshot.modsEnabled) {
                 item(key = "off") {
                     ListSection(footer = "Turned-off mods add nothing to your chats. Their files and settings stay.") {
@@ -230,11 +256,13 @@ private fun ModsList(
                     ListSection(header = "Installed") {
                         snapshot.mods.forEach { mod ->
                             val status = snapshot.status(mod)
+                            val runtime = host.mods[mod.id]?.takeIf { status == ModStatus.ON }
                             ListRow(
                                 title = mod.manifest.name,
-                                subtitle = "${mod.manifest.version} · ${status.label} · ${contributionSummary(mod.manifest)}",
+                                subtitle = "${mod.manifest.version} · ${runtime?.state?.label ?: status.label} · " +
+                                    (runtime?.summary ?: contributionSummary(mod.manifest)),
                                 subtitleMaxLines = 1,
-                                subtitleColor = if (status == ModStatus.NEEDS_REVIEW) colors.orange else null,
+                                subtitleColor = if (status == ModStatus.NEEDS_REVIEW || runtime?.state == ModRunState.CRASHED) colors.orange else null,
                                 leading = { MonogramTile(monogram(mod.manifest.name), modColor(mod.id, colors), tinted = true) },
                                 onClick = { onOpen(mod.id) },
                                 trailing = {
@@ -373,6 +401,7 @@ private enum class ModPageTab(val label: String) { DASHBOARD("Dashboard"), CONTR
 private fun ModPage(
     mod: InstalledMod,
     snapshot: ModsSnapshot,
+    runtime: ModRuntimeInfo?,
     bottomBarPadding: Dp,
     onBack: () -> Unit,
     viewModel: ModsViewModel,
@@ -390,6 +419,10 @@ private fun ModPage(
         if (uri != null) viewModel.export(mod.id, uri)
     }
     LaunchedEffect(mod, tab) { if (tab == ModPageTab.ACTIVITY) audit = viewModel.audit(mod.id) }
+    val logVersion by viewModel.logVersion.collectAsStateWithLifecycle()
+    var log by remember(mod.id) { mutableStateOf<List<ModLogEntry>>(emptyList()) }
+    LaunchedEffect(mod.id, tab, logVersion) { if (tab == ModPageTab.ACTIVITY && mod.manifest.hooksModule != null) log = viewModel.modLog(mod.id) }
+    val shownRuntime = runtime?.takeIf { snapshot.status(mod) == ModStatus.ON }
     val showText = { title: String, path: String -> preview = title to path }
 
     LargeTitleScaffold(
@@ -404,7 +437,7 @@ private fun ModPage(
             verticalArrangement = Arrangement.spacedBy(PocketSpacing.xl),
         ) {
             item(key = "title") {
-                LargeTitle(mod.manifest.name, subtitle = "${mod.manifest.version} · ${snapshot.status(mod).label}")
+                LargeTitle(mod.manifest.name, subtitle = "${mod.manifest.version} · ${shownRuntime?.state?.label ?: snapshot.status(mod).label}")
             }
             item(key = "tabs") {
                 Column(Modifier.padding(horizontal = ListInset)) {
@@ -420,9 +453,9 @@ private fun ModPage(
             }
             when (tab) {
                 ModPageTab.DASHBOARD -> dashboardTab(mod)
-                ModPageTab.CONTROLS -> controlsTab(mod, viewModel, onPreview = showText, onEdit = { editing = it })
+                ModPageTab.CONTROLS -> controlsTab(mod, shownRuntime, viewModel, onPreview = showText, onEdit = { editing = it })
                 ModPageTab.PERMISSIONS -> permissionsTab(mod, viewModel, onConfirmHigh = { confirmHigh = it })
-                ModPageTab.ACTIVITY -> activityTab(mod, audit, viewModel)
+                ModPageTab.ACTIVITY -> activityTab(mod, audit, log, viewModel)
                 ModPageTab.ABOUT -> aboutTab(
                     mod,
                     onExport = { exportLauncher.launch("${mod.manifest.name.replace(Regex("[^A-Za-z0-9._-]+"), "-")}-${mod.manifest.version}.mhmod") },
@@ -527,7 +560,7 @@ private fun ModPage(
 
 private fun LazyListScope.dashboardTab(mod: InstalledMod) {
     item(key = "dashboard") {
-        ListSection(footer = "Dashboards are drawn by mod code. This version of the app cannot run mod code yet.") {
+        ListSection(footer = "Mod code draws dashboards in a coming update. This mod's code already runs: its status is in Controls and its log in Activity.") {
             ListRow("Dashboard “${mod.manifest.dashboard?.pane}”", subtitle = "Not available in this version")
         }
     }
@@ -535,6 +568,7 @@ private fun LazyListScope.dashboardTab(mod: InstalledMod) {
 
 private fun LazyListScope.controlsTab(
     mod: InstalledMod,
+    runtime: ModRuntimeInfo?,
     viewModel: ModsViewModel,
     onPreview: (String, String) -> Unit,
     onEdit: (ModSetting) -> Unit,
@@ -618,8 +652,36 @@ private fun LazyListScope.controlsTab(
     }
     if (manifest.hooksModule != null) {
         item(key = "code") {
-            ListSection(footer = "This mod has a code part (${manifest.hooksModule}). This version of the app cannot run mod code yet.") {
-                ListRow("Mod code", value = "Not running")
+            val colors = PocketColors.current
+            val declared = manifest.slashCommands.map { it.name }.toSet()
+            ListSection(
+                header = "Mod code",
+                footer = "Runs in a locked-down sandbox with no access to your files or the internet, and only the permissions " +
+                    "you allow. It runs while a project is open or Mods is showing. Five problems in 10 minutes stop it.",
+            ) {
+                ListRow(
+                    title = manifest.hooksModule,
+                    value = runtime?.state?.label ?: "Off",
+                    titleColor = if (runtime?.state == ModRunState.CRASHED) colors.orange else null,
+                )
+                runtime?.message?.let { message ->
+                    ListRow(
+                        title = if (runtime.state == ModRunState.CRASHED) "Why it stopped" else "Note",
+                        subtitle = message,
+                        subtitleMaxLines = 6,
+                        subtitleColor = if (runtime.state == ModRunState.CRASHED) colors.orange else null,
+                    )
+                }
+                if (runtime?.state == ModRunState.CRASHED) {
+                    ListRow("Restart", onClick = { viewModel.restartMod(mod.id) })
+                }
+                runtime?.status?.let { ListRow("Status", subtitle = it) }
+                runtime?.takeIf { it.strikes > 0 && it.state != ModRunState.CRASHED }?.let {
+                    ListRow("Problems in the last 10 minutes", value = it.strikes.toString())
+                }
+                runtime?.commands?.filter { it.name !in declared }?.forEach { command ->
+                    ListRow(title = "/${command.name}", subtitle = command.description.ifBlank { null }, value = command.argumentHint)
+                }
             }
         }
     }
@@ -661,7 +723,7 @@ private fun SettingRow(mod: InstalledMod, setting: ModSetting, viewModel: ModsVi
         )
         ModSettingType.SECRET -> ListRow(
             title = setting.title,
-            subtitle = "Only mod code can use secrets, and this version cannot run mod code yet.",
+            subtitle = "Mod code can use secrets in a coming update.",
             enabled = false,
         )
     }
@@ -713,7 +775,23 @@ private fun LazyListScope.permissionsTab(mod: InstalledMod, viewModel: ModsViewM
     }
 }
 
-private fun LazyListScope.activityTab(mod: InstalledMod, audit: List<ModAuditEntry>, viewModel: ModsViewModel) {
+private fun LazyListScope.activityTab(mod: InstalledMod, audit: List<ModAuditEntry>, log: List<ModLogEntry>, viewModel: ModsViewModel) {
+    if (mod.manifest.hooksModule != null) {
+        item(key = "modlog") {
+            val colors = PocketColors.current
+            ListSection(header = "Mod log", footer = if (log.isEmpty()) "Nothing yet. The log is kept until the app closes." else "The newest 50 lines, newest first.") {
+                log.takeLast(50).asReversed().forEach { entry ->
+                    ListRow(
+                        title = entry.text.lineSequence().first().take(200),
+                        subtitle = entry.text.lines().drop(1).joinToString("\n").take(600).ifBlank { null },
+                        subtitleMaxLines = 4,
+                        titleColor = when (entry.level) { "error" -> colors.red; "warn" -> colors.orange; else -> null },
+                        value = formatTime(entry.time),
+                    )
+                }
+            }
+        }
+    }
     if (mod.disabledHooks.isNotEmpty()) {
         item(key = "stopped") {
             ListSection(header = "Turned off") {

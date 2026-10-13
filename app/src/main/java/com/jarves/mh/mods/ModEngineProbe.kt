@@ -12,12 +12,10 @@ import androidx.javascriptengine.Message
 import androidx.javascriptengine.MessagePort
 import androidx.javascriptengine.MessagePortClient
 import androidx.javascriptengine.TerminationInfo
-import com.google.common.util.concurrent.ListenableFuture
 import com.jarves.mh.BuildConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -25,8 +23,6 @@ import java.time.Instant
 import java.util.Locale
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /** One line of the engine test. [passed] is null for plain facts. */
 data class EngineCheck(val group: String, val label: String, val value: String, val passed: Boolean? = null)
@@ -297,6 +293,8 @@ class ModEngineProbe(context: Context) {
             JavaScriptSandbox.JS_FEATURE_ISOLATE_TERMINATION,
             JavaScriptSandbox.JS_FEATURE_ISOLATE_MAX_HEAP_SIZE,
             JavaScriptSandbox.JS_FEATURE_CONSOLE_MESSAGING,
+            JavaScriptSandbox.JS_FEATURE_MESSAGE_PORTS,
+            JavaScriptSandbox.JS_FEATURE_EVALUATE_WITHOUT_TRANSACTION_LIMIT,
         )
         private const val RECOVER = "Recover after the sandbox goes down"
         private val REQUIRED_TESTS = listOf("Mod call to the app and back", "Stuck mod is stopped", "Memory cap stops a greedy mod", RECOVER)
@@ -380,18 +378,4 @@ globalThis.__probe = (function () {
             return System.nanoTime() - start
         }
     }
-}
-
-/** Waits for a future without blocking a thread; cancelling the wait cancels the future. */
-private suspend fun <T> ListenableFuture<T>.await(): T = suspendCancellableCoroutine { continuation ->
-    addListener({
-        try {
-            continuation.resume(get())
-        } catch (e: ExecutionException) {
-            continuation.resumeWithException(e.cause ?: e)
-        } catch (t: Throwable) {
-            continuation.resumeWithException(t)
-        }
-    }, Runnable::run)
-    continuation.invokeOnCancellation { cancel(false) }
 }

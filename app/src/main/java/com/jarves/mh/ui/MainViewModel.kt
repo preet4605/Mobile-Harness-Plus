@@ -139,11 +139,14 @@ import com.jarves.mh.model.SubagentInfo
 import com.jarves.mh.runtime.DiagnosticsHelper
 import com.jarves.mh.mods.InstalledMod
 import com.jarves.mh.mods.ModAuthoringGuide
+import com.jarves.mh.mods.ModCodeCommandOutcome
+import com.jarves.mh.mods.ModCodeEvents
 import com.jarves.mh.mods.ModCommandResult
 import com.jarves.mh.mods.ModContributionSet
 import com.jarves.mh.mods.ModEvent
 import com.jarves.mh.mods.ModEventContext
-import com.jarves.mh.mods.ModHookEffects
+import com.jarves.mh.mods.ModHost
+import com.jarves.mh.mods.ModHostEffects
 import com.jarves.mh.mods.ModHookRunner
 import com.jarves.mh.mods.ModNotifier
 import com.jarves.mh.mods.ModRegistry
@@ -178,6 +181,8 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -485,11 +490,13 @@ class MainViewModel(
     @Volatile private var modContributions = ModContributionSet()
     /** Runs the mods' declarative hooks on a background worker. */
     @Volatile private var modHooks: ModHookRunner? = null
+    /** Runs mod code (spec v2 P4); app-wide, so it outlives this screen. */
+    @Volatile private var modHost: ModHost? = null
     /** Mod chat posts that arrived while a task ran; they join the chat when it ends. Main thread only. */
     private val pendingModPosts = mutableListOf<Pair<ChatMessage, ModEventContext>>()
     /** What the composer holds now, so a mod's draft never replaces the user's typing. */
     @Volatile private var composerText = ""
-    private val modEffects = object : ModHookEffects {
+    private val modEffects = object : ModHostEffects {
         override fun toast(mod: InstalledMod, text: String) {
             _state.update { it.copy(toastMessage = text) }
         }
@@ -510,6 +517,26 @@ class MainViewModel(
                 }
             }
             return true
+        }
+
+        override fun chatMessages(context: ModEventContext, limit: Int): List<Pair<String, String>>? {
+            val current = _state.value
+            if (current.activeProject?.id != context.projectId || current.activeChatId != context.chatId) return null
+            return current.messages.filter { it.text.isNotBlank() }.takeLast(limit).map { message ->
+                when {
+                    message.fromUser -> "user"
+                    message.origin != null -> "mod"
+                    else -> "agent"
+                } to message.text
+            }
+        }
+
+        override fun currentPlan(context: ModEventContext): com.jarves.mh.model.brain.ExecutionPlan? {
+            if (_state.value.activeProject?.id != context.projectId) return null
+            val taskId = activeUiTaskId ?: return null
+            return runCatching {
+                com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).canonicalTaskRepository.getTask(taskId)?.plan
+            }.getOrNull()?.takeIf { it.steps.isNotEmpty() }
         }
     }
     private val antigravityAccountManager = AntigravityAccountManager(application, preferences)
@@ -2659,6 +2686,20 @@ class MainViewModel(
                 .getOrNull() ?: return@launch
             modRegistry = registry
             modHooks = ModHookRunner(registry, modEffects, viewModelScope)
+            runCatching { ModHost.getInstance(application) }
+                .onFailure { android.util.Log.w("MainViewModel", "Mod host could not start", it) }
+                .getOrNull()?.let { host ->
+                    host.effects = modEffects
+                    modHost = host
+                    launch {
+                        _state.map { ModScope(it.activeProject?.id, it.activeProject?.name, it.agentKind, it.activeChatId, it.isRunning) }
+                            .distinctUntilChanged()
+                            .collect { scope ->
+                                val context = scope.projectId?.let { ModEventContext(it, scope.projectName, null, scope.chatId, scope.harness) }
+                                host.updateContext(context, scope.running)
+                            }
+                    }
+                }
             launch {
                 delay(MOD_STABLE_AFTER_MS)
                 runCatching { registry.markStable() }
@@ -2673,19 +2714,26 @@ class MainViewModel(
 
     /** The app left the screen cleanly: this run counts as stable for mod safe mode. */
     fun onAppStopped() {
+        modHost?.setForeground(false)
         val registry = modRegistry ?: return
         viewModelScope.launch(Dispatchers.IO) { runCatching { registry.markStable() } }
     }
 
-    /** Tells the mods' declarative hooks about [event]. Costs one snapshot read when no mod listens. */
+    /**
+     * Tells the mods' declarative hooks and mod code about [event]. [data] is the payload mod code
+     * gets; without it, mod code gets [vars]. Costs a snapshot read when no mod listens.
+     */
     private fun emitModEvent(
         event: ModEvent,
         vars: () -> Map<String, String> = { emptyMap() },
         status: String? = null,
         project: Project? = _state.value.activeProject,
+        data: (() -> JSONObject)? = null,
     ) {
-        val hooks = modHooks ?: return
-        if (!hooks.listens(event)) return
+        val hooks = modHooks?.takeIf { it.listens(event) }
+        val codeEvent = ModCodeEvents.name(event)
+        val host = modHost?.takeIf { codeEvent != null && it.listens(codeEvent) }
+        if (hooks == null && host == null) return
         val current = _state.value
         val context = ModEventContext(
             projectId = project?.id,
@@ -2694,7 +2742,49 @@ class MainViewModel(
             chatId = current.activeChatId,
             harness = current.agentKind,
         )
-        runCatching { hooks.emit(event, context, vars(), status) }
+        val values = runCatching { vars() }.getOrDefault(emptyMap())
+        if (hooks != null) runCatching { hooks.emit(event, context, values, status) }
+        if (host != null && codeEvent != null) {
+            runCatching { host.emit(codeEvent, data?.invoke() ?: ModCodeEvents.payload(values), ModCodeEvents.private(event)) }
+        }
+    }
+
+    /** What mod code sees of where the user is; a change ends and starts the mods' session. */
+    private data class ModScope(
+        val projectId: String?,
+        val projectName: String?,
+        val harness: AgentKind,
+        val chatId: String?,
+        val running: Boolean,
+    )
+
+    /**
+     * `/name args` for a command mod code registered: the mod's answer joins the chat as its own
+     * message, which the agent does not see, or is sent to the agent as the user's prompt.
+     */
+    private fun runModCodeCommand(project: Project, modId: String, name: String, args: String, typed: String) {
+        val host = modHost ?: return
+        val chatId = _state.value.activeChatId
+        _state.update { it.copy(slashCommandsVisible = false, filteredSkills = emptyList()) }
+        viewModelScope.launch {
+            val outcome = host.runCommand(modId, name, args)
+            val current = _state.value
+            if (current.activeProject?.id != project.id || current.activeChatId != chatId) return@launch
+            if (outcome is ModCodeCommandOutcome.Prompt) {
+                sendPrompt(outcome.text, emptyList(), fromQueue = false)
+                return@launch
+            }
+            val reply = when (outcome) {
+                is ModCodeCommandOutcome.Reply -> outcome.text
+                is ModCodeCommandOutcome.Failed -> outcome.message
+                else -> null
+            }
+            _state.update {
+                it.copy(messages = it.messages + ChatMessage(fromUser = true, text = typed) +
+                    listOfNotNull(reply?.let { text -> ChatMessage(fromUser = false, text = text, origin = "mod:$modId") }))
+            }
+            persistMessages()
+        }
     }
 
     /** A mod's chat post joins the chat it was meant for, after any running task, and is never sent to the agent. */
@@ -2722,6 +2812,7 @@ class MainViewModel(
 
     /** Re-checks the Claude session when the app returns to the foreground (e.g. back from the browser). */
     fun onAppResumed() {
+        modHost?.setForeground(true)
         emitModEvent(ModEvent.APP_RESUMED)
         if (_state.value.provider.kind == ProviderKind.CHATGPT) refreshCodexAuthStatus()
         val provider = _state.value.provider
@@ -5288,7 +5379,8 @@ class MainViewModel(
                 val mods = modContributions
                 val userSkills = _state.value.activeSkills
                 val filteredCmds = SlashCommandEngine.filterCommands(query, _state.value.agentKind) +
-                    mods.filterCommands(query, _state.value.agentKind, userSkills)
+                    mods.filterCommands(query, _state.value.agentKind, userSkills) +
+                    mods.filterCodeCommands(modHost?.snapshot?.value?.commands.orEmpty(), query, userSkills)
                 val filteredSkills = SlashCommandEngine.filterSkills(query, userSkills) + mods.filterSkills(query, userSkills)
                 _state.update {
                     it.copy(
@@ -6187,6 +6279,13 @@ class MainViewModel(
         val mods = modContributions
         val modCommand = if (parsedCmd == null && userSkill == null) mods.resolveCommand(trimmed, _state.value.agentKind) else null
         val parsedSkill = userSkill ?: if (parsedCmd == null && modCommand == null) mods.resolveSkill(trimmed) else null
+        val codeCommand = if (parsedCmd == null && userSkill == null && modCommand == null && parsedSkill == null) {
+            mods.resolveCodeCommand(trimmed, modHost?.snapshot?.value?.commands.orEmpty())
+        } else null
+        if (codeCommand != null) {
+            runModCodeCommand(project, codeCommand.first.modId, codeCommand.first.name, codeCommand.second, trimmed)
+            return
+        }
 
         if (modCommand is ModCommandResult.Rejected) {
             _state.update {
@@ -6378,7 +6477,9 @@ class MainViewModel(
         )
         attemptedProfileIds.clear()
         state.value.provider.profileId.takeIf { it.isNotBlank() }?.let { attemptedProfileIds += it }
-        emitModEvent(ModEvent.TASK_STARTED, { mapOf("task.prompt" to prompt.trim()) }, project = project)
+        emitModEvent(ModEvent.TASK_STARTED, { mapOf("task.prompt" to prompt.trim()) }, project = project) {
+            JSONObject().put("prompt", prompt.trim()).put("taskId", taskRecord.taskId)
+        }
         if (nativeControl == null && !managedCodexTask) supervisor.registerFallbackDecider(taskRecord.taskId) { taskId, errorMsg ->
             applyFallbackForTask(taskId, errorMsg)
         }
@@ -6514,6 +6615,7 @@ class MainViewModel(
             val reply = messages.drop(lastUser + 1).lastOrNull { !it.fromUser && it.origin == null && it.text.isNotBlank() }
             mapOf("message.text" to reply?.text.orEmpty())
         })
+        val taskId = activeUiTaskId
         val status = when {
             completed -> "completed"
             cancelled -> "stopped"
@@ -6525,7 +6627,13 @@ class MainViewModel(
                 "task.duration" to ModHookRunner.formatDuration(finishedAt - (startedAt ?: finishedAt)),
                 "task.error" to if (status == "failed") detail else "",
             )
-        })
+        }) {
+            JSONObject()
+                .put("status", status)
+                .put("durationMs", finishedAt - (startedAt ?: finishedAt))
+                .put("error", if (status == "failed") detail else JSONObject.NULL)
+                .put("taskId", taskId ?: JSONObject.NULL)
+        }
     }
 
     private fun queueFollowUp(project: Project, prompt: String, attachments: List<ChatAttachment>) {
@@ -7075,11 +7183,36 @@ class MainViewModel(
             is RuntimeEvent.SessionFailed -> emitModEvent(ModEvent.SESSION_FAILED, { mapOf("session.error" to event.reason) })
             is RuntimeEvent.FilesChanged -> emitModEvent(ModEvent.FILES_CHANGED, {
                 mapOf("files.count" to event.paths.size.toString(), "files.paths" to event.paths.take(20).joinToString(", "))
-            })
-            is RuntimeEvent.ToolCompleted -> emitModEvent(ModEvent.TOOL_COMPLETED, { mapOf("tool.name" to event.toolName, "tool.summary" to event.summary) })
+            }) {
+                JSONObject().put("paths", JSONArray(event.paths.take(200))).put("count", event.paths.size).put("sessionId", event.sessionId)
+            }
+            is RuntimeEvent.ToolCompleted -> emitModEvent(ModEvent.TOOL_COMPLETED, { mapOf("tool.name" to event.toolName, "tool.summary" to event.summary) }) {
+                JSONObject().put("tool", event.toolName).put("summary", event.summary.take(2000)).put("sessionId", event.sessionId)
+            }
             is RuntimeEvent.ToolRequested -> emitModEvent(ModEvent.TOOL_REQUESTED, {
                 mapOf("tool.name" to event.request.toolName, "tool.risk" to event.request.risk.name.lowercase(Locale.ROOT))
-            })
+            }) {
+                JSONObject().put("tool", event.request.toolName).put("risk", event.request.risk.name.lowercase(Locale.ROOT))
+                    .put("canGate", false).put("sessionId", event.sessionId)
+            }
+            is RuntimeEvent.ToolStarted -> modHost?.takeIf { it.listens("tool.call") }?.let { host ->
+                runCatching {
+                    host.emit("tool.call", JSONObject().put("tool", event.toolName).put("detail", event.detail.take(2000))
+                        .put("canGate", false).put("sessionId", event.sessionId).put("taskId", activeUiTaskId ?: JSONObject.NULL))
+                }
+            }
+            is RuntimeEvent.TokenUsageUpdated -> modHost?.takeIf { it.listens("usage.update") }?.let { host ->
+                val metrics = event.metrics
+                runCatching {
+                    host.emitCoalesced("usage.update", JSONObject()
+                        .put("promptTokens", metrics.promptTokens)
+                        .put("completionTokens", metrics.completionTokens)
+                        .put("cachedTokens", metrics.cachedTokens)
+                        .put("contextLimit", metrics.contextWindowLimit)
+                        .put("costUsd", metrics.estimatedCostUsd)
+                        .put("sessionId", event.sessionId))
+                }
+            }
             else -> Unit
         }
         discoverAgentPreview(event, task)
@@ -7314,6 +7447,11 @@ class MainViewModel(
     }
 
     override fun onCleared() {
+        modHost?.let { host ->
+            // This screen is gone for good: nothing reports the project or a running task any more.
+            if (host.effects === modEffects) host.effects = null
+            host.updateContext(null, taskIsRunning = false)
+        }
         flushPendingTranscriptWrite()
         super.onCleared()
     }

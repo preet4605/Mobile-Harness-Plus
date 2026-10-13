@@ -301,6 +301,15 @@ class ModRegistry(
         auditLocked(id, record.version, op, capability?.id, "denied", detail)
     }
 
+    /** Records a call mod code made, or what happened to it, such as being stopped after repeated problems. */
+    fun recordCall(id: String, op: String, capability: ModCapability?, decision: String, detail: String?) = synchronized(lock) {
+        val record = state.mods[id] ?: return@synchronized
+        auditLocked(id, record.version, op, capability?.id, decision, detail)
+    }
+
+    /** Where a mod's saved data lives; kept across updates, and removed only with "also delete saved data". */
+    fun dataDir(id: String): File = File(File(root, id), DATA_DIR)
+
     /** The newest audit entries, newest first; [modId] null for every mod. */
     fun readAudit(modId: String?, limit: Int = 100): List<ModAuditEntry> = synchronized(lock) {
         listOf(File(root, "_audit.1.jsonl"), auditFile)
