@@ -1069,6 +1069,9 @@ class AppPreferences(
                 if (m.activeSkill != null) {
                     put("activeSkill", m.activeSkill)
                 }
+                if (m.origin != null) {
+                    put("origin", m.origin)
+                }
                 put("workItems", JSONArray().apply {
                     m.workItems.forEach { item ->
                         put(JSONObject().apply {
@@ -1204,6 +1207,7 @@ class AppPreferences(
             }
         }.orEmpty(),
         workedMillis = obj.optLong("workedMillis", 0L),
+        origin = obj.optString("origin").takeIf { it.isNotBlank() && !obj.isNull("origin") },
         workItems = obj.optJSONArray("workItems")?.let { workItems ->
             (0 until workItems.length()).mapNotNull { index ->
                 runCatching {

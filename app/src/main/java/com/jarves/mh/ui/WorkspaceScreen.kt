@@ -103,6 +103,7 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.History
@@ -583,6 +584,7 @@ internal fun WorkspaceScreen(
     onStop: () -> Unit,
     onSteerFollowUp: (String) -> Unit = {},
     onRemoveFollowUp: (String) -> Unit = {},
+    onComposerDraftConsumed: () -> Unit = {},
     onApproval: (Boolean) -> Unit,
     onRefreshFiles: () -> Unit,
     onOpenFile: (WorkspaceEntry) -> Unit,
@@ -1044,6 +1046,8 @@ internal fun WorkspaceScreen(
                                     queuedFollowUps = state.queuedFollowUps,
                                     onSteerFollowUp = onSteerFollowUp,
                                     onRemoveFollowUp = onRemoveFollowUp,
+                                    composerDraft = state.composerDraft,
+                                    onComposerDraftConsumed = onComposerDraftConsumed,
                                 )
                                 WorkspaceTab.FILES -> FilesTab(
                                     files = state.workspaceFiles,
@@ -2258,6 +2262,8 @@ private fun ChatTab(
     queuedFollowUps: List<QueuedFollowUp> = emptyList(),
     onSteerFollowUp: (String) -> Unit = {},
     onRemoveFollowUp: (String) -> Unit = {},
+    composerDraft: String? = null,
+    onComposerDraftConsumed: () -> Unit = {},
 ) {
     val view = LocalView.current
     // Keep the screen on while the selected agent is working in this chat. Released automatically
@@ -2272,6 +2278,12 @@ private fun ChatTab(
     val setInput = { value: TextFieldValue ->
         inputState = value
         onPromptChanged(value.text)
+    }
+    // A mod's prompt.draft: it fills only an empty composer and is never sent by itself.
+    LaunchedEffect(composerDraft) {
+        val draft = composerDraft ?: return@LaunchedEffect
+        if (inputState.text.isBlank()) setInput(TextFieldValue(draft, selection = TextRange(draft.length)))
+        onComposerDraftConsumed()
     }
     val chatScope = rememberCoroutineScope()
     // True while the newest item (message, live panel, or approval card) is on screen.
@@ -3185,6 +3197,16 @@ private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Uni
         if (message.fromUser) {
             UserBubble(message, onCopy = copyAction)
         } else {
+            message.origin?.takeIf { it.startsWith("mod:") }?.let { origin ->
+                Row(
+                    modifier = Modifier.padding(start = PocketSpacing.xs, bottom = PocketSpacing.xs),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Outlined.Extension, contentDescription = null, modifier = Modifier.size(12.dp), tint = colors.secondaryLabel)
+                    Spacer(Modifier.width(PocketSpacing.xs))
+                    Text("From mod ${origin.removePrefix("mod:")}", style = PocketType.caption1, color = colors.secondaryLabel)
+                }
+            }
             SelectionContainer {
                 MarkdownText(
                     markdown = message.text,

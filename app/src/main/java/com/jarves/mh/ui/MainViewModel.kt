@@ -131,8 +131,14 @@ import com.jarves.mh.model.SkillSource
 import com.jarves.mh.model.SlashCommand
 import com.jarves.mh.model.SubagentInfo
 import com.jarves.mh.runtime.DiagnosticsHelper
+import com.jarves.mh.mods.InstalledMod
 import com.jarves.mh.mods.ModCommandResult
 import com.jarves.mh.mods.ModContributionSet
+import com.jarves.mh.mods.ModEvent
+import com.jarves.mh.mods.ModEventContext
+import com.jarves.mh.mods.ModHookEffects
+import com.jarves.mh.mods.ModHookRunner
+import com.jarves.mh.mods.ModNotifier
 import com.jarves.mh.mods.ModRegistry
 import com.jarves.mh.runtime.SkillManager
 import com.jarves.mh.runtime.SlashCommandEngine
@@ -333,6 +339,8 @@ data class AppUiState(
     /** Sessions of earlier attempts of the current task; their events never reach the chat again. */
     val retiredSessionIds: Set<String> = emptySet(),
     val toastMessage: String? = null,
+    /** Text a mod's prompt.draft hook puts in an empty composer; the chat clears it once shown. */
+    val composerDraft: String? = null,
     val projectTerminalLines: List<TerminalOutputLine> = emptyList(),
     val projectTerminalLiveOutput: String = "",
     val projectTerminalRunning: Boolean = false,
@@ -458,6 +466,35 @@ class MainViewModel(
     @Volatile private var modRegistry: ModRegistry? = null
     /** What the active mods add to chat, rebuilt off Main whenever a mod changes. */
     @Volatile private var modContributions = ModContributionSet()
+    /** Runs the mods' declarative hooks on a background worker. */
+    @Volatile private var modHooks: ModHookRunner? = null
+    /** Mod chat posts that arrived while a task ran; they join the chat when it ends. Main thread only. */
+    private val pendingModPosts = mutableListOf<Pair<ChatMessage, ModEventContext>>()
+    /** What the composer holds now, so a mod's draft never replaces the user's typing. */
+    @Volatile private var composerText = ""
+    private val modEffects = object : ModHookEffects {
+        override fun toast(mod: InstalledMod, text: String) {
+            _state.update { it.copy(toastMessage = text) }
+        }
+
+        override fun notify(mod: InstalledMod, title: String, body: String): Boolean =
+            ModNotifier.post(getApplication(), mod, title, body)
+
+        override fun chatPost(mod: InstalledMod, text: String, context: ModEventContext) {
+            viewModelScope.launch { postModMessage(ChatMessage(fromUser = false, text = text, origin = "mod:${mod.id}"), context) }
+        }
+
+        override fun promptDraft(mod: InstalledMod, text: String, context: ModEventContext): Boolean {
+            if (composerText.isNotBlank()) return false
+            viewModelScope.launch {
+                val current = _state.value
+                if (current.activeProject?.id == context.projectId && current.activeChatId == context.chatId) {
+                    _state.update { it.copy(composerDraft = text) }
+                }
+            }
+            return true
+        }
+    }
     private val antigravityAccountManager = AntigravityAccountManager(application, preferences)
     private val claudeRuntime = ClaudeRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
     private val dshRuntime = DshRuntimeBridge(application, accountManager = antigravityAccountManager) { profile -> vault.get(profile.secretId) }
@@ -1133,6 +1170,9 @@ class MainViewModel(
             )
             val updatedLines = (existingLines + completedLine).takeLast(MAX_PROJECT_TERMINAL_HISTORY)
             saveProjectTerminal(project.id, result.cwd, updatedLines)
+            emitModEvent(ModEvent.TERMINAL_COMMAND_FINISHED, {
+                mapOf("terminal.command" to command, "terminal.exitCode" to result.exitCode.toString())
+            }, project = project)
             if (_state.value.activeProject?.id == project.id) {
                 _state.update {
                     it.copy(
@@ -1412,6 +1452,7 @@ class MainViewModel(
         // One build at a time, even if two taps arrive before the state flow publishes.
         if (!androidBuildActive.compareAndSet(false, true)) return
         androidBuildStopRequested = false
+        if (installAfterBuild) emitModEvent(ModEvent.RUN_STARTED, project = project)
         _state.update {
             it.copy(
                 androidBuildRunning = true,
@@ -1524,6 +1565,18 @@ class MainViewModel(
                 androidBuildStopRequested = false
                 androidBuildActive.set(false)
                 refreshProjectFiles()
+                val buildStatus = when (outcome) {
+                    is AndroidBuildOutcome.Done -> "completed"
+                    is AndroidBuildOutcome.Failed -> "failed"
+                    AndroidBuildOutcome.Cancelled -> "stopped"
+                }
+                emitModEvent(ModEvent.BUILD_FINISHED, { mapOf("build.status" to buildStatus, "build.detail" to message) }, buildStatus, project)
+                if (installAfterBuild) {
+                    val runStatus = if (outcome is AndroidBuildOutcome.Done) "completed" else "failed"
+                    emitModEvent(ModEvent.RUN_FINISHED, {
+                        mapOf("run.status" to runStatus, "run.error" to if (runStatus == "failed") message else "")
+                    }, runStatus, project)
+                }
             }
         }.invokeOnCompletion { error ->
             // A cancelled scope (ViewModel cleared) skips the Main block above; release the build slot and service.
@@ -2483,6 +2536,7 @@ class MainViewModel(
                 .onFailure { android.util.Log.w("MainViewModel", "Mods could not load", it) }
                 .getOrNull() ?: return@launch
             modRegistry = registry
+            modHooks = ModHookRunner(registry, modEffects, viewModelScope)
             launch {
                 delay(MOD_STABLE_AFTER_MS)
                 runCatching { registry.markStable() }
@@ -2501,8 +2555,52 @@ class MainViewModel(
         viewModelScope.launch(Dispatchers.IO) { runCatching { registry.markStable() } }
     }
 
+    /** Tells the mods' declarative hooks about [event]. Costs one snapshot read when no mod listens. */
+    private fun emitModEvent(
+        event: ModEvent,
+        vars: () -> Map<String, String> = { emptyMap() },
+        status: String? = null,
+        project: Project? = _state.value.activeProject,
+    ) {
+        val hooks = modHooks ?: return
+        if (!hooks.listens(event)) return
+        val current = _state.value
+        val context = ModEventContext(
+            projectId = project?.id,
+            projectName = project?.name,
+            projectRoot = project?.let { { projectWorkspaceRoot(it) } },
+            chatId = current.activeChatId,
+            harness = current.agentKind,
+        )
+        runCatching { hooks.emit(event, context, vars(), status) }
+    }
+
+    /** A mod's chat post joins the chat it was meant for, after any running task, and is never sent to the agent. */
+    private fun postModMessage(message: ChatMessage, context: ModEventContext) {
+        val current = _state.value
+        if (current.activeProject?.id != context.projectId || current.activeChatId != context.chatId) return
+        if (current.isRunning || current.chatLoading) {
+            if (pendingModPosts.size < MAX_PENDING_MOD_POSTS) pendingModPosts += message to context
+            return
+        }
+        _state.update { it.copy(messages = it.messages + message) }
+        persistMessages()
+    }
+
+    private fun flushModPosts() {
+        if (pendingModPosts.isEmpty()) return
+        val posts = pendingModPosts.toList()
+        pendingModPosts.clear()
+        posts.forEach { (message, context) -> postModMessage(message, context) }
+    }
+
+    fun consumeComposerDraft() {
+        _state.update { if (it.composerDraft == null) it else it.copy(composerDraft = null) }
+    }
+
     /** Re-checks the Claude session when the app returns to the foreground (e.g. back from the browser). */
     fun onAppResumed() {
+        emitModEvent(ModEvent.APP_RESUMED)
         if (_state.value.provider.kind == ProviderKind.CHATGPT) refreshCodexAuthStatus()
         val provider = _state.value.provider
         if (provider.kind != ProviderKind.CLAUDE || provider.claudeAuthMode != ClaudeAuthMode.NATIVE_SUBSCRIPTION) return
@@ -3271,6 +3369,7 @@ class MainViewModel(
                     suggestedProjectRoot = details.suggestedRoot,
                 )
             }
+            emitModEvent(ModEvent.PROJECT_OPENED, project = project)
             // Pending changes read the bridge root, so they load only after it is configured above.
             runRequest { activeRuntime().loadPendingChanges(project.id) }
                 .onSuccess { pending ->
@@ -3286,6 +3385,7 @@ class MainViewModel(
 
     fun closeProject() {
         val active = _state.value.activeProject
+        if (active != null) emitModEvent(ModEvent.PROJECT_CLOSED, project = active)
         // A write that is queued or still flushing is not on disk yet, so the emptiness check must not trust the disk.
         val writeInFlight = pendingTranscriptWrite != null || transcriptDebounceJob?.isActive == true
         persistMessages()
@@ -4266,6 +4366,7 @@ class MainViewModel(
                     chatLoading = false,
                 )
             }
+            emitModEvent(ModEvent.CHAT_SWITCHED, { mapOf("chat.title" to chat.title) }, project = project)
         }
     }
 
@@ -4305,9 +4406,10 @@ class MainViewModel(
      * prompt's history budget needs from the older messages still on disk. Runs on the task's thread, not Main.
      */
     private fun promptHistory(request: RuntimeRetryRequest): List<ChatMessage> {
-        val older = request.olderHistory ?: return request.history
+        // Mod posts are shown to the user, never sent to the agent as conversation.
+        val older = request.olderHistory ?: return request.history.filter { it.origin == null }
         val saved = runCatching { preferences.loadPromptHistory(older.projectId, older.chatId, older.endIndex) }.getOrDefault(emptyList())
-        return saved + request.history
+        return (saved + request.history).filter { it.origin == null }
     }
 
     /**
@@ -4992,6 +5094,7 @@ class MainViewModel(
     }
 
     fun onPromptChanged(newPrompt: String, cursorPosition: Int = newPrompt.length) {
+        composerText = newPrompt
         val trigger = TriggerParser.parseTrigger(newPrompt, cursorPosition)
         when (trigger.type) {
             TriggerType.SLASH_COMMAND -> {
@@ -5954,6 +6057,7 @@ class MainViewModel(
         )
         attemptedProfileIds.clear()
         state.value.provider.profileId.takeIf { it.isNotBlank() }?.let { attemptedProfileIds += it }
+        emitModEvent(ModEvent.TASK_STARTED, { mapOf("task.prompt" to prompt.trim()) }, project = project)
         supervisor.registerFallbackDecider(taskRecord.taskId) { taskId, errorMsg ->
             applyFallbackForTask(taskId, errorMsg)
         }
@@ -6026,6 +6130,7 @@ class MainViewModel(
             else -> record.lastError ?: title
         }
         val finishedAt = record.completedAt ?: System.currentTimeMillis()
+        val taskStartedAt = _state.value.taskStartedAtMillis
         _state.update { current ->
             if (!RuntimeSessionRouting.followsTask(current, activeUiTaskId, record)) current else {
                 val subagents = when {
@@ -6066,8 +6171,33 @@ class MainViewModel(
         touchProject(record.projectId)
         refreshProjectFiles()
         persistMessages(includeLiveProcess = true, immediate = true)
+        emitTaskFinished(verified || unverified, cancelled, detail, taskStartedAt, finishedAt)
+        flushModPosts()
         // A stop the user asked for elsewhere (the notification) drops the queue like Stop does; Steer keeps it.
         if (cancelled && followUpSteerTaskId != taskId) clearFollowUps() else releaseFollowUpsAfter(taskId)
+    }
+
+    /** assistant.message.completed with the reply that ended the task, then task.finished. */
+    private fun emitTaskFinished(completed: Boolean, cancelled: Boolean, detail: String, startedAt: Long?, finishedAt: Long) {
+        val project = _state.value.activeProject
+        emitModEvent(ModEvent.ASSISTANT_MESSAGE_COMPLETED, project = project, vars = {
+            val messages = _state.value.messages
+            val lastUser = messages.indexOfLast { it.fromUser }
+            val reply = messages.drop(lastUser + 1).lastOrNull { !it.fromUser && it.origin == null && it.text.isNotBlank() }
+            mapOf("message.text" to reply?.text.orEmpty())
+        })
+        val status = when {
+            completed -> "completed"
+            cancelled -> "stopped"
+            else -> "failed"
+        }
+        emitModEvent(ModEvent.TASK_FINISHED, status = status, project = project, vars = {
+            mapOf(
+                "task.status" to status,
+                "task.duration" to ModHookRunner.formatDuration(finishedAt - (startedAt ?: finishedAt)),
+                "task.error" to if (status == "failed") detail else "",
+            )
+        })
     }
 
     private fun queueFollowUp(project: Project, prompt: String, attachments: List<ChatAttachment>) {
@@ -6363,7 +6493,8 @@ class MainViewModel(
         val startedAt = current.taskStartedAtMillis ?: return current
         val lastUserIndex = current.messages.indexOfLast { it.fromUser }
         val responseIndex = current.messages.indices.lastOrNull { index ->
-            index > lastUserIndex && !current.messages[index].fromUser && current.messages[index].text.isNotBlank()
+            index > lastUserIndex && !current.messages[index].fromUser && current.messages[index].origin == null &&
+                current.messages[index].text.isNotBlank()
         } ?: return current
         val updated = current.messages.toMutableList()
         updated[responseIndex] = updated[responseIndex].copy(
@@ -6430,7 +6561,7 @@ class MainViewModel(
                         current
                     }
                     val lastMessage = timeline.messages.lastOrNull()
-                    if (lastMessage != null && !lastMessage.fromUser && lastMessage.workItems.isEmpty() && lastMessage.workedMillis == 0L) {
+                    if (lastMessage != null && !lastMessage.fromUser && lastMessage.origin == null && lastMessage.workItems.isEmpty() && lastMessage.workedMillis == 0L) {
                         timeline.copy(messages = timeline.messages.dropLast(1) + lastMessage.copy(text = lastMessage.text + event.text))
                     } else {
                         timeline.copy(messages = timeline.messages + ChatMessage(fromUser = false, text = event.text))
@@ -6631,6 +6762,18 @@ class MainViewModel(
             }
         }
         if (!accepted) return
+        when (event) {
+            is RuntimeEvent.SessionCompleted -> emitModEvent(ModEvent.SESSION_COMPLETED)
+            is RuntimeEvent.SessionFailed -> emitModEvent(ModEvent.SESSION_FAILED, { mapOf("session.error" to event.reason) })
+            is RuntimeEvent.FilesChanged -> emitModEvent(ModEvent.FILES_CHANGED, {
+                mapOf("files.count" to event.paths.size.toString(), "files.paths" to event.paths.take(20).joinToString(", "))
+            })
+            is RuntimeEvent.ToolCompleted -> emitModEvent(ModEvent.TOOL_COMPLETED, { mapOf("tool.name" to event.toolName, "tool.summary" to event.summary) })
+            is RuntimeEvent.ToolRequested -> emitModEvent(ModEvent.TOOL_REQUESTED, {
+                mapOf("tool.name" to event.request.toolName, "tool.risk" to event.request.risk.name.lowercase(Locale.ROOT))
+            })
+            else -> Unit
+        }
         discoverAgentPreview(event, task)
         if (event is RuntimeEvent.FilesChanged) {
             _state.value.activeProject?.id?.let { touchProject(it) }
@@ -6957,6 +7100,7 @@ class MainViewModel(
         private const val AUTO_OPEN_DEDUPE_MS = 15_000L
         private const val CLAUDE_STATUS_RECHECK_MS = 30_000L
         private const val MOD_STABLE_AFTER_MS = 60_000L
+        private const val MAX_PENDING_MOD_POSTS = 5
         private const val DIAGNOSTICS_REFRESH_COOLDOWN_MS = 1_000L
         private const val RECENT_EXIT_CACHE_MS = 60_000L
         private const val LEGACY_GITHUB_TOKEN_KEY = "GITHUB_APP"

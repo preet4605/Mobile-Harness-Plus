@@ -523,6 +523,11 @@ data class ChatMessage(
     val workItems: List<ActivityItem> = emptyList(),
     val workedMillis: Long = 0L,
     val activeSkill: String? = null,
+    /**
+     * Who wrote a message that is neither the user's nor the agent's, as `mod:<id>` for a mod's
+     * chat post. Shown in the chat, never sent to the agent as conversation.
+     */
+    val origin: String? = null,
 )
 
 data class ChatAttachment(
