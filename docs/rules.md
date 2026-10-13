@@ -34,13 +34,11 @@ Use threat modeling at changed trust boundaries, including spoofing, tampering, 
 
 Use installed Gradle and configured ARM64 Android tools. Do not add an aapt2 override or change dependency/build-tool versions without need. Process utilities such as ps/top/free/uptime may fail in PRoot; use bounded harness-tools doctor checks. Log long commands and give progress updates. Keep Preview open during inspection; treat tool errors as failures.
 
-After code/build changes, generate both online variants and place verified APKs in the root:
+After code/build changes, generate both online variants and place only the 2 verified APKs in the root (stable and .dev debug):
 
     gradle assembleOnlineDebug assembleOnlineRelease --console=plain
-    cp -f app/build/outputs/apk/online/debug/app-online-debug.apk app-online-debug.apk
-    cp -f app-online-debug.apk mobile-harness-dev.apk
-    cp -f app/build/outputs/apk/online/release/app-online-release.apk app-online-release.apk
-    cp -f app-online-release.apk mobile-harness-stable.apk
+    cp -f app/build/outputs/apk/online/debug/app-online-debug.apk mobile-harness-dev.apk
+    cp -f app/build/outputs/apk/online/release/app-online-release.apk mobile-harness-stable.apk
     stat -c "%s %n" *.apk
     md5sum *.apk
 
