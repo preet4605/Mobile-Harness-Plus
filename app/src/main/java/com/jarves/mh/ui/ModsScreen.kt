@@ -315,7 +315,7 @@ private fun LazyListScope.studioSection(
     item(key = "drafts") {
         ListSection(
             header = "Drafts",
-            footer = if (drafts.isEmpty()) "Drafts you build appear here." else "Tap a draft to keep working on it with its agent. Install checks it and shows what it asks for first.",
+            footer = if (drafts.isEmpty()) "Drafts you build appear here." else "Tap a draft to keep working on it with its agent. Install checks it and shows what it asks for first. Once installed, each finished run in the draft reloads the mod, so its page shows the latest version; new permissions wait for Install.",
         ) {
             if (drafts.isEmpty()) {
                 ListRow("No drafts yet", subtitle = "Build a new mod to start one.")

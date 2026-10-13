@@ -109,4 +109,25 @@ class ModStudioTest {
         ModEvent.entries.forEach { assertTrue("guide lists ${it.id}", "`${it.id}`" in guide) }
         ModCapability.entries.filter { it.usable }.forEach { assertTrue("guide lists ${it.id}", "`${it.id}`" in guide) }
     }
+
+    @Test
+    fun `an installed draft reloads after a run unless it asks for more`() {
+        val registry = registry()
+        val folder = draft()
+        assertEquals(DraftReload.NotInstalled, registry.reloadDraft(folder))
+        registry.install(registry.stageDraft(folder), emptySet(), ModTrust.BUILT, "Studio draft · Notes")
+        assertEquals(DraftReload.Unchanged, registry.reloadDraft(folder))
+
+        File(folder, "rules/style.md").writeText("Prefer tiny functions.")
+        val updated = registry.reloadDraft(folder) as DraftReload.Updated
+        assertEquals("Prefer tiny functions.", File(updated.mod.dir, "rules/style.md").readText())
+        assertEquals("Studio draft · Notes", updated.mod.sourceLabel)
+
+        // A new permission waits for the user's review; the installed mod stays as it was.
+        File(folder, "mod.json").writeText(draftManifest {
+            put("permissions", JSONArray().put(JSONObject().put("capability", "notify").put("reason", "Says when notes change")))
+        })
+        assertEquals(DraftReload.NeedsReview("Notes"), registry.reloadDraft(folder))
+        assertTrue(registry.snapshot.value.mods.single().manifest.permissions.isEmpty())
+    }
 }

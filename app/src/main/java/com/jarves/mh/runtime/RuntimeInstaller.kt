@@ -1819,6 +1819,11 @@ class RuntimeInstaller(private val context: Context) {
         install(script, content)
         install(File(rootfs, "usr/local/bin/harness-tools"),
             "#!/bin/sh\nexec /usr/local/bin/node /opt/pocket/harness/harness-tools.cjs \"${'$'}@\"\n".toByteArray(), true)
+        // The mod authoring kit (spec v2 §6.5): `mh-mod`, with the app's own shim for `mh-mod test`.
+        install(File(rootfs, "opt/pocket/harness/mod-kit.cjs"), context.assets.open("harness/mod-kit.cjs").use { it.readBytes() })
+        install(File(rootfs, "opt/pocket/mods/mh-shim.js"), context.assets.open("mods/mh-shim.js").use { it.readBytes() })
+        install(File(rootfs, "usr/local/bin/mh-mod"),
+            "#!/bin/sh\nexec /usr/local/bin/node /opt/pocket/harness/mod-kit.cjs \"${'$'}@\"\n".toByteArray(), true)
         // Claude's `--mcp-config` for mod tools (spec v2 P8); the server inherits Claude's environment.
         install(File(rootfs, CLAUDE_MOD_TOOLS_CONFIG.removePrefix("/")), JSONObject().put("mcpServers", JSONObject().put("mods", JSONObject()
             .put("command", "/usr/local/bin/node")

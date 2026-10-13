@@ -41,6 +41,15 @@ enum class ModStatus(val label: String) {
     PAUSED("Paused"),
 }
 
+/** What [ModRegistry.reloadDraft] did. */
+sealed interface DraftReload {
+    data object NotInstalled : DraftReload
+    data object Unchanged : DraftReload
+    data class Updated(val mod: InstalledMod) : DraftReload
+    data class NeedsReview(val name: String) : DraftReload
+    data class Failed(val name: String, val reason: String) : DraftReload
+}
+
 data class InstalledMod(
     val manifest: ModManifest,
     val dir: File,
@@ -151,6 +160,38 @@ class ModRegistry(
 
     /** A Mod Studio draft folder; see [ModPackage.stageDraft]. */
     fun stageDraft(source: File): StagedMod = ModPackage.stageDraft(source, newStagingDir(), appVersionCode)
+
+    /**
+     * Mod Studio dev loop (spec v2 §6.4, §6.7): once a draft's mod is installed from Studio, a
+     * finished agent run in the draft installs the new files again, keeping its grants, as long as
+     * it asks for no new or wider permission. Anything else waits for the user's review.
+     */
+    fun reloadDraft(source: File): DraftReload {
+        val id = runCatching { org.json.JSONObject(File(source, ModPackage.MANIFEST).readText()).optString("id") }.getOrNull()
+        val previous = _snapshot.value.mods.firstOrNull { it.id == id }
+        if (previous == null || previous.trust != ModTrust.BUILT || !previous.enabled) return DraftReload.NotInstalled
+        val staged = try {
+            stageDraft(source)
+        } catch (e: ModInstallException) {
+            return DraftReload.Failed(previous.manifest.name, e.message ?: "it has problems")
+        }
+        try {
+            if (staged.manifest == previous.manifest) {
+                discard(staged)
+                return DraftReload.Unchanged
+            }
+            fun ModPermission.scope() = listOf(capability.id, paths.sorted(), events.sorted(), hosts.sorted(), commands.sorted())
+            val before = previous.manifest.permissions.map { it.scope() }.toSet()
+            if (staged.manifest.permissions.any { it.scope() !in before }) {
+                discard(staged)
+                return DraftReload.NeedsReview(staged.manifest.name)
+            }
+            return DraftReload.Updated(install(staged, previous.granted, ModTrust.BUILT, previous.sourceLabel))
+        } catch (e: ModInstallException) {
+            discard(staged)
+            return DraftReload.Failed(previous.manifest.name, e.message ?: "it could not be installed")
+        }
+    }
 
     fun discard(staged: StagedMod) {
         if (staged.dir.canonicalFile.toPath().startsWith(stagingRoot.canonicalFile.toPath())) staged.dir.deleteRecursively()

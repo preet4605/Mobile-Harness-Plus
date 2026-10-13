@@ -90,6 +90,13 @@ class SkillManager(
             ),
         )
 
+        // Kept in step with the app's mod API, unlike the starter skills the user may have edited.
+        File(bundledSkillsDir, "mod-authoring").apply { mkdirs() }.let { dir ->
+            val text = com.jarves.mh.mods.ModAuthoringGuide.skill()
+            val file = File(dir, "SKILL.md")
+            if (!file.isFile || file.readText() != text) file.writeText(text)
+        }
+
         defaultSkills.forEach { (name, info) ->
             val (desc, content) = info
             val dir = File(bundledSkillsDir, name).apply { mkdirs() }

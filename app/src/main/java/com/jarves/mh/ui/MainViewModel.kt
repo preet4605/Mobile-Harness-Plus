@@ -6999,6 +6999,22 @@ class MainViewModel(
         if (cancelled && followUpSteerTaskId != taskId) clearFollowUps() else releaseFollowUpsAfter(taskId)
     }
 
+    /** Spec v2 §6.4: a Studio draft whose mod is installed reloads it when an agent run ends. */
+    private fun reloadStudioDraft(project: Project) {
+        val registry = modRegistry ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val root = runCatching { projectWorkspaceRoot(project) }.getOrNull() ?: return@launch
+            if (!File(root, "mod.json").isFile || !File(root, com.jarves.mh.mods.ModAuthoringGuide.GUIDE_FILE).isFile) return@launch
+            val message = when (val result = runCatching { registry.reloadDraft(root) }.getOrNull()) {
+                is com.jarves.mh.mods.DraftReload.Updated -> "Reloaded ${result.mod.manifest.name} ${result.mod.manifest.version} from this draft."
+                is com.jarves.mh.mods.DraftReload.NeedsReview -> "${result.name} asks for new permissions. Install it from Mods > Studio to review them."
+                is com.jarves.mh.mods.DraftReload.Failed -> "${result.name} wasn't reloaded: ${result.reason}"
+                else -> null
+            } ?: return@launch
+            _state.update { it.copy(toastMessage = message) }
+        }
+    }
+
     /** assistant.message.completed with the reply that ended the task, then task.finished. */
     private fun emitTaskFinished(completed: Boolean, cancelled: Boolean, detail: String, startedAt: Long?, finishedAt: Long) {
         val project = _state.value.activeProject
@@ -7014,6 +7030,7 @@ class MainViewModel(
             cancelled -> "stopped"
             else -> "failed"
         }
+        project?.let(::reloadStudioDraft)
         emitModEvent(ModEvent.TASK_FINISHED, status = status, project = project, vars = {
             mapOf(
                 "task.status" to status,

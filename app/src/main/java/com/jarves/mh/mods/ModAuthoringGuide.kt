@@ -31,6 +31,26 @@ object ModAuthoringGuide {
         build the mod only in the files it describes. The user installs it from Mods > Studio.
     """.trimIndent() + "\n"
 
+    /** The bundled "mod-authoring" skill (spec v2 §6.5), so any harness can build a mod anywhere. */
+    fun skill(): String = """
+        ---
+        name: mod-authoring
+        description: Build Mobile Harness mods (mod.json, a hooks module with on() and the ${'$'} API, dashboards) and check them with the mh-mod kit.
+        ---
+
+        # Building a Mobile Harness mod
+
+        - Start a mod with `mh-mod init dev.yourname.mod-name`, or work in a Mod Studio draft, which has
+          the full guide in `$GUIDE_FILE`. Read that guide before writing code; it lists every event, `${'$'}` call
+          and permission.
+        - Check your work before you say it is done: `mh-mod validate` (what the app would refuse) and
+          `mh-mod test` (runs `tests/*.test.js` against the app's own shim with a mocked host).
+        - A mod is one hooks module (`hooks/register.js`, plain JavaScript, no imports) plus mod.json.
+          Ask only for the permissions it uses, with a reason each.
+        - The user installs it from Mods > Studio (or imports a .mhmod). Once installed from a draft,
+          each finished agent run in the draft reloads it, unless it asks for new permissions.
+    """.trimIndent() + "\n"
+
     fun firstPrompt(idea: String): String =
         "Build a Mobile Harness mod in this folder. Read $GUIDE_FILE first and keep to what it allows.\n\n" +
             "What the mod should do: ${idea.trim()}"
@@ -157,8 +177,15 @@ object ModAuthoringGuide {
         appendLine()
         appendLine("- Run `python3 -m json.tool mod.json > /dev/null` to catch JSON mistakes.")
         appendLine("- Check every file `mod.json` names exists, and every `{{variable}}` is allowed where it is used.")
-        appendLine("- For mod code, if `node` is installed: `cp hooks/register.js /tmp/check.mjs && node --check /tmp/check.mjs`.")
+        appendLine("- Run `mh-mod validate` here: it checks mod.json, permissions and the hooks module the way the app")
+        appendLine("  loads them. Then `mh-mod test` runs `tests/*.test.js` against the app's own shim with a mocked host:")
+        appendLine("  `test('name', async () => { const mod = await loadMod({ mocks: { 'agent.ask': () => ({ text: 'ok' }) } });")
+        appendLine("  await mod.emit('run.end', { status: 'completed' }); assert.deepEqual(mod.toasts, ['Done']) })`.")
+        appendLine("  `mod.gate(event, e)`, `mod.render(surface, e)` and `mod.press(surface, key)` test gates and drawings;")
+        appendLine("  `mod.calls`, `mod.store`, `mod.logs`, `mod.commands` and `mod.tools` show what it did.")
         appendLine("  After installing, the mod's page shows whether its code runs (Controls) and its log (Activity).")
+        appendLine("- After the user installs this draft once, every agent run you finish here reloads the mod, so they")
+        appendLine("  see your changes on its page. New or wider permissions wait until they tap Install again.")
         appendLine("- Then tell the user to open Mods > Studio and tap Install on this draft.")
     }
 

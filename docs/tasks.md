@@ -1,8 +1,19 @@
 # Tasks and progress
 
+## Mod Studio dev loop and authoring kit (spec v2 phase P9, rest) — 2026-10-13
+
+COMPLETE: agents on any harness can build and check mods, and Studio drafts reload as they change.
+
+- `mh-mod` in the guest (`assets/harness/mod-kit.cjs`, installed with the harness tools, with a copy of the app's shim): `init <id>` scaffolds a mod with a hooks module and a test; `validate` checks mod.json, permissions (the capability list is kept equal to the app's by a test) and the hooks module through the app's own module transform, and flags `require`, `import()`, `eval` and `Function`; `test` runs `tests/*.test.js` with `loadMod()` driving the real shim (emit, gate, render, press; mocked `$` calls; recorded toasts, statuses, logs, calls, store, commands, tools); `pack` compiles JSX/TS only when esbuild is installed and otherwise says how to write `h()` calls.
+- A bundled `mod-authoring` skill (rewritten whenever the app's text changes) points every harness at the guide and the kit. `MODDING.md` in drafts explains `mh-mod validate`/`test` and the reload rule.
+- Hot reload: when an agent run ends in a Studio draft whose mod is installed (Studio trust, turned on), the draft is staged again; unchanged drafts are left alone, changed ones reinstall with the same grants and source, and a draft asking for a new or wider permission waits for Install (a toast says which). The mod's page is the live preview.
+- Defaults taken: no separate preview sandbox with an empty store (the installed draft's page is the preview, and Studio trust already keeps HIGH permissions off until trusted); `.mh/mods` folders in ordinary projects are not watched (Studio drafts are the dev loop); no web panes (P11, D2 deferred) and no sharing beyond .mhmod import/export (P12, D8 local import first).
+- VERIFIED: `ModStudioTest` (not installed, unchanged, reloaded with the new file and the same source, new permission waits); `node --test tools/tests/mod-kit.test.cjs` (module transform, validate problems, a mod driven through events, gates, drawing and taps, init plus its own passing test, capability list equal to the app's). Full `testOnlineDebugUnitTest` 1500 tests, 0 failures; harness-tools and mod-kit node tests 16/16.
+- NOT RUN: `mh-mod` inside the phone's Ubuntu guest; a harness building a mod from one line on a device (the spec's P9 check).
+
 ## Mod network and model calls (spec v2 phase P10) — 2026-10-13
 
-COMPLETE: mod code can reach named websites and ask the user's model, within limits.
+COMPLETE (pushed to harness-dev as 60efec9): mod code can reach named websites and ask the user's model, within limits.
 
 - `$.http.fetch(url, { method, headers, body })` (`net.fetch`, HIGH) needs `scope.hosts` (`api.example.com`, or `*.example.com` for subdomains; the manifest now accepts that form). https on the standard port only; IP addresses, localhost and user:password URLs are refused; Host, Cookie and other transport headers can't be set; no cookies are kept and redirects are not followed (the 3xx comes back); 256 KB body, 1 MB answer, 15 s; at most 4 requests at a time. `Set-Cookie` is dropped from the answer. One audit entry per host a minute. The permission confirm and rows show the hosts.
 - `$.model.complete({ prompt, system, maxTokens })` (`model.complete`, HIGH) sends one non-streamed request to the active provider when it is API-key based (Anthropic messages, OpenAI chat or responses shapes; `ProviderApiClient.complete`). Account sign-ins (Claude subscription, ChatGPT, Antigravity) are refused. Each mod has 50,000 tokens a day (UTC), counted from the provider's usage and held as an estimate while a call runs; `$.model.usage()` reports it. Saved in the mod's data folder.
