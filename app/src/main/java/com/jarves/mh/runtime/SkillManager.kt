@@ -15,6 +15,11 @@ import java.io.File
 class SkillManager(
     private val baseDir: File,
 ) {
+    companion object {
+        /** Codex's default `project_doc_max_bytes`; a longer AGENTS.md is truncated there, so it is still injected. */
+        const val CODEX_PROJECT_DOC_MAX_BYTES = 32L * 1024
+    }
+
     constructor(context: Context) : this(context.filesDir)
 
     val globalSkillsDir: File
@@ -329,6 +334,41 @@ class SkillManager(
         }
 
         return result
+    }
+
+    /**
+     * Drops rules the harness already reads by itself, so they are not paid for twice. Claude Code
+     * loads `CLAUDE.md`, the `.md` files in `.claude/rules` and `~/.claude/CLAUDE.md` (not `AGENTS.md`); Codex
+     * loads `AGENTS.md` from its working directory up to its 32 KiB project-doc limit, unless an
+     * `AGENTS.override.md` replaces it (both verified against Claude Code 2.1.299 and Codex 0.161.0).
+     * A rule with the same text as a natively loaded one goes too. Other harnesses keep every rule.
+     */
+    fun withoutNativelyLoadedRules(
+        rules: List<RuleInfo>,
+        agent: com.jarves.mh.model.AgentKind,
+        projectDir: File?,
+        rootfsDir: File?,
+    ): List<RuleInfo> {
+        val native = nativeRuleFiles(agent, projectDir, rootfsDir)
+        if (native.isEmpty()) return rules
+        fun canonical(path: String) = runCatching { File(path).canonicalPath }.getOrDefault(path)
+        fun text(rule: RuleInfo) = rule.content.trim().replace("\r\n", "\n")
+        val loaded = rules.filter { canonical(it.filePath) in native }
+        val loadedText = loaded.map(::text).filter(String::isNotEmpty).toSet()
+        return rules.filter { it !in loaded && text(it) !in loadedText }
+    }
+
+    private fun nativeRuleFiles(agent: com.jarves.mh.model.AgentKind, projectDir: File?, rootfsDir: File?): Set<String> {
+        val files = when (agent) {
+            com.jarves.mh.model.AgentKind.CLAUDE_CODE -> listOfNotNull(
+                projectDir?.let { File(it, "CLAUDE.md") },
+                rootfsDir?.let { File(it, "root/.claude/CLAUDE.md") },
+            ) + projectDir?.let { File(it, ".claude/rules").listFiles()?.filter { f -> f.isFile && f.name.endsWith(".md") } }.orEmpty()
+            com.jarves.mh.model.AgentKind.CODEX -> listOfNotNull(projectDir?.let { File(it, "AGENTS.md") }
+                ?.takeIf { it.isFile && it.length() <= CODEX_PROJECT_DOC_MAX_BYTES && !File(projectDir, "AGENTS.override.md").exists() })
+            else -> emptyList()
+        }
+        return files.filter(File::isFile).mapNotNull { runCatching { it.canonicalPath }.getOrNull() }.toSet()
     }
 
     /**

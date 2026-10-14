@@ -7018,7 +7018,10 @@ class MainViewModel(
         }
 
         // Inject active rules and skills progressive disclosure index
-        val rulesBlock = skillManager.buildRulesBlock(_state.value.activeRules)
+        // Rule files the harness reads by itself are not sent a second time.
+        val rulesBlock = skillManager.buildRulesBlock(skillManager.withoutNativelyLoadedRules(
+            _state.value.activeRules, _state.value.agentKind, projectWorkspaceRoot(project), installer.rootfs,
+        ))
         val skillsIndex = skillManager.buildProgressiveDisclosureIndex(_state.value.activeSkills)
         // Standing context: bridges that resume a native session send it once, not in every message.
         val standingContext = buildString {

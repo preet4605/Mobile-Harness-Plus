@@ -441,4 +441,38 @@ class SkillManagerTest {
         val skillDir = File(projectDir, ".agents/skills/$name").apply { mkdirs() }
         File(skillDir, "SKILL.md").writeText("---\nname: $name\ndescription: test skill\n---\nBody.")
     }
+
+    @Test
+    fun rulesTheHarnessLoadsItselfAreNotInjectedAgain() {
+        val manager = SkillManager(tempFolder.newFolder("files_native"))
+        val project = tempFolder.newFolder("project_native")
+        val rootfs = tempFolder.newFolder("rootfs_native")
+        File(project, "CLAUDE.md").writeText("Claude rules")
+        File(project, "AGENTS.md").writeText("Shared rules")
+        File(project, "GEMINI.md").writeText("Shared rules")
+        File(project, ".claude/rules").mkdirs(); File(project, ".claude/rules/style.md").writeText("Style rules")
+        File(rootfs, "root/.claude").mkdirs(); File(rootfs, "root/.claude/CLAUDE.md").writeText("User Claude rules")
+        val rules = manager.discoverRules(project, rootfs)
+        fun names(agent: com.jarves.mh.model.AgentKind) =
+            manager.withoutNativelyLoadedRules(rules, agent, project, rootfs).map { File(it.filePath).name }.toSet()
+
+        val claude = names(com.jarves.mh.model.AgentKind.CLAUDE_CODE)
+        assertFalse("CLAUDE.md" in claude)
+        assertFalse("style.md" in claude)
+        assertTrue("Claude does not read AGENTS.md itself", "AGENTS.md" in claude)
+
+        val codex = names(com.jarves.mh.model.AgentKind.CODEX)
+        assertFalse("AGENTS.md" in codex)
+        assertFalse("identical text goes with it", "GEMINI.md" in codex)
+        assertTrue("CLAUDE.md" in codex)
+
+        assertEquals(rules, manager.withoutNativelyLoadedRules(rules, com.jarves.mh.model.AgentKind.ANTIGRAVITY, project, rootfs))
+        assertEquals(rules, manager.withoutNativelyLoadedRules(rules, com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS, project, rootfs))
+
+        File(project, "AGENTS.override.md").writeText("Override")
+        assertTrue("an override replaces AGENTS.md in Codex", "AGENTS.md" in names(com.jarves.mh.model.AgentKind.CODEX))
+        File(project, "AGENTS.override.md").delete()
+        File(project, "AGENTS.md").writeText("x".repeat((SkillManager.CODEX_PROJECT_DOC_MAX_BYTES + 1).toInt()))
+        assertTrue("Codex truncates past its limit", "AGENTS.md" in names(com.jarves.mh.model.AgentKind.CODEX))
+    }
 }
