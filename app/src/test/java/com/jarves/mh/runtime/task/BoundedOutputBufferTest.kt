@@ -9,6 +9,19 @@ import org.junit.Test
 class BoundedOutputBufferTest {
 
     @Test
+    fun `oversized error does not bypass the retained output budget`() {
+        val buffer = BoundedOutputBuffer(maxLines = 2, maxBytes = 200)
+        buffer.appendLine("error: " + "x".repeat(10_000))
+        buffer.appendLine("later output")
+
+        assertTrue(buffer.byteCount <= buffer.maxBytes)
+        val error = buffer.getLastError()
+        assertNotNull(error)
+        assertTrue(error!!.length * 2 <= buffer.maxBytes)
+        assertTrue(error.startsWith("error:"))
+    }
+
+    @Test
     fun `test buffer line count limit drops oldest lines`() {
         val buffer = BoundedOutputBuffer(maxLines = 5, maxBytes = 1024 * 1024)
 

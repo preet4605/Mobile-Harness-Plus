@@ -902,16 +902,18 @@ class AppPreferences(
         val end = endIndex.coerceAtMost(meta.count)
         val pages = ArrayDeque<List<ChatMessage>>()
         var chars = 0
-        var page = (end - 1) / meta.pageSize
-        while (end > 0 && page >= 0 && chars < budgetChars) {
+        var oldest = Int.MAX_VALUE
+        for (page in chatPageIndexes(dir).asReversed()) {
+            if (end <= 0 || page > (end - 1) / meta.pageSize) continue
+            if (chars >= budgetChars) break
             val messages = readChatPage(dir, page, meta).messages.take(end - page * meta.pageSize)
             pages.addFirst(messages)
             chars += messages.sumOf { message ->
                 if (PromptContextSupport.isHistoryNoise(message)) 0 else minOf(message.text.length, PromptContextSupport.HISTORY_MAX_MESSAGE_CHARS)
             }
-            page--
+            oldest = page
         }
-        if (page >= 0) pages.addFirst(readChatPage(dir, 0, meta).messages)
+        if (end > 0 && oldest > 0) pages.addFirst(readChatPage(dir, 0, meta).messages)
         return pages.flatten()
     }
 
@@ -935,13 +937,60 @@ class AppPreferences(
 
     private fun chatPageFile(dir: File, page: Int): File = File(dir, String.format(java.util.Locale.ROOT, "%08d.json", page))
 
-    private fun readChatPagesMeta(dir: File): ChatPagesMeta? = runCatching {
-        val obj = JSONObject(File(dir, CHAT_PAGES_META).readText())
-        val pageSize = obj.getInt("pageSize")
-        val count = obj.getInt("count")
-        require(pageSize > 0 && count >= 0)
-        ChatPagesMeta(pageSize, count)
-    }.getOrNull()
+    private fun chatPageIndexes(dir: File): List<Int> = dir.listFiles().orEmpty().mapNotNull { file ->
+        if (!file.isFile) return@mapNotNull null
+        CHAT_PAGE_FILE.matchEntire(file.name)?.groupValues?.get(1)?.toIntOrNull()
+    }.sorted()
+
+    private fun readChatPagesMeta(dir: File): ChatPagesMeta? {
+        recoverChatPageWrite(dir)
+        return runCatching {
+            val obj = JSONObject(File(dir, CHAT_PAGES_META).readText())
+            val pageSize = obj.getInt("pageSize")
+            val count = obj.getInt("count")
+            require(pageSize == CHAT_PAGE_SIZE && count >= 0)
+            val highestPage = chatPageIndexes(dir).lastOrNull()
+            require(count.toLong() <= ((highestPage?.toLong() ?: -1L) + 1L) * pageSize)
+            ChatPagesMeta(pageSize, count)
+        }.getOrNull()
+    }
+
+    /** A durable undo journal keeps overwritten pages readable if a save stops before committing its meta. */
+    private fun recoverChatPageWrite(dir: File) {
+        val cleanup = File(dir, ".rollback-cleanup")
+        if (cleanup.exists()) check(cleanup.deleteRecursively()) { "Could not remove completed chat journal" }
+        val rollback = File(dir, ".rollback")
+        if (!rollback.exists()) return
+        val journalFile = File(rollback, "journal.json")
+        if (journalFile.isFile) {
+            val journal = JSONObject(journalFile.readText())
+            val committedToken = runCatching { JSONObject(File(dir, CHAT_PAGES_META).readText()).optString("transaction") }.getOrNull()
+            if (committedToken != journal.getString("token")) {
+                val pages = journal.getJSONArray("pages")
+                for (i in 0 until pages.length()) {
+                    val entry = pages.getJSONObject(i)
+                    val index = entry.getInt("index")
+                    require(index >= 0)
+                    val target = chatPageFile(dir, index)
+                    if (entry.getBoolean("existed")) {
+                        writeReplacing(target, File(rollback, target.name).readText())
+                    } else {
+                        check(!target.exists() || target.delete()) { "Could not remove uncommitted chat page" }
+                    }
+                }
+                if (journal.has("meta")) {
+                    val meta = File(dir, CHAT_PAGES_META)
+                    if (journal.isNull("meta")) check(!meta.exists() || meta.delete())
+                    else writeReplacing(meta, journal.getString("meta"))
+                }
+                verifiedChatFiles.keys.removeAll { File(it).parentFile == dir }
+                if (snapshotDir == dir.path) pageSnapshots.clear()
+            }
+        }
+        // Backups remain intact until every rollback write succeeds, so recovery can itself be interrupted.
+        check(rollback.renameTo(cleanup)) { "Could not retire chat rollback journal" }
+        check(cleanup.deleteRecursively()) { "Could not clean up chat rollback journal" }
+    }
 
     /** The chat as pages, moving an old single-file chat to pages first. */
     private fun openChatSource(projectId: String, chatId: String): ChatSource {
@@ -978,30 +1027,34 @@ class AppPreferences(
         return ChatSource.Pages(ChatPagesMeta(CHAT_PAGE_SIZE, messages.size))
     }
 
-    /** A pages folder without a readable meta: a first save stopped before its meta. The pages from 0 that exist are the chat. */
+    /** Recovers a missing/corrupt meta from the readable page inventory, preserving pages after gaps. */
     private fun recoverChatPagesMeta(dir: File): ChatPagesMeta {
-        var pages = 0
-        while (chatPageFile(dir, pages).isFile) pages++
-        if (pages == 0) return ChatPagesMeta(CHAT_PAGE_SIZE, 0)
-        val last = decodeChatFile(chatPageFile(dir, pages - 1)).messages.size
-        logChatFileProblem(dir, "no readable meta; using $pages page(s) found on disk")
-        return ChatPagesMeta(CHAT_PAGE_SIZE, (pages - 1) * CHAT_PAGE_SIZE + last)
+        val indexes = chatPageIndexes(dir)
+        val lastPage = indexes.lastOrNull() ?: return ChatPagesMeta(CHAT_PAGE_SIZE, 0)
+        val last = decodeChatFile(chatPageFile(dir, lastPage)).messages.size.coerceAtMost(CHAT_PAGE_SIZE)
+        logChatFileProblem(dir, "no readable meta; using ${indexes.size} page(s) found on disk")
+        return ChatPagesMeta(CHAT_PAGE_SIZE, Math.toIntExact(lastPage.toLong() * CHAT_PAGE_SIZE + last))
     }
 
-    /** Reads whole pages backwards from the page holding message [endIndex] - 1 until [minMessages] are loaded. */
+    /** Reads existing whole pages backwards; missing pages never cause an unbounded numeric scan. */
     private fun readPagesBackward(dir: File, meta: ChatPagesMeta, endIndex: Int, minMessages: Int): PagesRead {
         val pages = ArrayDeque<List<ChatMessage>>()
         var loaded = 0
         var clean = true
-        var page = (endIndex - 1) / meta.pageSize
-        while (endIndex > 0 && page >= 0 && loaded < minMessages) {
+        var expected = if (endIndex > 0) (endIndex - 1) / meta.pageSize else -1
+        var oldest = 0
+        for (page in chatPageIndexes(dir).asReversed()) {
+            if (endIndex <= 0 || page > (endIndex - 1) / meta.pageSize) continue
+            if (loaded >= minMessages) break
             val read = readChatPage(dir, page, meta)
             pages.addFirst(read.messages)
             loaded += read.messages.size
-            clean = clean && read.clean
-            page--
+            clean = clean && read.clean && page == expected
+            expected = page - 1
+            oldest = page
         }
-        val start = if (endIndex > 0) (page + 1) * meta.pageSize else 0
+        if (loaded < minMessages && expected >= 0) clean = false
+        val start = if (pages.isEmpty()) 0 else Math.toIntExact(oldest.toLong() * meta.pageSize)
         return PagesRead(ChatMessageWindow(start, pages.flatten()), clean)
     }
 
@@ -1021,21 +1074,35 @@ class AppPreferences(
         return PageRead(messages, decoded.isClean)
     }
 
-    /**
-     * Writes [messages] as the pages from [startIndex] on, then the meta, then removes pages past the new end. Each file
-     * is replaced by rename, and the meta goes last, so a crash leaves the previous count and readers ignore the rest.
-     */
+    /** Writes changed pages under an undo journal, commits the meta, then removes obsolete pages. */
     private fun writeChatPages(dir: File, messages: List<ChatMessage>, startIndex: Int, pageSize: Int) {
         dir.mkdirs()
+        recoverChatPageWrite(dir)
         val firstPage = startIndex / pageSize
-        messages.chunked(pageSize).forEachIndexed { offset, chunk -> writeChatPage(dir, firstPage + offset, chunk) }
-        val count = startIndex + messages.size
-        writeReplacing(
-            File(dir, CHAT_PAGES_META),
-            JSONObject().put("format", CHAT_PAGES_FORMAT).put("pageSize", pageSize).put("count", count).toString(),
-        )
-        // Pages past the new end hold a longer earlier version, or a save that stopped before its meta.
-        val pageCount = (count + pageSize - 1) / pageSize
+        val changed = messages.chunked(pageSize).mapIndexedNotNull { offset, chunk ->
+            val page = firstPage + offset
+            if (chatPageUnchanged(dir, page, chunk)) null else page to chunk
+        }
+        val rollback = File(dir, ".rollback")
+        check(rollback.mkdir()) { "Could not prepare chat rollback journal" }
+        val entries = JSONArray()
+        changed.forEach { (page, _) ->
+            val file = chatPageFile(dir, page)
+            if (file.isFile) {
+                backupUnverifiedChatFile(file)
+                file.copyTo(File(rollback, file.name))
+            }
+            entries.put(JSONObject().put("index", page).put("existed", file.isFile))
+        }
+        val token = java.util.UUID.randomUUID().toString()
+        val metaFile = File(dir, CHAT_PAGES_META)
+        writeReplacing(File(rollback, "journal.json"), JSONObject().put("token", token).put("pages", entries)
+            .put("meta", if (metaFile.isFile) metaFile.readText() else JSONObject.NULL).toString())
+        changed.forEach { (page, chunk) -> writeChatPage(dir, page, chunk) }
+        val count = Math.addExact(startIndex, messages.size)
+        writeReplacing(metaFile, JSONObject().put("format", CHAT_PAGES_FORMAT).put("pageSize", pageSize)
+            .put("count", count).put("transaction", token).toString())
+        val pageCount = (count.toLong() + pageSize - 1) / pageSize
         dir.listFiles().orEmpty().forEach { file ->
             val page = CHAT_PAGE_FILE.matchEntire(file.name)?.groupValues?.get(1)?.toIntOrNull() ?: return@forEach
             if (page >= pageCount) {
@@ -1044,15 +1111,16 @@ class AppPreferences(
                 file.delete()
             }
         }
+        recoverChatPageWrite(dir)
     }
 
-    /** Rewrites one page unless it still holds exactly [messages] as this instance last read or wrote it. */
+    private fun chatPageUnchanged(dir: File, page: Int, messages: List<ChatMessage>): Boolean =
+        snapshotDir == dir.path && pageSnapshots[page] == messages &&
+            verifiedChatFiles[chatPageFile(dir, page).path] == chatFileStamp(chatPageFile(dir, page))
+
+    /** Rewrites a changed page after its previous contents are secured by the journal. */
     private fun writeChatPage(dir: File, page: Int, messages: List<ChatMessage>) {
         val file = chatPageFile(dir, page)
-        val unchanged = snapshotDir == dir.path && pageSnapshots[page] == messages &&
-            verifiedChatFiles[file.path] == chatFileStamp(file)
-        if (unchanged) return
-        backupUnverifiedChatFile(file)
         verifiedChatFiles.remove(file.path)
         writeReplacing(file, encodeChatMessages(messages))
         verifiedChatFiles[file.path] = chatFileStamp(file)

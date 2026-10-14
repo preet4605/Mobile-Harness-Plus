@@ -211,9 +211,7 @@ class DshRuntimeBridge(
                 process = process,
                 pid = nativePid
             )
-            if (!bound) {
-                Log.w("DshBridge", "Process binding failed for task $taskId / session $sessionId (PID: $nativePid)")
-            }
+            check(bound) { "DeepSeek process no longer belongs to an active task" }
             if (userStopRequested) process.destroy()
             val sdkResult = runSdkSession(
                 process = process,

@@ -47,6 +47,24 @@ class MainViewModelFileEditTest {
     }
 
     @Test
+    fun deletingWhileASaveIsPendingIsRefusedEvenAfterClosingTheViewer() {
+        val project = testProject("PendingSave")
+        val file = app.writeWorkspaceFile(project, "a.txt", "old")
+        val io = ManualDispatcher()
+        val viewModel = open(project, "a.txt", io)
+        viewModel.beginFileEdit()
+        viewModel.updateFileDraft("saved")
+        viewModel.saveOpenedFile()
+        viewModel.closeFile()
+        viewModel.deleteWorkspaceEntry("a.txt")
+        io.runAll()
+
+        assertTrue(file.exists())
+        assertEquals("saved", file.readText())
+        assertFalse(viewModel.state.value.fileOperationRunning)
+    }
+
+    @Test
     fun anOutsideChangeIsAConflictAndIsNotOverwritten() {
         val project = testProject("Conflict")
         val file = app.writeWorkspaceFile(project, "a.txt", "old")

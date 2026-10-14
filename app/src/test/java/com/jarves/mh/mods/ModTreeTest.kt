@@ -37,6 +37,28 @@ class ModTreeTest {
     }
 
     @Test
+    fun `select options share the tree text limit`() {
+        fun select(vararg choices: Any) = el("Select", JSONObject().put("options", JSONArray(choices.toList())))
+        val exact = "x".repeat(ModTree.MAX_TEXT / 2)
+        assertEquals(listOf(exact to exact), ModTree.parse(select(exact))!!.props["options"])
+        val reason = "It has more than ${ModTree.MAX_TEXT} characters of text."
+        assertEquals(reason, refusal(select(exact + "x")))
+        assertEquals(reason, refusal(select(JSONObject().put("value", "v").put("label", "x".repeat(ModTree.MAX_TEXT)))))
+        assertEquals(reason, refusal(select(exact, "x")))
+        assertEquals(reason, refusal(el("Column", JSONObject(), el("Text", JSONObject(), "x"), select(exact))))
+        assertEquals(reason, refusal(el("Column", JSONObject(), select(exact), select("x"))))
+    }
+
+    @Test
+    fun `duplicate explicit sibling keys are refused but keys in separate parents are allowed`() {
+        fun keyed(key: String) = el("Divider", JSONObject().put("key", key))
+        assertEquals("Column has duplicate child key \"same\".", refusal(el("Column", JSONObject(), keyed("same"), keyed("same"))))
+        assertEquals("List has duplicate child key \"same\".", refusal(el("List", JSONObject(), keyed("same"), keyed("same"))))
+        assertEquals("accepted", refusal(el("Column", JSONObject(), keyed("1"), el("Divider"))))
+        assertEquals("accepted", refusal(el("Column", JSONObject(), el("Column", JSONObject(), keyed("same")), el("Column", JSONObject(), keyed("same")))))
+    }
+
+    @Test
     fun `trees the app can't draw are refused with the reason`() {
         assertEquals("\"Blink\" is not an element. Use one of: ${ModTree.ELEMENTS.joinToString()}.", refusal(el("Blink")))
         assertEquals("Text has no \"colour\" prop.", refusal(el("Text", JSONObject().put("colour", "red"), "x")))

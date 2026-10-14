@@ -72,7 +72,7 @@ class RuntimeHealthMonitor {
         _snapshot.update { current ->
             current.copy(
                 activeTaskCount = (current.activeTaskCount - 1).coerceAtLeast(0),
-                activeProcessCount = (current.activeProcessCount - 1).coerceAtLeast(0),
+                activeProcessCount = (current.activeProcessCount - if (pid != null && pid in current.activePids) 1 else 0).coerceAtLeast(0),
                 activeTaskIds = current.activeTaskIds - taskId,
                 activePids = if (pid != null) current.activePids - pid else current.activePids,
                 totalTasksCompleted = current.totalTasksCompleted + 1,
@@ -87,7 +87,7 @@ class RuntimeHealthMonitor {
         _snapshot.update { current ->
             current.copy(
                 activeTaskCount = (current.activeTaskCount - 1).coerceAtLeast(0),
-                activeProcessCount = (current.activeProcessCount - 1).coerceAtLeast(0),
+                activeProcessCount = (current.activeProcessCount - if (pid != null && pid in current.activePids) 1 else 0).coerceAtLeast(0),
                 activeTaskIds = current.activeTaskIds - taskId,
                 activePids = if (pid != null) current.activePids - pid else current.activePids,
                 totalTasksFailed = current.totalTasksFailed + 1,
@@ -113,7 +113,7 @@ class RuntimeHealthMonitor {
         _snapshot.update { current ->
             current.copy(
                 activeTaskCount = (current.activeTaskCount - 1).coerceAtLeast(0),
-                activeProcessCount = (current.activeProcessCount - 1).coerceAtLeast(0),
+                activeProcessCount = (current.activeProcessCount - if (pid != null && pid in current.activePids) 1 else 0).coerceAtLeast(0),
                 activeTaskIds = current.activeTaskIds - taskId,
                 activePids = if (pid != null) current.activePids - pid else current.activePids,
                 totalTasksAbandoned = current.totalTasksAbandoned + 1,

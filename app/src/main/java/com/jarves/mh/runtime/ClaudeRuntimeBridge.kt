@@ -346,9 +346,7 @@ class ClaudeRuntimeBridge(
                 process = process,
                 pid = nativePid
             )
-            if (!bound) {
-                Log.w("ClaudeBridge", "Process binding failed for task $taskId / session $sessionId (PID: $nativePid)")
-            }
+            check(bound) { "Claude process no longer belongs to an active task" }
             if (userStopRequested) process.destroy()
             coroutineScope {
                 val permissionWatcher = launch { watchPermissionRequests(sessionId) }

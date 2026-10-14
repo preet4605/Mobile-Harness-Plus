@@ -37,7 +37,7 @@ internal fun workspaceChildPath(parentPath: String, name: String): String =
  */
 internal fun workspaceFilesBusy(state: AppUiState): Boolean =
     state.isRunning || state.projectTerminalRunning || state.androidBuildRunning ||
-        state.projectExportRunning || state.fileOperationRunning
+        state.projectExportRunning || state.fileOperationRunning || state.openedFileEdit?.saving == true
 
 /**
  * Why [name] can't be used for a new or renamed file or folder, or null when it can. Names are

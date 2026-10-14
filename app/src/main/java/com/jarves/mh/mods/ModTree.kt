@@ -132,10 +132,14 @@ object ModTree {
         }
         val rawChildren = o.optJSONArray("children") ?: JSONArray()
         if (type in NO_CHILDREN && rawChildren.length() > 0) fail("$type takes no children.")
+        val childKeys = HashSet<String>()
         val children = (0 until rawChildren.length()).map { i ->
             val child = rawChildren.opt(i)
             val parsed = node(child, depth + 1, counter, "Child ${i + 1} of $type")
             if (type in TEXT_ONLY && parsed.type != ModNode.TEXT) fail("$type can only hold text, not ${parsed.type}.")
+            (parsed.props["key"] as? String)?.let { key ->
+                if (!childKeys.add(key)) fail("$type has duplicate child key \"$key\".")
+            }
             parsed
         }
         return ModNode(type, props, children)
@@ -171,7 +175,10 @@ object ModTree {
                         v to (option.optString("label").ifBlank { v })
                     }
                     else -> fail("$type.options must hold text or { value, label }.")
-                }.also { (v, l) -> counter.text += v.length + l.length }
+                }.also { (v, l) ->
+                    counter.text += v.length + l.length
+                    if (counter.text > MAX_TEXT) fail("It has more than $MAX_TEXT characters of text.")
+                }
             }
         }
         Src -> {

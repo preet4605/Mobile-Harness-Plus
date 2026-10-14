@@ -5,6 +5,11 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -34,6 +39,34 @@ class DuplicateExecutionProtectionTest {
         assertTrue(executed)
         assertFalse(lock.isTaskActive("task-1"))
         assertFalse(lock.isProjectActive("project-1"))
+    }
+
+    @Test
+    fun `cancelled task releases ownership after contended cleanup`() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val execution = launch {
+            lock.withExecutionLock("cancelled-task", "project") {
+                entered.complete(Unit)
+                awaitCancellation()
+            }
+        }
+        entered.await()
+        // Hold the admission mutex to force cleanup to suspend after cancellation.
+        val mutex = TaskExecutionLock::class.java.getDeclaredField("mutex").let {
+            it.isAccessible = true
+            it.get(lock) as Mutex
+        }
+        mutex.lock()
+        try {
+            execution.cancel()
+            kotlinx.coroutines.yield()
+        } finally {
+            mutex.unlock()
+        }
+        withTimeout(2_000) { execution.join() }
+        assertFalse(lock.isTaskActive("cancelled-task"))
+        assertFalse(lock.isProjectActive("project"))
+        lock.withExecutionLock("next-task", "project") { }
     }
 
     @Test

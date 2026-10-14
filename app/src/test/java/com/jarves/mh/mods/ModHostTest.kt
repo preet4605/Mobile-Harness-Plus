@@ -7,6 +7,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
@@ -379,7 +381,10 @@ class ModHostTest {
         assertTrue(host.logText("dev.test.b"), "loses its in-memory state" in host.logText("dev.test.b"))
 
         engines[1].kill(culprit = engines[1].liveIsolates().first())
-        waitFor("a third engine") { engines.size == 3 && engines[2].liveIsolates().size == 2 }
+        waitFor("a third engine with both mods running") {
+            engines.size == 3 && engines[2].liveIsolates().size == 2 &&
+                host.info("dev.test.a")?.state == ModRunState.RUNNING && host.info("dev.test.b")?.state == ModRunState.RUNNING
+        }
         engines[2].kill(culprit = engines[2].liveIsolates().first())
         waitFor("mod code to pause") { host.snapshot.value.engine == ModEngineState.PAUSED }
         assertEquals(host.logText("dev.test.b"), ModRunState.BLOCKED, host.info("dev.test.b")?.state)
@@ -400,6 +405,34 @@ class ModHostTest {
         assertTrue("can't import" in host.info("dev.test.imports")?.message.orEmpty())
         assertTrue(host.info("dev.test.syntax")?.message.orEmpty(), "SyntaxError" in host.info("dev.test.syntax")?.message.orEmpty())
         assertTrue("export a function named register" in host.info("dev.test.empty")?.message.orEmpty())
+    }
+
+    @Test
+    fun `unloading a mod cancels its pending sleep jobs`() {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('tool.call', async ($) => {
+                const sleeping = $.clock.sleep(600000)
+                await $.ui.status('sleeping')
+                await sleeping
+              })
+            }
+        """.trimIndent())
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod to run") { host.info()?.state == ModRunState.RUNNING }
+        // Observe coroutine ownership without adding production diagnostics solely for this test.
+        val scope = ModHost::class.java.getDeclaredField("scope").apply { isAccessible = true }.get(host) as CoroutineScope
+        val owner = scope.coroutineContext[Job]!!
+        val before = owner.children.toSet()
+        host.emit("tool.call", JSONObject())
+        waitFor("the sleeping hook") { host.info()?.status == "sleeping" && owner.children.count() > before.size }
+        val pending = owner.children.filter { it !in before }.toList()
+        assertTrue("Sleep must create pending host work", pending.isNotEmpty())
+        registry.setEnabled("dev.test.sample", false)
+        waitFor("the mod to unload") { engines.single().liveIsolates().isEmpty() }
+        waitFor("pending sleep work to be canceled", timeoutMs = 2_000) { pending.none { it.isActive } }
     }
 
     @Test

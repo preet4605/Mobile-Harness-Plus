@@ -275,8 +275,16 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             if (resolvedPid == null || resolvedPid <= 0) {
                 Log.w(TAG, "Process PID is missing or invalid for task $taskId (session $sessionId)")
             }
-            processSupervisor.register(taskId, process, resolvedPid, sessionId)
-            val updated = stateStore.bindProcess(taskId, sessionId, resolvedPid ?: -1)
+            val updated = synchronized(stateStore) {
+                val owner = stateStore.get(taskId) ?: error("Cannot bind process to missing task $taskId")
+                check(!owner.status.isTerminal) { "Cannot bind process to terminal task $taskId" }
+                val sessionOwner = stateStore.getBySessionId(sessionId)
+                check(sessionOwner == null || sessionOwner.taskId == taskId) { "Session already belongs to another task" }
+                // Persistence must accept ownership before the child becomes stoppable by this task's aliases.
+                stateStore.bindProcess(taskId, sessionId, resolvedPid ?: -1).also {
+                    processSupervisor.register(taskId, process, resolvedPid, sessionId)
+                }
+            }
             if (resolvedPid != null && resolvedPid > 0) {
                 healthMonitor.onTaskProcessBound(updated.taskId, resolvedPid)
             }
@@ -284,6 +292,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             Log.i(TAG, "Successfully bound process (PID $resolvedPid) for task ${updated.taskId}, session $sessionId")
             true
         } catch (t: Throwable) {
+            com.jarves.mh.runtime.closeAuthProcess(process)
+            if (processSupervisor.getProcess(taskId) === process) processSupervisor.unregister(taskId)
             Log.e(TAG, "Failed to bind process for task $taskId, session $sessionId", t)
             false
         }

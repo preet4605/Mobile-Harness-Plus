@@ -9,6 +9,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -409,6 +410,7 @@ class ModHost(
         var closed = false
         val dispatches = HashMap<Long, Dispatch>()
         val timers = HashMap<Long, Job>()
+        val sleeps = HashMap<Long, Job>()
         val commands = LinkedHashMap<String, ModCodeCommand>()
         /** `$.http.fetch` requests in flight. */
         var fetching = 0
@@ -1115,6 +1117,8 @@ class ModHost(
         loaded.timers.clear()
         loaded.slowJobs.toList().forEach { it.cancel() }
         loaded.slowJobs.clear()
+        loaded.sleeps.values.forEach { it.cancel() }
+        loaded.sleeps.clear()
         loaded.dispatches.values.forEach { it.watchdog?.cancel(); it.result?.complete(null) }
         loaded.dispatches.clear()
         loaded.settle?.cancel()
@@ -1387,9 +1391,24 @@ class ModHost(
             }
             answer(loaded, callId, result)
         }
-        // A slow call must not hold up the mod's other messages, which are handled one at a time.
-        if (op.slow) {
-            val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+        if (op == ModOp.CLOCK_SLEEP) {
+            val ms = args.optLong(0, -1)
+            if (ms !in 0..MAX_SLEEP_MS) {
+                complete(Result.failure(IllegalArgumentException("\$.clock.sleep(ms) takes 0 to ${MAX_SLEEP_MS / 60_000} minutes.")))
+                return
+            }
+            val job = scope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    delay(ms)
+                    complete(Result.success(null))
+                } finally {
+                    loaded.sleeps.remove(callId)
+                }
+            }
+            loaded.sleeps[callId] = job
+            job.start()
+        } else if (op.slow) {
+            val job = scope.launch(start = CoroutineStart.LAZY) {
                 try {
                     complete(runOp(loaded, mod, op, args, scoped))
                 } finally {

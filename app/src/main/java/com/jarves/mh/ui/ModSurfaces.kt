@@ -143,7 +143,9 @@ internal fun LazyListScope.modPaneItems(
     val tree = drawing?.tree
     if (tree != null && (tree.type == "Column" || tree.type == "List") && !tree.bool("card") && drawing.message == null) {
         val gap = (tree.number("gap") ?: 8.0).dp
-        itemsIndexed(tree.children, key = { i, child -> "$keyPrefix:${child.string("key") ?: i}" }) { i, child ->
+        itemsIndexed(tree.children, key = { i, child ->
+            child.string("key")?.let { "$keyPrefix:key:$it" } ?: "$keyPrefix:index:$i"
+        }) { i, child ->
             ModElement(child, dir, onEvent, itemModifier.padding(top = if (i == 0) 0.dp else gap))
         }
     } else {

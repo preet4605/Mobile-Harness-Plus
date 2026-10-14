@@ -29,6 +29,12 @@ internal class OpenRouterRoutingGateway(
     private val apiKey: String,
 ) : AutoCloseable {
     private val running = AtomicBoolean(true)
+    private val sockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
+    private val upstreamConnections = java.util.concurrent.ConcurrentHashMap.newKeySet<HttpURLConnection>()
+    private val requests = java.util.concurrent.ThreadPoolExecutor(
+        0, 8, 30, java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.SynchronousQueue(),
+        java.util.concurrent.ThreadFactory { task -> Thread(task, "mh-openrouter-request").apply { isDaemon = true } },
+    )
     private val server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
     val url: String = "http://127.0.0.1:${server.localPort}"
 
@@ -40,7 +46,17 @@ internal class OpenRouterRoutingGateway(
         while (running.get()) {
             runCatching { server.accept() }.getOrNull()?.let { socket ->
                 runCatching { socket.soTimeout = SOCKET_TIMEOUT_MILLIS }
-                Thread({ socket.use(::handle) }, "mh-openrouter-request").apply { isDaemon = true; start() }
+                sockets.add(socket)
+                try {
+                    if (!running.get()) { sockets.remove(socket); socket.close(); return }
+                    requests.execute {
+                        try { socket.use { runCatching { handle(it) } } }
+                        finally { sockets.remove(socket) }
+                    }
+                } catch (_: java.util.concurrent.RejectedExecutionException) {
+                    sockets.remove(socket)
+                    socket.close()
+                }
             }
         }
     }
@@ -52,8 +68,12 @@ internal class OpenRouterRoutingGateway(
         val method = parts.getOrNull(0).orEmpty()
         val path = parts.getOrNull(1).orEmpty().substringBefore('?')
         val headers = mutableMapOf<String, String>()
+        var headerBytes = 0
+        var headerCount = 0
         while (true) {
             val line = readLine(input) ?: return
+            headerBytes += line.length
+            if (headerBytes > 32_768 || ++headerCount > 100) return
             if (line.isEmpty()) break
             val split = line.indexOf(':')
             if (split > 0) headers[line.substring(0, split).lowercase()] = line.substring(split + 1).trim()
@@ -75,6 +95,7 @@ internal class OpenRouterRoutingGateway(
             if (count < 0) break
             offset += count
         }
+        if (offset < length) return
         if (path.endsWith("/count_tokens")) {
             writeJson(output, 200, JSONObject().put("input_tokens", body.decodeToString().length / 4 + 1).toString())
             return
@@ -88,7 +109,9 @@ internal class OpenRouterRoutingGateway(
             val routedBody = applyOpenRouterRouting(JSONObject(body.decodeToString()), profile).toString().toByteArray()
             val endpoint = profile.resolvedBaseUrl.trimEnd('/') + path
             val connection = URL(endpoint).openConnection() as HttpURLConnection
+            upstreamConnections.add(connection)
             try {
+                check(running.get()) { "Gateway is closed" }
                 connection.requestMethod = "POST"
                 connection.connectTimeout = 20_000
                 connection.readTimeout = 180_000
@@ -110,6 +133,7 @@ internal class OpenRouterRoutingGateway(
                 stream?.use { it.copyTo(output, DEFAULT_BUFFER_SIZE) }
                 output.flush()
             } finally {
+                upstreamConnections.remove(connection)
                 connection.disconnect()
             }
         }.onFailure { error ->
@@ -153,6 +177,9 @@ internal class OpenRouterRoutingGateway(
     override fun close() {
         running.set(false)
         runCatching { server.close() }
+        sockets.forEach { runCatching { it.close() } }
+        upstreamConnections.forEach { runCatching { it.disconnect() } }
+        requests.shutdownNow()
     }
 
     private companion object {

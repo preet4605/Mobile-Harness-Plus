@@ -18,6 +18,68 @@ import java.io.ByteArrayOutputStream
 class CodexNativeTaskLifecycleTest {
     @Before fun loadJdbcDriverForThisClassLoader() { Class.forName("org.sqlite.JDBC") }
 
+    private fun liveChild(): Process = object : Process() {
+        private var alive = true
+        override fun getOutputStream() = ByteArrayOutputStream()
+        override fun getInputStream() = ByteArrayInputStream(byteArrayOf())
+        override fun getErrorStream() = ByteArrayInputStream(byteArrayOf())
+        override fun waitFor() = 0
+        override fun exitValue(): Int { if (alive) throw IllegalThreadStateException(); return 0 }
+        override fun destroy() { alive = false }
+    }
+
+    @Test fun terminalTaskRejectsAndReapsLateRuntimeChild() {
+        val db = BrainDatabase(BrainDatabaseDriverFactory.createInMemoryDriver())
+        try {
+            val supervisor = TaskSupervisor.createForTesting(database = db)
+            supervisor.createTask(taskId = "task", projectId = "project", projectSlug = "slug", chatId = "chat",
+                agentKind = "CLAUDE_CODE", providerJson = "CLAUDE", prompt = "Execute")
+            supervisor.finalizeTask("task", TaskExecutionStatus.CANCELLED)
+            val child = liveChild()
+
+            assertFalse(supervisor.bindProcess("task", "late-session", child, 42))
+            assertFalse("Rejected child must be terminated", child.isAlive)
+            assertNull(supervisor.processSupervisor.getProcess("task"))
+            assertNull(supervisor.processSupervisor.getProcess("late-session"))
+            assertEquals(TaskExecutionStatus.CANCELLED, supervisor.stateStore.get("task")!!.status)
+        } finally { db.close() }
+    }
+
+    @Test fun missingTaskCannotClaimAnotherTasksSession() {
+        val db = BrainDatabase(BrainDatabaseDriverFactory.createInMemoryDriver())
+        try {
+            val supervisor = TaskSupervisor.createForTesting(database = db)
+            supervisor.createTask(taskId = "owner", projectId = "project", projectSlug = "slug", chatId = "chat",
+                agentKind = "CLAUDE_CODE", providerJson = "CLAUDE", prompt = "Execute")
+            supervisor.bindSession("owner", "owned-session")
+            val child = liveChild()
+
+            assertFalse(supervisor.bindProcess("missing", "owned-session", child, 42))
+            assertFalse(child.isAlive)
+            assertNull(supervisor.processSupervisor.getProcess("missing"))
+            assertNull(supervisor.processSupervisor.getProcess("owned-session"))
+            assertNull(supervisor.stateStore.get("owner")!!.pid)
+        } finally { db.close() }
+    }
+
+    @Test fun activeTaskCannotClaimAnotherTasksSession() {
+        val db = BrainDatabase(BrainDatabaseDriverFactory.createInMemoryDriver())
+        try {
+            val supervisor = TaskSupervisor.createForTesting(database = db)
+            listOf("owner", "other").forEach { id ->
+                supervisor.createTask(taskId = id, projectId = id, projectSlug = id, chatId = "chat",
+                    agentKind = "CLAUDE_CODE", providerJson = "CLAUDE", prompt = "Execute")
+            }
+            supervisor.bindSession("owner", "owned-session")
+            val child = liveChild()
+            assertFalse(supervisor.bindProcess("other", "owned-session", child, 42))
+            assertFalse(child.isAlive)
+            assertNull(supervisor.processSupervisor.getProcess("other"))
+            assertNull(supervisor.stateStore.get("other")!!.pid)
+            assertEquals("owner", supervisor.stateStore.getBySessionId("owned-session")!!.taskId)
+        } finally { db.close() }
+    }
+
     @Test fun multiStepObjectiveStillAdmitsOneNativeOperationWithoutAutomaticReplay() {
         val db = BrainDatabase(BrainDatabaseDriverFactory.createInMemoryDriver())
         val supervisor = TaskSupervisor.createForTesting(database = db)

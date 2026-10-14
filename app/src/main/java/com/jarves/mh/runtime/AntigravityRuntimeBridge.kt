@@ -624,9 +624,7 @@ class AntigravityRuntimeBridge(
                         process = process,
                         pid = nativePid
                     )
-                    if (!bound) {
-                        Log.w("AntigravityBridge", "Process binding failed for task $taskId / session $sessionId (PID: $nativePid)")
-                    }
+                    check(bound) { "Antigravity process no longer belongs to an active task" }
                     if (userStopRequested) process.destroy()
                     val request = JSONObject()
                         .put("event", "user")

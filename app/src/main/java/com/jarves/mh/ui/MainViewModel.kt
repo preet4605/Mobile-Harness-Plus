@@ -1620,6 +1620,10 @@ class MainViewModel(
     }
 
     private fun runProjectTerminalCommand(command: String) {
+        if (_state.value.fileOperationRunning || _state.value.openedFileEdit?.saving == true) {
+            _state.update { it.copy(toastMessage = WORKSPACE_BUSY_MESSAGE) }
+            return
+        }
         val project = _state.value.activeProject ?: return
         if (_state.value.projectTerminalRunning) return
         val startingCwd = _state.value.projectTerminalCwd
@@ -1926,6 +1930,10 @@ class MainViewModel(
     ) { startAndroidBuildNow(installAfterBuild, force) }
 
     private fun startAndroidBuildNow(installAfterBuild: Boolean, force: Boolean) {
+        if (_state.value.fileOperationRunning || _state.value.openedFileEdit?.saving == true) {
+            _state.update { it.copy(toastMessage = WORKSPACE_BUSY_MESSAGE) }
+            return
+        }
         val project = _state.value.activeProject ?: return
         if (_state.value.androidBuildRunning || androidBuildActive.get()) return
         if (!installer.isStackInstalled(DevStack.ANDROID)) {
@@ -5461,45 +5469,49 @@ class MainViewModel(
         }
         val request = fileReadGeneration
         val name = path.substringAfterLast('/')
-        _state.update { it.copy(openedFileEdit = edit.copy(saving = true, conflict = false)) }
+        _state.update { it.copy(fileOperationRunning = true, openedFileEdit = edit.copy(saving = true, conflict = false)) }
         viewModelScope.launch {
-            val text = textForSave(edit.draft, original)
-            val result = withContext(ioDispatcher) {
-                runRequest {
-                    val file = resolveWorkspacePath(projectWorkspaceRoot(project), path)?.takeIf { it.isFile }
-                        ?: error("This file can no longer be changed")
-                    // Null: the file changed on disk since it was read.
-                    if (sha256(file) != fingerprint) {
-                        null
-                    } else {
-                        val bytes = text.toByteArray(Charsets.UTF_8)
-                        writeFileAtomically(file, bytes)
-                        sha256(bytes)
+            try {
+                val text = textForSave(edit.draft, original)
+                val result = withContext(ioDispatcher) {
+                    runRequest {
+                        val file = resolveWorkspacePath(projectWorkspaceRoot(project), path)?.takeIf { it.isFile }
+                            ?: error("This file can no longer be changed")
+                        // Null: the file changed on disk since it was read.
+                        if (sha256(file) != fingerprint) {
+                            null
+                        } else {
+                            val bytes = text.toByteArray(Charsets.UTF_8)
+                            writeFileAtomically(file, bytes)
+                            sha256(bytes)
+                        }
                     }
                 }
-            }
-            val savedFingerprint = result.getOrNull()
-            if (savedFingerprint != null) modHost?.emit("file.saved", JSONObject().put("path", path.trim('/')))
-            // The viewer moved to another file or closed while saving; the save itself still happened.
-            if (request != fileReadGeneration || _state.value.openedFilePath != path) {
-                if (savedFingerprint != null) _state.update { it.copy(toastMessage = "$name saved") }
-                return@launch
-            }
-            when {
-                savedFingerprint != null -> {
-                    openedFileFingerprint = savedFingerprint
-                    _state.update { it.copy(openedFileContent = text, openedFileEdit = null, toastMessage = "$name saved") }
-                    if (isCurrentProjectRoot(project)) refreshProjectFiles()
+                val savedFingerprint = result.getOrNull()
+                if (savedFingerprint != null) modHost?.emit("file.saved", JSONObject().put("path", path.trim('/')))
+                // The viewer moved to another file or closed while saving; the save itself still happened.
+                if (request != fileReadGeneration || _state.value.openedFilePath != path) {
+                    if (savedFingerprint != null) _state.update { it.copy(toastMessage = "$name saved") }
+                    return@launch
                 }
-                result.isSuccess -> _state.update {
-                    it.copy(openedFileEdit = it.openedFileEdit?.copy(saving = false, conflict = true))
+                when {
+                    savedFingerprint != null -> {
+                        openedFileFingerprint = savedFingerprint
+                        _state.update { it.copy(openedFileContent = text, openedFileEdit = null, toastMessage = "$name saved") }
+                        if (isCurrentProjectRoot(project)) refreshProjectFiles()
+                    }
+                    result.isSuccess -> _state.update {
+                        it.copy(openedFileEdit = it.openedFileEdit?.copy(saving = false, conflict = true))
+                    }
+                    else -> _state.update {
+                        it.copy(
+                            openedFileEdit = it.openedFileEdit?.copy(saving = false),
+                            toastMessage = "Could not save $name: ${result.exceptionOrNull()?.message ?: "Unknown error"}",
+                        )
+                    }
                 }
-                else -> _state.update {
-                    it.copy(
-                        openedFileEdit = it.openedFileEdit?.copy(saving = false),
-                        toastMessage = "Could not save $name: ${result.exceptionOrNull()?.message ?: "Unknown error"}",
-                    )
-                }
+            } finally {
+                _state.update { it.copy(fileOperationRunning = false) }
             }
         }
     }
@@ -5520,14 +5532,17 @@ class MainViewModel(
         }
         _state.update { it.copy(fileOperationRunning = true) }
         viewModelScope.launch {
-            val result = withContext(ioDispatcher) { runRequest { operation(projectWorkspaceRoot(project)) } }
-            _state.update {
-                it.copy(
-                    fileOperationRunning = false,
-                    toastMessage = result.getOrElse { error -> error.message ?: "The file operation failed" },
-                )
+            try {
+                val result = withContext(ioDispatcher) { runRequest { operation(projectWorkspaceRoot(project)) } }
+                _state.update {
+                    it.copy(
+                        toastMessage = result.getOrElse { error -> error.message ?: "The file operation failed" },
+                    )
+                }
+                if (isCurrentProjectRoot(project)) refreshProjectFiles()
+            } finally {
+                _state.update { it.copy(fileOperationRunning = false) }
             }
-            if (isCurrentProjectRoot(project)) refreshProjectFiles()
         }
     }
 
@@ -6729,6 +6744,10 @@ class MainViewModel(
         modsChecked: Boolean = false,
         modSections: String = "",
     ) {
+        if (_state.value.fileOperationRunning || _state.value.openedFileEdit?.saving == true) {
+            _state.update { it.copy(toastMessage = WORKSPACE_BUSY_MESSAGE) }
+            return
+        }
         val project = state.value.activeProject ?: return
         if (_state.value.agentKind == AgentKind.ANTIGRAVITY &&
             _state.value.antigravityAuth.status != AntigravityAuthStatus.SIGNED_IN) {
