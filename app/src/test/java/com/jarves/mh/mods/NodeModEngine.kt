@@ -48,9 +48,13 @@ class NodeModEngine : ModEngine {
     override suspend fun createIsolate(heapBytes: Long, listener: ModIsolateListener): ModIsolate {
         val iso = nextIso.getAndIncrement()
         listeners[iso] = listener
+        heaps[iso] = heapBytes
         request(JSONObject().put("t", "new").put("iso", iso))
         return NodeIsolate(iso)
     }
+
+    /** The heap each isolate was created with, by isolate id. */
+    val heaps = java.util.concurrent.ConcurrentHashMap<Int, Long>()
 
     /** The isolate [culprit] (1-based, in creation order) passes its memory cap: the whole engine dies. */
     fun kill(culprit: Int) {

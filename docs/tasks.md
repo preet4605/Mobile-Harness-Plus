@@ -4,7 +4,17 @@
 
 Love chose "All ten phases" (04:05 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair. Native code in mods (plan row 24) is not built; mods running with the app closed (row 15) and sharing beyond .mhmod (row 16) stay deferred.
 
+### Phase 6: memory limits
+
+- Every mod keeps 16 MB. `engine.memory` (developer, review risk) gives a mod 32 MB; at most 2 mods have it at once (the first two allowed, by id), the rest keep 16 MB and their log says why. A grant or Developer mode change reloads the mod with its new heap; Developer mode off puts every mod back at 16 MB.
+- Unchanged by design: one mod over its cap still takes the whole engine down and every mod reloads (engine test 2). The cap message names the mod's own limit.
+- Defaults taken: a permission per mod (not one global switch), picked by id when more than two ask.
+- VERIFIED (full suite 1514 tests, 0 failures; node 17/17): `ModHostTest` (16 MB without the grant, 32 MB for two of three mods with it, the third's log, back to 16 MB with Developer mode off; heaps read from the test engine).
+- NOT RUN: on a phone (the real sandbox honoring 32 MB per isolate).
+
 ### Phase 5: web panels
+
+COMPLETE (pushed to harness-dev as 3a2f265; e12e823 removed two test leftovers it picked up and ignores `app/checkpoints/`).
 
 - `ui.webpane` is usable now: `contributes.panels` (4; `id`, `title` up to 40, `entry` a `.html` file in the mod) parses (it was refused) and needs that permission. The mod's page lists its panels under Controls; tapping one opens it in a large sheet, one live panel at a time.
 - The panel ([ModWebPanel.kt](../app/src/main/java/com/jarves/mh/ui/ModWebPanel.kt)) is a framework WebView on the mod's own origin `https://<id>.mod.invalid/`: every request is answered from the installed package (regular files inside it, 5 MB each, no links) with a CSP (`default-src 'self'`, no inline script, `connect-src 'none'`, no frames or forms), anything else gets 403 and other origins are never navigated. No file or content access, no pop-ups, permissions or file chooser, Safe Browsing on.

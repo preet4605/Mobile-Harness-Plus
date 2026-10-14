@@ -242,7 +242,8 @@ object ModAuthoringGuide {
           are lost when the mod reloads. Use `${'$'}.store` for anything to keep.
         - Limits: each hook gets 10 s of its own time (1 s for `app.*` events); time spent waiting on
           `${'$'}` calls does not count. Code that runs 3 s without awaiting is stopped. Memory is capped at
-          16 MB, and going over restarts every mod. Five problems (a throw, a timeout, a stop) in 10 minutes
+          16 MB (32 MB for a mod allowed `engine.memory` in Developer mode; 2 such mods at most, the rest
+          keep 16 MB), and going over restarts every mod. Five problems (a throw, a timeout, a stop) in 10 minutes
           stop the mod until the user restarts it from its page.
 
         ### Events for mod code

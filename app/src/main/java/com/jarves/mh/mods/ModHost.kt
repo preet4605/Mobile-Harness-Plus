@@ -210,6 +210,10 @@ data class ModHostLimits(
     val redrawGapMs: Long = 100,
     val backoffMs: List<Long> = listOf(1_000, 5_000, 30_000),
     val heapBytes: Long = 16L * 1024 * 1024,
+    /** The heap of a mod allowed `engine.memory` (Developer mode; mod plan row 13). */
+    val bigHeapBytes: Long = 32L * 1024 * 1024,
+    /** At most this many mods run with [bigHeapBytes]; the rest keep [heapBytes]. */
+    val maxBigHeapMods: Int = 2,
 )
 
 /**
@@ -331,7 +335,7 @@ class ModHost(
         var watchdog: Job? = null
     }
 
-    private inner class Loaded(val mod: InstalledMod, val key: String, val isolate: ModIsolate, val inbox: Channel<String>) {
+    private inner class Loaded(val mod: InstalledMod, val key: String, val isolate: ModIsolate, val inbox: Channel<String>, val heapBytes: Long) {
         var events: Set<String> = emptySet()
         /** Tools its tool.call hooks match; "*" for any. */
         var tools: Set<String> = emptySet()
@@ -877,9 +881,10 @@ class ModHost(
     private suspend fun syncMods() {
         val desired = logicMods()
         val allowed = desired.take(MAX_LOGIC_MODS).associateBy { it.id }
+        val big = bigHeapMods(allowed.values)
         running.values.toList().forEach { loaded ->
             val now = allowed[loaded.id]
-            if (now == null || keyOf(now) != loaded.key) unload(loaded, sendEnd = true)
+            if (now == null || keyOf(now, big) != loaded.key) unload(loaded, sendEnd = true)
         }
         desired.drop(MAX_LOGIC_MODS).forEach {
             infos[it.id] = ModRuntimeInfo(ModRunState.BLOCKED, "Only $MAX_LOGIC_MODS mods with code can run at once. Turn another one off.")
@@ -888,13 +893,14 @@ class ModHost(
         for (mod in allowed.values) {
             if (engine == null || !wanted()) break
             if (running.containsKey(mod.id) || mod.id in crashed || restartJobs[mod.id]?.isActive == true) continue
-            load(mod)
+            load(mod, big)
         }
     }
 
-    private suspend fun load(mod: InstalledMod) {
+    private suspend fun load(mod: InstalledMod, big: Set<String>) {
         val current = engine ?: return
         if (running.containsKey(mod.id)) return
+        val heap = heapOf(mod, big)
         val generation = engineGeneration
         setInfo(mod.id) { it.copy(state = ModRunState.STARTING, message = null) }
         val inbox = Channel<String>(INBOX_CAPACITY)
@@ -909,14 +915,14 @@ class ModHost(
             }
         }
         val isolate = try {
-            current.createIsolate(limits.heapBytes, listener)
+            current.createIsolate(heap, listener)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             addLog(mod.id, "error", "Couldn't start: ${e.message ?: e.javaClass.simpleName}")
             if (generation == engineGeneration) onEngineDeath(null)
             return
         }
-        loaded = Loaded(mod, keyOf(mod), isolate, inbox)
+        loaded = Loaded(mod, keyOf(mod, big), isolate, inbox, heap)
         running[mod.id] = loaded
         loaded.consumer = scope.launch { for (text in inbox) handleMessage(loaded, text) }
         val events = try {
@@ -959,6 +965,11 @@ class ModHost(
             loaded.commands[command.name] = ModCodeCommand(mod.id, mod.manifest.name, command.name, command.description)
         }
         addLog(mod.id, "info", "Started" + if (events.isEmpty()) "; it hooks no events" else "; hooks ${events.sorted().joinToString()}")
+        if (heap != limits.heapBytes) {
+            addLog(mod.id, "info", "It has ${heap / MB} MB of memory.")
+        } else if (allowed(mod, ModCapability.ENGINE_MEMORY)) {
+            addLog(mod.id, "info", "It has ${heap / MB} MB of memory: only ${limits.maxBigHeapMods} mods may have ${limits.bigHeapBytes / MB} MB at once.")
+        }
         setInfo(mod.id) { it.copy(state = ModRunState.RUNNING, message = null, commands = loaded.commands.values.toList()) }
         refreshListening()
         dispatch(loaded, "session.start", JSONObject(), limits.eventBudgetMs)
@@ -996,7 +1007,7 @@ class ModHost(
         if (loaded.closed || generation != engineGeneration) return
         when (reason) {
             ModTermination.MEMORY_LIMIT -> {
-                addLog(loaded.id, "error", "Stopped: it used more than ${limits.heapBytes / (1024 * 1024)} MB of memory, which also stopped the other mods.")
+                addLog(loaded.id, "error", "Stopped: it used more than ${loaded.heapBytes / MB} MB of memory, which also stopped the other mods.")
                 strike(loaded.id, "used too much memory")
                 if (loaded.id !in crashed) scheduleRestart(loaded.id)
                 onEngineDeath(loaded.id)
@@ -1808,7 +1819,17 @@ class ModHost(
     /** Follow-ups mods may chain after one message from the user: more for a mod allowed `agent.chain`. */
     private fun followUpLimit(mod: InstalledMod): Int = if (allowed(mod, ModCapability.AGENT_CHAIN)) MAX_CHAIN_FOLLOW_UPS else MAX_FOLLOW_UPS
 
-    private fun keyOf(mod: InstalledMod): String = "${mod.manifest.version}:${mod.installedAt}:${options(mod)}"
+    /** What a running mod was loaded with; a change reloads it (an `engine.memory` grant too, so its log says what it got). */
+    private fun keyOf(mod: InstalledMod, big: Set<String>): String = "${mod.manifest.version}:${mod.installedAt}:${heapOf(mod, big)}:${allowed(mod, ModCapability.ENGINE_MEMORY)}:${options(mod)}"
+
+    /**
+     * Mods that get the bigger heap: allowed `engine.memory` (so Developer mode is on), the first
+     * [ModHostLimits.maxBigHeapMods] by id. One mod over its cap still takes the whole engine down.
+     */
+    private fun bigHeapMods(mods: Collection<InstalledMod>): Set<String> =
+        mods.filter { allowed(it, ModCapability.ENGINE_MEMORY) }.map { it.id }.sorted().take(limits.maxBigHeapMods).toSet()
+
+    private fun heapOf(mod: InstalledMod, big: Set<String>): Long = if (mod.id in big) limits.bigHeapBytes else limits.heapBytes
 
     /** The mod's settings except secrets, as `register(on, options)` receives them. */
     private fun options(mod: InstalledMod): JSONObject = JSONObject().apply {
@@ -1950,6 +1971,7 @@ class ModHost(
     companion object {
         private const val TAG = "ModHost"
         const val MAX_LOGIC_MODS = 8
+        private const val MB = 1024 * 1024
         const val MAX_STRIKES = 5
         const val MAX_ENGINE_DEATHS = 3
         const val STRIKE_WINDOW_MS = 10 * 60_000L

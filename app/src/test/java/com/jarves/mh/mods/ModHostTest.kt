@@ -1063,4 +1063,31 @@ class ModHostTest {
         Thread.sleep(300)
         assertFalse(host.info()?.status.orEmpty().startsWith("board:again"))
     }
+
+    @Test
+    fun `two mods at most get 32 MB, only with engine-memory in Developer mode`() = runBlocking {
+        val registry = registry()
+        val code = "export function register(on) { on('session.start', async (\$) => { await \$.ui.status('up') }) }"
+        listOf("dev.test.a", "dev.test.b", "dev.test.c").forEach { id ->
+            install(registry, code, id = id, name = id.takeLast(1), permissions = listOf("ui.status", "engine.memory"))
+        }
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        fun heaps() = engines.last().let { engine -> engine.liveIsolates().map { engine.heaps.getValue(it) } }
+        val small = LIMITS.heapBytes
+        val big = LIMITS.bigHeapBytes
+        waitFor("three mods") { engines.isNotEmpty() && engines.last().liveIsolates().size == 3 && listOf("a", "b", "c").all { host.info("dev.test.$it")?.status == "up" } }
+        // Installed with Developer mode off: the grant was never given.
+        assertEquals(listOf(small, small, small), heaps())
+
+        registry.setDeveloperMode(true)
+        listOf("dev.test.a", "dev.test.b", "dev.test.c").forEach { registry.setGranted(it, ModCapability.ENGINE_MEMORY, true) }
+        waitFor("a and b to reload with 32 MB") { heaps().sorted() == listOf(small, big, big) && listOf("a", "b").all { host.info("dev.test.$it")?.state == ModRunState.RUNNING } }
+        waitFor("the log") { "It has 32 MB of memory." in host.logText("dev.test.a") }
+        assertTrue(host.logText("dev.test.c"), "only 2 mods may have 32 MB" in host.logText("dev.test.c"))
+
+        // Developer mode off: back to 16 MB each.
+        registry.setDeveloperMode(false)
+        waitFor("everyone back at 16 MB") { heaps() == listOf(small, small, small) }
+    }
 }
