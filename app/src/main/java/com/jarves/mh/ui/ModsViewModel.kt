@@ -47,6 +47,8 @@ data class ModReview(
     val existing: InstalledMod? = null,
     val error: String? = null,
     val problems: List<String> = emptyList(),
+    /** Developer mode was on when the review opened; developer permissions can be allowed only then. */
+    val developerMode: Boolean = false,
 )
 
 /** A Mod Studio draft: a project whose folder holds `mod.json` and the Studio guide. */
@@ -163,7 +165,7 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
             _review.value = ModReview(null, label, ModTrust.IMPORTED, error = e.message, problems = e.problems)
             return@work
         }
-        _review.value = ModReview(staged, label, ModTrust.IMPORTED, existing = existing(staged.manifest.id))
+        _review.value = ModReview(staged, label, ModTrust.IMPORTED, existing = existing(staged.manifest.id), developerMode = registry.await().snapshot.value.developerMode)
     }
 
     /** Finds the Studio drafts among [projects], reading only each folder's mod.json. */
@@ -199,7 +201,7 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
             _review.value = ModReview(null, label, ModTrust.BUILT, error = e.message, problems = e.problems)
             return@work
         }
-        _review.value = ModReview(staged, label, ModTrust.BUILT, existing = existing(staged.manifest.id))
+        _review.value = ModReview(staged, label, ModTrust.BUILT, existing = existing(staged.manifest.id), developerMode = registry.await().snapshot.value.developerMode)
     }
 
     fun confirmInstall(granted: Set<ModCapability>) = work("Could not install the mod") {
@@ -246,6 +248,11 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     fun setModsEnabled(enabled: Boolean) = work("Could not change mods") {
         registry.await().setModsEnabled(enabled)
         _messages.emit(if (enabled) "Mods are on." else "All mods are off.")
+    }
+
+    fun setDeveloperMode(enabled: Boolean) = work("Could not change Developer mode") {
+        registry.await().setDeveloperMode(enabled)
+        _messages.emit(if (enabled) "Developer mode is on." else "Developer mode is off. Developer permissions stopped working.")
     }
 
     fun leaveSafeMode() = work("Could not turn mods back on") { registry.await().leaveSafeMode() }

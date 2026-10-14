@@ -50,17 +50,22 @@ interface ModHostEffects : ModHookEffects {
 
     /**
      * Runs [prompt] as a task in [context]'s chat on [harness] (null: the chat's current one),
-     * once the chat is free, and answers when the task ends: `{ status, text, taskId, harness }`.
-     * Fails when the chat closes or the task can't start; answers `status: "timeout"` after
-     * [timeoutMs] while the task goes on.
+     * once the chat is free, and answers when the task ends: `{ status, text, taskId, harness,
+     * chatId }`. [options] may pick a model and effort, and another chat of the project.
+     * Fails when the chat closes, the task can't start, or the user stopped the agent since their
+     * last message; answers `status: "timeout"` after [timeoutMs] while the task goes on.
      */
-    suspend fun askAgent(mod: InstalledMod, harness: AgentKind?, prompt: String, context: ModEventContext, timeoutMs: Long): JSONObject
+    suspend fun askAgent(mod: InstalledMod, harness: AgentKind?, prompt: String, context: ModEventContext, timeoutMs: Long, options: ModAskOptions): JSONObject
+
+    /** Stops [taskId] when it is a running task a mod started with `$.agent.ask`; false otherwise. */
+    fun stopAgent(mod: InstalledMod, taskId: String): Boolean
 
     /**
      * A `run.end` hook's `{ followUp }`: queued in [context]'s chat as the next prompt. False when
-     * that chat is no longer open or mods already chained the most follow-ups one prompt allows.
+     * that chat is no longer open, the user stopped the agent since their last message, or mods
+     * already chained [limit] follow-ups since that message.
      */
-    fun followUp(mod: InstalledMod, text: String, context: ModEventContext): Boolean
+    fun followUp(mod: InstalledMod, text: String, context: ModEventContext, limit: Int): Boolean
 
     /** The agent's file changes in [context]'s project that the user hasn't kept or undone; null when it isn't open. */
     fun pendingChanges(context: ModEventContext): JSONArray?
@@ -68,6 +73,9 @@ interface ModHostEffects : ModHookEffects {
     /** Undoes the agent's change to [path] in [context]'s project from its checkpoint; false when there is none. */
     suspend fun undoChange(context: ModEventContext, path: String): Boolean
 }
+
+/** What `$.agent.ask` may pick besides the harness: model and effort ids, and [chat] ("new" or a chat id). */
+data class ModAskOptions(val model: String? = null, val effort: String? = null, val chat: String? = null)
 
 enum class ModEngineState(val label: String) {
     OFF("Off"),
@@ -237,6 +245,11 @@ class ModHost(
      */
     @Volatile var toolGateMatcher: String? = null
         private set
+    /** A running mod may give the agents tools, so harnesses start with the mods MCP server and see tools added later. */
+    @Volatile var toolsPossible: Boolean = false
+        private set
+    /** `$.mods.call` calls in flight across all mods; bounds chains of mods calling each other. */
+    private var modCallsInFlight = 0
     private val logs = HashMap<String, ArrayDeque<ModLogEntry>>()
     private val logsLock = Any()
 
@@ -1262,8 +1275,9 @@ class ModHost(
                 val text = text(args).trim().take(MAX_TEXT)
                 require(text.isNotEmpty()) { "\$.prompt.send(text) needs text" }
                 val e = effects ?: error("The app screen is closed")
-                // Same limits as run.end follow-ups: the open chat only, at most 3 after a message from the user.
-                if (!e.followUp(mod, text, scoped!!)) error("The message wasn't sent: its chat isn't open, or mods already sent 3 since the user's last message")
+                // Same limits as run.end follow-ups: the open chat only, at most 3 (25 with agent.chain) after a message from the user.
+                val limit = followUpLimit(mod)
+                if (!e.followUp(mod, text, scoped!!, limit)) error("The message wasn't sent: its chat isn't open, the user stopped the agent, or mods already sent $limit since the user's last message")
                 registry.recordCall(mod.id, "prompt.send", ModCapability.PROMPT_SEND, "allowed", null)
                 true
             }
@@ -1324,9 +1338,37 @@ class ModHost(
                     ModManifestParser.harnessFromId(it) ?: throw IllegalArgumentException("\$.agent.ask: harness must be claude, deepseek, antigravity or codex")
                 }
                 val timeout = spec.optLong("timeoutMs", DEFAULT_ASK_MS).coerceIn(MIN_ASK_MS, MAX_ASK_MS)
+                fun option(key: String, max: Int): String? = spec.optString(key).trim().takeIf { !spec.isNull(key) && it.isNotEmpty() }?.also {
+                    require(it.length <= max && it.none(Char::isISOControl)) { "\$.agent.ask: $key is not valid" }
+                }
+                val options = ModAskOptions(model = option("model", 120), effort = option("effort", 40), chat = option("chat", 80))
                 addLog(mod.id, "info", "Asked ${harnessId ?: "the current harness"} to work on: ${firstLine(prompt).take(120)}")
-                registry.recordCall(mod.id, "\$.agent.ask", ModCapability.AGENT_ASK, "allowed", harnessId)
-                (effects ?: error("The app screen is closed")).askAgent(mod, harness, prompt, scoped!!, timeout)
+                registry.recordCall(mod.id, "\$.agent.ask", ModCapability.AGENT_ASK, "allowed", listOfNotNull(harnessId, options.model, options.chat).joinToString(" ").ifEmpty { null })
+                (effects ?: error("The app screen is closed")).askAgent(mod, harness, prompt, scoped!!, timeout, options)
+            }
+            ModOp.AGENT_STOP -> {
+                val taskId = text(args).trim()
+                require(taskId.isNotEmpty()) { "\$.agent.stop(taskId) needs the taskId \$.agent.ask answered" }
+                val stopped = (effects ?: error("The app screen is closed")).stopAgent(mod, taskId)
+                if (stopped) addLog(mod.id, "info", "Stopped the agent task it started")
+                stopped
+            }
+            ModOp.MODS_TOOLS -> JSONArray(running.values.filter { it.ready }.flatMap { it.provided.values }.map { tool ->
+                JSONObject().put("name", tool.exposed).put("mod", tool.modId).put("description", tool.description).put("inputSchema", JSONObject(tool.inputSchema))
+            })
+            ModOp.MODS_CALL -> {
+                val name = text(args).trim()
+                require(name.startsWith("mod_")) { "\$.mods.call(name, input) takes a tool name from \$.mods.tools()" }
+                val input = if (args.isNull(1)) JSONObject() else args.opt(1) as? JSONObject ?: error("\$.mods.call(name, input): input must be an object")
+                require(modCallsInFlight < MAX_MOD_CALLS) { "Too many mod-to-mod calls at once ($MAX_MOD_CALLS); one may be calling itself in a loop." }
+                modCallsInFlight++
+                val result = try {
+                    callTool(name, input)
+                } finally {
+                    modCallsInFlight--
+                }
+                if (throttle("modcall:${mod.id}/$name", 10_000)) registry.recordCall(mod.id, "mods.call $name", ModCapability.MODS_CALL, if (result.isError) "failed" else "allowed", null)
+                JSONObject().put("text", result.text).put("isError", result.isError)
             }
             ModOp.PROMPT_DRAFT -> {
                 val text = text(args).trim().take(MAX_TEXT)
@@ -1349,8 +1391,9 @@ class ModHost(
             registry.recordDenied(mod.id, "run.end followUp", ModCapability.PROMPT_SEND, "permission is off")
             return
         }
-        val queued = runCatching { effects?.followUp(mod, text, where) == true }.getOrDefault(false)
-        addLog(loaded.id, "info", if (queued) "Queued a follow-up: ${firstLine(text).take(120)}" else "Its follow-up wasn't queued: the chat changed or mods already chained 3 follow-ups.")
+        val limit = followUpLimit(mod)
+        val queued = runCatching { effects?.followUp(mod, text, where, limit) == true }.getOrDefault(false)
+        addLog(loaded.id, "info", if (queued) "Queued a follow-up: ${firstLine(text).take(120)}" else "Its follow-up wasn't queued: the chat changed, the user stopped the agent, or mods already chained $limit follow-ups.")
         if (queued) registry.recordCall(mod.id, "run.end followUp", ModCapability.PROMPT_SEND, "allowed", null)
     }
 
@@ -1534,6 +1577,9 @@ class ModHost(
 
     private fun allowed(mod: InstalledMod, capability: ModCapability): Boolean = capability in mod.granted && mod.canHold(capability)
 
+    /** Follow-ups mods may chain after one message from the user: more for a mod allowed `agent.chain`. */
+    private fun followUpLimit(mod: InstalledMod): Int = if (allowed(mod, ModCapability.AGENT_CHAIN)) MAX_CHAIN_FOLLOW_UPS else MAX_FOLLOW_UPS
+
     private fun keyOf(mod: InstalledMod): String = "${mod.manifest.version}:${mod.installedAt}:${options(mod)}"
 
     /** The mod's settings except secrets, as `register(on, options)` receives them. */
@@ -1607,6 +1653,7 @@ class ModHost(
 
     private fun refreshListening() {
         listening = running.values.filter { it.ready }.flatMap { it.events }.toSet()
+        toolsPossible = running.values.any { it.ready && allowed(currentMod(it), ModCapability.TOOLS_PROVIDE) }
         val tools = running.values
             .filter { it.ready && "tool.call" in it.events && allowed(currentMod(it), ModCapability.TOOLS_GATE) }
             .flatMap { it.tools }
@@ -1705,6 +1752,9 @@ class ModHost(
         const val MAX_TOOLS = 16
         const val MAX_TOOL_SCHEMA = 8 * 1024
         const val MAX_TOOL_TEXT = 48_000
+        const val MAX_FOLLOW_UPS = 3
+        const val MAX_CHAIN_FOLLOW_UPS = 25
+        private const val MAX_MOD_CALLS = 8
         private const val MIN_ASK_MS = 10_000L
         private const val DEFAULT_ASK_MS = 30 * 60_000L
         private const val MAX_ASK_MS = 2 * 60 * 60_000L

@@ -165,8 +165,12 @@ object ModAuthoringGuide {
         appendLine("| `capability` | Risk | What it allows |")
         appendLine("| --- | --- | --- |")
         ModCapability.entries.filter { it.usable }.forEach { capability ->
-            appendLine("| `${capability.id}` | ${capability.risk.name.lowercase()} | ${capability.summary} |")
+            val developer = if (capability.developer) " (Developer mode)" else ""
+            appendLine("| `${capability.id}` | ${capability.risk.name.lowercase()}$developer | ${capability.summary} |")
         }
+        appendLine()
+        appendLine("Permissions marked Developer mode work only while the user has Developer mode on in Mods, and")
+        appendLine("only after they allow each one for the mod. Turning Developer mode off stops them at once.")
         appendLine()
         appendLine("These files can never be written by a mod: `.claude/`, `.codex/`, `.agents/`, `.gemini/`, `.git/`,")
         appendLine("`.github/workflows/`, `.mh/`, `.mcp.json`, `.claude.json`, `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.gitattributes`.")
@@ -289,7 +293,9 @@ object ModAuthoringGuide {
         | `${'$'}.tool.register({ name, description, inputSchema })` | `tools.provide` | Gives the agents a tool; resolves to the name they see (see "Tools for the agents") |
         | `${'$'}.tool.unregister(name)` | `tools.provide` | Takes the tool away |
         | `${'$'}.agent.list()` | `agent.ask` | The harnesses: `{ id, name, installed, current }` |
-        | `${'$'}.agent.ask({ harness, prompt, timeoutMs })` | `agent.ask` | Runs a task in the open chat on a harness and resolves when it ends (see "Agent tasks") |
+        | `${'$'}.agent.ask({ harness, prompt, model, effort, chat, timeoutMs })` | `agent.ask` | Runs a task in the open chat (or another chat of the project) on a harness and resolves when it ends (see "Agent tasks") |
+        | `${'$'}.agent.stop(taskId)` | `agent.ask` | Stops a task the mod's `agent.ask` started; `true` when it was running |
+        | `${'$'}.mods.tools()`, `${'$'}.mods.call(name, input)` | `mods.call` | Other mods' tools (see "Tools for the agents") |
         | `${'$'}.ui.open({ id, title })`, `${'$'}.ui.close(id)` | `ui.pane` | Adds a panel (8 at most; `id` is lowercase letters, digits, dashes) or removes one; `open` returns `{ isPlaced }`, whether it is on screen now |
         | `${'$'}.ui.redraw(id?)` | none | Draws the mod's shown surfaces again (or just pane `id`) |
         | `${'$'}.ui.resolve(e)` | none | The element names, so `const { Column, Text } = ${'$'}.ui.resolve(e)` works as in other mod systems |
@@ -345,7 +351,12 @@ object ModAuthoringGuide {
         The agents see it as `mod_<last part of the mod id>_<name>`: Claude as an MCP tool (`mcp__mods__…`,
         allowed because you granted `tools.provide`), Codex through its harness-tools MCP server, and
         DeepSeek and Antigravity as the shell command `harness-tools mod <name> '<json>'`, listed in their
-        instructions. A tool registered during a task reaches Claude and Codex from their next start.
+        instructions. A tool registered during a task reaches Claude and Codex while they run (their MCP
+        server checks every 10 s and tells them the list changed); `harness-tools mod` lists the current ones.
+
+        With `mods.call`, a mod uses tools other mods give: `${'$'}.mods.tools()` lists them (`name`, `mod`,
+        `description`, `inputSchema`) and `${'$'}.mods.call(name, input)` resolves `{ text, isError }`. At
+        most 8 such calls run at once across all mods, so mods calling each other in a loop fail fast.
 
         ### Agent tasks
 
@@ -372,6 +383,13 @@ object ModAuthoringGuide {
         - One mod task runs at a time; a second call waits its turn. Waiting does not count against the
           hook's time. It throws when the chat closes or the harness can't start (for example, not
           installed or not signed in).
+        - `model` and `effort` pick the harness's model and effort level first (the ids `/model` and
+          `/effort` take); like the harness, they stay selected. `chat: 'new'` starts a new chat in the
+          project, and a chat id opens that chat; the answer's `chatId` says where it ran.
+        - `${'$'}.agent.stop(taskId)` stops a task the mod started. When the user presses Stop, mods start
+          no task or follow-up until the user sends a message, so a runaway chain always stops.
+        - `run.end` follow-ups and `${'$'}.prompt.send` share a limit of 3 after each message from the user;
+          a mod allowed `agent.chain` (Developer mode) may chain up to 25. Cap your own loops too.
 
         ### Drawing: dashboards, panels and the row above the message box
 

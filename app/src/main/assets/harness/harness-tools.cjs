@@ -153,18 +153,31 @@ async function content(result) {
   }
   return blocks;
 }
-function serve(mode) {
-  const active = new Map(); let buffer=''; let initialized=false;
+/** Names and descriptions of the mod tools, to notice when mods add or remove one. */
+function toolKey(list) { return JSON.stringify(list.map(tool => [tool.name, tool.description]).sort()); }
+function serve(mode, options = {}) {
+  const active = new Map(); let buffer=''; let initialized=false; let watch=null; let seen=null;
   const reply = value => process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+'\n');
+  // Mods can add tools while a harness runs: check every few seconds and tell the client (MCP tools.listChanged).
+  function startWatch() {
+    if (watch) return;
+    watch = setInterval(async () => {
+      const key = toolKey(await modTools(undefined, options.requestOptions));
+      if (seen !== null && key !== seen) reply({method:'notifications/tools/list_changed'});
+      seen = key;
+    }, options.watchMs || 10000);
+    watch.unref?.();
+  }
+  const stopWatch = () => { if (watch) clearInterval(watch); watch = null; };
   async function handle(message) {
     if (!message || typeof message !== 'object' || Array.isArray(message)) {reply({id:null,error:{code:-32600,message:'Invalid request'}});return;}
     const {id,method,params} = message;
     if (method === 'notifications/cancelled') {active.get(params?.requestId)?.abort(); return;}
     if (id === undefined) return;
-    if (method === 'initialize') {initialized=true; reply({id,result:{protocolVersion:['2024-11-05','2025-03-26','2025-06-18','2025-11-25'].includes(params?.protocolVersion) ? params.protocolVersion : '2024-11-05',capabilities:{tools:{}},serverInfo:{name:'mobile-harness',version:'1.0.0'}}}); return;}
+    if (method === 'initialize') {initialized=true; reply({id,result:{protocolVersion:['2024-11-05','2025-03-26','2025-06-18','2025-11-25'].includes(params?.protocolVersion) ? params.protocolVersion : '2024-11-05',capabilities:{tools:{listChanged:true}},serverInfo:{name:'mobile-harness',version:'1.0.0'}}}); startWatch(); return;}
     if (method === 'ping') {reply({id,result:{}}); return;}
     if (!initialized) {reply({id,error:{code:-32000,message:'Initialize first'}});return;}
-    if (method === 'tools/list') {const mods = await modTools(); reply({id,result:{tools:mode === 'mods' ? mods : [...tools, ...mods]}});return;}
+    if (method === 'tools/list') {const mods = await modTools(undefined, options.requestOptions); seen = toolKey(mods); reply({id,result:{tools:mode === 'mods' ? mods : [...tools, ...mods]}});return;}
     if (method !== 'tools/call') {reply({id,error:{code:-32601,message:'Method not found'}});return;}
     if (active.size >= 2 || active.has(id)) {reply({id,error:{code:-32000,message:'Inspection is busy'}});return;}
     const controller = new AbortController(); active.set(id,controller);
@@ -175,7 +188,7 @@ function serve(mode) {
     catch (error) {reply({id,result:{content:[{type:'text',text:error.message.slice(0,200)}],isError:true}});}
     finally {active.delete(id);}
   }
-  process.stdout.on('error', () => {for(const controller of active.values())controller.abort();process.stdin.destroy();});
+  process.stdout.on('error', () => {stopWatch();for(const controller of active.values())controller.abort();process.stdin.destroy();});
   process.stdin.setEncoding('utf8');
   process.stdin.on('data',data => {
     buffer += data;
@@ -186,10 +199,10 @@ function serve(mode) {
       try {void handle(JSON.parse(line)).catch(() => reply({id:null,error:{code:-32600,message:'Invalid request'}}));} catch {reply({id:null,error:{code:-32700,message:'Invalid JSON'}});}
     }
   });
-  process.stdin.on('end',() => {for(const controller of active.values())controller.abort();});
-  process.once('SIGTERM',() => {for(const controller of active.values())controller.abort();process.stdin.destroy();});
+  process.stdin.on('end',() => {stopWatch();for(const controller of active.values())controller.abort();});
+  process.once('SIGTERM',() => {stopWatch();for(const controller of active.values())controller.abort();process.stdin.destroy();});
 }
-module.exports = {probe,doctor,nativeRequest,call,gate,shrink,modTools};
+module.exports = {probe,doctor,nativeRequest,call,gate,shrink,modTools,serve};
 if (require.main === module) {
   if (process.argv[2] === '--mcp') serve(process.argv[3]);
   else if (process.argv[2] === 'mod') {

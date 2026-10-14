@@ -1,5 +1,20 @@
 # Tasks and progress
 
+## Developer-level mod control (design/mod-platform/developer-mods-plan.md) — 2026-10-14
+
+Love chose "All ten phases" (04:05 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair. Native code in mods (plan row 24) is not built; mods running with the app closed (row 15) and sharing beyond .mhmod (row 16) stay deferred.
+
+### Phase 1: orchestration and Developer mode
+
+- Developer mode (Mods > My mods, off by default, confirmed once): `ModCapability.developer` capabilities can be granted and used only while it is on; turning it off keeps their grants but makes them inert at once (`InstalledMod.canHold`). Saved in `_state.json` (`developerMode`), audited as `developer.on/off`.
+- `$.agent.ask` takes `model`, `effort` (applied through the same path as `/model` and `/effort`; they stay selected) and `chat` (`'new'` or a chat id of the project; the answer carries `chatId`). `$.agent.stop(taskId)` stops a task the mod started.
+- Chain limit: `run.end` follow-ups and `$.prompt.send` stay at 3 per user message; a mod allowed `agent.chain` (developer) may chain 25. When the user presses Stop, mods start no task or follow-up until the user's next message.
+- `mods.call`: `$.mods.tools()` and `$.mods.call(name, input)` reuse mod tools; at most 8 such calls in flight.
+- Mod tools reach running agents: Claude starts with the mods MCP server whenever a running mod may give tools (`ModHost.toolsPossible`), and the server polls every 10 s and sends `notifications/tools/list_changed` (`listChanged: true`). The DeepSeek/Antigravity block says `harness-tools mod` lists the current tools.
+- Defaults taken: grants survive Developer mode off (inert, restored when on); a mod-picked model/effort stays selected like the harness; `chat` switches the open chat.
+- VERIFIED: `ModHostTest` (developer gating of `agent.chain`, options passed, stop, mods.tools/call, chain limit 3 then 25 then 3, audit), `ModRegistryTest` (grant refused without Developer mode, saved, inert when off), `node --test` harness-tools list_changed test.
+- NOT RUN: on a phone; whether Claude Code and Codex refresh tools on `list_changed` (Claude Code documents support; Codex unverified).
+
 ## Mod Studio dev loop and authoring kit (spec v2 phase P9, rest) — 2026-10-13
 
 COMPLETE: agents on any harness can build and check mods, and Studio drafts reload as they change.

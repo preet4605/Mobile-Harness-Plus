@@ -68,6 +68,8 @@ data class InstalledMod(
     val shownIn: Set<ModPlace> = emptySet(),
     /** Why the mod cannot run until it is reviewed again, for example files changed on disk. */
     val problem: String? = null,
+    /** Developer mode is on, so [ModCapability.developer] capabilities may work. */
+    val developerMode: Boolean = false,
 ) {
     val id: String get() = manifest.id
 
@@ -79,7 +81,8 @@ data class InstalledMod(
 
     fun canHold(capability: ModCapability): Boolean =
         capability.usable && capability in manifest.requested &&
-            (capability.risk != RiskLevel.HIGH || trust == ModTrust.IMPORTED || trusted)
+            (capability.risk != RiskLevel.HIGH || trust == ModTrust.IMPORTED || trusted) &&
+            (!capability.developer || developerMode)
 }
 
 data class ModsSnapshot(
@@ -88,6 +91,8 @@ data class ModsSnapshot(
     val modsEnabled: Boolean = true,
     /** Set for one app run after repeated starts that never became stable. */
     val safeMode: Boolean = false,
+    /** Lets mods use [ModCapability.developer] capabilities they were granted; off by default. */
+    val developerMode: Boolean = false,
 ) {
     /** Mods whose contributions take effect now. */
     val active: List<InstalledMod>
@@ -334,6 +339,18 @@ class ModRegistry(
         publishLocked()
     }
 
+    /**
+     * Developer mode: while on, mods may use the developer capabilities they were granted. Off
+     * keeps those grants but makes them inert at once, so turning it on again restores them.
+     */
+    fun setDeveloperMode(enabled: Boolean) = synchronized(lock) {
+        if (state.developerMode == enabled) return@synchronized
+        state = state.copy(developerMode = enabled)
+        writeStateLocked()
+        auditLocked("*", "", if (enabled) "developer.on" else "developer.off", null, "allowed", null)
+        publishLocked()
+    }
+
     // ---- hooks and audit -----------------------------------------------------------------
 
     /**
@@ -461,7 +478,7 @@ class ModRegistry(
                 ?: return@mapNotNull null
             toInstalled(manifest, dir, record)
         }.sortedBy { it.manifest.name.lowercase() }
-        _snapshot.value = ModsSnapshot(mods = mods, modsEnabled = state.modsEnabled, safeMode = safeMode)
+        _snapshot.value = ModsSnapshot(mods = mods, modsEnabled = state.modsEnabled, safeMode = safeMode, developerMode = state.developerMode)
     }
 
     private fun toInstalled(manifest: ModManifest, dir: File, record: PersistedMod) = InstalledMod(
@@ -479,6 +496,7 @@ class ModRegistry(
         installedAt = record.installedAt,
         shownIn = record.shownIn,
         problem = problems[manifest.id],
+        developerMode = state.developerMode,
     )
 
     private fun move(from: File, to: File) {
@@ -620,10 +638,12 @@ private data class PersistedState(
     val modsEnabled: Boolean = true,
     val unstableStarts: Int = 0,
     val mods: Map<String, PersistedMod> = emptyMap(),
+    val developerMode: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("schemaVersion", SCHEMA_VERSION)
         .put("modsEnabled", modsEnabled)
+        .put("developerMode", developerMode)
         .put("unstableStarts", unstableStarts)
         .put("mods", JSONObject().apply { mods.forEach { (id, record) -> put(id, record.toJson()) } })
 
@@ -635,6 +655,7 @@ private data class PersistedState(
             return PersistedState(
                 modsEnabled = o.optBoolean("modsEnabled", true),
                 unstableStarts = o.optInt("unstableStarts", 0),
+                developerMode = o.optBoolean("developerMode", false),
                 mods = mods?.keys()?.asSequence()?.mapNotNull { id ->
                     runCatching { id to PersistedMod.fromJson(mods.getJSONObject(id)) }.getOrNull()
                 }?.toMap().orEmpty(),

@@ -326,7 +326,7 @@ class ClaudeRuntimeBridge(
                 resumeSessionId = resumeId,
                 maxTurns = prefs.claudeMaxTurns,
                 mcpConfig = RuntimeInstaller.CLAUDE_MOD_TOOLS_CONFIG.takeIf {
-                    com.jarves.mh.mods.ModHost.current.value?.snapshot?.value?.tools?.isNotEmpty() == true &&
+                    com.jarves.mh.mods.ModHost.current.value?.let { host -> host.toolsPossible || host.snapshot.value.tools.isNotEmpty() } == true &&
                         File(installed.rootfs, it.removePrefix("/")).isFile
                 },
             )

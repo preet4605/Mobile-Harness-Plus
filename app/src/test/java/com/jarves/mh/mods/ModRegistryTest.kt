@@ -289,4 +289,26 @@ class ModRegistryTest {
         assertTrue(File(root, "_state.damaged.json").isFile)
         assertNull(registry.snapshot.value.mods.firstOrNull())
     }
+
+    @Test
+    fun `developer permissions need Developer mode, which is saved and stops them without losing the grant`() {
+        val registry = registry()
+        val id = registry.install(stageZip(registry, ModTestKit.modZip(toastManifest(extraPermissions = listOf("agent.chain")), files)),
+            setOf(ModCapability.UI_TOAST, ModCapability.AGENT_CHAIN), ModTrust.IMPORTED, "a.mhmod").id
+        assertEquals(setOf(ModCapability.UI_TOAST), registry.snapshot.value.mods.single().granted)
+        registry.setGranted(id, ModCapability.AGENT_CHAIN, true)
+        assertFalse(ModCapability.AGENT_CHAIN in registry.snapshot.value.mods.single().granted)
+
+        registry.setDeveloperMode(true)
+        registry.setGranted(id, ModCapability.AGENT_CHAIN, true)
+        var mod = registry().snapshot.value.mods.single()
+        assertTrue(registry().snapshot.value.developerMode)
+        assertTrue(ModCapability.AGENT_CHAIN in mod.granted && mod.canHold(ModCapability.AGENT_CHAIN))
+
+        registry.setDeveloperMode(false)
+        mod = registry().snapshot.value.mods.single()
+        assertTrue(ModCapability.AGENT_CHAIN in mod.granted)
+        assertFalse(mod.canHold(ModCapability.AGENT_CHAIN))
+        assertTrue(mod.canHold(ModCapability.UI_TOAST))
+    }
 }

@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.MoreHoriz
@@ -175,6 +176,7 @@ private fun ModsList(
     val listState = rememberLazyListState()
     val collapse by rememberTitleCollapse(listState)
     var menuOpen by remember { mutableStateOf(false) }
+    var confirmDeveloper by remember { mutableStateOf(false) }
     val moreAnchor = rememberOverlayAnchor()
 
     LargeTitleScaffold(
@@ -281,7 +283,38 @@ private fun ModsList(
                     }
                 }
             }
+            item(key = "developer") {
+                ListSection(
+                    footer = "Developer mode lets mods you allow run commands, change settings, approve tool calls and more. " +
+                        "Each mod still needs each developer permission. Turning it off stops them all at once.",
+                ) {
+                    ToggleRow(
+                        title = "Developer mode",
+                        subtitle = if (snapshot.developerMode) "Developer permissions work" else "Off",
+                        checked = snapshot.developerMode,
+                        onCheckedChange = { on -> if (on) confirmDeveloper = true else viewModel.setDeveloperMode(false) },
+                        icon = Icons.Outlined.Code,
+                        iconTile = if (snapshot.developerMode) colors.orange else colors.gray,
+                    )
+                }
+            }
         }
+    }
+
+    if (confirmDeveloper) {
+        PocketAlert(
+            onDismiss = { confirmDeveloper = false },
+            title = "Turn on Developer mode?",
+            message = "Mods you give developer permissions can then run commands in your projects, change app settings, " +
+                "start agent chains and approve tool calls. Only allow them for mods you built or fully trust.",
+            actions = listOf(
+                AlertAction("Cancel", AlertRole.Cancel) { confirmDeveloper = false },
+                AlertAction("Turn on", AlertRole.Destructive) {
+                    confirmDeveloper = false
+                    viewModel.setDeveloperMode(true)
+                },
+            ),
+        )
     }
 
     GlassMenu(expanded = menuOpen, onDismiss = { menuOpen = false }, anchor = moreAnchor) {
@@ -845,7 +878,7 @@ private fun LazyListScope.permissionsTab(mod: InstalledMod, viewModel: ModsViewM
             mod.manifest.permissions.forEach { permission ->
                 val capability = permission.capability
                 val details = listOfNotNull(
-                    "${capability.id} · ${riskLabel(capability.risk)}",
+                    "${capability.id} · ${riskLabel(capability.risk)}" + if (capability.developer) " · developer" else "",
                     permission.reason,
                     permission.paths.takeIf { it.isNotEmpty() }?.let { "Only ${it.joinToString()}" }, permission.hosts.takeIf { it.isNotEmpty() }?.let { "Sites: ${it.joinToString()}" },
                 ).joinToString("\n")
@@ -854,7 +887,11 @@ private fun LazyListScope.permissionsTab(mod: InstalledMod, viewModel: ModsViewM
                     title = capability.summary,
                     subtitle = details,
                     subtitleMaxLines = 4,
-                    value = if (!capability.usable) "Not in this version" else null,
+                    value = when {
+                        !capability.usable -> "Not in this version"
+                        capability.developer && !mod.developerMode -> "Needs Developer mode"
+                        else -> null
+                    },
                     trailing = if (!capability.usable) null else {
                         {
                             PocketToggle(
@@ -1007,14 +1044,15 @@ private fun ModReviewSheet(review: ModReview, busy: Boolean, onInstall: (Set<Mod
                 ) {
                     manifest.permissions.forEach { permission ->
                         val capability = permission.capability
-                        val blocked = capability.risk == RiskLevel.HIGH && review.trust == ModTrust.BUILT
+                        val needsDeveloper = capability.developer && !review.developerMode
+                        val blocked = capability.risk == RiskLevel.HIGH && review.trust == ModTrust.BUILT || needsDeveloper
                         ListRow(
                             title = capability.summary,
                             subtitle = listOfNotNull(
                                 "${capability.id} · ${riskLabel(capability.risk)}",
                                 permission.reason,
                                 permission.paths.takeIf { it.isNotEmpty() }?.let { "Only ${it.joinToString()}" }, permission.hosts.takeIf { it.isNotEmpty() }?.let { "Sites: ${it.joinToString()}" },
-                                if (blocked) "Turn on “Trust this mod” on its page first." else null,
+                                if (needsDeveloper) "Turn on Developer mode in Mods first." else if (blocked) "Turn on “Trust this mod” on its page first." else null,
                             ).joinToString("\n"),
                             subtitleMaxLines = 5,
                             value = if (!capability.usable) "Not in this version" else null,

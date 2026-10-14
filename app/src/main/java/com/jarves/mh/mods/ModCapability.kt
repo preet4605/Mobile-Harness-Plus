@@ -5,13 +5,15 @@ import com.jarves.mh.model.RiskLevel
 /**
  * What a mod may ask for (mod.schema.v2.json). Each capability has a fixed risk. [usable] marks
  * the ones this app version can act on, from simple hooks or mod code (`ModOp`); the rest come in
- * later versions, so they are shown in review but never granted.
+ * later versions, so they are shown in review but never granted. [developer] capabilities work
+ * only while Developer mode is on (Mods screen); turning it off makes their grants inert.
  */
 enum class ModCapability(
     val id: String,
     val risk: RiskLevel,
     val summary: String,
     val usable: Boolean = false,
+    val developer: Boolean = false,
 ) {
     APP_INFO("app.info", RiskLevel.SAFE, "Read the app version", usable = true),
     PROJECT_INFO("project.info", RiskLevel.SAFE, "Read the open project's name, harness and plan", usable = true),
@@ -45,6 +47,8 @@ enum class ModCapability(
     TOOLS_GATE("tools.gate", RiskLevel.REVIEW, "Block or change Claude's tool calls and approval requests", usable = true),
     TOOLS_PROVIDE("tools.provide", RiskLevel.HIGH, "Give the agents new tools they may call", usable = true),
     MODEL_COMPLETE("model.complete", RiskLevel.HIGH, "Call the AI model on your account (daily token limit)", usable = true),
+    AGENT_CHAIN("agent.chain", RiskLevel.HIGH, "Keep the agent working for up to 25 follow-ups per message", usable = true, developer = true),
+    MODS_CALL("mods.call", RiskLevel.REVIEW, "Use tools other mods give", usable = true),
     ;
 
     companion object {

@@ -147,3 +147,30 @@ test('the mods-only MCP server offers no built-in tools', async t => {
   assert.equal(answer.isError, true); assert.match(answer.content[0].text, /unavailable/);
   child.stdin.end();
 });
+test('the MCP server tells the client when mods add a tool', async t => {
+  const dir = fixture(t);
+  let list = [{name: 'mod_a_one', description: 'one'}];
+  const reply = fs.watch(dir, (_, name) => {
+    if (!name?.endsWith('.request')) return;
+    const file = path.join(dir, name);
+    if (!fs.existsSync(file)) return;
+    fs.writeFileSync(file.replace('.request', '.response'), JSON.stringify({ok: true, tools: list}));
+  });
+  t.after(() => reply.close());
+  const script = `require(${JSON.stringify(path.resolve('app/src/main/assets/harness/harness-tools.cjs'))}).serve('mods', {requestOptions: {directory: ${JSON.stringify(dir)}, token: 'fixture'}, watchMs: 100})`;
+  const child = spawn(process.execPath, ['-e', script], {stdio: ['pipe','pipe','pipe']});
+  t.after(() => child.kill());
+  let pending = ''; const messages = [];
+  child.stdout.setEncoding('utf8'); child.stdout.on('data', data => {pending += data; let index; while ((index = pending.indexOf('\n')) >= 0) {messages.push(JSON.parse(pending.slice(0,index))); pending = pending.slice(index+1);}});
+  const send = (id, method, params) => child.stdin.write(JSON.stringify({jsonrpc:'2.0', id, method, params})+'\n');
+  async function until(find) {const deadline = Date.now()+10000; while (Date.now()<deadline) {const found=messages.find(find); if(found)return found; await new Promise(r=>setTimeout(r,20));} throw Error('MCP timeout');}
+  send(1,'initialize',{protocolVersion:'2024-11-05'});
+  assert.equal((await until(m => m.id === 1)).result.capabilities.tools.listChanged, true);
+  send(2,'tools/list',{});
+  assert.deepEqual((await until(m => m.id === 2)).result.tools.map(tool => tool.name), ['mod_a_one']);
+  await new Promise(r => setTimeout(r, 400));
+  assert.equal(messages.some(m => m.method === 'notifications/tools/list_changed'), false);
+  list = [...list, {name: 'mod_a_two', description: 'two'}];
+  await until(m => m.method === 'notifications/tools/list_changed');
+  child.stdin.end();
+});

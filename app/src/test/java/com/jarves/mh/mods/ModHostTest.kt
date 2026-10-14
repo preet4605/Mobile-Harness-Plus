@@ -41,14 +41,23 @@ class ModHostTest {
         override fun currentPlan(context: ModEventContext): ExecutionPlan? = null
         val asks = CopyOnWriteArrayList<String>()
         override fun agents(): JSONArray = JSONArray().put(JSONObject().put("id", "codex").put("installed", true).put("current", true))
-        override suspend fun askAgent(mod: InstalledMod, harness: AgentKind?, prompt: String, context: ModEventContext, timeoutMs: Long): JSONObject {
+        val askOptions = CopyOnWriteArrayList<ModAskOptions>()
+        override suspend fun askAgent(mod: InstalledMod, harness: AgentKind?, prompt: String, context: ModEventContext, timeoutMs: Long, options: ModAskOptions): JSONObject {
             asks += "${harness?.let(ModManifestParser::harnessId) ?: "current"}: $prompt"
+            askOptions += options
             kotlinx.coroutines.delay(300) // the task runs in the app, outside the mod's own time
             return JSONObject().put("status", "completed").put("text", "done: $prompt").put("taskId", "t${asks.size}")
         }
+        val stops = CopyOnWriteArrayList<String>()
+        override fun stopAgent(mod: InstalledMod, taskId: String): Boolean {
+            stops += taskId
+            return taskId == "t1"
+        }
         val followUps = CopyOnWriteArrayList<String>()
-        override fun followUp(mod: InstalledMod, text: String, context: ModEventContext): Boolean {
+        val followUpLimits = CopyOnWriteArrayList<Int>()
+        override fun followUp(mod: InstalledMod, text: String, context: ModEventContext, limit: Int): Boolean {
             followUps += text
+            followUpLimits += limit
             return true
         }
         override suspend fun modelComplete(mod: InstalledMod, prompt: String, system: String?, maxTokens: Int): JSONObject =
@@ -771,5 +780,62 @@ class ModHostTest {
         assertEquals("{\"a\":1}", httpCalls[0].body)
         assertEquals(mapOf("X-Key" to "k"), httpCalls[0].headers)
         assertTrue(File(registry.dataDir("dev.test.sample"), "model-usage.json").readText().contains("600"))
+    }
+
+    @Test
+    fun `developer mode gates agent chains, and mods steer, stop and call each other`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('session.start', async ($, e, next) => {
+                await $.tool.register({ name: 'shout', description: 'Upper-cases text' })
+                return next(e)
+              })
+              on('tool.call', { tool: 'shout' }, ($, e) => ({ text: String(e.input.text).toUpperCase() }))
+            }
+        """.trimIndent(), id = "dev.test.loud", permissions = listOf("tools.provide"))
+        install(registry, """
+            export function register(on) {
+              on('command.run', { name: 'go' }, async ($, e) => {
+                const asked = await $.agent.ask({ harness: 'codex', prompt: 'Plan', model: 'gpt-5', effort: 'high', chat: 'new' })
+                const stopped = await $.agent.stop(asked.taskId)
+                const tools = (await $.mods.tools()).map(t => t.name).join(',')
+                const loud = await $.mods.call('mod_loud_shout', { text: 'hi' })
+                const missing = await $.mods.call('mod_loud_none', {})
+                await $.prompt.send('keep going')
+                return { text: [stopped, tools, loud.text, missing.isError].join(' | ') }
+              })
+            }
+        """.trimIndent(), id = "dev.test.boss", permissions = listOf("agent.ask", "agent.chain", "mods.call", "prompt.send"))
+        val boss = registry.snapshot.value.mods.first { it.id == "dev.test.boss" }
+        // agent.chain is a developer permission: it can't be granted or used until Developer mode is on.
+        assertFalse(ModCapability.AGENT_CHAIN in boss.granted)
+        assertFalse(boss.canHold(ModCapability.AGENT_CHAIN))
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("both mods") { host.snapshot.value.mods.values.count { it.state == ModRunState.RUNNING } == 2 && host.snapshot.value.tools.size == 1 }
+        assertTrue(host.toolsPossible)
+        assertEquals(
+            ModCodeCommandOutcome.Reply("true | mod_loud_shout | HI | true"),
+            host.runCommand("dev.test.boss", "go", ""),
+        )
+        assertEquals(ModAskOptions(model = "gpt-5", effort = "high", chat = "new"), effects.askOptions.single())
+        assertEquals(listOf("t1"), effects.stops.toList())
+        assertEquals(listOf(ModHost.MAX_FOLLOW_UPS), effects.followUpLimits.toList())
+
+        registry.setDeveloperMode(true)
+        registry.setGranted("dev.test.boss", ModCapability.AGENT_CHAIN, true)
+        waitFor("the grant") { registry.snapshot.value.mods.first { it.id == "dev.test.boss" }.let { ModCapability.AGENT_CHAIN in it.granted && it.developerMode } }
+        Thread.sleep(200)
+        host.runCommand("dev.test.boss", "go", "")
+        assertEquals(listOf(ModHost.MAX_FOLLOW_UPS, ModHost.MAX_CHAIN_FOLLOW_UPS), effects.followUpLimits.toList())
+
+        // Off again: the grant stays but stops working at once.
+        registry.setDeveloperMode(false)
+        Thread.sleep(200)
+        host.runCommand("dev.test.boss", "go", "")
+        assertEquals(ModHost.MAX_FOLLOW_UPS, effects.followUpLimits.last())
+        assertTrue(ModCapability.AGENT_CHAIN in registry.snapshot.value.mods.first { it.id == "dev.test.boss" }.granted)
+        assertTrue(registry.readAudit(null).any { it.op == "developer.on" })
     }
 }

@@ -58,6 +58,9 @@ enum class ModOp(
     MODEL_USAGE("model.usage", ModCapability.MODEL_COMPLETE),
     AGENT_LIST("agent.list", ModCapability.AGENT_ASK),
     AGENT_ASK("agent.ask", ModCapability.AGENT_ASK, needsProject = true, slow = true),
+    AGENT_STOP("agent.stop", ModCapability.AGENT_ASK),
+    MODS_TOOLS("mods.tools", ModCapability.MODS_CALL),
+    MODS_CALL("mods.call", ModCapability.MODS_CALL, slow = true),
     ;
 
     companion object {

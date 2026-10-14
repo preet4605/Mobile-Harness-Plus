@@ -581,7 +581,14 @@ class MainViewModel(
             prompt: String,
             context: ModEventContext,
             timeoutMs: Long,
-        ): JSONObject = runModAsk(mod, harness, prompt, context, timeoutMs)
+            options: com.jarves.mh.mods.ModAskOptions,
+        ): JSONObject = runModAsk(mod, harness, prompt, context, timeoutMs, options)
+
+        override fun stopAgent(mod: InstalledMod, taskId: String): Boolean {
+            if (taskId !in modAsks || activeUiTaskId != taskId || !_state.value.isRunning) return false
+            stopActiveTask()
+            return true
+        }
 
         override fun pendingChanges(context: ModEventContext): JSONArray? {
             val current = _state.value
@@ -622,19 +629,21 @@ class MainViewModel(
             return true
         }
 
-        override fun followUp(mod: InstalledMod, text: String, context: ModEventContext): Boolean {
+        override fun followUp(mod: InstalledMod, text: String, context: ModEventContext, limit: Int): Boolean {
             val current = _state.value
             val project = current.activeProject ?: return false
             if (project.id != context.projectId || current.activeChatId != context.chatId) return false
-            if (modFollowUpsInChain >= MAX_MOD_FOLLOW_UPS) return false
+            if (modChainHalted || modFollowUpsInChain >= limit) return false
             modFollowUpsInChain++
             postModMessage(ChatMessage(fromUser = false, text = "${mod.manifest.name} asked the agent to keep working.", origin = "mod:${mod.id}"), context)
             queueFollowUp(project, text, emptyList())
             return true
         }
     }
-    /** Follow-ups mods queued from `run.end` since the user last sent a message; at most [MAX_MOD_FOLLOW_UPS]. Main thread. */
+    /** Follow-ups mods queued from `run.end` or `prompt.send` since the user last sent a message. Main thread. */
     private var modFollowUpsInChain = 0
+    /** The user pressed Stop: mods start no task or follow-up until the user sends a message. Main thread. */
+    private var modChainHalted = false
     /** A prompt waiting on the mods' prompt.submit and prompt.compose hooks; a second send waits for it. */
     private var modPromptJob: Job? = null
     /** What runs when the user confirms [AppUiState.pendingModConfirm]. Main thread. */
@@ -6332,6 +6341,7 @@ class MainViewModel(
     fun sendPrompt(prompt: String) {
         composerSends++
         modFollowUpsInChain = 0
+        modChainHalted = false
         sendPrompt(prompt, state.value.pendingAttachments, fromQueue = false)
     }
 
@@ -6738,21 +6748,49 @@ class MainViewModel(
         prompt: String,
         context: ModEventContext,
         timeoutMs: Long,
+        options: com.jarves.mh.mods.ModAskOptions = com.jarves.mh.mods.ModAskOptions(),
     ): JSONObject = withContext(Dispatchers.Main.immediate) {
         var taskId: String? = null
+        var chatId = context.chatId
         val answer = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
             modAskLock.lock()
             try {
-                fun sameChat(s: AppUiState) = s.activeProject?.id == context.projectId && s.activeChatId == context.chatId
+                check(!modChainHalted) { "You stopped the agent, so mods start nothing until your next message." }
+                fun sameChat(s: AppUiState) = s.activeProject?.id == context.projectId && s.activeChatId == chatId
+                // Another chat of the project: wait until the open one is free, then open or make it.
+                if (options.chat != null && options.chat != chatId) {
+                    val free = _state.first { it.activeProject?.id != context.projectId || modAskCanStart(it) }
+                    check(free.activeProject?.id == context.projectId) { "The mod's project is no longer open." }
+                    if (options.chat == "new") {
+                        val before = free.activeChatId
+                        createChat()
+                        check(_state.value.activeChatId != before) { "Couldn't start a new chat." }
+                    } else {
+                        check(free.projectChats.any { it.id == options.chat }) { "No chat ${options.chat} in this project." }
+                        switchChat(options.chat)
+                        check(_state.value.chatLoading || _state.value.activeChatId == options.chat) { "Couldn't open chat ${options.chat}." }
+                        _state.first { it.activeChatId == options.chat && !it.chatLoading || it.activeProject?.id != context.projectId }
+                    }
+                    chatId = _state.value.activeChatId
+                }
                 val ready = _state.first { !sameChat(it) || modAskCanStart(it) }
                 check(sameChat(ready)) { "The mod's chat is no longer open." }
+                check(!modChainHalted) { "You stopped the agent, so mods start nothing until your next message." }
                 val kind = harness ?: ready.agentKind
                 if (kind != ready.agentKind) {
                     check(kind in ready.installedAgentVersions) { "${kind.title} is not installed. Install it from Settings first." }
                     selectAgent(kind)
                     check(_state.value.agentKind == kind) { "Couldn't switch to ${kind.title}." }
                 }
-                postModMessage(ChatMessage(fromUser = false, text = "${mod.manifest.name} asked ${kind.title} to work on the next message.", origin = "mod:${mod.id}"), context)
+                options.model?.let { model ->
+                    check(applyModelChoice(model) != com.jarves.mh.model.ModelChoiceCheck.REJECTED) { "${kind.title} doesn't offer the model $model." }
+                }
+                options.effort?.let { effort ->
+                    val change = applyEffortChoice(effort)
+                    check(change !is EffortChange.Refused) { (change as EffortChange.Refused).reason }
+                }
+                val where = context.copy(chatId = chatId)
+                postModMessage(ChatMessage(fromUser = false, text = "${mod.manifest.name} asked ${kind.title} to work on the next message.", origin = "mod:${mod.id}"), where)
                 val toastBefore = _state.value.toastMessage
                 sendPrompt(prompt, emptyList(), fromQueue = true, fromMod = true)
                 // prompt.compose hooks finish the send a moment later.
@@ -6760,9 +6798,9 @@ class MainViewModel(
                 val started = activeUiTaskId?.takeIf { _state.value.isRunning }
                     ?: error(_state.value.toastMessage?.takeIf { it != toastBefore } ?: "${kind.title} didn't start a task for it.")
                 taskId = started
-                val ask = ModAsk(kotlinx.coroutines.CompletableDeferred(), context.projectId.orEmpty(), context.chatId)
+                val ask = ModAsk(kotlinx.coroutines.CompletableDeferred(), context.projectId.orEmpty(), chatId)
                 modAsks[started] = ask
-                ask.done.await().put("harness", com.jarves.mh.mods.ModManifestParser.harnessId(kind))
+                ask.done.await().put("harness", com.jarves.mh.mods.ModManifestParser.harnessId(kind)).put("chatId", chatId ?: JSONObject.NULL)
             } finally {
                 modAskLock.unlock()
             }
@@ -6771,6 +6809,7 @@ class MainViewModel(
             .put("status", "timeout")
             .put("text", "")
             .put("taskId", taskId ?: JSONObject.NULL)
+            .put("chatId", chatId ?: JSONObject.NULL)
             .also { taskId?.let(modAsks::remove) }
     }
 
@@ -6891,7 +6930,7 @@ class MainViewModel(
         if (tools.isEmpty()) return ""
         return buildString {
             appendLine("<mod-tools>")
-            appendLine("Installed mods give you these tools. Call one with: harness-tools mod <name> '<json input>'")
+            appendLine("Installed mods give you these tools. Call one with: harness-tools mod <name> '<json input>'. Run harness-tools mod to list the current ones; mods can add tools while you work.")
             tools.take(32).forEach { tool ->
                 appendLine("- ${tool.exposed}: ${tool.description.take(300)} Input schema: ${tool.inputSchema.take(600)}")
             }
@@ -7148,8 +7187,9 @@ class MainViewModel(
      */
     fun stopTask() {
         if (!_state.value.isRunning && !_state.value.isStopping) return
-        // Stop means stop: queued follow-ups are dropped, not started.
+        // Stop means stop: queued follow-ups are dropped, not started, and mods start nothing new until the next message.
         clearFollowUps()
+        modChainHalted = true
         stopActiveTask()
     }
 
@@ -7968,8 +8008,6 @@ class MainViewModel(
         private const val MOD_STABLE_AFTER_MS = 60_000L
         private const val MAX_PENDING_MOD_POSTS = 5
         private const val MAX_MOD_ASK_REPLY = 50_000
-        /** Follow-ups mods may chain after one message from the user (spec v2 §4.2 run.end). */
-        private const val MAX_MOD_FOLLOW_UPS = 3
         private const val MAX_MOD_PROMPT = 100_000
         private const val MOD_CHECK_NOTICE_MS = 700L
         private const val DIAGNOSTICS_REFRESH_COOLDOWN_MS = 1_000L
