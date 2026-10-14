@@ -5,6 +5,7 @@
 Love asked for every harness to use as few tokens as possible without losing capability. Measured with Claude Code 2.1.299 and Codex 0.161.0 against local mock model servers that log each request; not phone-tested. One commit per batch.
 
 - Batch 1, hard limits: `TaskSupervisor.classifyError` returns `AGENT_LIMIT_REACHED` for turn, budget and context-window errors (`AGENT_LIMIT_MARKERS`), which ends the task without the step and task retries that used to re-run it 2-3 times from scratch; edits are kept (`RecoveryEngine` returns null). Claude's `error_max_turns` result is no longer treated as fatal; its native session is saved, so "continue" resumes it.
+- Batch 2, standing context once per session: `MainViewModel.sendPrompt` wraps rules, mod rules, mod tools and the skills index in `<harness_context>` (`PromptContextSupport.wrapHarnessContext`); `prompt.compose` sections stay per message. Claude receives it with workspace and memory through `--append-system-prompt` (inline below 96 KiB, else in the message as before). Codex and Antigravity send it in the first message of a native conversation and again only when its hash changes, after a Codex compaction, or every 8 turns (`STANDING_CONTEXT_REFRESH_TURNS`; ledger `standing_context_ledger_v1` in AppPreferences, 64 entries). Codex native controls and DeepSeek (new session each turn) keep sending it every turn.
 
 ## Lag, heat and crash fixes — 2026-10-14
 

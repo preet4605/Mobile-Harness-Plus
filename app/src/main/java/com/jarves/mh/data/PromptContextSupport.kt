@@ -13,7 +13,7 @@ object PromptContextSupport {
     /** Tags whose literal closing/opening form must not be forgeable by embedded content. */
     private val DELIMITER_TAG_REGEX = Regex(
         "<(/?)(persistent_memory|BRAIN_CONTEXT|USER_TASK|conversation_history|project_workspace|" +
-            "pocketdev_workspace|user_rules|skills|active_skill|RULE\\b|mod_rules|mod\\b)",
+            "pocketdev_workspace|user_rules|skills|active_skill|RULE\\b|mod_rules|mod\\b|harness_context)",
         RegexOption.IGNORE_CASE,
     )
 
@@ -191,6 +191,93 @@ object PromptContextSupport {
             appendLine("</conversation_history>")
         }
     }
+
+    // ---- standing context ----------------------------------------------------
+
+    const val HARNESS_CONTEXT_START = "<harness_context>"
+    const val HARNESS_CONTEXT_END = "</harness_context>"
+
+    /** Resumed native sessions re-send standing context at least this often (covers native compaction). */
+    const val STANDING_CONTEXT_REFRESH_TURNS = 8
+
+    /**
+     * Wraps the rules, skills and mod blocks that stay the same from turn to turn, so a bridge can
+     * send them once per native session instead of inside every message. Empty when [inner] is blank.
+     */
+    fun wrapHarnessContext(inner: String): String {
+        val body = inner.trim()
+        if (body.isEmpty()) return ""
+        return "$HARNESS_CONTEXT_START\n${body.replace("</harness_context", "<\\/harness_context", ignoreCase = true)}\n$HARNESS_CONTEXT_END\n\n"
+    }
+
+    data class SplitPrompt(val standing: String, val turn: String)
+
+    /** Separates a leading [wrapHarnessContext] block from the rest of the message. */
+    fun splitHarnessContext(prompt: String): SplitPrompt {
+        if (!prompt.startsWith(HARNESS_CONTEXT_START)) return SplitPrompt("", prompt)
+        val end = prompt.indexOf(HARNESS_CONTEXT_END)
+        if (end < 0) return SplitPrompt("", prompt)
+        return SplitPrompt(
+            standing = prompt.substring(HARNESS_CONTEXT_START.length, end).trim(),
+            turn = prompt.substring(end + HARNESS_CONTEXT_END.length).trimStart(),
+        )
+    }
+
+    /**
+     * Context that only changes when the project's setup changes: the harness context, the workspace
+     * block and memory. Memory is rendered without per-task Brain de-duplication so the text, and
+     * therefore its [standingHash], stays stable across turns.
+     */
+    fun standingContext(
+        harnessContext: String,
+        guestWorkspacePath: String,
+        projectKind: ProjectKind,
+        memory: ContextMemory,
+        androidStackInstalled: Boolean,
+    ): String = buildString {
+        if (harnessContext.isNotBlank()) {
+            appendLine(HARNESS_CONTEXT_START)
+            appendLine(harnessContext.trim())
+            appendLine(HARNESS_CONTEXT_END)
+            appendLine()
+        }
+        append(workspaceBlock(guestWorkspacePath, projectKind, androidStackInstalled))
+        renderMemory(memory).takeIf { it.isNotBlank() }?.let {
+            appendLine()
+            append(it)
+        }
+    }.trim()
+
+    /** The per-turn part: bounded history (when the native session cannot carry it), then the task. */
+    fun turnPrompt(currentPrompt: String, history: List<ChatMessage>, guestWorkspacePath: String): String = buildString {
+        val historySection = historyBlock(history, guestWorkspacePath)
+        if (historySection.isEmpty()) {
+            appendLine(currentPrompt)
+        } else {
+            appendLine(historySection)
+            appendLine("Current user request:")
+            appendLine(currentPrompt)
+        }
+    }
+
+    fun standingHash(standing: String): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(standing.toByteArray(Charsets.UTF_8))
+            .take(16).joinToString("") { "%02x".format(it) }
+
+    /**
+     * Whether a turn must carry the standing context in its message. A new native session always does;
+     * a resumed one does when the context changed, after a native compaction cleared the record, or
+     * every [STANDING_CONTEXT_REFRESH_TURNS] turns.
+     */
+    fun mustSendStanding(resuming: Boolean, recorded: StandingRecord?, hash: String): Boolean =
+        !resuming || recorded == null || recorded.hash != hash ||
+            recorded.turnsSinceSent + 1 >= STANDING_CONTEXT_REFRESH_TURNS
+
+    data class StandingRecord(val hash: String, val turnsSinceSent: Int)
+
+    /** The record to keep after a successful turn on the same native conversation. */
+    fun nextStandingRecord(sent: Boolean, previous: StandingRecord?, hash: String): StandingRecord =
+        if (sent || previous == null) StandingRecord(hash, 0) else StandingRecord(hash, previous.turnsSinceSent + 1)
 
     /**
      * Full bridge prompt: workspace block, bounded memory, bounded history, then the task.

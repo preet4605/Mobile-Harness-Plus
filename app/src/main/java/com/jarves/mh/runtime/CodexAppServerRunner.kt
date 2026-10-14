@@ -180,7 +180,8 @@ internal class CodexAppServerRunner(
             }
         }
         val exit = if (!io.isAlive) runCatching { io.waitFor() }.getOrDefault(-1) else -1
-        return CodexRunResult(success && !isStopRequested(), failure.orEmpty(), exit, threadId, if (clearedByUser) "cleared" else goal?.status)
+        return CodexRunResult(success && !isStopRequested(), failure.orEmpty(), exit, threadId, if (clearedByUser) "cleared" else goal?.status,
+            compacted = compactionCompleted)
     }
 
     private fun rememberTurn(turn: JSONObject?) {

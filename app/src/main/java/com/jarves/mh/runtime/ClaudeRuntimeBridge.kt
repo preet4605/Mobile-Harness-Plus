@@ -195,7 +195,9 @@ class ClaudeRuntimeBridge(
             runCatching { com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).getBrainSnapshot(it) }.getOrNull()
         }
         val effectiveAttemptId = attemptId ?: snapshot?.attemptId
-        val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId, effectiveAttemptId)
+        // Standing context goes to the system prompt below, so it is not repeated in every resumed message.
+        val split = com.jarves.mh.data.PromptContextSupport.splitHarnessContext(prompt)
+        val injectedPrompt = ControlledBrainInjector.inject(split.turn, snapshot, taskId, effectiveAttemptId)
         finishedSessions.remove(sessionId)
         authoritativeResultSeen = false
         turnLimitReached = false
@@ -324,7 +326,19 @@ class ClaudeRuntimeBridge(
             val savedId = conversationScope?.let { prefs.consumeAgentConversation(com.jarves.mh.model.AgentKind.CLAUDE_CODE, projectId, it) }
             val resumeId = if (canResumeNativeConversation && owner?.retryCount == 0 && conversationHistory.count { it.fromUser } > 1)
                 NativeConversationScope.validId(savedId) else null
-            val contextPrompt = buildContextPrompt(injectedPrompt, if (resumeId == null) conversationHistory else emptyList(), guestWorkspacePath, projectKind, memory)
+            val standing = com.jarves.mh.data.PromptContextSupport.standingContext(
+                split.standing, guestWorkspacePath, projectKind, memory,
+                installer.isStackInstalled(com.jarves.mh.model.DevStack.ANDROID),
+            )
+            val systemPrompt = standing.takeIf { it.toByteArray(Charsets.UTF_8).size <= MAX_SYSTEM_PROMPT_ARG_BYTES }
+            val turn = com.jarves.mh.data.PromptContextSupport.turnPrompt(
+                injectedPrompt,
+                // the current prompt was just appended to history
+                if (resumeId == null) conversationHistory.dropLast(1) else emptyList(),
+                guestWorkspacePath,
+            )
+            // An oversized context cannot travel in argv; it then rides in the message as before.
+            val contextPrompt = if (systemPrompt != null) turn else "$standing\n\n$turn"
 
             val effort = if (provider.kind == ProviderKind.CLAUDE) {
                 com.jarves.mh.model.ClaudeThinkingLevel.fromStored(provider.claudeThinkingLevel).effortArg
@@ -337,6 +351,7 @@ class ClaudeRuntimeBridge(
                 resumeSessionId = resumeId,
                 maxTurns = maxTurns,
                 mcpConfig = claudeMcpConfig(installed.rootfs),
+                appendSystemPrompt = systemPrompt,
             )
             Log.d("ClaudeBridge", "Launching command: $command")
             val process = installer.process(
@@ -1048,21 +1063,6 @@ class ClaudeRuntimeBridge(
         }
     }
 
-    private fun buildContextPrompt(
-        currentPrompt: String,
-        history: List<ChatMessage>,
-        guestWorkspacePath: String,
-        projectKind: ProjectKind,
-        memory: ContextMemory = ContextMemory(""),
-    ): String = com.jarves.mh.data.PromptContextSupport.buildPrompt(
-        currentPrompt = currentPrompt,
-        history = history.dropLast(1), // the current prompt was just appended to history
-        guestWorkspacePath = guestWorkspacePath,
-        projectKind = projectKind,
-        memory = memory,
-        androidStackInstalled = installer.isStackInstalled(com.jarves.mh.model.DevStack.ANDROID),
-    )
-
     private fun ensureWorkspace(projectId: String): File = checkpoints.ensureWorkspace(projectId)
 
     fun configureProjectRoot(projectId: String, rootPath: String) {
@@ -1218,6 +1218,8 @@ class ClaudeRuntimeBridge(
         private const val MAX_RENDERED_DIFF_LINES = 600
         private const val DIFF_CONTEXT_LINES = 3
         private const val FOREGROUND_PROGRESS_MIN_INTERVAL_MS = 750L
+        /** Below the kernel's 128 KiB single-argument limit, with room for PRoot's own argv handling. */
+        internal const val MAX_SYSTEM_PROMPT_ARG_BYTES = 96 * 1024
 
         val SUPPORTED_EFFORT_LEVELS: Set<String> = setOf("low", "medium", "high", "xhigh", "max")
 
@@ -1229,6 +1231,8 @@ class ClaudeRuntimeBridge(
             maxTurns: Int = 25,
             /** Guest path of an MCP config to load, for tools running mods give (spec v2 P8). */
             mcpConfig: String? = null,
+            /** Standing project context; in the system prompt it is sent once per call, never stored in the transcript. */
+            appendSystemPrompt: String? = null,
         ): List<String> {
             val command = mutableListOf(
                 executable,
@@ -1253,6 +1257,7 @@ class ClaudeRuntimeBridge(
             require(maxTurns in 1..200) { "Claude turn budget must be between 1 and 200" }
             command.add(maxTurns.toString())
             mcpConfig?.let { command.addAll(listOf("--mcp-config", it)) }
+            appendSystemPrompt?.takeIf(String::isNotBlank)?.let { command.addAll(listOf("--append-system-prompt", it)) }
             NativeSpawnProcess.validateArgv(command)
             return command
         }

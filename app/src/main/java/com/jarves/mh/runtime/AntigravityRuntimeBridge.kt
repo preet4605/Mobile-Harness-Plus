@@ -503,7 +503,12 @@ class AntigravityRuntimeBridge(
             runCatching { com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).getBrainSnapshot(it) }.getOrNull()
         }
         val effectiveAttemptId = attemptId ?: snapshot?.attemptId
-        val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId, effectiveAttemptId)
+        // Standing context is sent once per agy conversation (ledger below), not in every message.
+        val split = com.jarves.mh.data.PromptContextSupport.splitHarnessContext(prompt)
+        val injectedPrompt = ControlledBrainInjector.inject(split.turn, snapshot, taskId, effectiveAttemptId)
+        val standing = antigravityStandingContext(projectSlug, split.standing, memory)
+        val standingHash = com.jarves.mh.data.PromptContextSupport.standingHash(standing)
+        val standingPrefs = com.jarves.mh.data.AppPreferences(context)
         val sessionStartedAtMillis = System.currentTimeMillis()
         activeSessionId = sessionId
         activeTaskId = taskId
@@ -583,11 +588,11 @@ class AntigravityRuntimeBridge(
                 val currentConvId = currentConversationId
                 val isStickyTurn = (useAccount && account!!.id == currentStickyAccountId && !currentConvId.isNullOrBlank())
                 val targetConvId = if (isStickyTurn) currentConvId else null
-                val effectivePrompt = if (!isStickyTurn && conversationHistory.isNotEmpty()) {
-                    buildFailoverPrompt(projectSlug, injectedPrompt, conversationHistory, memory)
-                } else {
-                    antigravityWorkspacePrompt(projectSlug, injectedPrompt, memory)
-                }
+                val standingRecord = targetConvId?.let { standingPrefs.standingContextRecord(com.jarves.mh.model.AgentKind.ANTIGRAVITY, it) }
+                val sendStanding = com.jarves.mh.data.PromptContextSupport.mustSendStanding(isStickyTurn, standingRecord, standingHash)
+                // The current prompt is the last history entry; it is sent once, as the task.
+                val turnText = if (!isStickyTurn) failoverTurnText(injectedPrompt, conversationHistory.dropLast(1)) else injectedPrompt
+                val effectivePrompt = if (sendStanding) "$standing\n\n$turnText" else turnText
 
                 var retryBlockedByChanges = false
                 var attemptHadTools = false
@@ -744,6 +749,10 @@ class AntigravityRuntimeBridge(
                     // running afterwards, so the signal exit code (143/137) must not fail the task.
                     val success = resultSeen || (exit == 0 && assistantTextSeen)
                     if (success) {
+                        currentConversationId?.takeIf { sendStanding || it == targetConvId }?.let { id ->
+                            standingPrefs.saveStandingContextRecord(com.jarves.mh.model.AgentKind.ANTIGRAVITY, id,
+                                com.jarves.mh.data.PromptContextSupport.nextStandingRecord(sendStanding, standingRecord, standingHash))
+                        }
                         if (useAccount) {
                             accountManager!!.recordUsage(account!!.id)
                             accountManager.resetStatus(account.id)
@@ -1058,9 +1067,22 @@ internal fun antigravityWorkspacePrompt(
     projectSlug: String,
     prompt: String,
     memory: ContextMemory = ContextMemory(""),
+): String = antigravityStandingContext(projectSlug, "", memory, renderMemoryBlock(memory, prompt)) + "\n\n" + prompt
+
+/** What an agy conversation needs once: harness context, the workspace rules and memory. */
+internal fun antigravityStandingContext(
+    projectSlug: String,
+    harnessContext: String,
+    memory: ContextMemory = ContextMemory(""),
+    memoryBlock: String = renderMemoryBlock(memory),
 ): String {
-    val memoryBlock = renderMemoryBlock(memory, prompt)
     return buildString {
+        if (harnessContext.isNotBlank()) {
+            appendLine(com.jarves.mh.data.PromptContextSupport.HARNESS_CONTEXT_START)
+            appendLine(harnessContext.trim())
+            appendLine(com.jarves.mh.data.PromptContextSupport.HARNESS_CONTEXT_END)
+            appendLine()
+        }
         appendLine("<pocketdev_workspace>")
         appendLine("The active project workspace is /workspace/$projectSlug. Create, edit, read, run, and build project files only inside this directory. Do not create project output under ~/.gemini/antigravity-cli/scratch or any other scratch directory.")
         appendLine()
@@ -1075,9 +1097,7 @@ internal fun antigravityWorkspacePrompt(
             appendLine()
             appendLine(memoryBlock)
         }
-        appendLine()
-        append(prompt)
-    }.trimIndent()
+    }.trim()
 }
 
 internal fun buildFailoverPrompt(
@@ -1086,13 +1106,17 @@ internal fun buildFailoverPrompt(
     history: List<ChatMessage>,
     memory: ContextMemory = ContextMemory(""),
 ): String {
-    if (history.isEmpty()) return antigravityWorkspacePrompt(projectSlug, originalPrompt, memory)
+    return antigravityWorkspacePrompt(projectSlug, failoverTurnText(originalPrompt, history), memory)
+}
+
+/** A new agy conversation gets the last few turns, since it cannot see the earlier one. */
+internal fun failoverTurnText(originalPrompt: String, history: List<ChatMessage>): String {
+    if (history.isEmpty()) return originalPrompt
     val recent = history.takeLast(4).joinToString("\n\n") { msg ->
         val role = if (msg.fromUser) "User" else "Assistant"
         "$role: ${msg.text.take(500)}"
     }
-    val combined = "Previous conversation context:\n$recent\n\nCurrent task:\n$originalPrompt"
-    return antigravityWorkspacePrompt(projectSlug, combined, memory)
+    return "Previous conversation context:\n$recent\n\nCurrent task:\n$originalPrompt"
 }
 
 internal fun isQuotaError(raw: String): Boolean {

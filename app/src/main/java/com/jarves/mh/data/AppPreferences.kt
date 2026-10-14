@@ -245,6 +245,32 @@ class AppPreferences(
         return if (preferences.edit().remove(key).commit()) value else null
     }
 
+    /**
+     * What standing context a resumed native conversation already holds (see
+     * [PromptContextSupport.mustSendStanding]). Bounded to the newest [STANDING_LEDGER_MAX] conversations.
+     */
+    fun standingContextRecord(agent: AgentKind, conversationId: String): PromptContextSupport.StandingRecord? =
+        runCatching {
+            val entry = JSONObject(preferences.getString(STANDING_LEDGER_KEY, null) ?: return null)
+                .optJSONObject("${agent.stableId}:$conversationId") ?: return null
+            PromptContextSupport.StandingRecord(entry.getString("hash"), entry.getInt("turns"))
+        }.getOrNull()
+
+    fun saveStandingContextRecord(agent: AgentKind, conversationId: String, record: PromptContextSupport.StandingRecord?) {
+        synchronized(standingLedgerLock) {
+            val ledger = runCatching { JSONObject(preferences.getString(STANDING_LEDGER_KEY, null) ?: "{}") }.getOrDefault(JSONObject())
+            val key = "${agent.stableId}:$conversationId"
+            if (record == null) ledger.remove(key)
+            else ledger.put(key, JSONObject().put("hash", record.hash).put("turns", record.turnsSinceSent).put("at", System.currentTimeMillis()))
+            val keys = ledger.keys().asSequence().toList()
+            if (keys.size > STANDING_LEDGER_MAX) {
+                keys.sortedBy { ledger.optJSONObject(it)?.optLong("at") ?: 0L }
+                    .take(keys.size - STANDING_LEDGER_MAX).forEach(ledger::remove)
+            }
+            preferences.edit().putString(STANDING_LEDGER_KEY, ledger.toString()).apply()
+        }
+    }
+
     /** Goal controls survive an interrupted turn without making ordinary partial turns resumable. */
     fun saveCodexGoalThread(projectId: String, scope: String, threadId: String) {
         check(preferences.edit().putString("${agentConversationKey(AgentKind.CODEX, projectId, scope)}:goal", threadId).commit()) {
@@ -1416,6 +1442,10 @@ class AppPreferences(
 
     companion object {
         private const val CHAT_STORE_TAG = "ChatStore"
+        private const val STANDING_LEDGER_KEY = "standing_context_ledger_v1"
+        private const val STANDING_LEDGER_MAX = 64
+        /** AppPreferences is created per use; the ledger's read-modify-write needs one process-wide lock. */
+        private val standingLedgerLock = Any()
         private const val MOVED_ASIDE_INDEX_PREFIX = "index.json.corrupt-"
 
         /** Messages per page file. Opening a chat reads whole pages from the end. */

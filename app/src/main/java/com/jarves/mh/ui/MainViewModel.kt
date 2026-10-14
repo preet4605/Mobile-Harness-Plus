@@ -7020,7 +7020,8 @@ class MainViewModel(
         // Inject active rules and skills progressive disclosure index
         val rulesBlock = skillManager.buildRulesBlock(_state.value.activeRules)
         val skillsIndex = skillManager.buildProgressiveDisclosureIndex(_state.value.activeSkills)
-        val envelopePrefix = buildString {
+        // Standing context: bridges that resume a native session send it once, not in every message.
+        val standingContext = buildString {
             if (rulesBlock.isNotBlank()) {
                 appendLine(rulesBlock)
                 appendLine()
@@ -7029,16 +7030,20 @@ class MainViewModel(
                 appendLine(mods.rulesBlock)
                 appendLine()
             }
-            if (modSections.isNotBlank()) {
-                appendLine(modSections)
-                appendLine()
-            }
             modToolsBlock(_state.value.agentKind).takeIf { it.isNotBlank() }?.let {
                 appendLine(it)
                 appendLine()
             }
             if (skillsIndex.isNotBlank()) {
                 appendLine(skillsIndex)
+                appendLine()
+            }
+        }
+        val envelopePrefix = buildString {
+            append(com.jarves.mh.data.PromptContextSupport.wrapHarnessContext(standingContext))
+            // prompt.compose sections belong to this message only.
+            if (modSections.isNotBlank()) {
+                appendLine(modSections)
                 appendLine()
             }
         }

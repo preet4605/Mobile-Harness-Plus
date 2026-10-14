@@ -77,7 +77,9 @@ class CodexRuntimeBridge(
             runCatching { com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).getBrainSnapshot(it) }.getOrNull()
         }
         val effectiveAttemptId = attemptId ?: snapshot?.attemptId
-        val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId, effectiveAttemptId)
+        // Standing context is sent once per native thread (see the ledger below), not in every message.
+        val split = com.jarves.mh.data.PromptContextSupport.splitHarnessContext(prompt)
+        val injectedPrompt = ControlledBrainInjector.inject(split.turn, snapshot, taskId, effectiveAttemptId)
         pendingGoalControl.set(null)
         finishedSessions.remove(sessionId)
         activeSessionId = sessionId
@@ -247,7 +249,25 @@ class CodexRuntimeBridge(
                     prefs.saveCodexPlanMode(projectId, conversationScope, true)
                     if (managedContext) handoff.savePlanMode(handoffKey!!, "$projectId:${owner!!.chatId}", true)
                 }
-                val contextPrompt = buildContextPrompt(injectedPrompt, if (resumeId == null) conversationHistory else emptyList(), guestWorkspacePath, projectKind, memory)
+                val standing = CodexPromptNotes.withPhoneEnvironment(com.jarves.mh.data.PromptContextSupport.standingContext(
+                    split.standing, guestWorkspacePath, projectKind, memory,
+                    installer.isStackInstalled(com.jarves.mh.model.DevStack.ANDROID),
+                ))
+                val standingHash = com.jarves.mh.data.PromptContextSupport.standingHash(standing)
+                // Codex keeps a thread's first developer_instructions on resume (verified with 0.161.0), so the
+                // context rides in the first message of a thread and again only when it changed, after a
+                // compaction, or every few turns. Native controls keep sending it as before.
+                val standingLedger = nativeControl == null
+                val standingRecord = resumeId?.let { prefs.standingContextRecord(AgentKind.CODEX, it) }
+                val sendStanding = !standingLedger ||
+                    com.jarves.mh.data.PromptContextSupport.mustSendStanding(resumeId != null, standingRecord, standingHash)
+                val turn = com.jarves.mh.data.PromptContextSupport.turnPrompt(
+                    injectedPrompt,
+                    // the current prompt was just appended to history
+                    if (resumeId == null) conversationHistory.dropLast(1) else emptyList(),
+                    guestWorkspacePath,
+                )
+                val contextPrompt = if (sendStanding) "$standing\n\n$turn" else turn
                 val capture = File(context.cacheDir, "codex-output-$sessionId.log").also { outputFile = it }
                 val reasoningEffort = com.jarves.mh.model.codexEffortToLaunch(
                     prefs.codexReasoningEffort,
@@ -379,6 +399,13 @@ class CodexRuntimeBridge(
                             eventBus.emit(RuntimeEvent.RuntimeLog(sessionId, "Chat history retained",
                                 "Codex finished, but its native context could not be saved for transfer. The next message will continue from saved chat history and the workspace."))
                         }
+                    }
+                }
+                result.threadId?.let { id ->
+                    when {
+                        result.compacted -> prefs.saveStandingContextRecord(AgentKind.CODEX, id, null)
+                        standingLedger && (sendStanding || id == resumeId) -> prefs.saveStandingContextRecord(AgentKind.CODEX, id,
+                            com.jarves.mh.data.PromptContextSupport.nextStandingRecord(sendStanding, standingRecord, standingHash))
                     }
                 }
                 if (result.goalStatus == "cleared") conversationScope?.let { prefs.clearCodexGoalThread(projectId, it) }
@@ -578,23 +605,6 @@ class CodexRuntimeBridge(
             error.message.orEmpty().ifBlank { "Codex could not start." }
         else -> CodexFailureMessages.friendly(error.message.orEmpty())
     }
-
-    private fun buildContextPrompt(
-        currentPrompt: String,
-        history: List<ChatMessage>,
-        guestWorkspacePath: String,
-        projectKind: ProjectKind,
-        memory: ContextMemory = ContextMemory(""),
-    ): String = CodexPromptNotes.withPhoneEnvironment(
-        com.jarves.mh.data.PromptContextSupport.buildPrompt(
-            currentPrompt = currentPrompt,
-            history = history.dropLast(1), // the current prompt was just appended to history
-            guestWorkspacePath = guestWorkspacePath,
-            projectKind = projectKind,
-            memory = memory,
-            androidStackInstalled = installer.isStackInstalled(com.jarves.mh.model.DevStack.ANDROID),
-        ),
-    )
 
     private fun pushForegroundProgress(detailRaw: String) {
         if (activeSessionId == null) return

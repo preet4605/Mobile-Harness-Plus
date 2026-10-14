@@ -72,6 +72,8 @@ internal data class CodexRunResult(
     val exitCode: Int,
     val threadId: String?,
     val goalStatus: String? = null,
+    /** A native context compaction finished during the run, so earlier standing context may be gone. */
+    val compacted: Boolean = false,
 )
 
 /**
