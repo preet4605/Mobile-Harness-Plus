@@ -614,6 +614,7 @@ class AntigravityRuntimeBridge(
                         guestWorkspacePath = "/workspace/$projectSlug",
                         credentialHome = guestHome,
                         emulateHardLinks = false,
+                        maxOutputBytes = NativeSpawnProcess.STREAMING_OUTPUT_BYTES,
                     )
                     activeProcess = process
                     val nativePid = (process as? NativeSpawnProcess)?.processPid

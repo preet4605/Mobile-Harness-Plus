@@ -89,6 +89,12 @@ internal class NativeSpawnProcess private constructor(
 
     companion object {
         const val MAX_OUTPUT_BYTES: Long = 5L * 1024 * 1024 // 5 MB
+        /**
+         * Budget for streams read while they grow (agent sessions, terminals, builds). Their
+         * stream-json or build log easily passes 5 MB on a long task, and hitting the budget
+         * kills the whole process group; the file is deleted when the session ends.
+         */
+        const val STREAMING_OUTPUT_BYTES: Long = 128L * 1024 * 1024 // 128 MB
         const val MAX_ARG_STRLEN: Int = 131072 // Linux MAX_ARG_STRLEN (32 pages * 4096)
 
         fun validateArgv(argv: List<String>) {
@@ -108,6 +114,7 @@ internal class NativeSpawnProcess private constructor(
             ptyRows: Int = 40,
             ptyColumns: Int = 120,
             onExit: () -> Unit = {},
+            maxOutputBytes: Long = MAX_OUTPUT_BYTES,
         ): NativeSpawnProcess {
             validateArgv(argv)
             outputFile.parentFile?.mkdirs()
@@ -133,7 +140,7 @@ internal class NativeSpawnProcess private constructor(
                     val source = if (pipe != null) FileInputStream(pipe) else
                         ParcelFileDescriptor.AutoCloseInputStream(ParcelFileDescriptor.adoptFd(spawned[2]))
                     source.use { stream -> FileOutputStream(outputFile, false).use { destination ->
-                        BoundedProcessCapture.copy(stream, destination, MAX_OUTPUT_BYTES) {
+                        BoundedProcessCapture.copy(stream, destination, maxOutputBytes) {
                             failed.set(true)
                             NativeSpawn.kill(spawned[0], 9)
                         }

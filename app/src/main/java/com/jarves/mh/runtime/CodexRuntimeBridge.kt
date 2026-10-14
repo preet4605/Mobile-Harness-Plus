@@ -308,6 +308,7 @@ class CodexRuntimeBridge(
                     // an atomic temp-file rename into a dangling `.l2s` symlink.
                     emulateHardLinks = false,
                     outputFile = capture,
+                    maxOutputBytes = NativeSpawnProcess.STREAMING_OUTPUT_BYTES,
                 )
                 activeProcess = process
                 val nativeProcess = process as? NativeSpawnProcess ?: error("Unsupported Android runtime process")

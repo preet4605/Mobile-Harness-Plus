@@ -1343,6 +1343,7 @@ class MainViewModel(
                         workspace = workspace,
                         environment = emptyMap(),
                         guestCommand = listOf("/usr/bin/bash", "-c", preparedCommand),
+                        maxOutputBytes = com.jarves.mh.runtime.NativeSpawnProcess.STREAMING_OUTPUT_BYTES,
                     )
                     terminalProcess = proc
                     val native = proc as? NativeSpawnProcess
@@ -1731,6 +1732,7 @@ class MainViewModel(
             environment = emptyMap(),
             guestCommand = listOf("/usr/bin/bash", "-lc", script),
             guestWorkspacePath = guestWorkspacePath,
+            maxOutputBytes = com.jarves.mh.runtime.NativeSpawnProcess.STREAMING_OUTPUT_BYTES,
         )
         projectTerminalProcess = process
         projectTerminalProjectId = projectId
@@ -2001,6 +2003,7 @@ class MainViewModel(
                         listOf("/usr/bin/bash", "-lc", androidGradleCommand(workspace, "assembleDebug")),
                         projectGuestRoot(project),
                         outputFile = log,
+                        maxOutputBytes = com.jarves.mh.runtime.NativeSpawnProcess.STREAMING_OUTPUT_BYTES,
                     )
                     androidBuildProcess = process
                     // Cancel may have arrived between the spawn and the assignment above.

@@ -336,6 +336,7 @@ class ClaudeRuntimeBridge(
                 command,
                 guestWorkspacePath = guestWorkspacePath,
                 credentialHome = "/root/.claude",
+                maxOutputBytes = NativeSpawnProcess.STREAMING_OUTPUT_BYTES,
             )
             activeProcess = process
             val nativePid = (process as? NativeSpawnProcess)?.processPid

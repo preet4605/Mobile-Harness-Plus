@@ -1690,6 +1690,7 @@ class RuntimeInstaller(private val context: Context) {
         ptyColumns: Int = 120,
         credentialHome: String? = null,
         inspectionAllowed: (() -> Boolean)? = null,
+        maxOutputBytes: Long = NativeSpawnProcess.MAX_OUTPUT_BYTES,
     ): Process {
         check(ensureRootfsCompatibilityLinks()) { "Core runtime has an invalid Linux filesystem layout" }
         RuntimeCertificates.repair(rootfs)
@@ -1796,6 +1797,7 @@ class RuntimeInstaller(private val context: Context) {
             ptyRows = ptyRows,
             ptyColumns = ptyColumns,
             onExit = { deleteAuthDirectory(File(context.cacheDir, "credential-masks/$inspectionToken")) },
+            maxOutputBytes = maxOutputBytes,
         )
         if (inspectionReady) InspectionSessions.shared.register(inspectionToken, workspace, guestWorkspacePath) {
             process.isAlive && inspectionAllowed?.invoke() != false

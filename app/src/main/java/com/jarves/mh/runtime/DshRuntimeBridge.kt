@@ -201,6 +201,7 @@ class DshRuntimeBridge(
                 // hard-link emulation turns that rename into a dangling `.l2s`
                 // symlink after the temp file is removed, losing the real file.
                 emulateHardLinks = false,
+                maxOutputBytes = NativeSpawnProcess.STREAMING_OUTPUT_BYTES,
             )
             activeProcess = process
             val nativePid = (process as? NativeSpawnProcess)?.processPid
