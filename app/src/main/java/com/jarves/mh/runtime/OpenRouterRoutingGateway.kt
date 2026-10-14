@@ -44,7 +44,11 @@ internal class OpenRouterRoutingGateway(
 
     private fun acceptLoop() {
         while (running.get()) {
-            runCatching { server.accept() }.getOrNull()?.let { socket ->
+            runCatching { server.accept() }.onFailure {
+                // A closed server ends the loop; any other accept error (out of descriptors) must not spin a core.
+                if (server.isClosed) return
+                Thread.sleep(GATEWAY_ACCEPT_RETRY_MS)
+            }.getOrNull()?.let { socket ->
                 runCatching { socket.soTimeout = SOCKET_TIMEOUT_MILLIS }
                 sockets.add(socket)
                 try {

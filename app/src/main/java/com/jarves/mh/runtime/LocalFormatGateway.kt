@@ -15,6 +15,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** Pause after a failed accept on a local gateway, so a persistent error cannot busy-loop. */
+internal const val GATEWAY_ACCEPT_RETRY_MS = 100L
+
 /** Small loopback-only Anthropic-to-OpenAI compatibility bridge for Claude Code. */
 internal class LocalFormatGateway(
     private val profile: ProviderProfile,
@@ -39,7 +42,11 @@ internal class LocalFormatGateway(
 
     private fun acceptLoop() {
         while (running.get()) {
-            runCatching { server.accept() }.getOrNull()?.let { socket ->
+            runCatching { server.accept() }.onFailure {
+                // A closed server ends the loop; any other accept error (out of descriptors) must not spin a core.
+                if (server.isClosed) return
+                Thread.sleep(GATEWAY_ACCEPT_RETRY_MS)
+            }.getOrNull()?.let { socket ->
                 socket.soTimeout = 30_000
                 sockets.add(socket)
                 try {

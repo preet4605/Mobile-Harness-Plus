@@ -994,8 +994,9 @@ class MainViewModel(
     private var followUpSteerTaskId: String? = null
     /** Counts composer sends, so an attachment import that finishes after a send does not attach to the next one. */
     private var composerSends = 0L
-    private val failedApiKeyIds = mutableSetOf<String>()
-    private val attemptedProfileIds = mutableSetOf<String>()
+    // The supervisor's fallback decider updates these off the main thread while Main reads them.
+    private val failedApiKeyIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val attemptedProfileIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     // getAndSet keeps a write queued during a flush from being dropped with the one being written.
     private val pendingTranscriptWrite = java.util.concurrent.atomic.AtomicReference<TranscriptWrite?>(null)
     private var transcriptDebounceJob: kotlinx.coroutines.Job? = null
@@ -1152,9 +1153,9 @@ class MainViewModel(
                 }
             }
         }
-        viewModelScope.launch { dshRuntime.events.coalesceAssistantDeltas().collect { onRuntimeEvent(it, AgentKind.DEEPSEEK_HARNESS) } }
-        viewModelScope.launch { antigravityRuntime.events.coalesceAssistantDeltas().collect { onRuntimeEvent(it, AgentKind.ANTIGRAVITY) } }
-        viewModelScope.launch { codexRuntime.events.coalesceAssistantDeltas().collect { onRuntimeEvent(it, AgentKind.CODEX) } }
+        viewModelScope.launch { dshRuntime.events.coalesceAssistantDeltas().collect { onRuntimeEventSafely(it, AgentKind.DEEPSEEK_HARNESS) } }
+        viewModelScope.launch { antigravityRuntime.events.coalesceAssistantDeltas().collect { onRuntimeEventSafely(it, AgentKind.ANTIGRAVITY) } }
+        viewModelScope.launch { codexRuntime.events.coalesceAssistantDeltas().collect { onRuntimeEventSafely(it, AgentKind.CODEX) } }
         viewModelScope.launch {
             antigravityAuthController.state.collect { auth ->
                 _state.update { it.copy(antigravityAuth = auth) }
@@ -1282,13 +1283,12 @@ class MainViewModel(
         val cleanedProjects = loadedProjects.filter { project ->
             if (project.kind == ProjectKind.QUICK_PROJECT) {
                 val workspaceDir = File(application.filesDir, "workspaces/${project.id}")
-                val userFiles = if (workspaceDir.isDirectory) {
-                    workspaceDir.walkTopDown().filter { file ->
-                        file.isFile && !file.name.startsWith(".claude") && file.name != ".pocket-dev-stacks.json"
-                    }.count()
-                } else 0
+                // App start runs this on the main thread: stop at the first user file instead of counting them all.
+                val hasUserFiles = workspaceDir.isDirectory && workspaceDir.walkTopDown().any { file ->
+                    file.isFile && !file.name.startsWith(".claude") && file.name != ".pocket-dev-stacks.json"
+                }
                 // Removed only when every chat file on disk is an empty list; any unreadable or non-empty file keeps it.
-                val keep = userFiles > 0 || !preferences.hasNoChatMessages(project.id)
+                val keep = hasUserFiles || !preferences.hasNoChatMessages(project.id)
                 if (!keep) {
                     workspaceDir.deleteRecursively()
                     terminalHistoryFile(project.id).delete()
@@ -2377,7 +2377,7 @@ class MainViewModel(
 
     init {
         viewModelScope.launch { RuntimeSetupController.snapshot.collect(::onSetupSnapshot) }
-        viewModelScope.launch { claudeRuntime.events.coalesceAssistantDeltas().collect { onRuntimeEvent(it, AgentKind.CLAUDE_CODE) } }
+        viewModelScope.launch { claudeRuntime.events.coalesceAssistantDeltas().collect { onRuntimeEventSafely(it, AgentKind.CLAUDE_CODE) } }
         viewModelScope.launch { bootstrap() }
     }
 
@@ -4206,13 +4206,13 @@ class MainViewModel(
 
         if (active != null) {
             val workspaceDir = File(getApplication<Application>().filesDir, "workspaces/${active.id}")
-            val userFiles = if (workspaceDir.isDirectory) {
-                workspaceDir.walkTopDown().filter { file ->
-                    file.isFile && !file.name.startsWith(".claude") && file.name != ".pocket-dev-stacks.json"
-                }.count()
-            } else 0
+            // Only emptiness matters: stop at the first user file instead of counting the whole
+            // workspace (node_modules can hold tens of thousands of files) on the main thread.
+            val hasUserFiles = workspaceDir.isDirectory && workspaceDir.walkTopDown().any { file ->
+                file.isFile && !file.name.startsWith(".claude") && file.name != ".pocket-dev-stacks.json"
+            }
 
-            if (!writeInFlight && preferences.hasNoChatMessages(active.id) && userFiles == 0 &&
+            if (!writeInFlight && preferences.hasNoChatMessages(active.id) && !hasUserFiles &&
                 !_state.value.isRunning && !_state.value.projectTerminalRunning
             ) {
                 // Unused empty project; delete immediately so it does not clutter the project list.
@@ -7500,11 +7500,15 @@ class MainViewModel(
         if (activeRuntimeRequest?.taskId == taskId) activeRuntimeRequest = null
         failedApiKeyIds.clear()
         attemptedProfileIds.clear()
-        if (verified) {
-            runCatching { memoryStore.taskRepository.recordSuccess(record.projectId, detail) }
-            extractMemoryFromSession(record.projectId, _state.value.messages)
-        } else if (!unverified && !cancelled) {
-            runCatching { memoryStore.taskRepository.recordError(record.projectId, detail) }
+        // Memory extraction runs several SQLite queries per item; keep it off the main thread.
+        val finishedMessages = _state.value.messages
+        viewModelScope.launch(Dispatchers.IO) {
+            if (verified) {
+                runCatching { memoryStore.taskRepository.recordSuccess(record.projectId, detail) }
+                extractMemoryFromSession(record.projectId, finishedMessages)
+            } else if (!unverified && !cancelled) {
+                runCatching { memoryStore.taskRepository.recordError(record.projectId, detail) }
+            }
         }
         touchProject(record.projectId)
         refreshProjectFiles()
@@ -7848,6 +7852,20 @@ class MainViewModel(
             liveThinking = false,
             workSegmentStartedAtMillis = current.workSegmentStartedAtMillis ?: System.currentTimeMillis(),
         )
+    }
+
+    /**
+     * One bad event must not take the app down: an exception here would cancel the collector
+     * (so the chat stops updating) and, with no handler, crash the process mid-task.
+     */
+    private fun onRuntimeEventSafely(event: RuntimeEvent, source: AgentKind) {
+        try {
+            onRuntimeEvent(event, source)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            android.util.Log.e("MainViewModel", "Runtime event ${event::class.simpleName} failed", error)
+        }
     }
 
     private fun onRuntimeEvent(event: RuntimeEvent, source: AgentKind) {

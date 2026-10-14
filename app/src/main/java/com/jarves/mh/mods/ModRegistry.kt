@@ -472,7 +472,8 @@ class ModRegistry(
         if (state.mods.isEmpty()) return@synchronized
         val starts = state.unstableStarts + 1
         state = state.copy(unstableStarts = starts)
-        writeStateLocked()
+        // A failed write (full disk) must not make the registry, and every screen that awaits it, fail to start.
+        runCatching { writeStateLocked() }
         if (starts >= SAFE_MODE_STARTS) {
             safeMode = true
             auditLocked("*", "", "safe-mode", null, "on", "$starts starts without a stable run")
