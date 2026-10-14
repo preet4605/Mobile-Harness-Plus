@@ -138,6 +138,9 @@ object ModAuthoringGuide {
         appendLine("  `${ModGuestTools.GUEST_ROOT}/bin/mod_<last part of the id>_<name>`, listed to every harness, run in the agent's folder")
         appendLine("  with the agent's arguments, ${ModGuestTools.TOOL_CPU_SECONDS} s of CPU and 1 GB of data memory. An MCP server is started by")
         appendLine("  Claude and Codex for their task (${ModGuestTools.SERVER_CPU_SECONDS} s of CPU, 1 GB). Turning the mod or Developer mode off kills them.")
+        appendLine("- `menuItems` (up to 8): `id`, `title` (up to 40 characters), `place` (`chat`: the message box's + menu;")
+        appendLine("  `file`: a file's menu in Files; `project`: the menu on the project's title) and `command`, one of the mod's")
+        appendLine("  `slashCommands`. A tap runs that command as if typed; in a file's menu its arguments are the file's path.")
         appendLine("- `panels` (up to 4), which need `ui.webpane`: `id` (lowercase letters, digits, dashes), `title`")
         appendLine("  (up to 40 characters) and `entry`, a `.html` file in the mod. See \"Web panels\".")
         appendLine()
@@ -323,6 +326,7 @@ object ModAuthoringGuide {
         | `${'$'}.settings.set(key, value)` | `settings.write` | Changes one of those through the app's own setter (refused with the app's reason, such as switching harness while a task runs); resolves `{ key, value, before, changed }`. `harness` is `claude`, `deepseek`, `antigravity` or `codex`; `theme` `system`, `light` or `dark`; `antigravityBalancing` `least_recently_used`, `round_robin` or `primary_only`; the last two are true or false. The user can undo each change from the mod's page |
         | `${'$'}.ui.open({ id, title })`, `${'$'}.ui.close(id)` | `ui.pane` | Adds a panel (8 at most; `id` is lowercase letters, digits, dashes) or removes one; `open` returns `{ isPlaced }`, whether it is on screen now |
         | `${'$'}.ui.post(panel, data)` | `ui.webpane` | Sends the mod's web panel `panel` a message (text, or JSON for anything else; at most 64 KB). Dropped when that panel isn't open |
+        | `${'$'}.ui.theme({ accent })` | `ui.theme` | Gives the whole app an accent color: `blue`, `indigo`, `purple`, `pink`, `red`, `orange`, `green`, `teal` or `brown`; `null` gives the app its own back. It lasts while the mod is on and allowed; the newest mod to set one wins |
         | `${'$'}.ui.redraw(id?)` | none | Draws the mod's shown surfaces again (or just pane `id`) |
         | `${'$'}.ui.resolve(e)` | none | The element names, so `const { Column, Text } = ${'$'}.ui.resolve(e)` works as in other mod systems |
 
@@ -446,7 +450,9 @@ object ModAuthoringGuide {
         - Surfaces: a pane (`component: 'Pane'`, `requestId` = its id; needs `ui.pane`) on the mod's
           Dashboard page and, when the user switches it on, in a project's Mods tab; the row above the
           message box (`component: 'AbovePrompt'`; needs `ui.band`, and the user switches it on). Set
-          `"dashboard": { "pane": "<id>" }` in `mod.json` so the page opens on that pane.
+          `"dashboard": { "pane": "<id>" }` in `mod.json` so the page opens on that pane. With a dashboard,
+          the user may also give the mod its own tab in the app's tab bar, a full-screen page of its panes
+          (one mod at a time, after the app's own tabs, which never change).
         - `ui.render` hooks must be synchronous and quick: 250 ms of the mod's own time. Read data that
           comes from `${'$'}` calls in other hooks, keep it in atoms, and only `read` it while drawing. An
           atom read while drawing redraws the surface when `update` changes it (at most 10 times a second).

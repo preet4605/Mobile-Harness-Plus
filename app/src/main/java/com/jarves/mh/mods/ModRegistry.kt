@@ -27,6 +27,8 @@ enum class ModPlace(val id: String, val label: String, val capability: ModCapabi
     BAND("band", "Row above the message box", ModCapability.UI_BAND),
     STATUS("status", "Status chip", ModCapability.UI_STATUS),
     WORKSPACE("workspace", "Panel in the Mods tab", ModCapability.UI_PANE),
+    /** A full-screen page of its dashboard in the app's tab bar (mod plan row 18); one mod at a time. */
+    TAB("tab", "Its own tab in the tab bar", ModCapability.UI_PANE),
     ;
 
     companion object {
@@ -97,7 +99,15 @@ data class ModsSnapshot(
     val codexGateProjects: Set<String> = emptySet(),
     /** App settings mods changed, newest first, each with the value to undo it to. */
     val settingChanges: List<ModSettingChange> = emptyList(),
+    /** The mod that last set the app's accent with `$.ui.theme`, and the accent. */
+    val themeAccent: Pair<String, String>? = null,
 ) {
+    /** The accent the app shows: the setting mod's, while it is active and allowed `ui.theme`. */
+    val accent: String?
+        get() = themeAccent?.let { (id, accent) ->
+            accent.takeIf { active.any { it.id == id && ModCapability.UI_THEME in it.granted && it.canHold(ModCapability.UI_THEME) } }
+        }
+
     /** Whether Codex in [projectId] asks the mods' tool gates before it runs commands and edits. */
     fun codexGate(projectId: String?): Boolean = developerMode && projectId != null && projectId in codexGateProjects
 
@@ -381,6 +391,17 @@ class ModRegistry(
         change
     }
 
+    /** [modId] sets the app's accent to [accent] (one of [ModTheme.ACCENTS]), or clears it with null. */
+    fun setThemeAccent(modId: String, accent: String?) = synchronized(lock) {
+        val record = state.mods[modId] ?: return@synchronized
+        val next = accent?.let { modId to it }
+        if (next == state.themeAccent || (accent == null && state.themeAccent?.first != modId)) return@synchronized
+        state = state.copy(themeAccent = next)
+        writeStateLocked()
+        auditLocked(modId, record.version, "ui.theme", ModCapability.UI_THEME.id, "allowed", accent ?: "cleared")
+        publishLocked()
+    }
+
     /** Forgets change [id]; [undone] when the user undid it. */
     fun removeSettingChange(id: String, undone: Boolean) = synchronized(lock) {
         val change = state.settingChanges.firstOrNull { it.id == id } ?: return@synchronized
@@ -524,6 +545,7 @@ class ModRegistry(
             developerMode = state.developerMode,
             codexGateProjects = state.codexGateProjects,
             settingChanges = state.settingChanges,
+            themeAccent = state.themeAccent,
         )
     }
 
@@ -688,6 +710,7 @@ private data class PersistedState(
     val developerMode: Boolean = false,
     val codexGateProjects: Set<String> = emptySet(),
     val settingChanges: List<ModSettingChange> = emptyList(),
+    val themeAccent: Pair<String, String>? = null,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("schemaVersion", SCHEMA_VERSION)
@@ -695,6 +718,7 @@ private data class PersistedState(
         .put("developerMode", developerMode)
         .put("codexGateProjects", JSONArray(codexGateProjects.sorted()))
         .put("settingChanges", JSONArray(settingChanges.map { it.toJson() }))
+        .put("themeAccent", themeAccent?.let { (id, accent) -> JSONObject().put("modId", id).put("accent", accent) } ?: JSONObject.NULL)
         .put("unstableStarts", unstableStarts)
         .put("mods", JSONObject().apply { mods.forEach { (id, record) -> put(id, record.toJson()) } })
 
@@ -708,6 +732,10 @@ private data class PersistedState(
                 unstableStarts = o.optInt("unstableStarts", 0),
                 developerMode = o.optBoolean("developerMode", false),
                 codexGateProjects = o.optJSONArray("codexGateProjects").strings().toSet(),
+                themeAccent = o.optJSONObject("themeAccent")?.let { t ->
+                    val id = t.optString("modId")
+                    t.optString("accent").takeIf { id.isNotBlank() && it in ModTheme.ACCENTS }?.let { id to it }
+                },
                 settingChanges = o.optJSONArray("settingChanges")?.let { array ->
                     (0 until array.length()).mapNotNull { array.optJSONObject(it)?.let(ModSettingChange::fromJson) }
                 }.orEmpty(),

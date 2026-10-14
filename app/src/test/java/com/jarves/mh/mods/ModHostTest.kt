@@ -1166,4 +1166,42 @@ class ModHostTest {
             .forEach { (key, value) -> assertTrue("$key=$value", runCatching { ModAppSettings.check(key, value) }.isFailure) }
         assertFalse(ModAppSettings.KEYS.any { "key" in it.lowercase() || "token" in it.lowercase() || "account" == it })
     }
+
+    @Test
+    fun `a mod gives the app an accent while it is on and allowed, and no other mod clears it`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('command.run', { name: 'accent' }, async ($, e) => {
+                try { await $.ui.theme({ accent: e.args || null }); return { text: 'ok' } } catch (error) { return { text: 'ERR ' + error.message } }
+              })
+            }
+        """.trimIndent(), permissions = listOf("ui.theme")) {
+            put("contributes", JSONObject().put("slashCommands", JSONArray().put(JSONObject().put("name", "accent").put("description", "Accent"))))
+        }
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod") { host.info()?.state == ModRunState.RUNNING }
+        suspend fun accent(name: String) = (host.runCommand("dev.test.sample", "accent", name) as ModCodeCommandOutcome.Reply).text
+        assertEquals("ok", accent("purple"))
+        assertEquals("purple", registry.snapshot.value.accent)
+        assertEquals("purple", registry().snapshot.value.accent)
+        assertTrue(accent("chartreuse"), accent("chartreuse").startsWith("ERR"))
+        assertEquals("purple", registry.snapshot.value.accent)
+
+        // Another mod can't clear it; turning the mod off or taking the permission gives the app its own back.
+        registry.setThemeAccent("dev.test.other", null)
+        assertEquals("purple", registry.snapshot.value.accent)
+        registry.setGranted("dev.test.sample", ModCapability.UI_THEME, false)
+        assertEquals(null, registry.snapshot.value.accent)
+        registry.setGranted("dev.test.sample", ModCapability.UI_THEME, true)
+        assertEquals("purple", registry.snapshot.value.accent)
+        registry.setEnabled("dev.test.sample", false)
+        assertEquals(null, registry.snapshot.value.accent)
+        registry.setEnabled("dev.test.sample", true)
+        waitFor("the mod again") { host.info()?.state == ModRunState.RUNNING }
+        assertEquals("ok", accent(""))
+        assertEquals(null, registry.snapshot.value.accent)
+        assertTrue(registry.readAudit("dev.test.sample").any { it.op == "ui.theme" && it.detail == "cleared" })
+    }
 }

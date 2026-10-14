@@ -16,7 +16,7 @@ const CAPABILITIES = ['app.info', 'project.info', 'ui.toast', 'storage', 'notify
   'secrets', 'memory.read', 'agent.ask', 'prompt.transform', 'ui.status', 'ui.band', 'ui.pane', 'ui.webpane',
   'prompt.compose', 'files.gate', 'changes.read', 'changes.undo', 'terminal.gate', 'tools.gate', 'tools.provide',
   'model.complete', 'agent.chain', 'mods.call', 'git.write', 'build.run', 'guest.tools', 'tools.approve', 'engine.memory',
-  'settings.read', 'settings.write'];
+  'settings.read', 'settings.write', 'ui.theme'];
 const ID = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,4}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const MAX_MODULE = 512 * 1024;
@@ -126,6 +126,7 @@ async function loadMod(dir = process.cwd(), {options = {}, mocks = {}, store = {
       case 'ui.status': case 'ui.summary': record.statuses.push(args[0]); return null;
       case 'ui.redraw': case 'ui.open': case 'ui.close': return true;
       case 'ui.post': record.posts.push({panel: args[0], data: args[1]}); return null;
+      case 'ui.theme': record.theme = args[0] && args[0].accent || null; return null;
       case 'command.register': record.commands.push(args[0] && args[0].name); return true;
       case 'tool.register': record.tools.push(args[0] && args[0].name); return `mod_${manifest.id.split('.').pop().replace(/[^a-z0-9]+/g, '_')}_${args[0] && args[0].name}`;
       case 'project.info': return {id: 'p1', name: 'Test project', harness: 'claude'};

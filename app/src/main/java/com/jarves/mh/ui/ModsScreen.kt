@@ -855,7 +855,10 @@ private fun LazyListScope.controlsTab(
             }
         }
         item(key = "places") {
-            ListSection(header = "In projects", footer = "Where this mod also shows while a project is open. Each is off until you turn it on.") {
+            ListSection(
+                header = "Where it shows",
+                footer = "Panels, rows and chips show while a project is open; its own tab needs a dashboard and shows one mod at a time. Each is off until you turn it on.",
+            ) {
                 ModPlace.entries.forEach { place ->
                     val requested = place.capability in manifest.requested
                     val granted = place.capability in mod.granted

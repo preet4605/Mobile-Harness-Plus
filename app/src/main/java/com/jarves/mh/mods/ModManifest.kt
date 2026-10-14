@@ -32,6 +32,8 @@ data class ModManifest(
     val mcpServers: List<ModGuestProgram> = emptyList(),
     /** Web panels: HTML pages from the package, shown one at a time (mod plan row 12; `ui.webpane`). */
     val webPanels: List<ModWebPanel> = emptyList(),
+    /** Items in the chat, file and project menus that run one of its commands (mod plan row 18). */
+    val menuItems: List<ModMenuItem> = emptyList(),
 ) {
     val requested: Set<ModCapability> get() = permissions.map { it.capability }.toSet()
 
@@ -43,6 +45,21 @@ data class ModManifest(
             (guestTools + mcpServers).flatMap { it.command }.filter { it.startsWith("./") }.map { it.removePrefix("./") }.distinct() +
             webPanels.map { it.entry }
 }
+
+/** Where a mod's menu item shows: the composer's + menu, a file's menu in Files, or the project's view menu. */
+enum class ModMenuPlace(val id: String) {
+    CHAT("chat"), FILE("file"), PROJECT("project");
+
+    companion object {
+        fun fromId(id: String): ModMenuPlace? = entries.firstOrNull { it.id == id }
+    }
+}
+
+/** A menu item that runs the mod's slash command [command]; in a file's menu with the file's path as its arguments. */
+data class ModMenuItem(val id: String, val title: String, val place: ModMenuPlace, val command: String)
+
+/** A menu item of an active mod, as the project's menus list it. */
+data class ModMenuEntry(val modId: String, val modName: String, val item: ModMenuItem)
 
 /** A web panel: [entry] is an `.html` file in the package, served from the mod's own origin. */
 data class ModWebPanel(val id: String, val title: String, val entry: String)
@@ -188,7 +205,7 @@ object ModManifestParser {
         "permissions", "contributes", "integrity", "hooks", "types", "dashboard",
     )
     private val CONTRIBUTES_KEYS = setOf(
-        "panels", "slashCommands", "promptTemplates", "settings", "rules", "skills", "hooks", "guestTools", "mcpServers",
+        "panels", "menuItems", "slashCommands", "promptTemplates", "settings", "rules", "skills", "hooks", "guestTools", "mcpServers",
     )
     private val HARNESS_IDS = mapOf(
         "claude" to AgentKind.CLAUDE_CODE,
@@ -259,6 +276,7 @@ object ModManifestParser {
         var guestTools = emptyList<ModGuestProgram>()
         var mcpServers = emptyList<ModGuestProgram>()
         var webPanels = emptyList<ModWebPanel>()
+        var menuItems = emptyList<ModMenuItem>()
         if (contributes != null) {
             if (contributes !is JSONObject) {
                 p.add("\"contributes\" must be an object.")
@@ -267,6 +285,7 @@ object ModManifestParser {
                 guestTools = array(contributes, "guestTools", p, 8).mapIndexedNotNull { i, o -> parseGuestProgram(o, "contributes.guestTools[$i]", p) }
                 mcpServers = array(contributes, "mcpServers", p, 4).mapIndexedNotNull { i, o -> parseGuestProgram(o, "contributes.mcpServers[$i]", p) }
                 webPanels = array(contributes, "panels", p, 4).mapIndexedNotNull { i, o -> parseWebPanel(o, i, p) }
+                menuItems = array(contributes, "menuItems", p, 8).mapIndexedNotNull { i, o -> parseMenuItem(o, i, p) }
                 commands = array(contributes, "slashCommands", p, 32).mapIndexedNotNull { i, o -> parseCommand(o, i, p) }
                 templates = array(contributes, "promptTemplates", p, 32).mapIndexedNotNull { i, o -> parseTemplate(o, i, p) }
                 settings = array(contributes, "settings", p, 32).mapIndexedNotNull { i, o -> parseSetting(o, i, p) }
@@ -299,6 +318,10 @@ object ModManifestParser {
         checkUnique(hooks.map { it.id }, "hook id", p)
         checkUnique(guestTools.map { it.name } + mcpServers.map { it.name }, "guest tool or MCP server name", p)
         checkUnique(webPanels.map { it.id }, "web panel id", p)
+        checkUnique(menuItems.map { it.id }, "menu item id", p)
+        menuItems.filter { item -> commands.none { it.name == item.command } }.forEach {
+            p.add("Menu item ${it.id} runs /${it.command}, which isn't one of the mod's slashCommands.")
+        }
 
         val builtIn = SlashCommandEngine.ALL_SLASH_COMMANDS.map { it.name.lowercase(Locale.ROOT) }.toSet()
         commands.filter { it.name in builtIn }.forEach { p.add("Command /${it.name} would replace a built-in command.") }
@@ -370,7 +393,21 @@ object ModManifestParser {
             guestTools = guestTools,
             mcpServers = mcpServers,
             webPanels = webPanels,
+            menuItems = menuItems,
         )
+    }
+
+    private fun parseMenuItem(o: JSONObject, i: Int, p: Problems): ModMenuItem? {
+        val at = "contributes.menuItems[$i]"
+        unknownKeys(o, setOf("id", "title", "place", "command"), at, p)
+        val id = string(o, "id", p, required = true, label = "$at.id") ?: return null
+        if (!ITEM_ID.matches(id)) p.add("$at.id must be lowercase letters, digits or dashes.")
+        val title = string(o, "title", p, required = true, min = 1, max = 40, label = "$at.title") ?: return null
+        val place = string(o, "place", p, required = true, label = "$at.place")?.let { value ->
+            ModMenuPlace.fromId(value) ?: run { p.add("$at.place must be chat, file or project."); null }
+        } ?: return null
+        val command = string(o, "command", p, required = true, label = "$at.command")?.removePrefix("/") ?: return null
+        return ModMenuItem(id, title, place, command)
     }
 
     private fun parseWebPanel(o: JSONObject, i: Int, p: Problems): ModWebPanel? {

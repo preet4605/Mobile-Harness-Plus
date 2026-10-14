@@ -294,6 +294,10 @@ data class AppUiState(
     val provider: ProviderProfile = ProviderProfile(ProviderKind.ANTHROPIC),
     val activeApiKeyName: String? = null,
     val themeMode: com.jarves.mh.ui.theme.AppThemeMode = com.jarves.mh.ui.theme.AppThemeMode.DARK,
+    /** The accent colour an active mod gave the app (`$.ui.theme`), or null for the app's own. */
+    val modAccent: String? = null,
+    /** Active mods' items for the chat, file and project menus. */
+    val modMenuItems: List<com.jarves.mh.mods.ModMenuEntry> = emptyList(),
     val apiPingStatus: ApiPingStatus = ApiPingStatus.IDLE,
     val apiPingMessage: String? = null,
     val projects: List<Project> = emptyList(),
@@ -2969,6 +2973,9 @@ class MainViewModel(
                 modContributions = runCatching {
                     ModContributionSet.build(snapshot) { skillManager.parseSkillFile(it, SkillSource.MOD) }
                 }.getOrElse { ModContributionSet() }
+                val accent = snapshot.accent
+                val menuItems = snapshot.active.flatMap { mod -> mod.manifest.menuItems.map { com.jarves.mh.mods.ModMenuEntry(mod.id, mod.manifest.name, it) } }
+                _state.update { if (it.modAccent == accent && it.modMenuItems == menuItems) it else it.copy(modAccent = accent, modMenuItems = menuItems) }
                 // A mod turned off, or Developer mode off, stops its guest programs at once (mod plan row 11).
                 val allowed = ModGuestTools.allowed(snapshot).map { it.id }.toSet()
                 if (guestPrograms != null && !allowed.containsAll(guestPrograms.orEmpty())) {
@@ -3013,6 +3020,24 @@ class MainViewModel(
         if (hooks != null) runCatching { hooks.emit(event, context, values, status) }
         if (host != null && codeEvent != null) {
             runCatching { host.emit(codeEvent, data?.invoke() ?: ModCodeEvents.payload(values), ModCodeEvents.private(event)) }
+        }
+    }
+
+    /**
+     * A mod's menu item (mod plan row 18): runs its slash command as if typed, with [path] (a file's
+     * menu) as the arguments. A code command answers in the chat; a template command is sent to the
+     * agent, so it waits until no task runs.
+     */
+    fun runModMenuItem(entry: com.jarves.mh.mods.ModMenuEntry, path: String?) {
+        val current = _state.value
+        val project = current.activeProject ?: return
+        val args = path.orEmpty()
+        val typed = "/${entry.item.command}" + if (args.isEmpty()) "" else " $args"
+        val code = modHost?.snapshot?.value?.commands.orEmpty().firstOrNull { it.modId == entry.modId && it.name == entry.item.command }
+        when {
+            code != null -> runModCodeCommand(project, entry.modId, code.name, args, typed)
+            current.isRunning -> _state.update { it.copy(toastMessage = "Wait for the task to finish, then try ${entry.item.title} again.") }
+            else -> sendPrompt(typed, emptyList(), fromQueue = true)
         }
     }
 

@@ -9,6 +9,7 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
@@ -179,8 +180,9 @@ internal val PocketShapes = Shapes(
 
 enum class AppThemeMode { SYSTEM, DARK, LIGHT }
 
+/** [accent]: a design-token colour name a mod chose (`$.ui.theme`, mod plan row 18), or null for the app's own. */
 @Composable
-fun PocketTheme(themeMode: AppThemeMode = AppThemeMode.SYSTEM, content: @Composable () -> Unit) {
+fun PocketTheme(themeMode: AppThemeMode = AppThemeMode.SYSTEM, accent: String? = null, content: @Composable () -> Unit) {
     val isDark = when (themeMode) {
         AppThemeMode.DARK -> true
         AppThemeMode.LIGHT -> false
@@ -197,10 +199,16 @@ fun PocketTheme(themeMode: AppThemeMode = AppThemeMode.SYSTEM, content: @Composa
         }
     }
 
-    MaterialTheme(
-        colorScheme = if (isDark) DarkColors else LightColors,
-        typography = PocketTypography,
-        shapes = PocketShapes,
-        content = content,
-    )
+    val baseRoles = if (isDark) DarkColorRoles else LightColorRoles
+    val accentColor = accent?.let(baseRoles::named)
+    val scheme = (if (isDark) DarkColors else LightColors).let { if (accentColor != null) it.copy(primary = accentColor) else it }
+    val roles = if (accentColor != null) baseRoles.copy(accent = accentColor) else baseRoles
+    CompositionLocalProvider(LocalPocketColorRoles provides roles) {
+        MaterialTheme(
+            colorScheme = scheme,
+            typography = PocketTypography,
+            shapes = PocketShapes,
+            content = content,
+        )
+    }
 }

@@ -1606,6 +1606,15 @@ class ModHost(
                 (effects ?: error("The app screen is closed")).runBuild(mod, scoped!!, install)
             }
             ModOp.MEMORY_LIST -> (effects ?: error("The app screen is closed")).projectMemory(scoped!!) ?: error("That project is not open")
+            ModOp.UI_THEME -> {
+                val options = args.optJSONObject(0)
+                val accent = options?.opt("accent")?.takeIf { it != JSONObject.NULL }?.toString()?.lowercase()
+                require(options != null && (accent == null || accent in ModTheme.ACCENTS)) {
+                    "\$.ui.theme({ accent }): accent is one of ${ModTheme.ACCENTS.joinToString()}, or null to give the app its own back"
+                }
+                registry.setThemeAccent(mod.id, accent)
+                null
+            }
             ModOp.SETTINGS_GET -> {
                 val all = (effects ?: error("The app screen is closed")).appSettings()
                 if (args.isNull(0)) all else text(args).also(ModAppSettings::requireKey).let { all.opt(it) ?: JSONObject.NULL }

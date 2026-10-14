@@ -234,4 +234,20 @@ class ModManifestParserTest {
         }
         assertNull(ModPaths.alwaysDeniedReason("notes/log.md"))
     }
+
+    @Test
+    fun `menu items run one of the mod's own commands`() {
+        fun withItems(vararg items: JSONObject) = ModTestKit.manifest {
+            put("contributes", JSONObject()
+                .put("slashCommands", JSONArray().put(JSONObject().put("name", "lint").put("description", "Lint").put("template", "Lint {{args}}")))
+                .put("menuItems", JSONArray(items.toList())))
+        }
+        fun item(id: String, place: String, command: String = "lint") = JSONObject().put("id", id).put("title", "Lint this").put("place", place).put("command", command)
+        val manifest = ModManifestParser.parse(withItems(item("lint-file", "file"), item("lint-chat", "chat", "/lint")))
+        assertEquals(listOf(ModMenuItem("lint-file", "Lint this", ModMenuPlace.FILE, "lint"), ModMenuItem("lint-chat", "Lint this", ModMenuPlace.CHAT, "lint")), manifest.menuItems)
+        assertRejected(withItems(item("x", "toolbar")), "chat, file or project")
+        assertRejected(withItems(item("x", "chat", "deploy")), "isn't one of the mod's slashCommands")
+        assertRejected(withItems(item("x", "chat"), item("x", "file")), "menu item id")
+        assertRejected(withItems(*Array(9) { item("i$it", "chat") }), "menuItems")
+    }
 }

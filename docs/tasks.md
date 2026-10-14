@@ -4,7 +4,18 @@
 
 Love chose "All ten phases" (04:05 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair. Native code in mods (plan row 24) is not built; mods running with the app closed (row 15) and sharing beyond .mhmod (row 16) stay deferred.
 
+### Phase 8: menus, theming and a mod's own tab
+
+- `contributes.menuItems` (8): `id`, `title`, `place` (`chat`: the composer's + menu; `file`: a file's menu in Files, with its path as arguments; `project`: the project title's view menu) and `command`, which must be one of the mod's `slashCommands`. A tap runs the command as if typed (`MainViewModel.runModMenuItem`): a code command answers in the chat; a template command goes to the agent, refused with a note while a task runs. The items reach the menus through `LocalModMenus`, so WorkspaceScreen's signature is unchanged.
+- `ui.theme` (usable): `$.ui.theme({ accent })` sets the whole app's accent to one of nine design-token colors that keep white text readable (`ModTheme.ACCENTS`), or `null` back to the app's own. Kept in `_state.json`; `ModsSnapshot.accent` shows it only while that mod is active and allowed, and another mod can't clear it. `PocketTheme(accent)` puts it in `colorScheme.primary` and `PocketColors.current.accent` (a subtree with its own light or dark scheme keeps plain roles).
+- Own tab: `ModPlace.TAB` ("Its own tab in the tab bar", `ui.pane`, needs a dashboard). The root tab bar adds one tab after Projects, Agent, Mods and Settings for the first such mod by name; it shows the mod's panes full screen and keeps its code running while shown. Built-in tabs and screens are never replaced or hidden.
+- Defaults taken: density is not built (the app has no density tokens, and scaling every spacing would be a redesign); one mod tab at a time; menu items run declared commands only; accents limited to nine colors.
+- VERIFIED (full suite 1518 tests, 0 failures; node 17/17; app compiles): `ModManifestParserTest` (menu items, places, unknown command, unique ids, 8 at most), `ModHostTest` (`$.ui.theme` sets, persists, refuses unknown colors, survives another mod's clear, hidden while off or not allowed, clears).
+- NOT RUN: on a phone (menus, the extra tab and accent drawing; compiled only).
+
 ### Phase 7: app settings and more app events
+
+COMPLETE (pushed to harness-dev as a256202).
 
 - `settings.read` (usable): `$.settings.get(key?)` for `harness`, `model`, `effort`, `theme`, `antigravityBalancing`, `antigravityFailover`, `codexAccountBalancing` (`ModAppSettings.KEYS`). Any other key, including API keys, sign-ins and the keystore, is refused by name.
 - `settings.write` (developer): `$.settings.set(key, value)` checks the value (`ModAppSettings.check`), then goes through the same MainViewModel setters as the app's screens (`selectAgent`, `applyModelChoice`, `applyEffortChoice`, `setThemeMode`, the Antigravity and Codex balancing setters), so their refusals hold (no harness switch while a task runs, models the harness offers). Each change is kept as an undo snapshot (`ModsSnapshot.settingChanges`, newest 20, in `_state.json`), audited `settings.set`/`settings.undo`, and listed on the mod's Activity tab with Undo.

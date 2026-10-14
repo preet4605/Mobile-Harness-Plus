@@ -77,6 +77,20 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.io.File
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.unit.Dp
+import com.jarves.mh.mods.ModMenuEntry
+import com.jarves.mh.mods.ModMenuPlace
+import com.jarves.mh.mods.ModSurfaces
+import com.jarves.mh.ui.kit.GlassMenuDivider
+import com.jarves.mh.ui.kit.GlassMenuItem
+import com.jarves.mh.ui.kit.LargeTitle
+import com.jarves.mh.ui.theme.glass.hostBackdropSource
 
 /**
  * Mod surfaces (spec v2 §4.4): trees a mod's `ui.render` hooks return, drawn with the app's own
@@ -528,5 +542,82 @@ internal fun ModWorkspacePanes(modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * The mod with its own tab in the app's tab bar (mod plan row 18): switched on for it, allowed and
+ * with a dashboard; the first by name, so the bar never holds more than one. Built-in tabs stay.
+ */
+@Composable
+internal fun rememberModTab(): ModSurfaces? {
+    val host = ModHost.current.collectAsState().value ?: return null
+    val tab = remember(host) {
+        host.surfaces.map { all -> all.values.filter { ModPlace.TAB in it.shownIn && it.dashboard != null }.minByOrNull { it.name.lowercase() } }
+            .map { it?.let { mod -> mod.modId to mod.name } }.distinctUntilChanged()
+    }
+    val chosen = tab.collectAsState(null).value ?: return null
+    return host.surfaces.collectAsState().value[chosen.first]
+}
+
+/** A mod's dashboard as a full-screen page in the tab bar. Its code runs while the page shows. */
+@Composable
+internal fun ModTabPage(modId: String, bottomPadding: Dp, modifier: Modifier = Modifier) {
+    val host = ModHost.current.collectAsState().value ?: return
+    DisposableEffect(host) {
+        host.setScreenVisible(TAB_SCREEN, true)
+        onDispose { host.setScreenVisible(TAB_SCREEN, false) }
+    }
+    val all by host.surfaces.collectAsState()
+    val mod = all[modId] ?: return
+    var chosen by rememberSaveable(modId) { mutableStateOf<String?>(null) }
+    val pane = mod.panes.firstOrNull { it.id == chosen } ?: mod.panes.firstOrNull() ?: return
+    ShowModSurface(host, modId, pane.surface, TAB_HOLDER)
+    val onEvent: (String, Any?) -> Unit = { handler, value -> host.press(modId, pane.surface, handler, value) }
+    LazyColumn(
+        modifier.fillMaxSize().hostBackdropSource(),
+        contentPadding = PaddingValues(
+            top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + PocketSpacing.lg,
+            bottom = bottomPadding,
+        ),
+        verticalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
+    ) {
+        item(key = "title") { LargeTitle(mod.name) }
+        if (mod.panes.size > 1) {
+            item(key = "choices") {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = PocketSpacing.lg),
+                    horizontalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
+                ) {
+                    mod.panes.forEach { p ->
+                        PocketButton(p.title, { chosen = p.id }, style = if (p.id == pane.id) PocketButtonStyle.Filled else PocketButtonStyle.Gray, size = PocketButtonSize.Small)
+                    }
+                }
+            }
+        }
+        modPaneItems("tab-$modId-${pane.id}", mod.drawings[pane.surface], mod.dir, onEvent, Modifier.padding(horizontal = PocketSpacing.lg))
+    }
+}
+
+/** Active mods' menu items for the open project, and what a tap does (mod plan row 18). */
+internal class ModMenuActions(val items: List<ModMenuEntry>, val run: (ModMenuEntry, String?) -> Unit) {
+    companion object {
+        val None = ModMenuActions(emptyList()) { _, _ -> }
+    }
+}
+
+internal val LocalModMenus = staticCompositionLocalOf { ModMenuActions.None }
+
+/** The mods' items for [place], after a divider; [path] is the file a file menu is for. */
+@Composable
+internal fun ModMenuItems(place: ModMenuPlace, path: String? = null) {
+    val menus = LocalModMenus.current
+    val items = menus.items.filter { it.item.place == place }
+    if (items.isEmpty()) return
+    GlassMenuDivider()
+    items.forEach { entry ->
+        GlassMenuItem(entry.item.title, { menus.run(entry, path) }, icon = Icons.Outlined.Extension)
+    }
+}
+
 private const val BAND_HOLDER = "workspace-band"
 private const val PANE_HOLDER = "workspace-pane"
+private const val TAB_HOLDER = "tab-page"
+private const val TAB_SCREEN = "mod-tab"

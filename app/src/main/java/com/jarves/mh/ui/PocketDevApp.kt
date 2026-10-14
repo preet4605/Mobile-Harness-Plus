@@ -202,6 +202,8 @@ private fun AppScreen(
     reduceTransparency: Boolean,
     setReduceTransparency: (Boolean) -> Unit,
 ) {
+    // Mods' items in the chat, file and project menus (mod plan row 18).
+    val modMenus = remember(state.modMenuItems, viewModel) { ModMenuActions(state.modMenuItems, viewModel::runModMenuItem) }
     when (destination) {
         AppDestination.Loading -> StartupLoadingScreen(
             state = state,
@@ -285,7 +287,7 @@ private fun AppScreen(
             onSwitchChat = viewModel::switchReadOnlyChat,
             onContinueHere = viewModel::activateReadOnlyProject,
         )
-        AppDestination.Workspace -> WorkspaceScreen(
+        AppDestination.Workspace -> CompositionLocalProvider(LocalModMenus provides modMenus) { WorkspaceScreen(
             state = state,
             onBack = viewModel::closeProject,
             onSend = viewModel::sendPrompt,
@@ -374,7 +376,7 @@ private fun AppScreen(
             onDeleteMemoryEntry = viewModel::deleteMemory,
             onClearAutoMemory = viewModel::clearAutoMemory,
             onClearAllMemory = viewModel::clearMemory,
-        )
+        ) }
         AppDestination.Root -> RootScreenHost(state, viewModel, projectsListState, reduceTransparency, setReduceTransparency)
     }
 }
@@ -401,8 +403,12 @@ private fun RootScreenHost(
     val terminalLiveOutput by viewModel.terminalLiveOutput.collectAsStateWithLifecycle()
     val terminalCurrentCommand by viewModel.terminalCurrentCommand.collectAsStateWithLifecycle()
 
+    // A mod's own page after the built-in tabs, when one is switched on (mod plan row 18).
+    val modTab = rememberModTab()
+    var onModTab by rememberSaveable { mutableStateOf(false) }
+    val showModTab = onModTab && modTab != null
     val minimize = rememberTabBarMinimizeState()
-    LaunchedEffect(screen) { minimize.expand() }
+    LaunchedEffect(screen, showModTab) { minimize.expand() }
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         containerColor = MaterialTheme.colorScheme.background,
@@ -423,12 +429,17 @@ private fun RootScreenHost(
                         },
                 ) {
                     FloatingTabBar(
-                        tabs = RootScreen.entries.map { TabItem(it.label, it.icon, it.selectedIcon) },
-                        selectedIndex = screen.ordinal,
+                        tabs = RootScreen.entries.map { TabItem(it.label, it.icon, it.selectedIcon) } +
+                            listOfNotNull(modTab?.let { TabItem(it.name.take(12), Icons.Outlined.Extension, Icons.Rounded.Extension) }),
+                        selectedIndex = if (showModTab) RootScreen.entries.size else screen.ordinal,
                         onSelect = {
-                            val next = RootScreen.entries[it]
-                            if (next != screen) {
+                            val next = RootScreen.entries.getOrNull(it)
+                            if (next == null) {
                                 viewModel.cancelProjectOpening()
+                                onModTab = true
+                            } else if (next != screen || showModTab) {
+                                viewModel.cancelProjectOpening()
+                                onModTab = false
                                 screen = next
                             }
                         },
@@ -459,12 +470,14 @@ private fun RootScreenHost(
             modifier = Modifier.fillMaxSize().nestedScroll(minimize.connection),
         ) {
             AnimatedContent(
-                targetState = screen,
+                // Null: the mod's tab.
+                targetState = if (showModTab) null else screen,
                 transitionSpec = { PocketTransitions.crossFade() },
                 label = "root tab",
             ) { tab ->
             BackdropSourceScope(active = isTransitionTarget) {
             when (tab) {
+                null -> modTab?.let { ModTabPage(it.modId, bottomPadding = floatingNavClearance) }
                 RootScreen.PROJECTS -> ProjectsScreen(
                     state = state,
                     listState = projectsListState,

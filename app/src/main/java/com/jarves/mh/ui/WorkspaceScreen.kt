@@ -1221,6 +1221,7 @@ internal fun WorkspaceScreen(
                             tabs.forEach { tab ->
                                 GlassMenuItem(tab.label, { selectView(tab) }, checked = tab == selectedTab)
                             }
+                            ModMenuItems(com.jarves.mh.mods.ModMenuPlace.PROJECT)
                         }
                     }
                 }
@@ -2009,6 +2010,7 @@ private fun EntryMenuItems(entry: WorkspaceEntry, actions: EntryActions) {
     GlassMenuDivider()
     GlassMenuItem("Rename", { actions.onRename(entry) }, icon = Icons.Outlined.DriveFileRenameOutline, enabled = actions.enabled)
     GlassMenuItem("Delete", { actions.onDelete(entry) }, icon = Icons.Outlined.Delete, destructive = true, enabled = actions.enabled)
+    if (!entry.isDirectory) ModMenuItems(com.jarves.mh.mods.ModMenuPlace.FILE, entry.path.trim('/'))
 }
 
 /** Asks for the name of a new file or folder, or a new name for an entry. Problems show under the field. */
@@ -2751,6 +2753,7 @@ private fun Composer(
         GlassMenuItem("Memory", onOpenMemoryViewer, icon = Icons.Outlined.Psychology)
         GlassMenuDivider()
         GlassMenuItem(if (activeCount > 0) "Activity · $activeCount running" else "Activity", onOpenInspector, icon = Icons.Outlined.Layers)
+        ModMenuItems(com.jarves.mh.mods.ModMenuPlace.CHAT)
     }
 }
 

@@ -71,6 +71,7 @@ enum class ModOp(
     TERMINAL_RUN("terminal.run", ModCapability.TERMINAL_RUN, needsProject = true, slow = true),
     BUILD_RUN("build.run", ModCapability.BUILD_RUN, needsProject = true, slow = true),
     MEMORY_LIST("memory.list", ModCapability.MEMORY_READ, needsProject = true),
+    UI_THEME("ui.theme", ModCapability.UI_THEME),
     SETTINGS_GET("settings.get", ModCapability.SETTINGS_READ),
     SETTINGS_SET("settings.set", ModCapability.SETTINGS_WRITE, slow = true),
     ;
@@ -222,6 +223,11 @@ object ModAppSettings {
             else -> value as? Boolean ?: throw IllegalArgumentException("\$.settings.set: $key must be true or false")
         }
     }
+}
+
+/** Accent colors a mod may give the app (`$.ui.theme`): design-token colors that keep white text readable. */
+object ModTheme {
+    val ACCENTS = listOf("blue", "indigo", "purple", "pink", "red", "orange", "green", "teal", "brown")
 }
 
 internal object ModCodeEvents {

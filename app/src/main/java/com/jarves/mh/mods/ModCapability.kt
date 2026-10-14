@@ -53,6 +53,7 @@ enum class ModCapability(
     BUILD_RUN("build.run", RiskLevel.HIGH, "Build and install the project's Android app", usable = true, developer = true),
     GUEST_TOOLS("guest.tools", RiskLevel.HIGH, "Run the mod's own programs and MCP servers in the Linux guest", usable = true, developer = true),
     TOOLS_APPROVE("tools.approve", RiskLevel.HIGH, "Approve the agents' requests to run tools inside your projects", usable = true, developer = true),
+    UI_THEME("ui.theme", RiskLevel.REVIEW, "Change the app's accent color", usable = true),
     SETTINGS_READ("settings.read", RiskLevel.REVIEW, "Read app settings: harness, model, effort, theme and agent options", usable = true),
     SETTINGS_WRITE("settings.write", RiskLevel.HIGH, "Change app settings (you can undo each change)", usable = true, developer = true),
     ENGINE_MEMORY("engine.memory", RiskLevel.REVIEW, "Use up to 32 MB of memory for its code (2 mods at most)", usable = true, developer = true),
