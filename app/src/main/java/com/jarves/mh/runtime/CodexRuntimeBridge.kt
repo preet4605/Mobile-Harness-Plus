@@ -333,6 +333,10 @@ class CodexRuntimeBridge(
                     isStopRequested = { userStopRequested },
                     imageData = { guestPath -> nativeImageData(workspace, guestWorkspacePath, guestPath) },
                     reasoningEffort = reasoningEffort,
+                    // Off unless the user turned on mods' Codex gate for this project (Developer mode).
+                    toolGate = com.jarves.mh.mods.ModHost.current.value?.takeIf { it.codexGateOn(projectId) }?.let { host ->
+                        { tool, input -> host.gateCodexTool(tool, input) }
+                    },
                     onActivity = { active -> taskId?.let { id ->
                         val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
                         if (active) supervisor.wakeLockManager.resume(id) else supervisor.wakeLockManager.pause(id)

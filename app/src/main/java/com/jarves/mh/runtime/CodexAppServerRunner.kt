@@ -4,6 +4,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -32,6 +33,12 @@ internal class CodexAppServerRunner(
     private val isStopRequested: () -> Boolean = { false },
     private val onActivity: (Boolean) -> Unit = {},
     private val reasoningEffort: String? = null,
+    /**
+     * Mods' tool gate (mod plan row 6), only when the project's Codex switch is on: Codex then asks
+     * before commands and edits ("untrusted"), and each request runs when this answers true. Null
+     * keeps Codex never asking, as before.
+     */
+    private val toolGate: (suspend (tool: String, input: JSONObject) -> Boolean)? = null,
     private val config: CodexAppServerRunnerConfig = CodexAppServerRunnerConfig(),
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
@@ -54,6 +61,7 @@ internal class CodexAppServerRunner(
     private var transientAt: Long? = null
     private val textByItem = mutableMapOf<String, String>()
     private val reasoningByItem = mutableMapOf<String, String>()
+    private val fileChangePaths = mutableMapOf<String, List<String>>()
     private var usage = CodexUsage()
 
     suspend fun run(): CodexRunResult {
@@ -76,7 +84,8 @@ internal class CodexAppServerRunner(
                     if (control?.kind !in setOf("goalSet", "goalResume")) require(goal?.status != "active") { "Pause the active goal with /goal pause or explicitly resume it with /goal resume." }
                     if (control?.kind == "goalResume") require(goal != null) { "This chat has no native Codex goal." }
                 }
-                val params = JSONObject().put("cwd", workspace).put("approvalPolicy", "never").put("sandbox", "danger-full-access")
+                val params = JSONObject().put("cwd", workspace).put("approvalPolicy", if (toolGate != null) "untrusted" else "never")
+                    .put("sandbox", "danger-full-access")
                 if (model.isNotBlank()) params.put("model", model)
                 val result = if (resumeId == null) rpc("thread/start", params)
                     else rpc("thread/resume", params.put("threadId", resumeId).put("excludeTurns", true))
@@ -264,6 +273,8 @@ internal class CodexAppServerRunner(
                 check(replies.size < 32) { "Too many unexpected Codex replies." }
                 replies[obj.getInt("id")] = obj
                 if (obj.getInt("id") == expectedReply) return
+            } else if (obj.has("id") && toolGate != null && method in APPROVAL_METHODS) {
+                answerApproval(obj, method, obj.optJSONObject("params") ?: JSONObject(), toolGate)
             } else if (obj.has("id")) {
                 val params = obj.optJSONObject("params") ?: JSONObject()
                 val questions = params.optJSONArray("questions")
@@ -282,6 +293,25 @@ internal class CodexAppServerRunner(
                 notification(method, params)
               }
         }
+    }
+
+    /**
+     * Answers Codex's request to run a command or apply a file change from the mods' gate.
+     * A gate that fails or takes too long lets it run, as Codex did before the switch.
+     */
+    private suspend fun answerApproval(request: JSONObject, method: String, params: JSONObject, gate: suspend (String, JSONObject) -> Boolean) {
+        val command = params.opt("command").let { if (it is JSONArray) (0 until it.length()).joinToString(" ") { i -> it.optString(i) } else it as? String }
+        val input = if (method in COMMAND_APPROVAL_METHODS) {
+            JSONObject().put("command", command.orEmpty().take(8_000)).put("cwd", params.optString("cwd", workspace))
+        } else {
+            val paths = fileChangePaths[params.optString("itemId")] ?: params.optJSONObject("fileChanges")?.keys()?.asSequence()?.toList().orEmpty()
+            JSONObject().put("paths", JSONArray(paths.take(200)))
+        }
+        if (params.has("reason") && !params.isNull("reason")) input.put("reason", params.optString("reason").take(1_000))
+        val tool = if (input.has("command")) "Bash" else "apply_patch"
+        val run = runCatching { withTimeoutOrNull(GATE_WAIT_MS) { gate(tool, input) } }.getOrNull() ?: true
+        val decision = if (method in LEGACY_APPROVAL_METHODS) (if (run) "approved" else "denied") else (if (run) "accept" else "decline")
+        send(JSONObject().put("id", request.get("id")).put("result", JSONObject().put("decision", decision)))
     }
 
     private suspend fun notification(method: String, params: JSONObject) {
@@ -354,7 +384,13 @@ internal class CodexAppServerRunner(
             }
             "commandExecution" -> if (completed) emit(CodexEvent.CommandFinished(id, text("command"), text("aggregatedOutput").takeLast(4000), if (value.isNull("exitCode")) null else value.getInt("exitCode"), text("status") in setOf("failed", "declined") || (!value.isNull("exitCode") && value.getInt("exitCode") != 0)))
                 else emit(CodexEvent.CommandStarted(id, text("command")))
-            "fileChange" -> if (completed) {
+            "fileChange" -> if (!completed) {
+                // Kept so the mods' gate can say which files an approval request would change.
+                val changes = value.optJSONArray("changes")
+                if (fileChangePaths.size < 256) fileChangePaths[value.optString("id")] =
+                    changes?.let { (0 until it.length()).mapNotNull { i -> it.optJSONObject(i)?.optString("path")?.takeIf(String::isNotBlank) } }.orEmpty()
+            } else {
+                fileChangePaths.remove(value.optString("id"))
                 val changes = value.optJSONArray("changes")
                 emit(CodexEvent.FileChange(changes?.let { (0 until it.length()).mapNotNull { i -> it.optJSONObject(i)?.optString("path")?.takeIf(String::isNotBlank) } }.orEmpty()))
             }
@@ -371,5 +407,13 @@ internal class CodexAppServerRunner(
             "exitedReviewMode" -> if (completed) emit(CodexEvent.AgentMessage(text("review"), id))
             "contextCompaction" -> { if (completed) compactionCompleted = true; emit(CodexEvent.ToolCall(id, "Native compaction", "Compacting thread context", completed, false)) }
         }
+    }
+
+    private companion object {
+        const val GATE_WAIT_MS = 9_000L
+        /** v1 names answer `approved`/`denied`; the v2 item names answer `accept`/`decline`. */
+        val LEGACY_APPROVAL_METHODS = setOf("execCommandApproval", "applyPatchApproval")
+        val COMMAND_APPROVAL_METHODS = setOf("item/commandExecution/requestApproval", "execCommandApproval")
+        val APPROVAL_METHODS = LEGACY_APPROVAL_METHODS + COMMAND_APPROVAL_METHODS + "item/fileChange/requestApproval"
     }
 }

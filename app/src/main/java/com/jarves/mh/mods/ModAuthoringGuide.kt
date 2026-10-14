@@ -245,7 +245,7 @@ object ModAuthoringGuide {
         | `run.start` | A task starts | `prompt`, `taskId` |
         | `run.end` | A task ends | `status` (`completed`, `failed`, `stopped`), `durationMs`, `error`, `taskId` |
         | `message.end` | The agent finished its reply | `text` (only with `chat.read`) |
-        | `tool.call` | The agent starts a tool; for Claude, also a gate before it runs (`canGate: true`, see "Gates") | `tool`, `detail`, `sessionId`; as a gate `tool`, `input`, `harness`, `inputTruncated` |
+        | `tool.call` | The agent starts a tool; for Claude and DeepSeek, and Codex where its switch is on, also a gate before it runs (`canGate: true`, see "Gates") | `tool`, `detail`, `sessionId`; as a gate `tool`, `input`, `harness`, `inputTruncated` |
         | `tool.result` | A tool finished | `tool`, `summary`, `sessionId` |
         | `tool.approval` | The agent asks the user to approve a tool | `tool`, `risk`, `explanation`, `paths`, `command`, `canGate` |
         | `files.changed` | The agent changed files | `paths`, `count` |
@@ -324,13 +324,21 @@ object ModAuthoringGuide {
           marked with the mod's id.
         - `terminal.command`, `files.op` and `build.start` may answer `{ deny: 'why' }` (stopped) or
           `{ confirm: 'why' }` (the user is asked first).
-        - `tool.call` with `canGate: true` (Claude only; needs `tools.gate`) may answer `{ deny: 'why' }`, or
+        - `tool.call` with `canGate: true` (needs `tools.gate`) may answer `{ deny: 'why' }`, or
           rewrite the call with `next({ ...e, input: { ...e.input, command: 'pnpm test' } })`. A rewritten
           call is never approved by the mod: with approvals on, the user is asked. Match tools by name,
           `on('tool.call', { tool: 'Bash' }, ...)`, so Claude asks the app only about those. An input
-          too large to send (`inputTruncated: true`) can be denied but not rewritten.
-        - `tool.approval` (needs `tools.gate`) may answer `{ deny: 'why' }` before the user answers; it can
-          never approve. Mods without `tools.gate` still hear of it, with `canGate: false`.
+          too large to send (`inputTruncated: true`) can be denied but not rewritten. `e.harness` says
+          whose call it is. `claude`: tools by Claude's names. `deepseek`: DeepSeek Harness's own tool
+          names (it asks about every tool); it can't take a changed input, so a rewrite denies the call
+          and tells the agent the input you want. `codex`: only in projects where the user turned on
+          "Mods gate Codex" (Developer mode); commands come as `Bash` (`command`, `cwd`) and file changes
+          as `apply_patch` (`paths`), and a deny or rewrite declines the step. Antigravity has no gate.
+        - `tool.approval` (needs `tools.gate`) may answer `{ deny: 'why' }` before the user answers. A mod
+          also allowed `tools.approve` (Developer mode) may answer `{ approve: 'why' }`: the request is
+          approved for the user only when no mod denies it and every path and the command stay in the
+          project folder (no `..`, `~`, `${'$'}`, backticks or outside absolute paths); otherwise the user
+          decides. Mods without `tools.gate` still hear of it, with `canGate: false`.
         - `run.end` (not a gate) may answer `{ followUp: 'text' }` to queue the next message for the agent;
           needs `prompt.send`, and at most 3 follow-ups chain after one message from the user.
         - Mods run one after another; each sees what the mods before it passed on. Gates fail open: a

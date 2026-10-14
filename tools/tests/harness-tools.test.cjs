@@ -103,9 +103,13 @@ test('the Claude gate relays a mod decision and fails open', async t => {
   assert.equal(await tools.gate(JSON.stringify({tool_name: 'Bash', tool_input: {command: 'ls'}}), options), null);
   assert.equal(seen[0].operation, 'mod_gate');
   assert.equal(seen[0].args.truncated, false);
+  assert.equal(seen[0].args.harness, 'claude');
   await tools.gate(JSON.stringify({tool_name: 'Write', tool_input: {file_path: 'a', content: 'x'.repeat(100000)}}), options);
   assert.equal(seen[2].args.truncated, true);
   assert.equal(seen[2].args.input.content.length, 8192);
+  // DeepSeek Harness runs the same hook through its Claude-hooks bridge, marked as its own.
+  await tools.gate(JSON.stringify({tool_name: 'bash', tool_input: {command: 'ls'}}), options, 'deepseek');
+  assert.equal(seen[3].args.harness, 'deepseek');
   // No bridge, bad JSON or a missing tool name: nothing printed, so the tool call goes on.
   assert.equal(await tools.gate('{', options), null);
   assert.equal(await tools.gate(JSON.stringify({tool_input: {}}), options), null);

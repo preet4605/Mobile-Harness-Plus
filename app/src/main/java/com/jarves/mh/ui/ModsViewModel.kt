@@ -255,6 +255,10 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
         _messages.emit(if (enabled) "Developer mode is on." else "Developer mode is off. Developer permissions stopped working.")
     }
 
+    fun setCodexGate(projectId: String, enabled: Boolean) = work("Could not change the Codex gate") {
+        registry.await().setCodexGate(projectId, enabled)
+    }
+
     fun leaveSafeMode() = work("Could not turn mods back on") { registry.await().leaveSafeMode() }
 
     private val secrets by lazy { com.jarves.mh.mods.ModSecrets(application) }

@@ -92,6 +92,40 @@ class CodexAppServerRunnerTest {
         assertFalse(io.isAlive)
     }
 
+    @Test fun modGateAnswersApprovalRequestsOnlyWhenItsSwitchIsOn() = runBlocking {
+        fun io() = RpcIo(thread) { req, fake ->
+            if (req.optString("method") == "turn/start") {
+                fake.reply(req, JSONObject().put("turn", turn("t", "inProgress")))
+                fake.notify("item/started", JSONObject().put("turnId", "t").put("item", JSONObject().put("id", "f1").put("type", "fileChange")
+                    .put("changes", org.json.JSONArray().put(JSONObject().put("path", "src/a.kt")))))
+                fake.append(JSONObject().put("id", "ap1").put("method", "item/commandExecution/requestApproval")
+                    .put("params", JSONObject().put("threadId", thread).put("turnId", "t").put("itemId", "c1").put("command", "rm -rf /").put("cwd", "/workspace/p")))
+                fake.append(JSONObject().put("id", "ap2").put("method", "item/fileChange/requestApproval")
+                    .put("params", JSONObject().put("threadId", thread).put("turnId", "t").put("itemId", "f1")))
+                fake.notify("turn/completed", JSONObject().put("turn", turn("t", "completed")))
+                true
+            } else false
+        }
+        val asked = mutableListOf<Pair<String, String>>()
+        val gated = io()
+        val result = CodexAppServerRunner(gated, "/workspace/p", "prompt", "model", null, false, null, emit = {}, config = config,
+            toolGate = { tool, input -> asked += tool to input.toString(); !input.optString("command").startsWith("rm ") }).run()
+        assertTrue(result.failure, result.completed)
+        assertEquals("untrusted", gated.requests.single { it.optString("method") == "thread/start" }.getJSONObject("params").getString("approvalPolicy"))
+        assertEquals("decline", gated.requests.single { it.optString("id") == "ap1" }.getJSONObject("result").getString("decision"))
+        assertEquals("accept", gated.requests.single { it.optString("id") == "ap2" }.getJSONObject("result").getString("decision"))
+        assertEquals(listOf("Bash", "apply_patch"), asked.map { it.first })
+        assertTrue(asked[0].second, "\"cwd\":\"/workspace/p\"" in asked[0].second)
+        assertTrue(asked[1].second, "src/a.kt" in asked[1].second)
+
+        // Switch off: Codex never asks, as before, and a stray request still fails cleanly.
+        val plain = io()
+        val off = CodexAppServerRunner(plain, "/workspace/p", "prompt", "model", null, false, null, emit = {}, config = config).run()
+        assertEquals("never", plain.requests.single { it.optString("method") == "thread/start" }.getJSONObject("params").getString("approvalPolicy"))
+        assertFalse(off.completed)
+        assertTrue(plain.requests.any { it.optString("id") == "ap1" && it.has("error") })
+    }
+
     @Test fun cancellationBeforeHandshakeNeverAdmitsNativeWorkAndReapsChild() = runBlocking {
         val io = RpcIo(thread)
         val result = CodexAppServerRunner(io, "/workspace/p", "prompt", "model", null, false, null, emit = {}, isStopRequested = { true }, config = config).run()

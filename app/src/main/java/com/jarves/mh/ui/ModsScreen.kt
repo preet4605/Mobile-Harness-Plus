@@ -130,6 +130,7 @@ fun ModsScreen(
                 onBuild = { building = true },
                 onOpenDraft = { onOpenProject(it.project) },
                 onEngineTest = { openId = ENGINE_TEST_PAGE },
+                projects = projects,
                 viewModel = viewModel,
             )
             else -> ModPage(shown, snapshot, host.mods[shown.id], surfaces[shown.id], bottomBarPadding, onBack = { openId = null }, viewModel)
@@ -169,6 +170,7 @@ private fun ModsList(
     onBuild: () -> Unit,
     onOpenDraft: (ModDraft) -> Unit,
     onEngineTest: () -> Unit,
+    projects: List<Project>,
     viewModel: ModsViewModel,
 ) {
     val colors = PocketColors.current
@@ -296,6 +298,24 @@ private fun ModsList(
                         icon = Icons.Outlined.Code,
                         iconTile = if (snapshot.developerMode) colors.orange else colors.gray,
                     )
+                }
+            }
+            val gateProjects = projects.filter { project -> drafts.none { it.project.id == project.id } }.take(30)
+            if (snapshot.developerMode && gateProjects.isNotEmpty()) {
+                item(key = "codex-gate") {
+                    ListSection(
+                        header = "Mods gate Codex",
+                        footer = "In these projects Codex asks before it runs a command or changes a file, and mods that gate " +
+                            "tool calls answer for you. Codex works as before in the others. Leave it off until you need it.",
+                    ) {
+                        gateProjects.forEach { project ->
+                            ToggleRow(
+                                title = project.name,
+                                checked = project.id in snapshot.codexGateProjects,
+                                onCheckedChange = { viewModel.setCodexGate(project.id, it) },
+                            )
+                        }
+                    }
                 }
             }
         }

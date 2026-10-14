@@ -122,7 +122,7 @@ function shrink(value, depth = 0) {
  * Answers the hook output to print, or null for none, so the call goes on as it would without mods.
  * Every failure (no bridge, a timeout, bad input) is null: mod gates fail open.
  */
-async function gate(text, options = {}) {
+async function gate(text, options = {}, harness = 'claude') {
   let hook;
   try { hook = JSON.parse(text); } catch { return null; }
   if (!hook || typeof hook.tool_name !== 'string' || hook.tool_name.length > 128) return null;
@@ -130,7 +130,7 @@ async function gate(text, options = {}) {
   let truncated = false;
   if (Buffer.byteLength(JSON.stringify(input)) > 48 * 1024) { input = shrink(input); truncated = true; }
   try {
-    const result = await nativeRequest('mod_gate', {tool: hook.tool_name, input, truncated}, {timeout: 9000, ...options});
+    const result = await nativeRequest('mod_gate', {tool: hook.tool_name, input, truncated, harness}, {timeout: 9000, ...options});
     return result.hook && typeof result.hook === 'object' && !Array.isArray(result.hook) ? result.hook : null;
   } catch { return null; }
 }
@@ -219,7 +219,11 @@ if (require.main === module) {
     };
     run().then(text => process.stdout.write(text + '\n')).catch(error => {process.stderr.write(error.message.slice(0, 2000)+'\n');process.exitCode=1;});
   }
-  else if (process.argv[2] === 'gate') readStdin().then(gate).then(output => { if (output) process.stdout.write(JSON.stringify(output) + '\n'); }, () => {});
+  else if (process.argv[2] === 'gate') {
+    // `gate --harness deepseek` is DeepSeek Harness's PreToolUse hook (its Claude-hooks bridge).
+    const harness = process.argv[3] === '--harness' && process.argv[4] === 'deepseek' ? 'deepseek' : 'claude';
+    readStdin().then(text => gate(text, {}, harness)).then(output => { if (output) process.stdout.write(JSON.stringify(output) + '\n'); }, () => {});
+  }
   else {
     const [command,argument] = process.argv.slice(2);
     const name = command === 'doctor' ? 'harness_doctor' : command === 'brain' ? 'harness_brain_search' : 'harness_preview';

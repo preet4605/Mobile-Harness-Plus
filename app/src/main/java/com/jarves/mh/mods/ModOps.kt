@@ -202,3 +202,28 @@ internal object ModCodeEvents {
     fun private(event: ModEvent): Map<String, ModCapability> =
         if (event == ModEvent.ASSISTANT_MESSAGE_COMPLETED) mapOf("text" to ModCapability.CHAT_READ) else emptyMap()
 }
+
+/**
+ * Whether an approval request stays inside the project folder, so a mod allowed `tools.approve`
+ * may approve it. Paths must be relative (no `..`) or under one of the project's roots. A command
+ * may not use `..`, `~`, `$`, backticks, `cd -`, or an absolute path outside the roots
+ * (`/dev/null` aside). It is a cautious check, not a sandbox: anything unsure counts as outside,
+ * and then the user decides as before.
+ */
+object ModApproval {
+    private val ABSOLUTE = Regex("""(?<![\w.~-])/[^\s'"`;|&<>(){}]*""")
+
+    fun inside(paths: List<String>, command: String?, roots: List<String>): Boolean {
+        val clean = roots.map { it.trimEnd('/') }.filter { it.length > 1 }
+        if (clean.isEmpty()) return false
+        fun under(path: String) = path.split('/').none { it == ".." } && clean.any { path == it || path.startsWith("$it/") }
+        val pathsOk = paths.all { raw ->
+            val path = raw.trim()
+            path.isEmpty() || (!path.startsWith("~") && path.split('/').none { it == ".." } && (!path.startsWith("/") || under(path)))
+        }
+        if (!pathsOk) return false
+        val text = command ?: return true
+        if (".." in text || '~' in text || '$' in text || '`' in text || Regex("""\bcd\s+-""").containsMatchIn(text)) return false
+        return ABSOLUTE.findAll(text).all { it.value == "/dev/null" || under(it.value) }
+    }
+}

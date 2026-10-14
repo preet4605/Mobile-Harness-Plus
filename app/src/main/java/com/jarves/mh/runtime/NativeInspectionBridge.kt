@@ -144,15 +144,19 @@ internal class NativeInspectionBridge(
                         JSONObject().put("ok", true).put("text", "Untrusted project Brain context: $data".take(12_000))
                     }
                     "mod_gate" -> {
-                        // Claude's PreToolUse hook (mod spec v2 §7). Mods only decide: nothing runs
-                        // here, and any failure answers with no decision, so the tool call goes on.
+                        // Claude's and DeepSeek's PreToolUse hook (mod spec v2 §7). Mods only decide: nothing
+                        // runs here, and any failure answers with no decision, so the tool call goes on.
                         val args = request.getJSONObject("args")
                         val tool = args.getString("tool").take(128)
                         val input = args.optJSONObject("input") ?: JSONObject()
+                        val truncated = args.optBoolean("truncated")
+                        val deepSeek = args.optString("harness") == "deepseek"
                         val interactive = com.jarves.mh.data.AppPreferences(context).claudeInteractiveApprovals
                         val hook = com.jarves.mh.mods.ModHost.current.value?.let { host ->
                             kotlinx.coroutines.withTimeoutOrNull(7_000) {
-                                runCatching { host.gateClaudeTool(tool, input, args.optBoolean("truncated"), interactive) }.getOrNull()
+                                runCatching {
+                                    if (deepSeek) host.gateDeepSeekTool(tool, input, truncated) else host.gateClaudeTool(tool, input, truncated, interactive)
+                                }.getOrNull()
                             }
                         }
                         JSONObject().put("ok", true).apply { if (hook != null) put("hook", hook) }

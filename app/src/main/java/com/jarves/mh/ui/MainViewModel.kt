@@ -138,6 +138,7 @@ import com.jarves.mh.model.SlashCommand
 import com.jarves.mh.model.SubagentInfo
 import com.jarves.mh.runtime.DiagnosticsHelper
 import com.jarves.mh.mods.InstalledMod
+import com.jarves.mh.mods.ModApproval
 import com.jarves.mh.mods.ModAuthoringGuide
 import com.jarves.mh.mods.ModCodeCommandOutcome
 import com.jarves.mh.mods.ModCodeEvents
@@ -7039,7 +7040,10 @@ class MainViewModel(
         }
     }
 
-    /** Spec v2 §4.2 `tool.approval`: a mod may deny an approval request before the user answers it, never approve it. */
+    /**
+     * Spec v2 §4.2 `tool.approval`: a mod may deny an approval request before the user answers it.
+     * A mod allowed `tools.approve` (Developer mode) may approve one that stays inside the project.
+     */
     private fun gateApprovalWithMods(request: ToolRequest) {
         val host = modHost?.takeIf { it.listens("tool.approval") } ?: return
         val payload = JSONObject()
@@ -7050,11 +7054,24 @@ class MainViewModel(
             .put("command", request.commandPreview?.take(4_000) ?: JSONObject.NULL)
             .put("canGate", true)
             .put("sessionId", request.sessionId)
+        val roots = _state.value.activeProject?.let { project ->
+            listOf(projectGuestRoot(project), runCatching { projectWorkspaceRoot(project).canonicalPath }.getOrDefault(""))
+        }.orEmpty()
         viewModelScope.launch {
-            val outcome = runCatching { host.gateApproval(payload) }.getOrNull() ?: return@launch
-            if (outcome.verdict != "deny" || _state.value.pendingApproval?.approvalId != request.approvalId) return@launch
-            _state.update { it.copy(toastMessage = "${outcome.modName} declined ${request.toolName}: ${outcome.reason}") }
-            answerApproval(false)
+            val outcome = runCatching {
+                host.gateApproval(payload) { ModApproval.inside(request.affectedPaths, request.commandPreview, roots) }
+            }.getOrNull() ?: return@launch
+            if (_state.value.pendingApproval?.approvalId != request.approvalId) return@launch
+            when {
+                outcome.verdict == "deny" -> {
+                    _state.update { it.copy(toastMessage = "${outcome.modName} declined ${request.toolName}: ${outcome.reason}") }
+                    answerApproval(false)
+                }
+                outcome.approvedBy != null -> {
+                    _state.update { it.copy(toastMessage = "${outcome.approvedByName} approved ${request.toolName}") }
+                    answerApproval(true)
+                }
+            }
         }
     }
 

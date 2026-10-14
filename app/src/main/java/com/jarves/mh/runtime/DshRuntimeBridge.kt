@@ -175,7 +175,7 @@ class DshRuntimeBridge(
                 provider,
                 localGatewayUrl = antigravityGateway?.url ?: openRouterGateway?.url,
             )
-            writeDshSettings(installed.rootfs, route, provider)
+            writeDshSettings(installed.rootfs, route, provider, modGate = com.jarves.mh.mods.ModHost.current.value?.toolGateMatcher != null)
             val dshSecret = if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER && antigravityGateway != null) {
                 antigravityGateway.gatewaySecret
             } else {
@@ -765,9 +765,40 @@ class DshRuntimeBridge(
             }
         }
 
-        internal fun writeDshSettings(rootfs: File, route: DshRoute, provider: ProviderProfile) {
+        /** The DeepSeek Harness package that runs Claude-style command hooks; it ships with dsh. */
+        private const val DSH_HOOKS_PACKAGE = "@deepseek-ai/dsh-hooks-claude-code"
+        private const val DSH_MOD_HOOKS_PATH = "$DSH_HOME_GUEST_PATH/mh-mod-hooks.json"
+
+        /**
+         * Mods' tool gate for DeepSeek (mod plan row 6): dsh's Claude-hooks bridge runs
+         * `harness-tools gate --harness deepseek` before every tool call. That bridge honors deny
+         * only, which is all [com.jarves.mh.mods.ModHost.gateDeepSeekTool] answers.
+         */
+        internal fun buildDshModGatePatch(): String = buildString {
+            appendLine("- insert:")
+            appendLine("    - id: mh-mod-gate")
+            appendLine("      name: '$DSH_HOOKS_PACKAGE'")
+            appendLine("      config:")
+            appendLine("        configPath: $DSH_MOD_HOOKS_PATH")
+            appendLine("        defaultTimeoutMs: 10000")
+        }
+
+        internal fun buildDshModHooks(): String = JSONObject().put("hooks", JSONObject().put("PreToolUse", JSONArray().put(
+            JSONObject().put("matcher", "*").put("hooks", JSONArray().put(
+                JSONObject().put("type", "command").put("command", "/usr/local/bin/harness-tools gate --harness deepseek").put("timeout", 10),
+            )),
+        ))).toString()
+
+        /**
+         * Writes dsh's settings. [modGate] (a running mod gates tool calls) adds the mods' tool gate,
+         * but only when this dsh install has the hooks package, so an older install still starts.
+         */
+        internal fun writeDshSettings(rootfs: File, route: DshRoute, provider: ProviderProfile, modGate: Boolean = false) {
             val home = File(rootfs, DSH_HOME_GUEST_PATH.removePrefix("/")).apply { mkdirs() }
-            val cordisPatch = buildDshCordisPatch(route, provider)
+            val hooksPackage = File(rootfs, "usr/local/lib/dsh/node_modules/$DSH_HOOKS_PACKAGE/package.json")
+            val gate = modGate && hooksPackage.isFile
+            if (gate) File(home, "mh-mod-hooks.json").writeText(buildDshModHooks())
+            val cordisPatch = buildDshCordisPatch(route, provider) + if (gate) "\n" + buildDshModGatePatch() else ""
             File(home, "cordis.patch.yml").writeText(cordisPatch)
             val sdkProfileDir = File(home, "profiles/sdk")
             if (sdkProfileDir.isDirectory) {

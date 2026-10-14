@@ -942,4 +942,87 @@ class ModHostTest {
         listOf("commit", "branch", "run", "build").forEach { assertTrue(it + after, after.getValue(it).startsWith("refused")) }
         assertEquals(1, effects.builds.size)
     }
+
+    @Test
+    fun `mods approve only with tools-approve inside the project, and DeepSeek and Codex gates only deny`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('tool.approval', ($, e, next) => String(e.command).startsWith('npm ') ? { approve: 'tests are fine' } : next(e))
+              on('tool.call', ($, e, next) => {
+                const command = String(e.input.command || '')
+                if (command.startsWith('rm ')) return { deny: 'No deleting' }
+                if (command === 'npm test') return next({ ...e, input: { ...e.input, command: 'pnpm test' } })
+                return next(e)
+              })
+            }
+        """.trimIndent(), id = "a.ok", name = "Approver", permissions = listOf("tools.gate", "tools.approve"))
+        install(registry, """
+            export function register(on) {
+              on('tool.approval', ($, e, next) => e.command === 'npm publish' ? { deny: 'Not today' } : next(e))
+            }
+        """.trimIndent(), id = "b.no", name = "Guard", permissions = listOf("tools.gate"))
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("both mods") { host.snapshot.value.mods.values.count { it.state == ModRunState.RUNNING } == 2 }
+        fun approval(command: String) = JSONObject().put("tool", "Bash").put("command", command).put("paths", JSONArray()).put("canGate", true)
+
+        // tools.approve is a developer permission: with Developer mode off it was never granted.
+        assertEquals(null, host.gateApproval(approval("npm test")) { true }.approvedBy)
+        assertTrue(host.logText("a.ok"), "needs the tools.approve permission" in host.logText("a.ok"))
+        registry.setDeveloperMode(true)
+        registry.setGranted("a.ok", ModCapability.TOOLS_APPROVE, true)
+        waitFor("the grant") { registry.snapshot.value.mods.first { it.id == "a.ok" }.let { ModCapability.TOOLS_APPROVE in it.granted && it.developerMode } }
+        Thread.sleep(200)
+        assertEquals("a.ok", host.gateApproval(approval("npm test")) { true }.approvedBy)
+        // Outside the project folder the user decides, and a later mod's deny beats an approve.
+        assertEquals(null, host.gateApproval(approval("npm test")) { false }.approvedBy)
+        val publish = host.gateApproval(approval("npm publish")) { true }
+        assertEquals("deny", publish.verdict)
+        assertEquals(null, publish.approvedBy)
+        val audit = registry.readAudit("a.ok")
+        assertTrue(audit.any { it.op == "tool.approval" && it.decision == "approved" })
+        assertTrue(audit.any { it.op == "tool.approval" && it.decision == "refused" })
+
+        // DeepSeek can only be denied: a rewrite becomes a deny that says what the mod wants.
+        fun bash(command: String) = JSONObject().put("command", command)
+        val denied = host.gateDeepSeekTool("bash", bash("rm -rf build"), truncated = false)!!.getJSONObject("hookSpecificOutput")
+        assertEquals("deny", denied.getString("permissionDecision"))
+        assertEquals("Approver: No deleting", denied.getString("permissionDecisionReason"))
+        val rewritten = host.gateDeepSeekTool("bash", bash("npm test"), truncated = false)!!.getJSONObject("hookSpecificOutput")
+        assertEquals("deny", rewritten.getString("permissionDecision"))
+        assertTrue(rewritten.getString("permissionDecisionReason"), "pnpm test" in rewritten.getString("permissionDecisionReason"))
+        assertEquals(null, host.gateDeepSeekTool("bash", bash("ls"), truncated = false))
+
+        // Codex: deny and rewrite decline; anything else runs. Its switch is per project and needs Developer mode.
+        assertFalse(host.gateCodexTool("Bash", bash("rm -rf build")))
+        assertFalse(host.gateCodexTool("Bash", bash("npm test")))
+        assertTrue(host.gateCodexTool("Bash", bash("ls")))
+        assertFalse(host.codexGateOn("p1"))
+        registry.setCodexGate("p1", true)
+        assertTrue(host.codexGateOn("p1"))
+        assertFalse(host.codexGateOn("p2"))
+        registry.setDeveloperMode(false)
+        assertFalse(host.codexGateOn("p1"))
+        assertTrue(registry.readAudit(null).any { it.op == "codex.gate.on" })
+    }
+
+    @Test
+    fun `approvals count as inside the project only when every path and command stays there`() {
+        val roots = listOf("/workspace/demo", "/data/files/workspaces/p1")
+        assertTrue(ModApproval.inside(listOf("src/a.kt", "/workspace/demo/b.kt"), "npm test > /dev/null", roots))
+        assertTrue(ModApproval.inside(emptyList(), "cat src/a.kt /workspace/demo/README.md", roots))
+        assertTrue(ModApproval.inside(listOf("/data/files/workspaces/p1/x"), null, roots))
+        assertFalse(ModApproval.inside(listOf("../other/a.kt"), null, roots))
+        assertFalse(ModApproval.inside(listOf("/workspace/demo2/a.kt"), null, roots))
+        assertFalse(ModApproval.inside(listOf("/etc/hosts"), null, roots))
+        assertFalse(ModApproval.inside(emptyList(), "rm -rf /", roots))
+        assertFalse(ModApproval.inside(emptyList(), "cat ~/.ssh/id_rsa", roots))
+        assertFalse(ModApproval.inside(emptyList(), "cd \$HOME && ls", roots))
+        assertFalse(ModApproval.inside(emptyList(), "ls `echo /`", roots))
+        assertFalse(ModApproval.inside(emptyList(), "cd - && ls", roots))
+        assertFalse(ModApproval.inside(emptyList(), "cat /workspace/demo/../x", roots))
+        assertFalse(ModApproval.inside(emptyList(), "curl https://example.com/x", roots))
+        assertFalse(ModApproval.inside(emptyList(), "ls", emptyList()))
+    }
 }

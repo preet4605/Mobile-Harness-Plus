@@ -172,6 +172,9 @@ data class ModGateOutcome(
     val modName: String? = null,
     /** `{ context }` answers and `prompt.compose` sections, as (mod id, mod name, text). */
     val notes: List<Triple<String, String, String>> = emptyList(),
+    /** The first mod that answered `{ approve }` with `tools.approve` (Developer mode), when no mod denied. */
+    val approvedBy: String? = null,
+    val approvedByName: String? = null,
 )
 
 /** Time limits; tests shorten them. */
@@ -507,13 +510,7 @@ class ModHost(
      * (too large for the bridge) can be denied but never rewritten.
      */
     suspend fun gateClaudeTool(tool: String, input: JSONObject, truncated: Boolean, interactive: Boolean): JSONObject? {
-        val outcome = gate(
-            "tool.call",
-            JSONObject().put("tool", tool).put("input", input).put("canGate", true).put("harness", "claude").put("inputTruncated", truncated),
-            ModCapability.TOOLS_GATE,
-            setOf("deny"),
-            limits.toolBudgetMs,
-        )
+        val outcome = gateTool("claude", tool, input, truncated)
         val output = JSONObject().put("hookEventName", "PreToolUse")
         val changed = outcome.input.optJSONObject("input")?.takeIf { !truncated && !sameJson(it, input) }
         return when {
@@ -527,14 +524,68 @@ class ModHost(
         }
     }
 
+    /** The `tool.call` gate for one harness's tool call: `harness` tells mods whose call it is. */
+    private suspend fun gateTool(harness: String, tool: String, input: JSONObject, truncated: Boolean): ModGateOutcome = gate(
+        "tool.call",
+        JSONObject().put("tool", tool).put("input", input).put("canGate", true).put("harness", harness).put("inputTruncated", truncated),
+        ModCapability.TOOLS_GATE,
+        setOf("deny"),
+        limits.toolBudgetMs,
+    )
+
     /**
-     * `tool.approval` (spec v2 §4.2, Claude): mods with `tools.gate` may deny an approval request
-     * before the user answers it, never approve it (D4). Other mods that hook it only hear of it.
+     * DeepSeek Harness's PreToolUse hook (through its Claude-hooks bridge): mods may deny a call.
+     * DeepSeek can't take a changed input, so a rewrite denies the call and tells the agent what
+     * the mod wants instead. Null lets the call go on.
      */
-    suspend fun gateApproval(payload: JSONObject): ModGateOutcome {
+    suspend fun gateDeepSeekTool(tool: String, input: JSONObject, truncated: Boolean): JSONObject? {
+        val outcome = gateTool("deepseek", tool, input, truncated)
+        val changed = outcome.input.optJSONObject("input")?.takeIf { !truncated && !sameJson(it, input) }
+        val reason = when {
+            outcome.verdict == "deny" -> "${outcome.modName}: ${outcome.reason}"
+            changed != null -> "A mod asks to make this call with this input instead: ${changed.toString().take(4_000)}"
+            else -> return null
+        }
+        return JSONObject().put("hookSpecificOutput", JSONObject().put("hookEventName", "PreToolUse")
+            .put("permissionDecision", "deny").put("permissionDecisionReason", reason))
+    }
+
+    /**
+     * Codex's approval request for a command or file change, when the project's Codex switch is
+     * on: true runs it (as Codex did before the switch), false declines it. A rewrite declines too,
+     * since Codex can't take a changed command.
+     */
+    /** Whether Codex in [projectId] should ask the mods' gate: its switch is on and a running mod gates tools. */
+    fun codexGateOn(projectId: String?): Boolean = toolGateMatcher != null && registry.snapshot.value.codexGate(projectId)
+
+    suspend fun gateCodexTool(tool: String, input: JSONObject): Boolean {
+        val outcome = gateTool("codex", tool, input, truncated = false)
+        val changed = outcome.input.optJSONObject("input")?.takeIf { !sameJson(it, input) }
+        return outcome.verdict != "deny" && changed == null
+    }
+
+    /**
+     * `tool.approval` (spec v2 §4.2): mods with `tools.gate` may deny an approval request before
+     * the user answers it. A mod also allowed `tools.approve` (Developer mode) may approve it with
+     * `{ approve }`, but only when no mod denies it and [inside] says everything it touches is in
+     * the project folder; otherwise the user decides as before. Other mods only hear of it.
+     */
+    suspend fun gateApproval(payload: JSONObject, inside: (JSONObject) -> Boolean = { false }): ModGateOutcome {
         if (!listens("tool.approval")) return ModGateOutcome(payload)
         return withContext(hostContext) {
-            runGate("tool.approval", payload, ModCapability.TOOLS_GATE, setOf("deny"), limits.toolBudgetMs, compose = false, observeWithout = true)
+            val outcome = runGate("tool.approval", payload, ModCapability.TOOLS_GATE, setOf("deny"), limits.toolBudgetMs,
+                compose = false, observeWithout = true, approvals = true)
+            val approver = outcome.approvedBy ?: return@withContext outcome
+            val tool = payload.optString("tool")
+            if (!inside(payload)) {
+                addLog(approver, "warn", "It approved $tool, but that reaches outside the project folder, so the user decides.")
+                registry.recordCall(approver, "tool.approval", ModCapability.TOOLS_APPROVE, "refused", "$tool: outside the project")
+                return@withContext outcome.copy(approvedBy = null, approvedByName = null)
+            }
+            addLog(approver, "info", "Approved $tool")
+            registry.recordCall(approver, "tool.approval", ModCapability.TOOLS_APPROVE, "approved",
+                (tool + ": " + payload.optString("command").ifBlank { payload.optJSONArray("paths")?.join(", ").orEmpty() }).take(300))
+            outcome
         }
     }
 
@@ -547,9 +598,15 @@ class ModHost(
         compose: Boolean,
         /** Mods without [capability] still hear of the event, as an observe event. */
         observeWithout: Boolean = false,
+        /**
+         * Whether `{ approve }` answers count (`tool.approval`). They never stop the loop: a later
+         * mod can still deny, and only a mod allowed `tools.approve` (Developer mode) approves.
+         */
+        approvals: Boolean = false,
     ): ModGateOutcome {
         var current = input
         val notes = mutableListOf<Triple<String, String, String>>()
+        var approver: InstalledMod? = null
         for (loaded in running.values.filter { it.ready && event in it.events }.sortedBy { it.id }) {
             val mod = currentMod(loaded)
             if (!allowed(mod, capability)) {
@@ -594,10 +651,20 @@ class ModHost(
                 registry.recordCall(mod.id, event, capability, verdict, reason)
                 return ModGateOutcome(current, verdict, reason, mod.id, mod.manifest.name, notes)
             }
+            if (approvals && value.has("approve") && !value.isNull("approve") && value.opt("approve") != false) {
+                when {
+                    !allowed(mod, ModCapability.TOOLS_APPROVE) -> {
+                        addLog(loaded.id, "warn", "It answered approve, which needs the tools.approve permission and Developer mode, so the user decides.")
+                        if (throttle("denied:${mod.id}/approve", 60_000)) registry.recordDenied(mod.id, event, ModCapability.TOOLS_APPROVE, "permission is off")
+                    }
+                    approver == null -> approver = mod
+                }
+                continue
+            }
             if (!context.isNullOrEmpty()) continue
             addLog(loaded.id, "warn", "Its $event hook answered something the app doesn't use, so the action went on.")
         }
-        return ModGateOutcome(current, notes = notes)
+        return ModGateOutcome(current, notes = notes, approvedBy = approver?.id, approvedByName = approver?.manifest?.name)
     }
 
     /** Clears a crash and its strikes, or resumes paused mod code, and starts the mod again. */
@@ -1697,7 +1764,6 @@ class ModHost(
 
     private fun allowed(mod: InstalledMod, capability: ModCapability): Boolean = capability in mod.granted && mod.canHold(capability)
 
-    /** Follow-ups mods may chain after one message from the user: more for a mod allowed `agent.chain`. */
     /**
      * Runs git in [context]'s project; a non-zero exit throws with git's own words. [exclusive]
      * (changes to the repository) waits for no task, terminal command or build to be running.
@@ -1712,6 +1778,7 @@ class ModHost(
 
     private fun shellQuote(text: String) = "'" + text.replace("'", "'\\''") + "'"
 
+    /** Follow-ups mods may chain after one message from the user: more for a mod allowed `agent.chain`. */
     private fun followUpLimit(mod: InstalledMod): Int = if (allowed(mod, ModCapability.AGENT_CHAIN)) MAX_CHAIN_FOLLOW_UPS else MAX_FOLLOW_UPS
 
     private fun keyOf(mod: InstalledMod): String = "${mod.manifest.version}:${mod.installedAt}:${options(mod)}"

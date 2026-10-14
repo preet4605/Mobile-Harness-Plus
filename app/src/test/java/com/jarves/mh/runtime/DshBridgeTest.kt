@@ -493,6 +493,36 @@ class AgentProviderPresetTest {
     }
 
     @Test
+    fun modGateMountsTheHooksBridgeOnlyWhenModsGateAndThePackageIsThere() {
+        val tempRootfs = java.io.File(System.getProperty("java.io.tmpdir", "/tmp"), "test-dsh-gate-${System.nanoTime()}")
+        try {
+            val profile = ProviderProfile(kind = ProviderKind.DEEPSEEK, model = "deepseek-chat")
+            val route = DshRouteMapper.forProfile(profile)
+            val patchFile = java.io.File(tempRootfs, "root/.dsh/cordis.patch.yml")
+            val hooksFile = java.io.File(tempRootfs, "root/.dsh/mh-mod-hooks.json")
+            // No hooks package in this install: dsh must still start, so nothing is mounted.
+            DshRuntimeBridge.writeDshSettings(tempRootfs, route, profile, modGate = true)
+            assertFalse(patchFile.readText().contains("mh-mod-gate"))
+            assertFalse(hooksFile.exists())
+
+            java.io.File(tempRootfs, "usr/local/lib/dsh/node_modules/@deepseek-ai/dsh-hooks-claude-code").apply { mkdirs() }
+                .resolve("package.json").writeText("{}")
+            DshRuntimeBridge.writeDshSettings(tempRootfs, route, profile, modGate = false)
+            assertFalse(patchFile.readText().contains("mh-mod-gate"))
+            DshRuntimeBridge.writeDshSettings(tempRootfs, route, profile, modGate = true)
+            val patch = patchFile.readText()
+            assertTrue(patch.contains("- id: agent-default-model"))
+            assertTrue(patch, patch.contains("- insert:\n    - id: mh-mod-gate\n      name: '@deepseek-ai/dsh-hooks-claude-code'"))
+            assertTrue(patch.contains("configPath: /root/.dsh/mh-mod-hooks.json"))
+            val hook = JSONObject(hooksFile.readText()).getJSONObject("hooks").getJSONArray("PreToolUse").getJSONObject(0)
+            assertEquals("*", hook.getString("matcher"))
+            assertEquals("/usr/local/bin/harness-tools gate --harness deepseek", hook.getJSONArray("hooks").getJSONObject(0).getString("command"))
+        } finally {
+            tempRootfs.deleteRecursively()
+        }
+    }
+
+    @Test
     fun writeDshSettingsCreatesCordisPatchAndLegacySettings() {
         val tempRootfs = java.io.File(System.getProperty("java.io.tmpdir", "/tmp"), "test-dsh-settings-${System.nanoTime()}")
         tempRootfs.mkdirs()

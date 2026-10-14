@@ -93,7 +93,12 @@ data class ModsSnapshot(
     val safeMode: Boolean = false,
     /** Lets mods use [ModCapability.developer] capabilities they were granted; off by default. */
     val developerMode: Boolean = false,
+    /** Projects where mods' tool gates also answer Codex's approval requests (Developer mode only). */
+    val codexGateProjects: Set<String> = emptySet(),
 ) {
+    /** Whether Codex in [projectId] asks the mods' tool gates before it runs commands and edits. */
+    fun codexGate(projectId: String?): Boolean = developerMode && projectId != null && projectId in codexGateProjects
+
     /** Mods whose contributions take effect now. */
     val active: List<InstalledMod>
         get() = if (!modsEnabled || safeMode) emptyList() else mods.filter { it.enabled && it.problem == null }
@@ -351,6 +356,18 @@ class ModRegistry(
         publishLocked()
     }
 
+    /**
+     * Lets mods' tool gates answer Codex's approval requests in [projectId]. Off by default: it
+     * changes how Codex runs there (it asks before commands and edits instead of never asking).
+     */
+    fun setCodexGate(projectId: String, enabled: Boolean) = synchronized(lock) {
+        if ((projectId in state.codexGateProjects) == enabled) return@synchronized
+        state = state.copy(codexGateProjects = if (enabled) state.codexGateProjects + projectId else state.codexGateProjects - projectId)
+        writeStateLocked()
+        auditLocked("*", "", if (enabled) "codex.gate.on" else "codex.gate.off", null, "allowed", projectId)
+        publishLocked()
+    }
+
     // ---- hooks and audit -----------------------------------------------------------------
 
     /**
@@ -478,7 +495,13 @@ class ModRegistry(
                 ?: return@mapNotNull null
             toInstalled(manifest, dir, record)
         }.sortedBy { it.manifest.name.lowercase() }
-        _snapshot.value = ModsSnapshot(mods = mods, modsEnabled = state.modsEnabled, safeMode = safeMode, developerMode = state.developerMode)
+        _snapshot.value = ModsSnapshot(
+            mods = mods,
+            modsEnabled = state.modsEnabled,
+            safeMode = safeMode,
+            developerMode = state.developerMode,
+            codexGateProjects = state.codexGateProjects,
+        )
     }
 
     private fun toInstalled(manifest: ModManifest, dir: File, record: PersistedMod) = InstalledMod(
@@ -639,11 +662,13 @@ private data class PersistedState(
     val unstableStarts: Int = 0,
     val mods: Map<String, PersistedMod> = emptyMap(),
     val developerMode: Boolean = false,
+    val codexGateProjects: Set<String> = emptySet(),
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("schemaVersion", SCHEMA_VERSION)
         .put("modsEnabled", modsEnabled)
         .put("developerMode", developerMode)
+        .put("codexGateProjects", JSONArray(codexGateProjects.sorted()))
         .put("unstableStarts", unstableStarts)
         .put("mods", JSONObject().apply { mods.forEach { (id, record) -> put(id, record.toJson()) } })
 
@@ -656,6 +681,7 @@ private data class PersistedState(
                 modsEnabled = o.optBoolean("modsEnabled", true),
                 unstableStarts = o.optInt("unstableStarts", 0),
                 developerMode = o.optBoolean("developerMode", false),
+                codexGateProjects = o.optJSONArray("codexGateProjects").strings().toSet(),
                 mods = mods?.keys()?.asSequence()?.mapNotNull { id ->
                     runCatching { id to PersistedMod.fromJson(mods.getJSONObject(id)) }.getOrNull()
                 }?.toMap().orEmpty(),
