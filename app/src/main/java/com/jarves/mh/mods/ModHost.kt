@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -836,12 +837,16 @@ class ModHost(
             throw e
         } catch (e: Exception) {
             if (loaded.closed) return
-            unload(loaded, sendEnd = false)
-            val message = when (e) {
-                is ModCodeException, is ModScriptException -> errorLine(e.message.orEmpty())
-                else -> e.message ?: e.javaClass.simpleName
+            if (e is ModCodeException || e is ModScriptException) {
+                unload(loaded, sendEnd = false)
+                crash(mod.id, "Its code didn't load: ${errorLine(e.message.orEmpty())}")
+                return
             }
-            crash(mod.id, "Its code didn't load: $message")
+            // Not the mod's code: the isolate or engine died mid-load. Let the queued termination
+            // handling run first; whatever is left is a fault that restarts, not a crash.
+            yield()
+            if (loaded.closed || generation != engineGeneration) return
+            fault(loaded, "Couldn't start: ${e.message ?: e.javaClass.simpleName}")
             return
         }
         if (loaded.closed) return
