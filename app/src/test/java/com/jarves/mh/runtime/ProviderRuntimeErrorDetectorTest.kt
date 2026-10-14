@@ -107,4 +107,24 @@ class ProviderRuntimeErrorDetectorTest {
         """.trimIndent()
         assertNull("Successful result must not be detected as error", ProviderRuntimeErrorDetector.detect(successResult))
     }
+
+    @Test
+    fun turnLimitResultIsNotKilledAsFatal() {
+        // Shape captured from Claude Code 2.1.299 stopping at --max-turns.
+        val event = """{"type":"result","subtype":"error_max_turns","is_error":true,"terminal_reason":"max_turns","num_turns":2,"errors":["Reached maximum number of turns (1)"]}"""
+        assertNull(ProviderRuntimeErrorDetector.detect(event))
+        assertEquals(true, ProviderRuntimeErrorDetector.isTurnLimitResult(org.json.JSONObject(event)))
+    }
+
+    @Test
+    fun otherErrorResultsStayFatal() {
+        val event = """{"type":"result","subtype":"error_during_execution","is_error":true}"""
+        assertEquals("Claude Code reported an error", ProviderRuntimeErrorDetector.detect(event))
+    }
+
+    @Test
+    fun turnLimitMessageIsClassifiedAsAFinalLimit() {
+        val message = ProviderRuntimeErrorDetector.turnLimitMessage(25)
+        assertEquals(true, com.jarves.mh.runtime.task.TaskSupervisor.AGENT_LIMIT_MARKERS.any(message.lowercase()::contains))
+    }
 }

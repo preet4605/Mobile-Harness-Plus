@@ -1,5 +1,11 @@
 # Tasks and progress
 
+## Token usage across harnesses (audits/token-usage-audit-2026-10-14.md in project files) — 2026-10-14
+
+Love asked for every harness to use as few tokens as possible without losing capability. Measured with Claude Code 2.1.299 and Codex 0.161.0 against local mock model servers that log each request; not phone-tested. One commit per batch.
+
+- Batch 1, hard limits: `TaskSupervisor.classifyError` returns `AGENT_LIMIT_REACHED` for turn, budget and context-window errors (`AGENT_LIMIT_MARKERS`), which ends the task without the step and task retries that used to re-run it 2-3 times from scratch; edits are kept (`RecoveryEngine` returns null). Claude's `error_max_turns` result is no longer treated as fatal; its native session is saved, so "continue" resumes it.
+
 ## Lag, heat and crash fixes — 2026-10-14
 
 Audit: project files `audits/perf-heat-crash-audit-2026-10-14.md` (static reading; nothing measured on a phone). One commit per batch:

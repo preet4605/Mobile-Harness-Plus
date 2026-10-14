@@ -344,6 +344,8 @@ class DefaultRecoveryEngine(
                     )
                 }
             }
+            // The same run would stop at the same limit, so retrying only spends tokens again.
+            TaskSupervisor.TaskErrorClassification.AGENT_LIMIT_REACHED -> null
             TaskSupervisor.TaskErrorClassification.ENVIRONMENT_DRIFT -> {
                 val lower = errorMessage.lowercase()
                 val isUnrecoverable = lower.contains("unrecoverable") ||

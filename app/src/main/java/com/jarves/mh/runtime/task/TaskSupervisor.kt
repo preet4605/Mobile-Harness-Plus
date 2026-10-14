@@ -149,6 +149,17 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
 
     companion object {
         private const val TAG = "TaskSupervisor"
+
+        /**
+         * Lowercase error text meaning the agent stopped at a hard limit (turns, budget, context size).
+         * Claude Code reports a turn-limit stop as `error_max_turns` / `terminal_reason: max_turns`.
+         */
+        internal val AGENT_LIMIT_MARKERS = listOf(
+            "max_turns", "maximum number of turns", "turn limit",
+            "error_max_budget", "max_budget_usd",
+            "prompt is too long", "context_length_exceeded", "maximum context length",
+            "context window exceeded", "exceeds the context window", "input is too long",
+        )
         @Volatile private var instance: TaskSupervisor? = null
 
         fun getInstance(context: Context): TaskSupervisor {
@@ -845,7 +856,9 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         PROCESS_FAILURE,
         STEP_VERIFICATION_FAILURE,
         TRANSIENT_SYSTEM_FAULT,
-        ENVIRONMENT_DRIFT
+        ENVIRONMENT_DRIFT,
+        /** The agent stopped at a turn, budget or context limit; running it again would hit the same limit. */
+        AGENT_LIMIT_REACHED
     }
 
     fun isCancellationActive(taskId: String): Boolean {
@@ -874,6 +887,10 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             lower.contains("external workspace drift") || lower.contains("workspace drift detected") ||
             lower.contains("environment drift detected") || lower.contains("dirty environment drift")) {
             return TaskErrorClassification.ENVIRONMENT_DRIFT
+        }
+        // Before the workspace check: a limit stop keeps its edits (no checkpoint restore) and is not re-run.
+        if (AGENT_LIMIT_MARKERS.any(lower::contains)) {
+            return TaskErrorClassification.AGENT_LIMIT_REACHED
         }
         if (workspaceMutated) {
             return TaskErrorClassification.WORKSPACE_MUTATED_FAILURE
@@ -2148,7 +2165,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                                     finalizeTask(taskId, TaskExecutionStatus.FAILED, error = failureDetail, recoveryRequired = true)
                                     break
                                 }
-                                TaskErrorClassification.STEP_VERIFICATION_FAILURE -> {
+                                TaskErrorClassification.STEP_VERIFICATION_FAILURE,
+                                TaskErrorClassification.AGENT_LIMIT_REACHED -> {
                                     finalizeTask(taskId, TaskExecutionStatus.FAILED, error = errorMsg, recoveryRequired = false)
                                     break
                                 }

@@ -15,6 +15,7 @@ import com.jarves.mh.model.brain.RecoveryStrategy
 import com.jarves.mh.model.brain.StepStatus
 import com.jarves.mh.model.brain.TaskFailureRecord
 import com.jarves.mh.runtime.ControlledBrainInjector
+import com.jarves.mh.runtime.ProviderRuntimeErrorDetector
 import com.jarves.mh.runtime.WorkspaceCheckpoints
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -81,6 +82,23 @@ class TransientSystemFaultRecoveryTest {
     @After
     fun tearDown() {
         ControlledBrainInjector.clearAll()
+    }
+
+    @Test
+    fun agentLimitStopsAreFinalAndKeepEdits() {
+        val limit = TaskSupervisor.TaskErrorClassification.AGENT_LIMIT_REACHED
+        assertEquals(limit, supervisor.classifyError(ProviderRuntimeErrorDetector.turnLimitMessage(25), workspaceMutated = false, isCancelled = false))
+        // Edits made before the limit are kept: no checkpoint-restoring WORKSPACE_MUTATED_FAILURE.
+        assertEquals(limit, supervisor.classifyError("Reached maximum number of turns (25)", workspaceMutated = true, isCancelled = false))
+        assertEquals(limit, supervisor.classifyError("API Error: 400 prompt is too long: 210000 tokens > 200000 maximum", workspaceMutated = false, isCancelled = false))
+        assertEquals(limit, supervisor.classifyError("context_length_exceeded", workspaceMutated = false, isCancelled = false))
+        assertEquals(TaskSupervisor.TaskErrorClassification.USER_CANCELLED,
+            supervisor.classifyError("Reached maximum number of turns (25)", workspaceMutated = false, isCancelled = true))
+        assertEquals(TaskSupervisor.TaskErrorClassification.PROCESS_FAILURE,
+            supervisor.classifyError("Claude Code reported an error", workspaceMutated = false, isCancelled = false))
+        val task = CanonicalTask(projectId = "p", projectSlug = "p", objective = "Fix the build")
+        val step = ExecutionStep(stepOrder = 0, title = "Execute Task", objective = "Fix the build")
+        assertNull(DefaultRecoveryEngine().planRecovery(task, step, limit, "turn limit", listOf("a.kt"), attemptCount = 0))
     }
 
     // 1. Evidence-based classification distinct from PROCESS_FAILURE, TRANSIENT_API_ERROR, workspace mutation

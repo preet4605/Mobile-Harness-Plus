@@ -63,7 +63,8 @@ internal object ProviderRuntimeErrorDetector {
                     }
                 }
                 "result" -> {
-                    if (json.optBoolean("is_error")) {
+                    // A turn-limit stop is a clean end: the bridge keeps the session so "continue" resumes it.
+                    if (json.optBoolean("is_error") && !isTurnLimitResult(json)) {
                         val result = json.optString("result")
                         val terminalReason = json.optString("terminal_reason")
                         classifyErrorMessage("$result $terminalReason")
@@ -106,6 +107,13 @@ internal object ProviderRuntimeErrorDetector {
         }
         return sb.toString().trim()
     }
+
+    fun isTurnLimitResult(json: JSONObject): Boolean =
+        json.optString("subtype") == "error_max_turns" || json.optString("terminal_reason") == "max_turns"
+
+    fun turnLimitMessage(maxTurns: Int): String =
+        "Claude stopped at its turn limit ($maxTurns turns). Its work and session are kept: send \"continue\" " +
+            "to pick up where it left off, or raise the limit with /turns."
 
     private fun classifyErrorMessage(raw: String): String? {
         val lower = raw.lowercase()
@@ -156,6 +164,7 @@ class ClaudeRuntimeBridge(
     @Volatile private var lastForegroundProgressAt: Long = 0L
     @Volatile private var foregroundResultPosted: Boolean = false
     @Volatile private var authoritativeResultSeen = false
+    @Volatile private var turnLimitReached = false
     private var nativeConversationId: String? = null
     private val streamedText = StringBuilder()
     private val streamedThinking = StringBuilder()
@@ -189,6 +198,7 @@ class ClaudeRuntimeBridge(
         val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId, effectiveAttemptId)
         finishedSessions.remove(sessionId)
         authoritativeResultSeen = false
+        turnLimitReached = false
         nativeConversationId = null
         answeredPermissions.clear()
         activeSessionId = sessionId
@@ -319,12 +329,13 @@ class ClaudeRuntimeBridge(
             val effort = if (provider.kind == ProviderKind.CLAUDE) {
                 com.jarves.mh.model.ClaudeThinkingLevel.fromStored(provider.claudeThinkingLevel).effortArg
             } else null
+            val maxTurns = prefs.claudeMaxTurns
             val command = buildClaudeCommand(
                 executable = launch.executable,
                 model = launch.environment["ANTHROPIC_MODEL"] ?: provider.model,
                 effort = effort,
                 resumeSessionId = resumeId,
-                maxTurns = prefs.claudeMaxTurns,
+                maxTurns = maxTurns,
                 mcpConfig = claudeMcpConfig(installed.rootfs),
             )
             Log.d("ClaudeBridge", "Launching command: $command")
@@ -434,6 +445,12 @@ class ClaudeRuntimeBridge(
                         acceptLastChanges(projectId)
                     }
                     if (userStopRequested) throw ProviderSessionException("Stopped by user")
+                    if (turnLimitReached && authoritativeResultSeen) {
+                        // The CLI finished its transcript before reporting the limit, so the next message can
+                        // resume it instead of replaying history into a new session (verified with Claude Code 2.1.299).
+                        conversationScope?.let { prefs.saveAgentConversation(com.jarves.mh.model.AgentKind.CLAUDE_CODE, projectId, it, nativeConversationId) }
+                        throw ProviderSessionException(ProviderRuntimeErrorDetector.turnLimitMessage(maxTurns))
+                    }
                     if (exit == 0 || authoritativeResultSeen && terminatedAfterResult) {
                         conversationScope?.let { prefs.saveAgentConversation(com.jarves.mh.model.AgentKind.CLAUDE_CODE, projectId, it, nativeConversationId) }
                         emitCompletedOnce(sessionId)
@@ -858,7 +875,10 @@ class ClaudeRuntimeBridge(
                 }
             }
             "result" -> {
-                if (json.optBoolean("is_error")) {
+                val topLevel = json.isNull("parent_tool_use_id") || json.optString("parent_tool_use_id").isBlank()
+                if (topLevel && ProviderRuntimeErrorDetector.isTurnLimitResult(json)) {
+                    turnLimitReached = true
+                } else if (json.optBoolean("is_error")) {
                     val message = json.optString("result").ifBlank { "Claude Code reported an error" }
                     throw IllegalStateException(message)
                 }
