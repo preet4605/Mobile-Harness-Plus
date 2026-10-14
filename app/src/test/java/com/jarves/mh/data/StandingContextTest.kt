@@ -114,4 +114,13 @@ class StandingContextTest {
         assertTrue(standing.contains("/workspace/app"))
         assertEquals("Fix it", failoverTurnText("Fix it", emptyList()))
     }
+
+    @Test
+    fun antigravityGetsTheAndroidRecipeOnlyWithTheAndroidStack() {
+        assertTrue("assembleDebug" in antigravityStandingContext("app", "", androidStackInstalled = true))
+        val withoutStack = antigravityStandingContext("app", "", androidStackInstalled = false)
+        assertFalse("assembleDebug" in withoutStack)
+        assertTrue(withoutStack.contains("/workspace/app"))
+        assertTrue(withoutStack.endsWith("</pocketdev_workspace>"))
+    }
 }

@@ -506,7 +506,12 @@ class AntigravityRuntimeBridge(
         // Standing context is sent once per agy conversation (ledger below), not in every message.
         val split = com.jarves.mh.data.PromptContextSupport.splitHarnessContext(prompt)
         val injectedPrompt = ControlledBrainInjector.inject(split.turn, snapshot, taskId, effectiveAttemptId)
-        val standing = antigravityStandingContext(projectSlug, split.standing, memory)
+        val standing = antigravityStandingContext(
+            projectSlug,
+            split.standing,
+            memory,
+            androidStackInstalled = installer.isStackInstalled(com.jarves.mh.model.DevStack.ANDROID),
+        )
         val standingHash = com.jarves.mh.data.PromptContextSupport.standingHash(standing)
         val standingPrefs = com.jarves.mh.data.AppPreferences(context)
         val sessionStartedAtMillis = System.currentTimeMillis()
@@ -1075,6 +1080,7 @@ internal fun antigravityStandingContext(
     harnessContext: String,
     memory: ContextMemory = ContextMemory(""),
     memoryBlock: String = renderMemoryBlock(memory),
+    androidStackInstalled: Boolean = true,
 ): String {
     return buildString {
         if (harnessContext.isNotBlank()) {
@@ -1085,13 +1091,15 @@ internal fun antigravityStandingContext(
         }
         appendLine("<pocketdev_workspace>")
         appendLine("The active project workspace is /workspace/$projectSlug. Create, edit, read, run, and build project files only inside this directory. Do not create project output under ~/.gemini/antigravity-cli/scratch or any other scratch directory.")
-        appendLine()
-        appendLine("For Android projects, never use plain `gradle build` or start a Gradle daemon. Build only the debug APK. First check whether `app/build/outputs/apk/debug/` already contains an APK.")
-        appendLine("- For a first build with no existing debug APK, allow dependency resolution and use:")
-        appendLine("  `timeout 15m gradle -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 --init-script /root/.gradle/init.d/pocketdev-android.gradle -Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 assembleDebug --console=plain --stacktrace`")
-        appendLine("- For a later build with an existing debug APK, prefer the cached fast path:")
-        appendLine("  `timeout 5m gradle -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 --offline --init-script /root/.gradle/init.d/pocketdev-android.gradle -Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 assembleDebug --console=plain --stacktrace`")
-        appendLine("PocketDev bundles the standard Android dependencies locally. If and only if the cached build finishes with a clear missing-cached-dependency error, retry once online with `timeout 15m`, removing only `--offline` and retaining all other flags. Do not retry a timed-out or resource-failed build unchanged.")
+        if (androidStackInstalled) {
+            appendLine()
+            appendLine("For Android projects, never use plain `gradle build` or start a Gradle daemon. Build only the debug APK. First check whether `app/build/outputs/apk/debug/` already contains an APK.")
+            appendLine("- For a first build with no existing debug APK, allow dependency resolution and use:")
+            appendLine("  `timeout 15m gradle -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 --init-script /root/.gradle/init.d/pocketdev-android.gradle -Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 assembleDebug --console=plain --stacktrace`")
+            appendLine("- For a later build with an existing debug APK, prefer the cached fast path:")
+            appendLine("  `timeout 5m gradle -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 --offline --init-script /root/.gradle/init.d/pocketdev-android.gradle -Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 assembleDebug --console=plain --stacktrace`")
+            appendLine("PocketDev bundles the standard Android dependencies locally. If and only if the cached build finishes with a clear missing-cached-dependency error, retry once online with `timeout 15m`, removing only `--offline` and retaining all other flags. Do not retry a timed-out or resource-failed build unchanged.")
+        }
         appendLine("</pocketdev_workspace>")
         if (memoryBlock.isNotBlank()) {
             appendLine()
