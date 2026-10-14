@@ -534,6 +534,70 @@ class WorkspaceCheckpointsTest {
     }
 
     @Test
+    fun `safeWorkspaceFile rejects a final symlink that leaves the workspace`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        val outside = tempFolder.newFile().apply { writeText("outside") }
+        java.nio.file.Files.createSymbolicLink(File(workspace, "link.txt").toPath(), outside.toPath())
+        java.nio.file.Files.createSymbolicLink(
+            File(workspace, "dangling.txt").toPath(),
+            File(tempFolder.root, "missing-outside.txt").toPath(),
+        )
+
+        listOf("link.txt", "dangling.txt").forEach { path ->
+            try {
+                checkpoints.safeWorkspaceFile(workspace, path)
+                org.junit.Assert.fail("Expected $path to be rejected")
+            } catch (e: IllegalArgumentException) {
+                assertTrue(e.message?.contains("escapes project") == true)
+            }
+        }
+    }
+
+    @Test
+    fun `safeWorkspaceFile keeps a final symlink that stays inside the workspace`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        val target = File(workspace, "real.txt").apply { writeText("inside") }
+        java.nio.file.Files.createSymbolicLink(File(workspace, "alias.txt").toPath(), target.toPath())
+
+        assertEquals(File(workspace, "alias.txt"), checkpoints.safeWorkspaceFile(workspace, "alias.txt"))
+    }
+
+    @Test
+    fun `Keep never copies a final symlink target from outside the workspace`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = checkpoints.ensureWorkspace("project")
+        val tracked = File(workspace, "notes.txt").apply { writeText("baseline") }
+        checkpoints.createCheckpoint("project", workspace)
+        val outside = tempFolder.newFile().apply { writeText("OUTSIDE SECRET") }
+        tracked.delete()
+        java.nio.file.Files.createSymbolicLink(tracked.toPath(), outside.toPath())
+        checkpoints.saveChangedPaths("project", listOf("notes.txt"))
+
+        assertFalse(checkpoints.acceptFileChange("project", "notes.txt"))
+        val baseline = File(checkpoints.checkpointDir("project"), "project/notes.txt")
+        assertEquals("baseline", baseline.readText())
+        assertEquals(listOf("notes.txt"), checkpoints.readChangedPaths("project"))
+    }
+
+    @Test
+    fun `Keep makes the current file the baseline`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = checkpoints.ensureWorkspace("project")
+        val tracked = File(workspace, "notes.txt").apply { writeText("baseline") }
+        File(workspace, "other.txt").writeText("other")
+        checkpoints.createCheckpoint("project", workspace)
+        tracked.writeText("kept")
+        File(workspace, "other.txt").writeText("changed")
+        checkpoints.saveChangedPaths("project", listOf("notes.txt", "other.txt"))
+
+        assertTrue(checkpoints.acceptFileChange("project", "notes.txt"))
+        assertEquals("kept", File(checkpoints.checkpointDir("project"), "project/notes.txt").readText())
+        assertEquals(listOf("other.txt"), checkpoints.readChangedPaths("project"))
+    }
+
+    @Test
     fun `single file Undo retains oversized pending original`() {
         val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
         val workspace = checkpoints.ensureWorkspace("project")

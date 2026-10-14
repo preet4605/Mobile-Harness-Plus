@@ -38,6 +38,8 @@ import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.NewReleases
 import androidx.compose.material.icons.outlined.PrivacyTip
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Terminal
@@ -45,6 +47,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -121,6 +124,8 @@ fun SettingsScreen(
     onSetDebugUpdateManifestUrl: (String) -> Unit = {},
     onClearDebugUpdateManifestUrl: () -> Unit = {},
     onOpenAgent: () -> Unit = {},
+    onRefreshDiagnostics: () -> Unit = {},
+    onClearRuntimeCache: () -> Unit = {},
     listState: LazyListState = rememberLazyListState(),
     bottomBarPadding: Dp = 0.dp,
 ) {
@@ -202,6 +207,16 @@ fun SettingsScreen(
                         }
                     }
                 }
+            }
+
+            item(key = "diagnostics") {
+                // Collect once when the section comes into view; the view model ignores repeats within a second.
+                LaunchedEffect(Unit) { onRefreshDiagnostics() }
+                DiagnosticsSection(
+                    state = state,
+                    onRefresh = onRefreshDiagnostics,
+                    onClearRuntimeCache = onClearRuntimeCache,
+                )
             }
 
             item(key = "maintenance") {
@@ -320,6 +335,109 @@ private fun OpenIcon() {
         tint = PocketColors.current.tertiaryLabel,
         modifier = Modifier.size(18.dp),
     )
+}
+
+/**
+ * App memory, runtime work the app tracks, in-memory buffers, the runtime output cache and the
+ * most recent abnormal exit. The snapshot is collected only on demand; nothing here polls.
+ */
+@Composable
+private fun DiagnosticsSection(state: AppUiState, onRefresh: () -> Unit, onClearRuntimeCache: () -> Unit) {
+    val colors = PocketColors.current
+    val diagnostics = state.diagnostics
+    val collected = diagnostics.refreshedAtMillis != null
+    val pending = if (diagnostics.loading) "Collecting…" else "—"
+    // The view model checks again off the main thread; this only explains why the action is unavailable.
+    val busy = state.isRunning || state.projectTerminalRunning || state.androidBuildRunning ||
+        diagnostics.activeProcesses.isNotEmpty()
+    ListSection(
+        header = "Diagnostics",
+        footer = "Collected only when this section is shown or you tap Refresh. Clearing the runtime cache " +
+            "removes leftover command output logs, never output that running work uses.",
+    ) {
+        ListRow(
+            "App memory",
+            value = if (collected) formatDiagnosticBytes(diagnostics.appPssBytes) else pending,
+            icon = Icons.Outlined.Memory,
+            iconTile = colors.indigo,
+        )
+        ListRow(
+            "Java heap",
+            value = if (collected) {
+                "${formatDiagnosticBytes(diagnostics.javaHeapUsedBytes)} of ${formatDiagnosticBytes(diagnostics.javaHeapMaxBytes)}"
+            } else {
+                pending
+            },
+            icon = Icons.Outlined.DataObject,
+            iconTile = colors.blue,
+        )
+        ListRow(
+            "Active processes",
+            subtitle = diagnostics.activeProcesses.takeIf { it.isNotEmpty() }?.joinToString(", "),
+            value = if (!collected) pending else if (diagnostics.activeProcesses.isEmpty()) "None" else null,
+            icon = Icons.Outlined.Terminal,
+            iconTile = colors.green,
+        )
+        ListRow(
+            "Chat messages loaded",
+            value = if (collected) "${diagnostics.chatMessageCount}" else pending,
+            subtitle = if (collected && diagnostics.liveActivityCount > 0) "${diagnostics.liveActivityCount} live activity rows" else null,
+            icon = Icons.Outlined.SmartToy,
+            iconTile = colors.orange,
+        )
+        ListRow(
+            "Terminal output",
+            value = if (collected) {
+                "${diagnostics.terminalLineCount} entries · ${formatDiagnosticBytes(diagnostics.terminalOutputBytes)}"
+            } else {
+                pending
+            },
+            icon = Icons.Outlined.Terminal,
+            iconTile = colors.gray,
+        )
+        ListRow(
+            "Runtime output cache",
+            value = if (collected) {
+                "${formatDiagnosticBytes(diagnostics.runtimeCacheBytes)} · ${diagnostics.runtimeCacheFiles} files"
+            } else {
+                pending
+            },
+            icon = Icons.Outlined.Storage,
+            iconTile = colors.purple,
+        )
+        ListRow(
+            "Recent abnormal exit",
+            subtitle = when {
+                !collected -> pending
+                android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R -> "Requires Android 11 or later"
+                else -> diagnostics.recentExit ?: "None recorded"
+            },
+            subtitleMaxLines = 3,
+            icon = Icons.Outlined.Speed,
+            iconTile = colors.red,
+        )
+        ListRow(
+            title = "Refresh",
+            icon = Icons.Outlined.Refresh,
+            iconTile = colors.gray,
+            enabled = !diagnostics.loading,
+            trailing = if (diagnostics.loading) {
+                { ProgressRing(progress = null, size = 20.dp, strokeWidth = 2.dp) }
+            } else {
+                null
+            },
+            onClick = onRefresh,
+        )
+        ListRow(
+            title = "Clear runtime cache",
+            subtitle = if (busy) "Available when no work is running" else null,
+            icon = Icons.Outlined.DeleteSweep,
+            iconTile = colors.red,
+            destructive = true,
+            enabled = collected && !busy && !diagnostics.loading && diagnostics.runtimeCacheFiles > 0,
+            onClick = onClearRuntimeCache,
+        )
+    }
 }
 
 private fun DevStack.symbol(): ImageVector = when (this) {

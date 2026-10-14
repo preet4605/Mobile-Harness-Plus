@@ -55,6 +55,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -84,10 +86,11 @@ data class TabItem(
     val icon: ImageVector,
     val selectedIcon: ImageVector = icon,
     val badge: Int = 0,
+    val badgeDescription: String? = null,
 )
 
 /** Height of the floating tab bar and of its minimized circle and accessory button. */
-val TabBarHeight: Dp = 62.dp
+val TabBarHeight: Dp = 58.dp
 
 /**
  * The floating glass tab bar.
@@ -108,9 +111,12 @@ fun FloatingTabBar(
     onExpand: () -> Unit = {},
     accessory: (@Composable () -> Unit)? = null,
 ) {
-    CappedTextScale {
+    run {
         val haptics = rememberHaptics()
         val density = LocalDensity.current
+        val labelLines = if (density.fontScale > 1.3f) 2 else 1
+        // Icon (22), gap (2) and inset (8), plus the fully scaled label.
+        val tabHeight = maxOf(TabBarHeight, (32 + PocketType.caption2.lineHeight.value * density.fontScale * labelLines).dp)
         val collapse = remember { Animatable(if (minimized) 1f else 0f) }
         LaunchedEffect(minimized) { collapse.animateTo(if (minimized) 1f else 0f, PocketMotion.spec(Token.Morph)) }
         val scope = rememberCoroutineScope()
@@ -122,7 +128,7 @@ fun FloatingTabBar(
         val dragScale = remember { Animatable(1f) }
         val colors = PocketColors.current
         val accent = MaterialTheme.colorScheme.primary
-        val heightPx = with(density) { TabBarHeight.toPx() }
+        val heightPx = with(density) { tabHeight.toPx() }
 
         var fullWidth by remember { mutableIntStateOf(0) }
         GlassGroup(modifier, spacing = 14.dp) {
@@ -134,13 +140,13 @@ fun FloatingTabBar(
                 LiquidGlassSurface(
                     modifier = Modifier
                         .weight(1f)
-                        .height(TabBarHeight)
+                        .height(tabHeight)
                         .layout { measurable, constraints ->
                             // The glass morphs from the full bar into a circle at the leading edge;
                             // the slot keeps its width so the accessory never jumps.
                             val full = constraints.maxWidth
                             if (full != fullWidth) fullWidth = full
-                            val target = lerp(full.toFloat(), heightPx, collapse.value).roundToInt().coerceIn(heightPx.roundToInt(), full)
+                            val target = lerp(full.toFloat(), heightPx, collapse.value).roundToInt().coerceIn(0, full)
                             val placeable = measurable.measure(constraints.copy(minWidth = target, maxWidth = target))
                             layout(full, placeable.height) { placeable.place(0, 0) }
                         },
@@ -228,6 +234,7 @@ fun FloatingTabBar(
                                     Modifier
                                         .weight(1f)
                                         .fillMaxHeight()
+                                        .semantics { tab.badgeDescription?.let { stateDescription = it } }
                                         .selectable(
                                             selected = selected,
                                             enabled = !minimized,
@@ -257,7 +264,8 @@ fun FloatingTabBar(
                                         tab.label,
                                         style = PocketType.caption2.medium,
                                         color = tint,
-                                        maxLines = 1,
+                                        maxLines = labelLines,
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                                         overflow = TextOverflow.Clip,
                                     )
                                 }
@@ -268,7 +276,7 @@ fun FloatingTabBar(
                             val tab = tabs.getOrNull(selectedIndex)
                             Box(
                                 Modifier
-                                    .size(TabBarHeight)
+                                    .size(tabHeight)
                                     .graphicsLayer { alpha = ((collapse.value - 0.5f) * 2f).coerceIn(0f, 1f) }
                                     .then(
                                         if (minimized) Modifier
@@ -297,6 +305,7 @@ fun FloatingTabBar(
 private fun TabBadge(count: Int, color: androidx.compose.ui.graphics.Color) {
     Box(
         Modifier
+            .clearAndSetSemantics { }
             .offset(x = 8.dp, y = (-6).dp)
             .defaultMinSize(minWidth = 16.dp, minHeight = 16.dp)
             .clip(PocketShape.capsule)
@@ -307,7 +316,7 @@ private fun TabBadge(count: Int, color: androidx.compose.ui.graphics.Color) {
         Text(
             if (count > 99) "99+" else "$count",
             style = PocketType.caption2.emphasized,
-            color = androidx.compose.ui.graphics.Color.White,
+            color = MaterialTheme.colorScheme.onPrimary,
             maxLines = 1,
         )
     }

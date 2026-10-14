@@ -23,7 +23,7 @@ object SlashCommandEngine {
         ),
         SlashCommand(
             name = "compact",
-            description = "Summarize earlier turns to reclaim context window space",
+            description = "Ask the agent for a conversation summary",
             category = SlashCommandCategory.GENERAL,
             isLocalOnly = false,
         ),
@@ -129,7 +129,7 @@ object SlashCommandEngine {
         ),
         SlashCommand(
             name = "goal",
-            description = "Autonomous execution mode running tasks to verified completion",
+            description = "Ask the agent to execute a goal to verified completion",
             category = SlashCommandCategory.AGENT_WORKFLOW,
             parameterHint = "<goal description>",
         ),
@@ -217,7 +217,7 @@ object SlashCommandEngine {
      */
     fun filterCommands(rawQuery: String, agent: AgentKind): List<SlashCommand> {
         val query = rawQuery.trim().removePrefix("/").trim().lowercase(Locale.ROOT)
-        return ALL_SLASH_COMMANDS.filter { cmd ->
+        return ALL_SLASH_COMMANDS.map { cmd -> nativeDescription(cmd, agent) }.filter { cmd ->
             agent in cmd.supportedAgents && (
                 query.isBlank() ||
                 cmd.name.lowercase(Locale.ROOT).contains(query) ||
@@ -233,13 +233,24 @@ object SlashCommandEngine {
         )
     }
 
+    private fun nativeDescription(command: SlashCommand, agent: AgentKind): SlashCommand {
+        if (agent != AgentKind.CODEX) return command
+        return when (command.name) {
+            "compact" -> command.copy(description = "Compact the saved native Codex thread context")
+            "plan" -> command.copy(description = "Set native Codex Plan mode or run a planning task", parameterHint = "[on | off | status | task]")
+            "goal" -> command.copy(description = "Start or control a persistent native Codex goal", parameterHint = "[--budget tokens] objective | status | pause | resume | clear")
+            "review" -> command.copy(description = "Run native Codex review", parameterHint = "[--base branch | --commit sha | --custom instructions]")
+            else -> command
+        }
+    }
+
     /**
      * Filters available skills matching the user's query and active state.
      */
     fun filterSkills(rawQuery: String, skills: List<SkillInfo>): List<SkillInfo> {
         val query = rawQuery.trim().removePrefix("/").trim().lowercase(Locale.ROOT)
         return skills.filter { skill ->
-            skill.isEnabled && (
+            skill.isEnabled && !skill.isMissingSource && skill.guestFilePath != null && (
                 query.isBlank() ||
                 skill.name.lowercase(Locale.ROOT).contains(query) ||
                 skill.description.lowercase(Locale.ROOT).contains(query)
@@ -259,7 +270,7 @@ object SlashCommandEngine {
         val trimmed = input.trim()
         if (!trimmed.startsWith("/")) return null
         val parts = trimmed.substring(1).split(Regex("\\s+"), limit = 2)
-        val cmdName = parts[0].lowercase(Locale.ROOT)
+        val cmdName = parts[0].lowercase(Locale.ROOT).let { if (it == "skill") "skills" else it }
         val args = parts.getOrNull(1).orEmpty().trim()
         val command = ALL_SLASH_COMMANDS.firstOrNull { it.name.equals(cmdName, ignoreCase = true) } ?: return null
         return command to args
@@ -275,7 +286,7 @@ object SlashCommandEngine {
         val candidateName = parts[0].lowercase(Locale.ROOT)
         val args = parts.getOrNull(1).orEmpty().trim()
         val skill = activeSkills.firstOrNull {
-            it.isEnabled && it.name.equals(candidateName, ignoreCase = true)
+            it.isEnabled && !it.isMissingSource && it.guestFilePath != null && it.name.equals(candidateName, ignoreCase = true)
         } ?: return null
         return skill to args
     }
@@ -347,7 +358,12 @@ object SlashCommandEngine {
             "init" -> buildString {
                 appendLine("[WORKFLOW: REPOSITORY RULES INITIALIZATION]")
                 appendLine("Analyze the repository structure, programming languages, build configurations, and project layout.")
-                appendLine("Generate or update project guidelines in GEMINI.md or CLAUDE.md:")
+                val rulesFile = when (agent) {
+                    AgentKind.CODEX -> "AGENTS.md"
+                    AgentKind.ANTIGRAVITY -> "GEMINI.md"
+                    else -> "CLAUDE.md"
+                }
+                appendLine("Generate or update project guidelines in $rulesFile, preserving existing user instructions:")
                 appendLine("1. Project Summary & Architecture overview")
                 appendLine("2. Development workflow & build commands")
                 appendLine("3. Code style, conventions, and architectural rules")

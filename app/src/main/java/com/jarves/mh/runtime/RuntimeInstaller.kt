@@ -11,6 +11,8 @@ import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -160,7 +162,19 @@ class RuntimeInstaller(private val context: Context) {
         val proot = File(context.applicationInfo.nativeLibraryDir, "libproot.so")
         require(proot.canExecute()) { "The embedded PRoot launcher is unavailable" }
 
-        if (!File(rootfs, "usr/bin/bash").exists() || rootfsMarker.readTextOrNull() != ROOTFS_VERSION) {
+        val staging = File(runtimeDir, "ubuntu.installing")
+        val repairBackup = File(runtimeDir, "ubuntu.repair-backup")
+        RootfsRepair.reconcileInterruptedSwap(
+            rootfs = rootfs,
+            staging = staging,
+            backup = repairBackup,
+            validate = ::isValidCoreRootfs,
+        )
+        val layoutBroken = rootfs.isDirectory && !ensureRootfsCompatibilityLinks()
+        if (layoutBroken ||
+            !File(rootfs, "usr/bin/bash").exists() ||
+            rootfsMarker.readTextOrNull() != ROOTFS_VERSION
+        ) {
             onProgress(RuntimeInstallProgress("Preparing the private development runtime", 0.03f))
             val archive = obtainRuntimeBundle(
                 CORE_BUNDLE,
@@ -170,15 +184,16 @@ class RuntimeInstaller(private val context: Context) {
                 onProgress,
             )
             onProgress(RuntimeInstallProgress("Verifying and unpacking the Core runtime", 0.28f))
-            val staging = File(runtimeDir, "ubuntu.installing")
             staging.deleteRecursively()
             staging.mkdirs()
             extractZstdTar(archive, staging)
             stripMacosMetadataArtifacts(staging)
-            require(File(staging, "usr/bin/bash").isFile) { "Core bundle is missing Bash" }
-            rootfs.deleteRecursively()
-            check(staging.renameTo(rootfs)) { "Could not activate the Linux environment" }
-            check(ensureRootfsCompatibilityLinks()) { "Core runtime has an invalid Linux filesystem layout" }
+            RootfsRepair.activate(
+                rootfs = rootfs,
+                staging = staging,
+                backup = repairBackup,
+                validate = ::isValidCoreRootfs,
+            )
             writeResolver()
             if (archive.parentFile == downloads) archive.delete()
         }
@@ -224,6 +239,7 @@ class RuntimeInstaller(private val context: Context) {
             com.jarves.mh.model.AgentKind.ANTIGRAVITY -> ensureAgyInstalled(proot, 0.985f, onProgress)
             com.jarves.mh.model.AgentKind.CODEX -> ensureCodexInstalled(proot, 0.985f, onProgress)
         }
+        RuntimeCertificates.repair(rootfs)
         onProgress(RuntimeInstallProgress("Setup complete", 1f))
         return InstalledRuntime(proot, rootfs)
     }
@@ -924,8 +940,7 @@ class RuntimeInstaller(private val context: Context) {
     private fun removeAndroidGradleProperty() {
         val properties = File(rootfs, "root/.gradle/gradle.properties")
         if (!properties.isFile) return
-        val propertyPattern = Regex("^\\s*${Regex.escape(ANDROID_AAPT2_PROPERTY)}\\s*[:=].*$")
-        val remaining = properties.readLines().filterNot { propertyPattern.matches(it) }
+        val remaining = properties.readLines().filterNot(::isManagedAndroidGradleProperty)
         if (remaining.isEmpty()) {
             properties.delete()
         } else {
@@ -1268,10 +1283,8 @@ class RuntimeInstaller(private val context: Context) {
         writeAndroidGradleInitScript(runtimeRootfs)
         val gradleDir = File(runtimeRootfs, "root/.gradle").apply { mkdirs() }
         val properties = File(gradleDir, "gradle.properties")
-        val propertyPattern = Regex("^\\s*${Regex.escape(ANDROID_AAPT2_PROPERTY)}\\s*[:=].*$")
         val existingLines = properties.readTextOrNull()?.lineSequence()?.toList().orEmpty()
-        val expectedLine = "$ANDROID_AAPT2_PROPERTY=$ANDROID_AAPT2_GUEST_PATH"
-        val updatedLines = existingLines.filterNot { propertyPattern.matches(it) } + expectedLine
+        val updatedLines = mergeManagedAndroidGradleProperties(existingLines, ANDROID_AAPT2_GUEST_PATH)
         if (existingLines == updatedLines) return
 
         val temporary = File(gradleDir, "gradle.properties.pocketdev.tmp")
@@ -1587,8 +1600,8 @@ class RuntimeInstaller(private val context: Context) {
      * making every ELF executable misleadingly fail with ENOENT. Restore only
      * the known Ubuntu compatibility links and never replace real directories.
      */
-    private fun ensureRootfsCompatibilityLinks(): Boolean {
-        if (!rootfs.isDirectory) return false
+    private fun ensureRootfsCompatibilityLinks(targetRootfs: File = rootfs): Boolean {
+        if (!targetRootfs.isDirectory) return false
         val links = mapOf(
             "bin" to "usr/bin",
             "lib" to "usr/lib",
@@ -1596,7 +1609,7 @@ class RuntimeInstaller(private val context: Context) {
         )
         return runCatching {
             links.forEach { (name, destination) ->
-                val link = File(rootfs, name)
+                val link = File(targetRootfs, name)
                 val path = link.toPath()
                 if (java.nio.file.Files.isSymbolicLink(path)) {
                     if (java.nio.file.Files.readSymbolicLink(path).toString() != destination) {
@@ -1609,13 +1622,18 @@ class RuntimeInstaller(private val context: Context) {
                     Os.symlink(destination, link.absolutePath)
                 }
             }
-            File(rootfs, "usr/bin/env").canExecute() &&
-                File(rootfs, "usr/bin/bash").canExecute() &&
-                File(rootfs, "lib/ld-linux-aarch64.so.1").exists()
+            File(targetRootfs, "usr/bin/env").canExecute() &&
+                File(targetRootfs, "usr/bin/bash").canExecute() &&
+                File(targetRootfs, "lib/ld-linux-aarch64.so.1").exists()
         }.onFailure {
             android.util.Log.e("RuntimeInstaller", "Could not repair Linux compatibility links", it)
         }.getOrDefault(false)
     }
+
+    private fun isValidCoreRootfs(targetRootfs: File): Boolean =
+        ensureRootfsCompatibilityLinks(targetRootfs) &&
+            File(targetRootfs, "usr/bin/bash").isFile &&
+            File(targetRootfs, ".pocket-rootfs-version").readTextOrNull() == ROOTFS_VERSION
 
     private fun actionableProcessError(output: String, fallback: String): String {
         val lines = output.lineSequence().map(String::trim).filter(String::isNotBlank).toList()
@@ -1649,7 +1667,8 @@ class RuntimeInstaller(private val context: Context) {
         onProgress(RuntimeInstallProgress("Checking private runtime files", 0.15f))
         writeResolver()
         ensureSettingsAndHooks()
-        File(context.filesDir, "runtime-bridge").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
+        RuntimeCertificates.repair(rootfs)
+        AndroidBrowserBridge.clearPendingRequests(File(context.filesDir, "runtime-bridge"))
         onProgress(RuntimeInstallProgress("Preparing the Android runtime bridge", 0.42f))
         check(File(rootfs, "usr/local/bin/node").canExecute()) { "Core runtime is missing Node.js" }
         check(File(rootfs, "usr/bin/git").canExecute()) { "Core runtime is missing Git" }
@@ -1670,13 +1689,21 @@ class RuntimeInstaller(private val context: Context) {
         ptyRows: Int = 40,
         ptyColumns: Int = 120,
         credentialHome: String? = null,
+        inspectionAllowed: (() -> Boolean)? = null,
+        maxOutputBytes: Long = NativeSpawnProcess.MAX_OUTPUT_BYTES,
     ): Process {
         check(ensureRootfsCompatibilityLinks()) { "Core runtime has an invalid Linux filesystem layout" }
+        RuntimeCertificates.repair(rootfs)
         require(
             guestWorkspacePath == "/workspace" ||
                 Regex("^/workspace/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$").matches(guestWorkspacePath),
         ) { "Invalid project workspace path" }
         workspace.mkdirs()
+        val inspectionToken = java.util.UUID.randomUUID().toString()
+        val inspectionDirectory = File(context.filesDir, "runtime-inspection/$inspectionToken")
+        val inspectionReady = ensureInspectionTools(rootfs) && runCatching {
+            inspectionDirectory.mkdirs() && File(rootfs, "pocket-inspection").let { it.isDirectory || it.mkdirs() }
+        }.getOrDefault(false)
         File(rootfs, guestWorkspacePath.removePrefix("/")).mkdirs()
         // Self-heal devices whose Android tools were installed by an older app
         // version before the global AAPT2 override was persisted.
@@ -1709,16 +1736,21 @@ class RuntimeInstaller(private val context: Context) {
             add("${workspace.absolutePath}:$guestWorkspacePath")
             add("-b")
             add("${bridge.absolutePath}:/pocket-bridge")
+            if (inspectionReady) {
+                add("-b")
+                add("${inspectionDirectory.absolutePath}:/pocket-inspection")
+            }
+            val skillSnapshots = GuestSkillAccess.linkedDirectory(context.filesDir, workspace)
+            if (skillSnapshots.isDirectory && skillSnapshots.canonicalFile.toPath().startsWith(context.filesDir.canonicalFile.toPath())) {
+                File(rootfs, "opt/pocket/skills/linked").mkdirs()
+                add("-b")
+                add("${skillSnapshots.absolutePath}:/opt/pocket/skills/linked")
+            }
             credentialHome?.let { activeHome ->
-                val mask = File(context.cacheDir, "credential-mask").apply { mkdirs() }
-                val hidden = CredentialMounts.hiddenHomes(activeHome)
-                hidden.forEach { guestPath ->
+                val mask = File(context.cacheDir, "credential-masks/$inspectionToken")
+                CredentialMounts.bindings(rootfs, mask, activeHome).forEach { binding ->
                     add("-b")
-                    add("${mask.absolutePath}:$guestPath")
-                }
-                if (hidden.any { activeHome.startsWith("$it/") }) {
-                    add("-b")
-                    add("${File(rootfs, activeHome.removePrefix("/")).absolutePath}:$activeHome")
+                    add(binding)
                 }
             }
             add("-w")
@@ -1726,13 +1758,15 @@ class RuntimeInstaller(private val context: Context) {
             addAll(guestCommand)
         }
         val prootTemp = File(context.cacheDir, "proot-tmp").apply { mkdirs() }
-        return NativeSpawnProcess.start(
+        val process = NativeSpawnProcess.start(
             argv = args,
             environment = buildMap {
                 put("HOME", "/root")
                 put("BROWSER", AndroidBrowserBridge.BROWSER_ENV_PATH)
                 val androidReady = File(rootfs, "root/.pocket-android-tools-version").readTextOrNull() == ANDROID_TOOLS_VERSION
-                val basePath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                val javaHome = "/opt/jdk-17.0.20.1+1"
+                val javaPath = if (File(rootfs, "$javaHome/bin/javap").isFile) ":$javaHome/bin" else ""
+                val basePath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/pocket/tools$javaPath"
                 if (androidReady) {
                     put("ANDROID_HOME", "/root/android-sdk")
                     put("ANDROID_SDK_ROOT", "/root/android-sdk")
@@ -1746,20 +1780,62 @@ class RuntimeInstaller(private val context: Context) {
                 put("LANG", "C.UTF-8")
                 put("TERM", "xterm-256color")
                 put("LD_LIBRARY_PATH", context.applicationInfo.nativeLibraryDir)
-                put("PROOT_NO_SECCOMP", "1")
+                // Seccomp lets PRoot skip ptrace for syscalls it does not rewrite, which cuts guest
+                // CPU (and heat) a lot. It is on in the dev app only until it is phone-tested.
+                if (!PROOT_SECCOMP_ENABLED) put("PROOT_NO_SECCOMP", "1")
                 put("PROOT_TMP_DIR", prootTemp.absolutePath)
                 put("PROOT_LOADER", File(context.applicationInfo.nativeLibraryDir, "libprootloader.so").absolutePath)
                 // Also protects any glibc helper Claude starts later.
                 put("GLIBC_TUNABLES", "glibc.pthread.rseq=0")
                 putAll(environment)
+                if (inspectionReady) {
+                    put("POCKET_INSPECTION_TOKEN", inspectionToken)
+                    put("POCKET_WORKSPACE", guestWorkspacePath)
+                }
             },
             cwd = context.filesDir.absolutePath,
             outputFile = outputFile,
             pseudoTerminal = pseudoTerminal,
             ptyRows = ptyRows,
             ptyColumns = ptyColumns,
+            onExit = { deleteAuthDirectory(File(context.cacheDir, "credential-masks/$inspectionToken")) },
+            maxOutputBytes = maxOutputBytes,
         )
+        if (inspectionReady) InspectionSessions.shared.register(inspectionToken, workspace, guestWorkspacePath) {
+            process.isAlive && inspectionAllowed?.invoke() != false
+        }
+        return process
     }
+
+    /** Optional inspection failures must not disable existing agent/build commands. */
+    internal fun ensureInspectionTools(rootfs: File): Boolean = runCatching {
+        val script = File(rootfs, "opt/pocket/harness/harness-tools.cjs")
+        val content = context.assets.open("harness/harness-tools.cjs").use { it.readBytes() }
+        fun install(file: File, bytes: ByteArray, executable: Boolean = false) {
+            check(file.parentFile!!.canonicalFile.toPath().startsWith(rootfs.canonicalFile.toPath()))
+            if (!file.isFile || file.length() != bytes.size.toLong() || !file.readBytes().contentEquals(bytes)) {
+                file.parentFile!!.mkdirs()
+                val staging = File(file.parentFile, ".${file.name}-${java.util.UUID.randomUUID()}")
+                try { staging.writeBytes(bytes); check(staging.renameTo(file)) } finally { staging.delete() }
+            }
+            if (executable) Os.chmod(file.absolutePath, 0b111101101)
+        }
+        install(script, content)
+        install(File(rootfs, "usr/local/bin/harness-tools"),
+            "#!/bin/sh\nexec /usr/local/bin/node /opt/pocket/harness/harness-tools.cjs \"${'$'}@\"\n".toByteArray(), true)
+        // The mod authoring kit (spec v2 §6.5): `mh-mod`, with the app's own shim for `mh-mod test`.
+        install(File(rootfs, "opt/pocket/harness/mod-kit.cjs"), context.assets.open("harness/mod-kit.cjs").use { it.readBytes() })
+        install(File(rootfs, "opt/pocket/mods/mh-shim.js"), context.assets.open("mods/mh-shim.js").use { it.readBytes() })
+        install(File(rootfs, "usr/local/bin/mh-mod"),
+            "#!/bin/sh\nexec /usr/local/bin/node /opt/pocket/harness/mod-kit.cjs \"${'$'}@\"\n".toByteArray(), true)
+        // Claude's `--mcp-config` for mod tools (spec v2 P8); the server inherits Claude's environment.
+        install(File(rootfs, CLAUDE_MOD_TOOLS_CONFIG.removePrefix("/")), JSONObject().put("mcpServers", JSONObject().put("mods", JSONObject()
+            .put("command", "/usr/local/bin/node")
+            .put("args", org.json.JSONArray().put("/opt/pocket/harness/harness-tools.cjs").put("--mcp").put("mods")))).toString().toByteArray())
+        // Search is optional: a storage/asset failure must leave core commands and MCP working.
+        RuntimeSearchTool.ensure(rootfs) { context.assets.open("harness/rg-arm64.bin") }
+        true
+    }.getOrDefault(false)
 
     fun ensureSettingsAndHooks(interactiveApprovals: Boolean = com.jarves.mh.data.AppPreferences(context).claudeInteractiveApprovals) {
         val hook = File(rootfs, "opt/pocket/permission-hook.sh")
@@ -1771,30 +1847,35 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
 """)
         Os.chmod(hook.absolutePath, 0b111101101)
 
+        val hooks = JSONObject().put(
+            "PermissionRequest",
+            org.json.JSONArray().put(
+                JSONObject()
+                    .put("matcher", "Bash|Edit|Write|NotebookEdit")
+                    .put(
+                        "hooks",
+                        org.json.JSONArray().put(
+                            JSONObject().put("type", "command").put("command", "/opt/pocket/permission-hook.sh").put("timeout", 150),
+                        ),
+                    ),
+            ),
+        )
+        // Mods' tool gate (spec v2 §7): only while a running mod may gate tools, for the tools they match.
+        com.jarves.mh.mods.ModHost.current.value?.toolGateMatcher?.let { matcher ->
+            hooks.put("PreToolUse", org.json.JSONArray().put(JSONObject().put("matcher", matcher).put("hooks", org.json.JSONArray().put(
+                JSONObject().put("type", "command").put("command", "/usr/local/bin/harness-tools gate").put("timeout", 10),
+            ))))
+        }
         val settingsContent = JSONObject()
             .put("disableAllHooks", false)
             .put(
                 "permissions",
                 JSONObject()
-                    .put("allow", if (interactiveApprovals) org.json.JSONArray(listOf("Read", "Glob", "Grep")) else claudeWorkspaceToolRules())
+                    // Mod tools were allowed when the user granted their mod tools.provide.
+                    .put("allow", if (interactiveApprovals) org.json.JSONArray(listOf("Read", "Glob", "Grep", "mcp__mods")) else claudeWorkspaceToolRules())
                     .put("defaultMode", if (interactiveApprovals) "default" else "acceptEdits"),
             )
-            .put(
-                "hooks",
-                JSONObject().put(
-                    "PermissionRequest",
-                    org.json.JSONArray().put(
-                        JSONObject()
-                            .put("matcher", "Bash|Edit|Write|NotebookEdit")
-                            .put(
-                                "hooks",
-                                org.json.JSONArray().put(
-                                    JSONObject().put("type", "command").put("command", "/opt/pocket/permission-hook.sh").put("timeout", 150),
-                                ),
-                            ),
-                    ),
-                ),
-            )
+            .put("hooks", hooks)
             .toString()
 
         val settingsPaths = listOf(
@@ -1833,6 +1914,7 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         put("Read")
         put("Glob")
         put("Grep")
+        put("mcp__mods")
     }
 
     fun writeResolver(dnsServersOverride: List<InetAddress>? = null) {
@@ -2086,6 +2168,11 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
     private fun File.readTextOrNull(): String? = runCatching { readText().trim() }.getOrNull()
 
     companion object {
+        /** PRoot seccomp acceleration: dev (debug) builds only until it is tested on phones. */
+        internal val PROOT_SECCOMP_ENABLED: Boolean = BuildConfig.DEBUG
+
+        /** Guest path of Claude's MCP config for mod tools, written with the harness tools. */
+        const val CLAUDE_MOD_TOOLS_CONFIG = "/opt/pocket/harness/mods.mcp.json"
         const val AGY_GUEST_PATH = "/root/.local/bin/agy"
         const val GITHUB_CLI_GUEST_PATH = "/root/.local/bin/gh"
 
@@ -2165,7 +2252,6 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         private const val ANDROID_GRADLE_SHA256 = "8e228b640319a7c739c0a93d002facdeb08e8f3ba394d57d74ee355a5e93072c"
         private const val ANDROID_MAVEN_URL = "$ANDROID_ASSET_BASE/localMvnRepository.zip"
         private const val ANDROID_MAVEN_SHA256 = "3ba89892b43377d60743568d1b9004f172c2eab75dac059064f82dec497819f9"
-        private const val ANDROID_AAPT2_PROPERTY = "android.aapt2FromMavenOverride"
         private const val ANDROID_AAPT2_GUEST_PATH = "/root/android-sdk/build-tools/35.0.0/aapt2"
         private const val ANDROID_AAPT2_HOST_PATH = "root/android-sdk/build-tools/35.0.0/aapt2"
         private val CLAUDE_VERSION_PATTERN = Regex("[0-9]+\\.[0-9]+\\.[0-9]+")
@@ -2218,3 +2304,34 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         const val NARB_DISABLE_NATIVE_CACHE_VALUE = "1"
     }
 }
+
+private const val ANDROID_AAPT2_GRADLE_PROPERTY = "android.aapt2FromMavenOverride"
+private val MANAGED_ANDROID_GRADLE_PROPERTIES = listOf(
+    ANDROID_AAPT2_GRADLE_PROPERTY,
+    "org.gradle.daemon",
+    "org.gradle.jvmargs",
+    "org.gradle.workers.max",
+    "org.gradle.parallel",
+    "kotlin.compiler.execution.strategy",
+)
+
+internal fun isManagedAndroidGradleProperty(line: String): Boolean =
+    MANAGED_ANDROID_GRADLE_PROPERTIES.any { key ->
+        Regex("^\\s*${Regex.escape(key)}\\s*[:=].*$").matches(line)
+    }
+
+/**
+ * Keeps the user's own lines in the guest's global gradle.properties and replaces only the keys
+ * the app manages. Bounded heap, two workers, no parallel projects and in-process Kotlin limit
+ * build resources. Disabling daemon reuse lets Gradle shut its build JVM down when finished,
+ * before the app loses foreground protection.
+ */
+internal fun mergeManagedAndroidGradleProperties(existingLines: List<String>, aapt2GuestPath: String): List<String> =
+    existingLines.filterNot(::isManagedAndroidGradleProperty) + listOf(
+        "$ANDROID_AAPT2_GRADLE_PROPERTY=$aapt2GuestPath",
+        "org.gradle.daemon=false",
+        "org.gradle.jvmargs=-Xmx512m -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8",
+        "org.gradle.workers.max=2",
+        "org.gradle.parallel=false",
+        "kotlin.compiler.execution.strategy=in-process",
+    )

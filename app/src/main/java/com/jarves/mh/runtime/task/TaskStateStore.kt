@@ -37,6 +37,7 @@ class TaskStateStore(private val db: BrainDatabase) {
             cancellationRequested = (row.getInt("cancellation_requested") ?: 0) == 1,
             recoveryRequired = (row.getInt("recovery_required") ?: 0) == 1,
             checkpointId = row.getString("checkpoint_id"),
+            nativeControlJson = row.getString("native_control_json"),
         )
     }
 
@@ -48,8 +49,8 @@ class TaskStateStore(private val db: BrainDatabase) {
                 provider_json, prompt, status, created_at, started_at,
                 updated_at, completed_at, session_id, pid, retry_count,
                 max_retries, last_known_step, last_error, cancellation_requested,
-                recovery_required, checkpoint_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                recovery_required, checkpoint_id, native_control_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.trimIndent()
 
         db.driver.execute(
@@ -75,7 +76,8 @@ class TaskStateStore(private val db: BrainDatabase) {
                 record.lastError,
                 if (record.cancellationRequested) 1 else 0,
                 if (record.recoveryRequired) 1 else 0,
-                record.checkpointId
+                record.checkpointId,
+                record.nativeControlJson
             )
         )
         inMemoryCache[record.taskId] = record
@@ -122,6 +124,14 @@ class TaskStateStore(private val db: BrainDatabase) {
         val sql = "SELECT * FROM durable_task_states WHERE project_id = ? ORDER BY updated_at DESC LIMIT ?"
         return db.driver.query(sql, listOf(projectId, limit), ::mapRow)
     }
+
+    fun getLatestTaskForChat(projectId: String, chatId: String, agentKind: String, excludingTaskId: String = ""): DurableTaskRecord? =
+        db.driver.query("SELECT * FROM durable_task_states WHERE project_id = ? AND chat_id = ? AND agent_kind = ? AND task_id != ? ORDER BY created_at DESC LIMIT 1",
+            listOf(projectId, chatId, agentKind, excludingTaskId), ::mapRow).firstOrNull()
+
+    fun getLatestTaskForChatAnyAgent(projectId: String, chatId: String, excludingTaskId: String = ""): DurableTaskRecord? =
+        db.driver.query("SELECT * FROM durable_task_states WHERE project_id = ? AND chat_id = ? AND task_id != ? ORDER BY created_at DESC LIMIT 1",
+            listOf(projectId, chatId, excludingTaskId), ::mapRow).firstOrNull()
 
     /**
      * Safely executes a centralized state transition with validation.

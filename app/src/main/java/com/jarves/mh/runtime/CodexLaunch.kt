@@ -17,7 +17,7 @@ internal sealed interface CodexRoute {
     val model: String
 
     /** Codex's own ChatGPT sign-in. Credentials live in `$CODEX_HOME/auth.json` inside the guest. */
-    data class ChatGptLogin(override val model: String) : CodexRoute
+    data class ChatGptLogin(override val model: String, val home: String = CodexLaunchBuilder.CODEX_HOME_GUEST_PATH) : CodexRoute
 
     /**
      * A Responses-API endpoint reached with an API key that travels only in the process
@@ -121,6 +121,8 @@ internal object CodexLaunchBuilder {
         imagePaths: List<String> = emptyList(),
         resumeSessionId: String? = null,
         persistSession: Boolean = false,
+        inspectionTools: Boolean = false,
+        skillConfig: String? = null,
     ): List<String> =
         buildList {
             add(CODEX_GUEST_PATH)
@@ -153,13 +155,41 @@ internal object CodexLaunchBuilder {
                 add("-c")
                 add(it)
             }
+            skillConfig?.let { add("-c"); add(it) }
             reasoningEffort?.let {
                 add("-c")
                 add("model_reasoning_effort=${tomlString(it)}")
             }
+            if (inspectionTools) {
+                add("-c")
+                add("mcp_servers.pocket_native_inspection={command=\"/usr/local/bin/node\",args=[\"/opt/pocket/harness/harness-tools.cjs\",\"--mcp\"],env_vars=[\"POCKET_INSPECTION_TOKEN\",\"POCKET_WORKSPACE\",\"PATH\"],startup_timeout_sec=10,tool_timeout_sec=40,required=false}")
+            }
             resumeSessionId?.let { add(it) }
             add("-")
         }
+
+    /** Native controls share exec's launch-local provider, skill and MCP configuration. */
+    fun appServerCommand(
+        route: CodexRoute,
+        reasoningEffort: String?,
+        inspectionTools: Boolean,
+        skillConfig: String?,
+        /** More `-c` overrides, such as mods' MCP servers. */
+        extraOverrides: List<String> = emptyList(),
+    ): List<String> = buildList {
+        add(CODEX_GUEST_PATH)
+        add("app-server")
+        configOverrides(route).forEach { add("-c"); add(it) }
+        add("-c"); add("sandbox_mode=${tomlString("danger-full-access")}")
+        if (route.model.isNotBlank()) { add("-c"); add("model=${tomlString(route.model)}") }
+        reasoningEffort?.let { add("-c"); add("model_reasoning_effort=${tomlString(it)}") }
+        skillConfig?.let { add("-c"); add(it) }
+        if (inspectionTools) {
+            add("-c")
+            add("mcp_servers.pocket_native_inspection={command=\"/usr/local/bin/node\",args=[\"/opt/pocket/harness/harness-tools.cjs\",\"--mcp\"],env_vars=[\"POCKET_INSPECTION_TOKEN\",\"POCKET_WORKSPACE\",\"PATH\"],startup_timeout_sec=10,tool_timeout_sec=40,required=false}")
+        }
+        extraOverrides.forEach { add("-c"); add(it) }
+    }
 
     /** Attached images the Codex CLI can take with `-i`, in attachment order. Other files stay as prompt text. */
     fun imagePaths(prompt: String, guestWorkspacePath: String): List<String> {
@@ -192,7 +222,7 @@ internal object CodexLaunchBuilder {
     /** [secret] is required for [CodexRoute.ApiKey] and ignored for ChatGPT sign-in. */
     fun environment(route: CodexRoute, secret: String?): Map<String, String> {
         val env = linkedMapOf(
-            "CODEX_HOME" to CODEX_HOME_GUEST_PATH,
+            "CODEX_HOME" to if (route is CodexRoute.ChatGptLogin) route.home else CODEX_HOME_GUEST_PATH,
             "NO_COLOR" to "1",
         )
         if (route is CodexRoute.ApiKey) {
@@ -224,12 +254,11 @@ internal object CodexLaunchBuilder {
 internal object CodexPromptNotes {
     internal const val PHONE_ENVIRONMENT =
         "<phone_environment>\n" +
-            "You are running on an Android phone inside a PRoot Ubuntu guest. Process tools such as ps, top, " +
-            "free and uptime may not work here, so do not rely on them to tell whether a command is still running.\n" +
-            "The user sees a command's output only after it finishes. For a long build or install, send its " +
-            "output to a log file (for example: gradle assembleDebug --console=plain > build.log 2>&1) and read " +
-            "the log with tail, and say in one line what you are waiting for. A first Gradle build on a phone " +
-            "can take many minutes.\n" +
+            "Android phone, PRoot Ubuntu. ps/top/free/uptime may fail; do not use them to check running commands.\n" +
+            "Command output appears on completion. Log long builds/installs (`> build.log 2>&1`), read with " +
+            "tail and send a one-line wait update; first Gradle builds may take minutes.\n" +
+            "Use harness-tools doctor for bounded checks. MCP provides Brain search and local Preview inspection; " +
+            "shell: harness-tools preview with dom, console or screenshot. Keep Preview open; tool errors mean failure.\n" +
             "</phone_environment>\n"
 
     fun withPhoneEnvironment(prompt: String): String = PHONE_ENVIRONMENT + "\n" + prompt

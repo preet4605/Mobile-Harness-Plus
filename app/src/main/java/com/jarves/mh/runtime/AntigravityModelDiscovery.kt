@@ -253,7 +253,8 @@ suspend fun discoverAntigravityModels(
                     }
                 }
             }
-            rawOutput = outputFile.takeIf { it.isFile }?.readText().orEmpty()
+            // Model lists are small; a runaway CLI must not load an unbounded log into memory.
+            rawOutput = outputFile.readTailText(512 * 1024)
         } finally {
             runCatching { outputFile.delete() }
         }

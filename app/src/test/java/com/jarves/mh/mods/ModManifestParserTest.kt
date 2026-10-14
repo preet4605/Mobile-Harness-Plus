@@ -1,0 +1,270 @@
+package com.jarves.mh.mods
+
+import com.jarves.mh.model.AgentKind
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Test
+
+class ModManifestParserTest {
+
+    private fun problems(manifest: String, appVersionCode: Int = 5): List<String> = try {
+        ModManifestParser.parse(manifest, appVersionCode)
+        emptyList()
+    } catch (e: ModManifestException) {
+        e.problems
+    }
+
+    private fun assertRejected(manifest: String, fragment: String) {
+        val found = problems(manifest)
+        assertTrue("expected a problem containing \"$fragment\", got $found", found.any { fragment in it })
+    }
+
+    private fun permission(capability: String, paths: List<String> = emptyList()) = JSONObject()
+        .put("capability", capability)
+        .put("reason", "test")
+        .apply { if (paths.isNotEmpty()) put("scope", JSONObject().put("paths", JSONArray(paths))) }
+
+    @Test
+    fun `minimal manifest parses`() {
+        val manifest = ModManifestParser.parse(ModTestKit.manifest())
+        assertEquals("dev.test.sample", manifest.id)
+        assertEquals("Sample", manifest.name)
+        assertEquals(2, manifest.apiVersion)
+        assertTrue(manifest.permissions.isEmpty())
+        assertNull(manifest.hooksModule)
+    }
+
+    @Test
+    fun `full declarative manifest parses`() {
+        val text = ModTestKit.manifest(mapOf("rules/style.md" to "Use tabs.", "skills/code-review/SKILL.md" to "# Review")) {
+            put("permissions", JSONArray().put(permission("ui.toast")).put(permission("files.write", listOf("notes/*.md"))))
+            put("contributes", JSONObject()
+                .put("slashCommands", JSONArray().put(JSONObject()
+                    .put("name", "tidy").put("description", "Tidy up").put("template", "Tidy {{args}} in {{settings.style}}")
+                    .put("agents", JSONArray().put("claude").put("codex"))))
+                .put("promptTemplates", JSONArray().put(JSONObject().put("id", "bug").put("title", "Bug report").put("template", "Steps:")))
+                .put("settings", JSONArray().put(JSONObject().put("key", "style").put("title", "Style").put("type", "enum")
+                    .put("options", JSONArray().put("short").put("long")).put("default", "short")))
+                .put("rules", JSONArray().put(JSONObject().put("id", "style").put("file", "rules/style.md")))
+                .put("skills", JSONArray().put(JSONObject().put("id", "code-review").put("dir", "skills/code-review")))
+                .put("hooks", JSONArray()
+                    .put(JSONObject().put("id", "done").put("on", "task.finished")
+                        .put("action", JSONObject().put("type", "ui.toast").put("text", "{{project.name}}: {{task.status}}"))
+                        .put("filter", JSONObject().put("status", "completed")))
+                    .put(JSONObject().put("id", "journal").put("on", "files.changed")
+                        .put("action", JSONObject().put("type", "files.append").put("path", "notes/log.md").put("line", "{{date}} {{files.count}}")))))
+        }
+        val manifest = ModManifestParser.parse(text)
+        assertEquals(setOf(AgentKind.CLAUDE_CODE, AgentKind.CODEX), manifest.slashCommands.single().agents)
+        assertEquals("short", manifest.settings.single().default)
+        assertEquals(ModEvent.TASK_FINISHED, manifest.hooks[0].on)
+        assertEquals("completed", manifest.hooks[0].status)
+        assertTrue(manifest.hooks[1].action is ModHookAction.FilesAppend)
+        assertEquals(listOf("rules/style.md", "skills/code-review/SKILL.md"), manifest.referencedFiles)
+    }
+
+    @Test
+    fun `unknown fields and bad identity are rejected`() {
+        assertRejected(ModTestKit.manifest { put("trusted", true) }, "Unknown field \"trusted\"")
+        assertRejected(ModTestKit.manifest { put("id", "NoDots") }, "\"id\"")
+        assertRejected(ModTestKit.manifest { put("version", "1.0") }, "\"version\"")
+        assertRejected(ModTestKit.manifest { put("apiVersion", 3) }, "not supported")
+        assertRejected(ModTestKit.manifest { put("minAppVersionCode", 99) }, "newer version of the app")
+        assertRejected("{not json", "not valid JSON")
+    }
+
+    @Test
+    fun `commands cannot shadow built-ins and need a template without a module`() {
+        assertRejected(ModTestKit.manifest {
+            put("contributes", JSONObject().put("slashCommands", JSONArray().put(JSONObject()
+                .put("name", "help").put("description", "x").put("template", "x"))))
+        }, "built-in")
+        assertRejected(ModTestKit.manifest {
+            put("contributes", JSONObject().put("slashCommands", JSONArray().put(JSONObject()
+                .put("name", "tidy").put("description", "x"))))
+        }, "needs a \"template\"")
+        assertRejected(ModTestKit.manifest(mapOf("skills/review/SKILL.md" to "# Review")) {
+            put("contributes", JSONObject().put("skills", JSONArray().put(JSONObject().put("id", "review").put("dir", "skills/review"))))
+        }, "hidden by the built-in /review")
+        assertRejected(ModTestKit.manifest {
+            put("contributes", JSONObject()
+                .put("slashCommands", JSONArray().put(JSONObject().put("name", "tidy").put("description", "x").put("template", "x")))
+                .put("promptTemplates", JSONArray().put(JSONObject().put("id", "tidy").put("title", "T").put("template", "x"))))
+        }, "/tidy is used by more than one")
+    }
+
+    @Test
+    fun `templates may only use variables that exist there`() {
+        assertRejected(ModTestKit.manifest {
+            put("contributes", JSONObject().put("slashCommands", JSONArray().put(JSONObject()
+                .put("name", "tidy").put("description", "x").put("template", "{{task.status}}"))))
+        }, "{{task.status}}")
+        assertRejected(ModTestKit.manifest {
+            put("contributes", JSONObject()
+                .put("settings", JSONArray().put(JSONObject().put("key", "token").put("title", "Token").put("type", "secret")))
+                .put("slashCommands", JSONArray().put(JSONObject()
+                    .put("name", "tidy").put("description", "x").put("template", "{{settings.token}}"))))
+        }, "{{settings.token}}")
+    }
+
+    @Test
+    fun `hooks must ask for the capability their action uses`() {
+        assertRejected(ModTestKit.manifest {
+            put("contributes", JSONObject().put("hooks", JSONArray().put(JSONObject().put("id", "x").put("on", "task.finished")
+                .put("action", JSONObject().put("type", "chat.post").put("text", "done")))))
+        }, "must ask for that permission")
+        assertRejected(ModTestKit.manifest {
+            put("permissions", JSONArray().put(permission("chat.post")))
+            put("contributes", JSONObject().put("hooks", JSONArray().put(JSONObject().put("id", "x").put("on", "assistant.message.completed")
+                .put("action", JSONObject().put("type", "chat.post").put("text", "{{message.text}}")))))
+        }, "chat.read")
+        assertRejected(ModTestKit.manifest {
+            put("permissions", JSONArray().put(permission("ui.toast")))
+            put("contributes", JSONObject().put("hooks", JSONArray().put(JSONObject().put("id", "x").put("on", "files.changed")
+                .put("filter", JSONObject().put("status", "failed"))
+                .put("action", JSONObject().put("type", "ui.toast").put("text", "x")))))
+        }, "has no status")
+    }
+
+    @Test
+    fun `file appends stay inside their scope and never touch agent settings`() {
+        assertRejected(ModTestKit.manifest {
+            put("permissions", JSONArray().put(permission("files.write")))
+        }, "scope.paths")
+        assertRejected(ModTestKit.manifest {
+            put("permissions", JSONArray().put(permission("files.write", listOf("notes/*.md"))))
+            put("contributes", JSONObject().put("hooks", JSONArray().put(JSONObject().put("id", "x").put("on", "files.changed")
+                .put("action", JSONObject().put("type", "files.append").put("path", "src/main.kt").put("line", "x")))))
+        }, "do not cover")
+        assertRejected(ModTestKit.manifest {
+            put("permissions", JSONArray().put(permission("files.write", listOf("*.md"))))
+            put("contributes", JSONObject().put("hooks", JSONArray().put(JSONObject().put("id", "x").put("on", "files.changed")
+                .put("action", JSONObject().put("type", "files.append").put("path", "AGENTS.md").put("line", "x")))))
+        }, "can never change")
+        assertRejected(ModTestKit.manifest {
+            put("permissions", JSONArray().put(permission("files.write", listOf(".git/hooks/*"))))
+        }, "not valid")
+    }
+
+    @Test
+    fun `settings defaults match their type`() {
+        fun setting(o: JSONObject) = ModTestKit.manifest { put("contributes", JSONObject().put("settings", JSONArray().put(o))) }
+        assertRejected(setting(JSONObject().put("key", "on").put("title", "On").put("type", "bool").put("default", "yes")), "true or false")
+        assertRejected(setting(JSONObject().put("key", "token").put("title", "T").put("type", "secret").put("default", "x")), "cannot have a default")
+        assertRejected(setting(JSONObject().put("key", "mode").put("title", "M").put("type", "enum")
+            .put("options", JSONArray().put("a")).put("default", "b")), "one of its options")
+        assertRejected(setting(JSONObject().put("key", "n").put("title", "N").put("type", "number")), "must be a number")
+    }
+
+    @Test
+    fun `a dashboard needs a hooks module`() {
+        assertRejected(ModTestKit.manifest {
+            put("dashboard", JSONObject().put("pane", "main"))
+        }, "needs a hooks module")
+    }
+
+    @Test
+    fun `web panels need ui-webpane and an html file of the mod`() {
+        fun panel(id: String, entry: String) = JSONObject().put("id", id).put("title", "Board").put("entry", entry)
+        fun withPanels(vararg panels: JSONObject, permission: Boolean = true) = ModTestKit.manifest(mapOf("web/board.html" to "<p>hi</p>")) {
+            if (permission) put("permissions", JSONArray().put(permission("ui.webpane")))
+            put("contributes", JSONObject().put("panels", JSONArray(panels.toList())))
+        }
+        val manifest = ModManifestParser.parse(withPanels(panel("board", "web/board.html")))
+        assertEquals(listOf(ModWebPanel("board", "Board", "web/board.html")), manifest.webPanels)
+        assertTrue("web/board.html" in manifest.referencedFiles)
+        assertRejected(withPanels(panel("board", "web/board.html"), permission = false), "ui.webpane permission")
+        assertRejected(withPanels(panel("board", "../board.html")), "relative .html file")
+        assertRejected(withPanels(panel("board", "web/board.js")), "relative .html file")
+        assertRejected(withPanels(panel("board", "web/board.html"), panel("board", "web/board.html")), "web panel id")
+        assertRejected(withPanels(*Array(5) { panel("p$it", "web/board.html") }), "panels")
+    }
+
+    @Test
+    fun `guest tools and MCP servers need guest-tools and stay inside the mod`() {
+        fun program(name: String, command: JSONArray, env: JSONObject? = null) = JSONObject().put("name", name)
+            .put("description", "Lints the project").put("command", command).apply { env?.let { put("env", it) } }
+        val good = ModTestKit.manifest(mapOf("tools/lint.js" to "")) {
+            put("permissions", JSONArray().put(permission("guest.tools")))
+            put("contributes", JSONObject()
+                .put("guestTools", JSONArray().put(program("lint", JSONArray().put("node").put("./tools/lint.js"), JSONObject().put("LINT_LEVEL", "strict"))))
+                .put("mcpServers", JSONArray().put(program("docs", JSONArray().put("python3").put("-m").put("docs_server")))))
+        }
+        val manifest = ModManifestParser.parse(good)
+        assertEquals(listOf("node", "./tools/lint.js"), manifest.guestTools.single().command)
+        assertEquals(mapOf("LINT_LEVEL" to "strict"), manifest.guestTools.single().env)
+        assertEquals("docs", manifest.mcpServers.single().name)
+
+        assertRejected(ModTestKit.manifest {
+            put("contributes", JSONObject().put("guestTools", JSONArray().put(program("lint", JSONArray().put("node")))))
+        }, "must ask for guest.tools")
+        fun withTool(tool: JSONObject) = ModTestKit.manifest {
+            put("permissions", JSONArray().put(permission("guest.tools")))
+            put("contributes", JSONObject().put("guestTools", JSONArray().put(tool)))
+        }
+        assertRejected(withTool(program("Lint", JSONArray().put("node"))), "lowercase letters")
+        assertRejected(withTool(program("lint", JSONArray())), "list of 1 to 32 strings")
+        assertRejected(withTool(program("lint", JSONArray().put("/usr/bin/node"))), "not an absolute path")
+        assertRejected(withTool(program("lint", JSONArray().put("node").put("./../escape.js"))), "must be a file inside the mod")
+        assertRejected(withTool(program("lint", JSONArray().put("node"), JSONObject().put("LD_PRELOAD", "x"))), "not a name a mod may set")
+    }
+
+    @Test
+    fun `safe relative paths`() {
+        assertTrue(ModManifestParser.isSafeRelativePath("rules/a.md"))
+        listOf("", "/abs", "../up", "a/../b", "a//b", "a\\b", "a/./b", "nul\u0000").forEach {
+            assertFalse("\"$it\" must be unsafe", ModManifestParser.isSafeRelativePath(it))
+        }
+    }
+
+    @Test
+    fun `globs and the deny list`() {
+        assertTrue(ModPaths.matchesGlob("notes/*.md", "notes/log.md"))
+        assertFalse(ModPaths.matchesGlob("notes/*.md", "notes/sub/log.md"))
+        assertTrue(ModPaths.matchesGlob("notes/**", "notes/sub/log.md"))
+        assertTrue(ModPaths.matchesGlob("**/*.md", "log.md"))
+        listOf(".claude/settings.json", "CLAUDE.md", "AGENTS.md", "GEMINI.md", ".codex/config.toml", ".git/config",
+            ".github/workflows/ci.yml", "src/.gitattributes", ".mcp.json", ".mh/mods/x/mod.json").forEach {
+            if (ModPaths.alwaysDeniedReason(it) == null) fail("$it must be denied")
+        }
+        assertNull(ModPaths.alwaysDeniedReason("notes/log.md"))
+    }
+
+    @Test
+    fun `menu items run one of the mod's own commands`() {
+        fun withItems(vararg items: JSONObject) = ModTestKit.manifest {
+            put("contributes", JSONObject()
+                .put("slashCommands", JSONArray().put(JSONObject().put("name", "lint").put("description", "Lint").put("template", "Lint {{args}}")))
+                .put("menuItems", JSONArray(items.toList())))
+        }
+        fun item(id: String, place: String, command: String = "lint") = JSONObject().put("id", id).put("title", "Lint this").put("place", place).put("command", command)
+        val manifest = ModManifestParser.parse(withItems(item("lint-file", "file"), item("lint-chat", "chat", "/lint")))
+        assertEquals(listOf(ModMenuItem("lint-file", "Lint this", ModMenuPlace.FILE, "lint"), ModMenuItem("lint-chat", "Lint this", ModMenuPlace.CHAT, "lint")), manifest.menuItems)
+        assertRejected(withItems(item("x", "toolbar")), "chat, file or project")
+        assertRejected(withItems(item("x", "chat", "deploy")), "isn't one of the mod's slashCommands")
+        assertRejected(withItems(item("x", "chat"), item("x", "file")), "menu item id")
+        assertRejected(withItems(*Array(9) { item("i$it", "chat") }), "menuItems")
+    }
+
+    @Test
+    fun `schedules wake a hooks module at most every 15 minutes, three at most`() {
+        fun withSchedules(vararg schedules: JSONObject, permission: Boolean = true, hooks: Boolean = true) = ModTestKit.manifest {
+            if (hooks) put("hooks", JSONObject().put("module", "hooks/register.js"))
+            if (permission) put("permissions", JSONArray().put(permission("schedules")))
+            put("contributes", JSONObject().put("schedules", JSONArray(schedules.toList())))
+        }
+        fun schedule(id: String, minutes: Int) = JSONObject().put("id", id).put("everyMinutes", minutes)
+        val manifest = ModManifestParser.parse(withSchedules(schedule("sync", 15), schedule("daily", 1440).put("description", "Once a day")))
+        assertEquals(listOf(ModSchedule("sync", 15), ModSchedule("daily", 1440, "Once a day")), manifest.schedules)
+        assertRejected(withSchedules(schedule("fast", 5)), "15 to 1440")
+        assertRejected(withSchedules(schedule("x", 15), schedule("x", 30)), "schedule id")
+        assertRejected(withSchedules(*Array(4) { schedule("s$it", 15) }), "schedules")
+        assertRejected(withSchedules(schedule("x", 15), permission = false), "schedules permission")
+        assertRejected(withSchedules(schedule("x", 15), hooks = false), "hooks module")
+    }
+}

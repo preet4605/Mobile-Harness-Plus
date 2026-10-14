@@ -79,7 +79,11 @@ class AntigravityGatewayServer(
 
     private fun acceptLoop() {
         while (running.get()) {
-            runCatching { server.accept() }.getOrNull()?.let { socket ->
+            runCatching { server.accept() }.onFailure {
+                // A closed server ends the loop; any other accept error (out of descriptors) must not spin a core.
+                if (server.isClosed) return
+                Thread.sleep(GATEWAY_ACCEPT_RETRY_MS)
+            }.getOrNull()?.let { socket ->
                 socket.soTimeout = 30_000
                 socket.tcpNoDelay = true
                 if (!running.get()) {

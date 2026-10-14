@@ -10,10 +10,28 @@ import android.os.Build
 import android.os.Process
 import androidx.core.content.FileProvider
 import java.io.File
+import java.security.MessageDigest
 
 /** Installs a locally-built APK through Android's package manager, without ADB. */
 object AndroidAppInstaller {
-    fun install(context: Context, apk: File) {
+    /**
+     * Launches the app when this exact APK ([fingerprint]) is what Android still has installed,
+     * so an unchanged build needs no reinstall. Returns false when an install is needed.
+     */
+    fun openIfAlreadyInstalled(context: Context, apk: File, fingerprint: String): Boolean {
+        val packageName = archivePackageName(context, apk) ?: return false
+        val installedAt = installedUpdateTime(context, packageName) ?: return false
+        val remembered = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .getString(packageName, null) ?: return false
+        if (remembered != "$fingerprint@$installedAt") return false
+        return launch(context, packageName)
+    }
+
+    /**
+     * [fingerprint] (from [fingerprint]) is remembered when the install succeeds, which lets
+     * [openIfAlreadyInstalled] skip an identical reinstall later.
+     */
+    fun install(context: Context, apk: File, fingerprint: String? = null) {
         require(apk.isFile && apk.extension.equals("apk", ignoreCase = true) && apk.length() > 0L) {
             "A valid APK was not produced: ${apk.name}"
         }
@@ -55,6 +73,7 @@ object AndroidAppInstaller {
                     .setPackage(context.packageName)
                     .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
                     .putExtra(PackageInstaller.EXTRA_SESSION_ID, sessionId)
+                if (fingerprint != null) callback.putExtra(EXTRA_APK_FINGERPRINT, fingerprint)
                 val mutabilityFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     PendingIntent.FLAG_MUTABLE
                 } else {
@@ -73,7 +92,56 @@ object AndroidAppInstaller {
     }
 
     const val ACTION_INSTALL_RESULT = "com.jarves.mh.action.APK_INSTALL_RESULT"
+    const val EXTRA_APK_FINGERPRINT = "com.jarves.mh.extra.APK_FINGERPRINT"
+
+    /** Records which APK is now installed for [packageName], tied to this install's update time. */
+    internal fun rememberInstalled(context: Context, packageName: String, fingerprint: String) {
+        val installedAt = installedUpdateTime(context, packageName) ?: return
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .putString(packageName, "$fingerprint@$installedAt")
+            .apply()
+    }
+
+    internal fun launch(context: Context, packageName: String): Boolean = runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.packageManager.getLaunchIntentSenderForPackage(packageName).sendIntent(
+                context, 0, null, null, null,
+            )
+        } else {
+            val intent = context.packageManager.getLaunchIntentForPackage(packageName) ?: return false
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+        }
+        true
+    }.getOrDefault(false)
+
+    /** SHA-256 of the APK bytes. Reads the whole file, so call it off the main thread. */
+    fun fingerprint(apk: File): String = sha256Hex(apk)
+
+    private fun archivePackageName(context: Context, apk: File): String? =
+        context.packageManager.getPackageArchiveInfo(apk.absolutePath, 0)?.packageName
+
+    /** The package's last update time, which changes on every reinstall, or null when it is not installed. */
+    private fun installedUpdateTime(context: Context, packageName: String): Long? = runCatching {
+        context.packageManager.getPackageInfo(packageName, 0).lastUpdateTime
+    }.getOrNull()
+
+    private const val PREFERENCES = "installed_android_apks"
 
     private fun isMiuiDevice(): Boolean = android.os.Build.MANUFACTURER.lowercase() in
         setOf("xiaomi", "redmi", "poco")
+}
+
+internal fun sha256Hex(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().buffered().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
 }

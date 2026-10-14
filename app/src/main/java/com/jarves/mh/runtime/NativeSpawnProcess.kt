@@ -15,6 +15,7 @@ internal class NativeSpawnProcess private constructor(
     private val outputPump: Thread? = null,
     private val captureFailed: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(),
     private val capturePipe: File? = null,
+    private val onExit: () -> Unit = {},
 ) : Process() {
     val processPid: Int get() = pid
     @Volatile private var result: Int? = null
@@ -52,7 +53,9 @@ internal class NativeSpawnProcess private constructor(
             NativeSpawn.kill(pid, 9)
             closeStreams()
         }
-        return status.also { result = it }
+        result = status
+        runCatching { onExit() }
+        return status
     }
 
     override fun destroy() {
@@ -86,6 +89,12 @@ internal class NativeSpawnProcess private constructor(
 
     companion object {
         const val MAX_OUTPUT_BYTES: Long = 5L * 1024 * 1024 // 5 MB
+        /**
+         * Budget for streams read while they grow (agent sessions, terminals, builds). Their
+         * stream-json or build log easily passes 5 MB on a long task, and hitting the budget
+         * kills the whole process group; the file is deleted when the session ends.
+         */
+        const val STREAMING_OUTPUT_BYTES: Long = 128L * 1024 * 1024 // 128 MB
         const val MAX_ARG_STRLEN: Int = 131072 // Linux MAX_ARG_STRLEN (32 pages * 4096)
 
         fun validateArgv(argv: List<String>) {
@@ -104,6 +113,8 @@ internal class NativeSpawnProcess private constructor(
             pseudoTerminal: Boolean = false,
             ptyRows: Int = 40,
             ptyColumns: Int = 120,
+            onExit: () -> Unit = {},
+            maxOutputBytes: Long = MAX_OUTPUT_BYTES,
         ): NativeSpawnProcess {
             validateArgv(argv)
             outputFile.parentFile?.mkdirs()
@@ -118,6 +129,7 @@ internal class NativeSpawnProcess private constructor(
                 ).also { check(it.size == 3 && it[0] > 0) { "Native runtime launch failed" } }
             } catch (error: Throwable) {
                 pipe?.delete()
+                runCatching { onExit() }
                 outputFile.delete()
                 throw error
             }
@@ -128,7 +140,7 @@ internal class NativeSpawnProcess private constructor(
                     val source = if (pipe != null) FileInputStream(pipe) else
                         ParcelFileDescriptor.AutoCloseInputStream(ParcelFileDescriptor.adoptFd(spawned[2]))
                     source.use { stream -> FileOutputStream(outputFile, false).use { destination ->
-                        BoundedProcessCapture.copy(stream, destination, MAX_OUTPUT_BYTES) {
+                        BoundedProcessCapture.copy(stream, destination, maxOutputBytes) {
                             failed.set(true)
                             NativeSpawn.kill(spawned[0], 9)
                         }
@@ -138,7 +150,7 @@ internal class NativeSpawnProcess private constructor(
                     runCatching { NativeSpawn.kill(spawned[0], 9) }
                 } finally { pipe?.delete() }
             }, "pocket-runtime-output").apply { isDaemon = true; start() }
-            return NativeSpawnProcess(spawned[0], outputFile, input, pump, failed, pipe)
+            return NativeSpawnProcess(spawned[0], outputFile, input, pump, failed, pipe, onExit)
         }
 
         fun isPidAlive(targetPid: Int): Boolean {

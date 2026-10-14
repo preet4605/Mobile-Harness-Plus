@@ -1,5 +1,6 @@
 package com.jarves.mh.ui
 
+import android.content.Context
 import android.net.Uri
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -49,6 +50,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -59,11 +61,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -72,19 +76,34 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.NoteAdd
+import androidx.compose.material.icons.automirrored.outlined.Redo
+import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Android
 import androidx.compose.material.icons.outlined.ArrowBackIosNew
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Build
+import com.jarves.mh.runtime.AndroidBuildIssue
+import com.jarves.mh.runtime.androidBuildEstimateText
+import com.jarves.mh.runtime.formatBuildDuration
+import com.jarves.mh.runtime.typicalAndroidBuildMillis
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.History
@@ -92,20 +111,27 @@ import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Preview
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material.icons.rounded.Cancel
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.RemoveCircle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -113,6 +139,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
@@ -121,6 +148,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -140,6 +168,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -178,7 +207,14 @@ import com.jarves.mh.ui.kit.AlertAction
 import com.jarves.mh.ui.kit.AlertRole
 import com.jarves.mh.ui.kit.BannerKind
 import com.jarves.mh.ui.kit.BarHeight
-import com.jarves.mh.ui.kit.CappedTextScale
+import com.jarves.mh.model.WorkStatus
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.semantics.stateDescription
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import com.jarves.mh.ui.theme.glass.LocalLiquidGlassConfig
 import com.jarves.mh.ui.kit.EmptyState
 import com.jarves.mh.ui.kit.FloatingTabBar
 import com.jarves.mh.ui.kit.GlassMenu
@@ -222,6 +258,7 @@ import com.jarves.mh.ui.theme.PocketTransitions
 import com.jarves.mh.ui.theme.PocketType
 import com.jarves.mh.ui.theme.emphasized
 import com.jarves.mh.ui.theme.glass.BackdropSourceScope
+import com.jarves.mh.ui.theme.glass.CONTENT_RECAPTURE_INTERVAL_MS
 import com.jarves.mh.ui.theme.glass.GlassRoles
 import com.jarves.mh.ui.theme.glass.LiquidGlassLayers
 import com.jarves.mh.ui.theme.glass.LiquidGlassMaterial
@@ -237,6 +274,7 @@ import com.jarves.mh.ui.theme.sharedTitle
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 
 /** The project's four views, switched from the tab bar at the bottom or the menu on the title. */
@@ -245,16 +283,18 @@ internal enum class WorkspaceTab(val label: String, val icon: ImageVector) {
     FILES("Files", Icons.Outlined.Folder),
     TERMINAL("Terminal", Icons.Outlined.Terminal),
     PREVIEW("Preview", Icons.Outlined.Preview),
+    /** Shown only while a mod has a panel switched on for projects. */
+    MODS("Mods", Icons.Outlined.Extension),
 }
 
 /** The composer never gets shorter than this, so it stays an easy target while typing. */
 private val ComposerMinHeight = 52.dp
 
 /**
- * The workspace's floating bar, one row: a glass back button, the title centred between the edges
+ * The workspace's floating bar, one row: a glass back button, the title between the actions
  * with a second line under it, and glass actions on the right. Tapping the title ([onTitleClick])
  * opens the view menu. Content scrolls beneath the bar and softens into the canvas once anything
- * is underneath; the bar has no fill or hairline.
+ * is underneath; the title's reading region has an opaque canvas backing.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -273,10 +313,10 @@ private fun WorkspaceBar(
     titleAnchor: OverlayAnchor? = null,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
-    CappedTextScale {
+    run {
         val colors = PocketColors.current
         Box(modifier.fillMaxWidth()) {
-            ScrollEdgeEffect(Modifier.matchParentSize(), fromTop = true, scrim = 1.3f, strength = scrolled)
+            ScrollEdgeEffect(Modifier.matchParentSize(), fromTop = true, protectContent = true, strength = scrolled)
             Column(
                 Modifier
                     .fillMaxWidth()
@@ -286,13 +326,14 @@ private fun WorkspaceBar(
                 BarRow(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(BarHeight)
+                        .heightIn(min = BarHeight)
                         .padding(horizontal = ListInset),
                     leading = { GlassToolbarButton(Icons.Outlined.ArrowBackIosNew, backLabel, onBack) },
                     center = {
-                        // Wraps the title, so BarRow can centre it on the row.
+                        // The title owns the space remaining between the actions.
                         Column(
                             Modifier
+                                .heightIn(min = LiquidGlassTokens.MinTouchTarget)
                                 .then(if (titleAnchor != null) Modifier.overlayAnchor(titleAnchor) else Modifier)
                                 .then(
                                     if (onTitleClick != null || onTitleLongPress != null) {
@@ -301,6 +342,7 @@ private fun WorkspaceBar(
                                             indication = null,
                                             role = Role.Button,
                                             onClickLabel = "Change view",
+                                            onLongClickLabel = "Show conversation details",
                                             onLongClick = onTitleLongPress,
                                             onClick = { onTitleClick?.invoke() },
                                         )
@@ -309,6 +351,7 @@ private fun WorkspaceBar(
                                     },
                                 ),
                             horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
                         ) {
                             Text(
                                 title,
@@ -335,7 +378,6 @@ private fun WorkspaceBar(
                                         overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.weight(1f, fill = false).then(leadModifier),
                                     )
-                                    Text(" · $subtitle", style = PocketType.caption1, color = colors.secondaryLabel, maxLines = 1)
                                 } else {
                                     Text(
                                         subtitle,
@@ -363,8 +405,8 @@ private fun WorkspaceBar(
 
 /**
  * The bar's single row. Leading and trailing slots sit at the edges. The centre slot is always
- * centred on the row: both sides reserve the width of the wider edge slot, so the title never
- * drifts toward the narrower one, and it ellipsizes once it fills that balanced gap.
+ * centred between the action slots; it uses the actual available width and grows vertically
+ * with system text size.
  */
 @Composable
 private fun BarRow(
@@ -381,38 +423,21 @@ private fun BarRow(
         },
         modifier = modifier,
     ) { measurables, constraints ->
-        val loose = constraints.copy(minWidth = 0)
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
         val leadingPlaceable = measurables[0].measure(loose)
         val trailingPlaceable = measurables[2].measure(loose)
         val gap = PocketSpacing.sm.roundToPx()
         val width = constraints.maxWidth
-        val reserve = maxOf(leadingPlaceable.width, trailingPlaceable.width) + gap
-        val start = reserve
-        val end = width - reserve
+        val start = leadingPlaceable.width + gap
+        val end = width - trailingPlaceable.width - gap
         val centerPlaceable = measurables[1].measure(loose.copy(maxWidth = (end - start).coerceAtLeast(0)))
         val height = maxOf(leadingPlaceable.height, centerPlaceable.height, trailingPlaceable.height).coerceIn(constraints.minHeight, constraints.maxHeight)
-        val x = (width - centerPlaceable.width) / 2
+        val x = start + ((end - start - centerPlaceable.width) / 2).coerceAtLeast(0)
         layout(width, height) {
             leadingPlaceable.placeRelative(0, (height - leadingPlaceable.height) / 2)
             centerPlaceable.placeRelative(x, (height - centerPlaceable.height) / 2)
             trailingPlaceable.placeRelative(width - trailingPlaceable.width, (height - trailingPlaceable.height) / 2)
         }
-    }
-}
-
-/** A small accent capsule with a count, over the top end of a toolbar symbol. */
-@Composable
-private fun CountBadge(count: Int, modifier: Modifier = Modifier) {
-    Box(
-        modifier
-            .clearAndSetSemantics { }
-            .defaultMinSize(minWidth = 14.dp, minHeight = 14.dp)
-            .clip(PocketShape.capsule)
-            .background(MaterialTheme.colorScheme.primary)
-            .padding(horizontal = 3.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(if (count > 99) "99+" else "$count", style = PocketType.caption2.emphasized, color = Color.White)
     }
 }
 
@@ -423,6 +448,7 @@ private fun CountBadge(count: Int, modifier: Modifier = Modifier) {
  */
 @Composable
 private fun WorkspaceTabBar(
+    tabs: List<WorkspaceTab>,
     selected: WorkspaceTab,
     onSelect: (WorkspaceTab) -> Unit,
     onFootprint: (Dp) -> Unit,
@@ -443,12 +469,15 @@ private fun WorkspaceTabBar(
             Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = PocketSpacing.lg, vertical = PocketSpacing.sm),
+                .padding(horizontal = PocketSpacing.lg, vertical = PocketSpacing.xs),
         ) {
             FloatingTabBar(
-                tabs = WorkspaceTab.entries.map { TabItem(it.label, it.icon, badge = if (it == WorkspaceTab.FILES) changeCount else 0) },
-                selectedIndex = selected.ordinal,
-                onSelect = { onSelect(WorkspaceTab.entries[it]) },
+                tabs = tabs.map {
+                    TabItem(it.label, it.icon, badge = if (it == WorkspaceTab.FILES) changeCount else 0,
+                        badgeDescription = if (it == WorkspaceTab.FILES && changeCount > 0) "$changeCount files awaiting review" else null)
+                },
+                selectedIndex = tabs.indexOf(selected).coerceAtLeast(0),
+                onSelect = { onSelect(tabs[it]) },
                 modifier = Modifier.onGloballyPositioned { coordinates ->
                     val screen = coordinates.findRootCoordinates().size.height
                     onFootprint(with(density) { (screen - coordinates.positionInRoot().y).toDp() })
@@ -479,14 +508,10 @@ internal fun ReadOnlyProjectScreen(
     BackHandler(onBack = onBack)
     val project = state.readOnlyProject ?: return
     val activeChat = state.readOnlyProjectChats.firstOrNull { it.id == state.readOnlyChatId }
-    val listState = rememberLazyListState()
+    val listState = rememberChatListState(state.readOnlyChatId, state.readOnlyMessages.size, project.id)
     var showChats by rememberSaveable { mutableStateOf(false) }
     val chatsAnchor = rememberOverlayAnchor()
     val (barHeight, onBarSize) = rememberBarHeight()
-
-    LaunchedEffect(state.readOnlyChatId) {
-        if (state.readOnlyMessages.isNotEmpty()) listState.scrollToItem(state.readOnlyMessages.lastIndex)
-    }
 
     ChatsSheet(
         visible = showChats,
@@ -553,11 +578,29 @@ internal fun WorkspaceScreen(
     onBack: () -> Unit,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
+    onSteerFollowUp: (String) -> Unit = {},
+    onRemoveFollowUp: (String) -> Unit = {},
+    onComposerDraftConsumed: () -> Unit = {},
     onApproval: (Boolean) -> Unit,
     onRefreshFiles: () -> Unit,
     onOpenFile: (WorkspaceEntry) -> Unit,
     onInstallApk: (WorkspaceEntry) -> Unit = {},
+    onAndroidBuild: (AndroidBuildRequest) -> Unit = {},
+    onCancelAndroidBuild: () -> Unit = {},
+    onOpenAndroidBuildIssue: (AndroidBuildIssue) -> Unit = {},
     onCloseFile: () -> Unit,
+    onBeginFileEdit: () -> Unit = {},
+    onUpdateFileDraft: (String) -> Unit = {},
+    onCancelFileEdit: () -> Unit = {},
+    onSaveFile: () -> Unit = {},
+    onReloadFile: () -> Unit = {},
+    onDismissFileConflict: () -> Unit = {},
+    onCreateWorkspaceEntry: (String, String, Boolean) -> Unit = { _, _, _ -> },
+    onRenameWorkspaceEntry: (String, String) -> Unit = { _, _ -> },
+    onDeleteWorkspaceEntry: (String) -> Unit = {},
+    onUploadToWorkspace: (String, List<Uri>) -> Unit = { _, _ -> },
+    onShareWorkspaceFile: (String) -> Unit = {},
+    onSaveWorkspaceFileCopy: (String, Uri) -> Unit = { _, _ -> },
     onUndoChanges: () -> Unit,
     onKeepChanges: () -> Unit,
     onUndoFileChange: (String) -> Unit,
@@ -575,8 +618,9 @@ internal fun WorkspaceScreen(
     onTerminalClear: () -> Unit,
     onTerminalConfirm: () -> Unit,
     onTerminalCancel: () -> Unit,
+    onModConfirm: (Boolean) -> Unit = {},
     onUseSuggestedProjectRoot: () -> Unit,
-    onExportProject: (Uri) -> Unit,
+    onExportProject: (Uri, ExportSelection) -> Unit,
     onAddAttachments: (List<Uri>) -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onOpenAttachment: (ChatAttachment) -> Unit,
@@ -616,21 +660,63 @@ internal fun WorkspaceScreen(
 ) {
     BackHandler(onBack = onBack)
     val banner = rememberBanner()
+    // Selection mode and the chosen files survive process death while the save picker is open,
+    // so the export that follows writes what was picked.
+    val projectKey = state.activeProject?.id
+    var exportSelectionMode by rememberSaveable(projectKey) { mutableStateOf(false) }
+    var exportSelection by rememberSaveable(projectKey, stateSaver = ExportSelectionSaver) { mutableStateOf(ExportSelection()) }
+    // A finished export ends selection mode; one that finished before this screen appeared does not.
+    var seenExport by rememberSaveable { mutableStateOf(state.projectExportSucceededAtMillis) }
+    LaunchedEffect(state.projectExportSucceededAtMillis) {
+        if (state.projectExportSucceededAtMillis != seenExport) {
+            seenExport = state.projectExportSucceededAtMillis
+            exportSelectionMode = false
+            exportSelection = ExportSelection()
+        }
+    }
     val exportProjectLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip"),
-        onResult = { uri -> if (uri != null) onExportProject(uri) },
+        onResult = { uri -> if (uri != null) onExportProject(uri, exportSelection) },
     )
     val attachmentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
         onResult = onAddAttachments,
     )
+    // The folder an upload goes into and the file a copy is made of, saved across process death
+    // while the system picker is open.
+    var pendingUploadFolder by rememberSaveable { mutableStateOf<String?>(null) }
+    val uploadLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+        onResult = { uris ->
+            pendingUploadFolder?.let { folder -> if (uris.isNotEmpty()) onUploadToWorkspace(folder, uris) }
+            pendingUploadFolder = null
+        },
+    )
+    var pendingCopyPath by rememberSaveable { mutableStateOf<String?>(null) }
+    val saveCopyLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
+        onResult = { uri ->
+            val path = pendingCopyPath
+            if (uri != null && path != null) onSaveWorkspaceFileCopy(path, uri)
+            pendingCopyPath = null
+        },
+    )
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // Saved so the capture survives Android killing the app while the camera app is open.
+    var pendingPhotoUri by rememberSaveable { mutableStateOf<String?>(null) }
+    val takePhotoLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture(),
+        onResult = { saved ->
+            val uri = pendingPhotoUri?.let(Uri::parse)
+            pendingPhotoUri = null
+            if (saved && uri != null) onAddAttachments(listOf(uri))
+        },
+    )
     val chatItemCount = state.messages.size +
         (if (state.liveProcess.isNotEmpty() || state.liveThinking) 1 else 0) +
         (if (state.pendingApproval != null) 1 else 0)
     // Keyed by project and chat, so a chat opens on its newest message rather than on the first one.
-    val chatListState = key(state.activeProject?.id, state.activeChatId) {
-        rememberLazyListState(initialFirstVisibleItemIndex = (chatItemCount - 1).coerceAtLeast(0))
-    }
+    val chatListState = rememberChatListState(state.activeChatId, chatItemCount, state.activeProject?.id)
     val filesListState = rememberLazyListState()
     var userScrolledUp by rememberSaveable { mutableStateOf(false) }
 
@@ -640,7 +726,7 @@ internal fun WorkspaceScreen(
     }
 
     // When the user actively scrolls/touches the screen, detect if they scrolled up to read thinking/messages.
-    LaunchedEffect(chatListState.isScrollInProgress) {
+    LaunchedEffect(chatListState, chatListState.isScrollInProgress) {
         if (chatListState.isScrollInProgress) {
             if (chatListState.canScrollForward) {
                 userScrolledUp = true
@@ -655,6 +741,7 @@ internal fun WorkspaceScreen(
 
     // Follow new tokens/updates only when user is at the bottom and has not scrolled up to read.
     LaunchedEffect(
+        chatListState,
         state.messages.size,
         state.messages.lastOrNull()?.text?.length,
         state.liveProcess.size,
@@ -668,6 +755,9 @@ internal fun WorkspaceScreen(
     }
 
     var selectedTab by rememberSaveable { mutableStateOf(initialTab) }
+    val modPanes = rememberModPanesAvailable()
+    val tabs = remember(modPanes) { WorkspaceTab.entries.filter { it != WorkspaceTab.MODS || modPanes } }
+    if (selectedTab !in tabs) selectedTab = WorkspaceTab.CHAT
     var showChats by rememberSaveable { mutableStateOf(false) }
     var showViews by rememberSaveable { mutableStateOf(false) }
     val viewsAnchor = rememberOverlayAnchor()
@@ -717,7 +807,7 @@ internal fun WorkspaceScreen(
         PocketAlert(
             onDismiss = onTerminalCancel,
             title = "Run this command?",
-            message = "It can delete files, rewrite Git history, or change the project significantly.",
+            message = state.pendingTerminalReason ?: "It can delete files, rewrite Git history, or change the project significantly.",
             actions = listOf(
                 AlertAction("Cancel", AlertRole.Cancel, onClick = onTerminalCancel),
                 AlertAction("Run anyway", AlertRole.Destructive, onClick = onTerminalConfirm),
@@ -734,6 +824,17 @@ internal fun WorkspaceScreen(
                     .padding(PocketSpacing.md),
             )
         }
+    }
+    state.pendingModConfirm?.let { request ->
+        PocketAlert(
+            onDismiss = { onModConfirm(false) },
+            title = request.title,
+            message = "${request.modName}: ${request.reason}",
+            actions = listOf(
+                AlertAction("Cancel", AlertRole.Cancel, onClick = { onModConfirm(false) }),
+                AlertAction("Continue", AlertRole.Default, onClick = { onModConfirm(true) }),
+            ),
+        )
     }
     if (state.auxiliaryInspectorVisible) {
         AuxiliaryInspectorSheet(
@@ -853,7 +954,6 @@ internal fun WorkspaceScreen(
     }
 
     val engine = if (state.agentKind == AgentKind.ANTIGRAVITY) state.agentKind.title else state.provider.kind.title
-    val memoryCount = state.contextMemory.entries.size
 
     // An open file is pushed over the workspace and popped back to Files.
     AnimatedContent(
@@ -875,6 +975,15 @@ internal fun WorkspaceScreen(
                     content = held.openedFileContent,
                     loading = held.fileContentLoading,
                     onClose = closeFile,
+                    readOnlyReason = held.openedFileReadOnlyReason,
+                    edit = held.openedFileEdit,
+                    editingAllowed = !workspaceFilesBusy(state),
+                    onBeginEdit = onBeginFileEdit,
+                    onDraftChange = onUpdateFileDraft,
+                    onCancelEdit = onCancelFileEdit,
+                    onSave = onSaveFile,
+                    onReload = onReloadFile,
+                    onDismissConflict = onDismissFileConflict,
                 )
             } else {
                 Box(Modifier.fillMaxSize()) {
@@ -909,6 +1018,16 @@ internal fun WorkspaceScreen(
                                     onAttach = {
                                         attachmentLauncher.launch(arrayOf("*/*"))
                                     },
+                                    onTakePhoto = {
+                                        runCatching {
+                                            val uri = createCameraPhotoUri(context)
+                                            pendingPhotoUri = uri.toString()
+                                            takePhotoLauncher.launch(uri)
+                                        }.onFailure {
+                                            pendingPhotoUri = null
+                                            banner("No camera app is available", BannerKind.Error)
+                                        }
+                                    },
                                     onRemoveAttachment = onRemoveAttachment,
                                     onOpenAttachment = onOpenAttachment,
                                     onRunInTerminal = { command ->
@@ -921,6 +1040,8 @@ internal fun WorkspaceScreen(
                                     skills = state.filteredSkills,
                                     onPromptChanged = onPromptChanged,
                                     onOpenInspector = onOpenInspector,
+                                    onOpenMemoryViewer = onOpenMemoryViewer,
+                                    liveWorkStatus = if (state.isStopping) WorkStatus.STOPPING else state.liveWorkStatus,
                                     onOpenSkills = onOpenSkills,
                                     subagentsCount = state.subagents.count { it.state == SubagentState.RUNNING },
                                     tasksCount = state.backgroundTasks.count { it.status == BackgroundTaskStatus.RUNNING },
@@ -933,6 +1054,11 @@ internal fun WorkspaceScreen(
                                     loading = state.chatLoading,
                                     hasOlderMessages = state.olderMessageCount > 0,
                                     onLoadOlderMessages = onLoadOlderMessages,
+                                    queuedFollowUps = state.queuedFollowUps,
+                                    onSteerFollowUp = onSteerFollowUp,
+                                    onRemoveFollowUp = onRemoveFollowUp,
+                                    composerDraft = state.composerDraft,
+                                    onComposerDraftConsumed = onComposerDraftConsumed,
                                 )
                                 WorkspaceTab.FILES -> FilesTab(
                                     files = state.workspaceFiles,
@@ -941,9 +1067,37 @@ internal fun WorkspaceScreen(
                                     onRefresh = onRefreshFiles,
                                     onOpenFile = onOpenFile,
                                     onInstallApk = onInstallApk,
+                                    androidBuild = if (state.androidProjectDetected || state.androidBuildRunning) {
+                                        AndroidBuildUi(
+                                            running = state.androidBuildRunning,
+                                            cancelling = state.androidBuildCancelling,
+                                            message = state.androidBuildMessage,
+                                            failed = state.androidBuildFailed,
+                                            startedAtMillis = state.androidBuildStartedAtMillis,
+                                            typicalMillis = typicalAndroidBuildMillis(state.androidBuildRecentDurationsMillis),
+                                            issues = state.androidBuildIssues,
+                                        )
+                                    } else null,
+                                    onAndroidBuild = onAndroidBuild,
+                                    onCancelAndroidBuild = onCancelAndroidBuild,
+                                    onOpenAndroidBuildIssue = onOpenAndroidBuildIssue,
                                     onUseSuggestedProjectRoot = onUseSuggestedProjectRoot,
+                                    selectionMode = exportSelectionMode,
+                                    exportSelection = exportSelection,
+                                    exportRunning = state.projectExportRunning,
+                                    onEnterSelection = {
+                                        exportSelection = ExportSelection()
+                                        exportSelectionMode = true
+                                    },
+                                    onCancelSelection = {
+                                        exportSelectionMode = false
+                                        exportSelection = ExportSelection()
+                                    },
+                                    onSelectionChange = { exportSelection = it },
                                     onExport = {
-                                        exportProjectLauncher.launch("${state.activeProject?.slug ?: "project"}.zip")
+                                        runCatching {
+                                            exportProjectLauncher.launch("${state.activeProject?.slug ?: "project"}.zip")
+                                        }.onFailure { banner("No app can save the ZIP", BannerKind.Error) }
                                     },
                                     listState = filesListState,
                                     topClearance = top,
@@ -952,6 +1106,25 @@ internal fun WorkspaceScreen(
                                     onReviewChanges = { showChanges = true },
                                     onUndoChanges = onUndoChanges,
                                     onKeepChanges = onKeepChanges,
+                                    fileOpsEnabled = !workspaceFilesBusy(state),
+                                    onCreateEntry = onCreateWorkspaceEntry,
+                                    onRenameEntry = onRenameWorkspaceEntry,
+                                    onDeleteEntry = onDeleteWorkspaceEntry,
+                                    onUploadInto = { folder ->
+                                        pendingUploadFolder = folder
+                                        runCatching { uploadLauncher.launch(arrayOf("*/*")) }.onFailure {
+                                            pendingUploadFolder = null
+                                            banner("No app can pick files to upload", BannerKind.Error)
+                                        }
+                                    },
+                                    onShareFile = onShareWorkspaceFile,
+                                    onSaveFileCopy = { path ->
+                                        pendingCopyPath = path
+                                        runCatching { saveCopyLauncher.launch(path.substringAfterLast('/')) }.onFailure {
+                                            pendingCopyPath = null
+                                            banner("No app can save a copy", BannerKind.Error)
+                                        }
+                                    },
                                 )
                                 WorkspaceTab.TERMINAL -> Box(
                                     Modifier
@@ -993,7 +1166,20 @@ internal fun WorkspaceScreen(
                                         .windowInsetsPadding(bottomInsets)
                                         .clipToBounds(),
                                 ) {
-                                    PreviewTab(state.previewReady, state.previewUrl)
+                                    key(state.activeProject?.id, state.activeProject?.rootPath) {
+                                        PreviewTab(state.previewReady, state.previewUrl, state.activeProject)
+                                    }
+                                }
+                                WorkspaceTab.MODS -> Box(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .hostBackdropSource()
+                                        .background(MaterialTheme.colorScheme.background)
+                                        .padding(top = top)
+                                        .windowInsetsPadding(bottomInsets)
+                                        .clipToBounds(),
+                                ) {
+                                    ModWorkspacePanes()
                                 }
                             }
                         }
@@ -1009,20 +1195,9 @@ internal fun WorkspaceScreen(
                         working = state.isRunning,
                         titleAnchor = viewsAnchor,
                         onTitleClick = { showViews = true },
-                        onTitleLongPress = { banner(state.activeProject?.name.orEmpty(), BannerKind.Info) },
+                        onTitleLongPress = { banner("${activeChat?.title ?: "Chat"}\n${state.activeProject?.name.orEmpty()} · $engine", BannerKind.Info) },
                         actions = {
                             GlassToolbarGroup {
-                                Box {
-                                    GlassToolbarItem(
-                                        Icons.Outlined.Psychology,
-                                        if (memoryCount > 0) "Persistent memory, $memoryCount entries" else "Persistent memory",
-                                        onOpenMemoryViewer,
-                                        tint = if (memoryCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                    )
-                                    if (memoryCount > 0) {
-                                        CountBadge(memoryCount, Modifier.align(Alignment.TopEnd))
-                                    }
-                                }
                                 GlassToolbarItem(
                                     Icons.Outlined.Forum,
                                     "Project chats",
@@ -1033,6 +1208,7 @@ internal fun WorkspaceScreen(
                         },
                     )
                     WorkspaceTabBar(
+                        tabs = tabs,
                         selected = selectedTab,
                         onSelect = selectView,
                         onFootprint = { if (it != tabBarFootprint) tabBarFootprint = it },
@@ -1040,8 +1216,14 @@ internal fun WorkspaceScreen(
                         modifier = Modifier.align(Alignment.BottomCenter),
                     )
                     GlassMenu(expanded = showViews, onDismiss = { showViews = false }, anchor = viewsAnchor) {
-                        WorkspaceTab.entries.forEach { tab ->
-                            GlassMenuItem(tab.label, { selectView(tab) }, checked = tab == selectedTab)
+                        Column(Modifier.verticalScroll(rememberScrollState())) {
+                            Text(activeChat?.title ?: "Chat", Modifier.padding(horizontal = PocketSpacing.lg, vertical = PocketSpacing.sm), style = PocketType.headline)
+                            Text("${state.activeProject?.name.orEmpty()} · $engine", Modifier.padding(horizontal = PocketSpacing.lg, vertical = PocketSpacing.sm), style = PocketType.footnote, color = PocketColors.current.secondaryLabel)
+                            GlassMenuDivider()
+                            tabs.forEach { tab ->
+                                GlassMenuItem(tab.label, { selectView(tab) }, checked = tab == selectedTab)
+                            }
+                            ModMenuItems(com.jarves.mh.mods.ModMenuPlace.PROJECT)
                         }
                     }
                 }
@@ -1112,13 +1294,25 @@ private fun ChatsSheet(
     }
 }
 
-/** A file pushed over the workspace: Markdown rendered, anything else as numbered code lines. */
+/**
+ * A file pushed over the workspace: Markdown rendered, anything else as numbered code lines. Text
+ * files that can be edited switch to a monospaced editor; leaving it with unsaved changes asks first.
+ */
 @Composable
 private fun FileViewerScreen(
     filePath: String,
     content: String?,
     loading: Boolean,
     onClose: () -> Unit,
+    readOnlyReason: FileReadOnlyReason? = null,
+    edit: FileEditState? = null,
+    editingAllowed: Boolean = true,
+    onBeginEdit: () -> Unit = {},
+    onDraftChange: (String) -> Unit = {},
+    onCancelEdit: () -> Unit = {},
+    onSave: () -> Unit = {},
+    onReload: () -> Unit = {},
+    onDismissConflict: () -> Unit = {},
 ) {
     val fileName = filePath.substringAfterLast('/')
     val isMarkdown = fileName.substringAfterLast('.', "") == "md"
@@ -1129,7 +1323,53 @@ private fun FileViewerScreen(
     val (barHeight, onBarSize) = rememberBarHeight()
     val top = (barHeight ?: (largeTitleBarPadding() + PocketSpacing.sm)) + PocketSpacing.sm
     val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + PocketSpacing.xxl
-    val showsCode = !loading && content != null && !isMarkdown
+    val editing = edit != null
+    val showsCode = !loading && content != null && (!isMarkdown || editing)
+    val editorScroll = rememberScrollState()
+
+    // The editor keeps its own cursor and history; the draft text goes to the ViewModel.
+    var editorValue by remember(filePath, editing) { mutableStateOf(TextFieldValue(edit?.draft.orEmpty())) }
+    var undoHistory by remember(filePath, editing) { mutableStateOf(emptyList<TextFieldValue>()) }
+    var redoHistory by remember(filePath, editing) { mutableStateOf(emptyList<TextFieldValue>()) }
+    var confirmLeave by remember { mutableStateOf(false) }
+    fun applyEditorValue(next: TextFieldValue) {
+        editorValue = next
+        onDraftChange(next.text)
+    }
+    fun leaveEditor() {
+        if (edit?.dirty == true) confirmLeave = true else onCancelEdit()
+    }
+    BackHandler(enabled = editing) { leaveEditor() }
+
+    if (confirmLeave && edit != null) {
+        PocketAlert(
+            onDismiss = { confirmLeave = false },
+            title = "Unsaved changes",
+            message = "Save your changes to $fileName before leaving the editor?",
+            actions = listOf(
+                AlertAction("Save", enabled = editingAllowed && !edit.saving) {
+                    confirmLeave = false
+                    onSave()
+                },
+                AlertAction("Discard changes", AlertRole.Destructive) {
+                    confirmLeave = false
+                    onCancelEdit()
+                },
+                AlertAction("Keep editing", AlertRole.Cancel) { confirmLeave = false },
+            ),
+        )
+    }
+    if (edit?.conflict == true) {
+        PocketAlert(
+            onDismiss = onDismissConflict,
+            title = "File changed",
+            message = "$fileName changed outside the editor since you opened it. Reload it to see the newer version; your edits will be lost.",
+            actions = listOf(
+                AlertAction("Keep editing", AlertRole.Cancel, onClick = onDismissConflict),
+                AlertAction("Reload", AlertRole.Destructive, onClick = onReload),
+            ),
+        )
+    }
 
     Box(Modifier.fillMaxSize().background(if (showsCode) colors.codeSurface else MaterialTheme.colorScheme.background)) {
         when {
@@ -1137,13 +1377,64 @@ private fun FileViewerScreen(
                 ProgressRing(progress = null)
             }
             content == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                EmptyState(Icons.Outlined.Description, "No content", message = "The file could not be read.")
+                EmptyState(
+                    Icons.Outlined.Description,
+                    "No content",
+                    message = when (readOnlyReason) {
+                        FileReadOnlyReason.BINARY -> "Binary files can't be shown or edited."
+                        FileReadOnlyReason.UNSAFE -> "This file is protected or outside the project."
+                        else -> "The file could not be read."
+                    },
+                )
+            }
+            editing -> {
+                val lineCount = remember(editorValue.text) { editorValue.text.count { it == '\n' } + 1 }
+                val lineNumbers = remember(lineCount) { (1..lineCount).joinToString("\n") }
+                val horizontal = rememberScrollState()
+                Row(
+                    Modifier
+                        .fillMaxSize()
+                        .hostBackdropSource()
+                        .imePadding()
+                        .verticalScroll(editorScroll)
+                        .padding(top = top, bottom = bottom),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Text(
+                        lineNumbers,
+                        modifier = Modifier.width(42.dp).padding(start = PocketSpacing.sm, end = 6.dp),
+                        style = PocketType.code,
+                        color = colors.tertiaryLabel,
+                        textAlign = TextAlign.End,
+                    )
+                    Box(Modifier.weight(1f).horizontalScroll(horizontal)) {
+                        BasicTextField(
+                            value = editorValue,
+                            onValueChange = { next ->
+                                if (next.text != editorValue.text) {
+                                    undoHistory = boundedEditHistory(undoHistory + editorValue)
+                                    redoHistory = emptyList()
+                                }
+                                applyEditorValue(next)
+                            },
+                            enabled = !edit.saving,
+                            textStyle = PocketType.code.copy(color = MaterialTheme.colorScheme.onSurface),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+                            modifier = Modifier
+                                .widthIn(min = 600.dp)
+                                .padding(end = PocketSpacing.md)
+                                .semantics { contentDescription = "Contents of $fileName" },
+                        )
+                    }
+                }
             }
             isMarkdown -> LazyColumn(
                 modifier = Modifier.fillMaxSize().hostBackdropSource(),
                 state = listState,
                 contentPadding = PaddingValues(start = PocketSpacing.lg, top = top, end = PocketSpacing.lg, bottom = bottom),
             ) {
+                readOnlyNote(readOnlyReason)
                 item { MarkdownText(markdown = content, color = MaterialTheme.colorScheme.onSurface) }
             }
             else -> {
@@ -1153,6 +1444,7 @@ private fun FileViewerScreen(
                     state = listState,
                     contentPadding = PaddingValues(top = top, bottom = bottom),
                 ) {
+                    readOnlyNote(readOnlyReason, Modifier.padding(horizontal = PocketSpacing.lg))
                     items(lines.size) { idx ->
                         Row(Modifier.fillMaxWidth().padding(vertical = 1.dp), verticalAlignment = Alignment.Top) {
                             Text(
@@ -1176,24 +1468,104 @@ private fun FileViewerScreen(
         WorkspaceBar(
             title = fileName,
             subtitle = filePath,
-            onBack = onClose,
-            backLabel = "Close file",
-            scrolled = { if (listState.canScrollBackward) 1f else 0f },
+            onBack = { if (editing) leaveEditor() else onClose() },
+            backLabel = if (editing) "Stop editing" else "Close file",
+            scrolled = {
+                val scrolled = if (editing) editorScroll.value > 0 else listState.canScrollBackward
+                if (scrolled) 1f else 0f
+            },
             modifier = Modifier.onSizeChanged(onBarSize),
             actions = {
-                if (!content.isNullOrEmpty()) {
-                    GlassToolbarButton(
-                        Icons.Outlined.ContentCopy,
-                        "Copy file contents",
-                        {
-                            clipboard.setText(AnnotatedString(content))
-                            banner("Copied $fileName", BannerKind.Success)
-                        },
-                    )
+                if (edit != null) {
+                    GlassToolbarGroup {
+                        GlassToolbarItem(
+                            Icons.AutoMirrored.Outlined.Undo,
+                            "Undo",
+                            {
+                                undoHistory.lastOrNull()?.let { previous ->
+                                    undoHistory = undoHistory.dropLast(1)
+                                    redoHistory = boundedEditHistory(redoHistory + editorValue)
+                                    applyEditorValue(previous)
+                                }
+                            },
+                            enabled = undoHistory.isNotEmpty() && !edit.saving,
+                        )
+                        GlassToolbarItem(
+                            Icons.AutoMirrored.Outlined.Redo,
+                            "Redo",
+                            {
+                                redoHistory.lastOrNull()?.let { next ->
+                                    redoHistory = redoHistory.dropLast(1)
+                                    undoHistory = boundedEditHistory(undoHistory + editorValue)
+                                    applyEditorValue(next)
+                                }
+                            },
+                            enabled = redoHistory.isNotEmpty() && !edit.saving,
+                        )
+                    }
+                    if (edit.saving) {
+                        Box(Modifier.size(LiquidGlassTokens.MinTouchTarget), contentAlignment = Alignment.Center) {
+                            ProgressRing(progress = null, size = 20.dp, strokeWidth = 2.dp)
+                        }
+                    } else {
+                        GlassToolbarButton(
+                            Icons.Outlined.Check,
+                            "Save file",
+                            onSave,
+                            enabled = edit.dirty && editingAllowed,
+                            prominent = edit.dirty && editingAllowed,
+                        )
+                    }
+                } else {
+                    if (!content.isNullOrEmpty()) {
+                        GlassToolbarButton(
+                            Icons.Outlined.ContentCopy,
+                            "Copy file contents",
+                            {
+                                clipboard.setText(AnnotatedString(content))
+                                banner("Copied $fileName", BannerKind.Success)
+                            },
+                        )
+                    }
+                    if (!loading && content != null && readOnlyReason == null) {
+                        GlassToolbarButton(
+                            Icons.Outlined.Edit,
+                            "Edit file",
+                            onBeginEdit,
+                            enabled = editingAllowed,
+                        )
+                    }
                 }
             },
         )
     }
+}
+
+/** A footnote above a file that is shown but can't be edited, saying why. */
+private fun LazyListScope.readOnlyNote(reason: FileReadOnlyReason?, modifier: Modifier = Modifier) {
+    val text = when (reason) {
+        FileReadOnlyReason.TOO_LARGE -> "Files larger than 512 KB are shown in part and can't be edited."
+        FileReadOnlyReason.INVALID_UTF8 -> "This file isn't valid UTF-8 text, so it can't be edited."
+        else -> return
+    }
+    item(key = "read-only-note") {
+        Text(
+            text,
+            modifier = modifier.padding(bottom = PocketSpacing.sm),
+            style = PocketType.footnote,
+            color = PocketColors.current.secondaryLabel,
+        )
+    }
+}
+
+/** Undo steps kept by the editor: the newest ones, up to about two million characters in all. */
+private fun boundedEditHistory(history: List<TextFieldValue>): List<TextFieldValue> {
+    var total = 0L
+    val kept = history.asReversed().takeWhile { value ->
+        total += value.text.length
+        total <= 2_000_000L
+    }
+    return kept.asReversed().takeLast(100)
 }
 
 /** The project tree as a grouped list, with built APKs and a detected project folder above it. */
@@ -1205,6 +1577,10 @@ private fun FilesTab(
     onRefresh: () -> Unit,
     onOpenFile: (WorkspaceEntry) -> Unit,
     onInstallApk: (WorkspaceEntry) -> Unit = {},
+    androidBuild: AndroidBuildUi? = null,
+    onAndroidBuild: (AndroidBuildRequest) -> Unit = {},
+    onCancelAndroidBuild: () -> Unit = {},
+    onOpenAndroidBuildIssue: (AndroidBuildIssue) -> Unit = {},
     onUseSuggestedProjectRoot: () -> Unit,
     onExport: () -> Unit,
     listState: LazyListState,
@@ -1214,9 +1590,41 @@ private fun FilesTab(
     onReviewChanges: () -> Unit,
     onUndoChanges: () -> Unit,
     onKeepChanges: () -> Unit,
+    fileOpsEnabled: Boolean = true,
+    onCreateEntry: (parentPath: String, name: String, isDirectory: Boolean) -> Unit = { _, _, _ -> },
+    onRenameEntry: (path: String, newName: String) -> Unit = { _, _ -> },
+    onDeleteEntry: (path: String) -> Unit = {},
+    onUploadInto: (parentPath: String) -> Unit = {},
+    onShareFile: (path: String) -> Unit = {},
+    onSaveFileCopy: (path: String) -> Unit = {},
+    selectionMode: Boolean = false,
+    exportSelection: ExportSelection = ExportSelection(),
+    exportRunning: Boolean = false,
+    onEnterSelection: () -> Unit = {},
+    onCancelSelection: () -> Unit = {},
+    onSelectionChange: (ExportSelection) -> Unit = {},
 ) {
     val colors = PocketColors.current
     val accent = MaterialTheme.colorScheme.primary
+    val selectionMarks = remember(files, exportSelection, selectionMode) {
+        if (selectionMode) exportSelectionMarks(files, exportSelection) else emptyMap()
+    }
+    val anySelected = selectionMarks.values.any { it != SelectionMark.NONE }
+    val allSelected = files.isNotEmpty() && selectionMarks.values.all { it == SelectionMark.ALL }
+    var nameDialog by remember { mutableStateOf<EntryNameDialog?>(null) }
+    var deleteTarget by remember { mutableStateOf<WorkspaceEntry?>(null) }
+    var rootMenuOpen by remember { mutableStateOf(false) }
+    val rootMenuAnchor = rememberOverlayAnchor()
+    val entryActions = EntryActions(
+        enabled = fileOpsEnabled,
+        onNewFile = { parent -> nameDialog = EntryNameDialog.Create(parent, isDirectory = false) },
+        onNewFolder = { parent -> nameDialog = EntryNameDialog.Create(parent, isDirectory = true) },
+        onUpload = onUploadInto,
+        onRename = { entry -> nameDialog = EntryNameDialog.Rename(entry.path, entry.name) },
+        onDelete = { entry -> deleteTarget = entry },
+        onShare = { entry -> onShareFile(entry.path) },
+        onSaveCopy = { entry -> onSaveFileCopy(entry.path) },
+    )
     val apkFiles = remember(files) {
         files.filter { !it.isDirectory && it.name.endsWith(".apk", ignoreCase = true) }
             .sortedByDescending { it.sizeBytes }
@@ -1233,9 +1641,11 @@ private fun FilesTab(
             segments.take(depth).joinToString("/") in expandedSet
         }
     }
-    val directChildCounts = files.filter { candidate ->
-        candidate.path.contains('/')
-    }.groupingBy { candidate -> candidate.path.substringBeforeLast('/') }.eachCount()
+    val directChildCounts = remember(files) {
+        files.filter { candidate ->
+            candidate.path.contains('/')
+        }.groupingBy { candidate -> candidate.path.substringBeforeLast('/') }.eachCount()
+    }
     val bottom = bottomClearance + PocketSpacing.lg
 
     LazyColumn(
@@ -1270,6 +1680,11 @@ private fun FilesTab(
                 }
             }
         }
+        if (androidBuild != null) {
+            item(key = "android-build") {
+                AndroidBuildSection(androidBuild, onAndroidBuild, onCancelAndroidBuild, onOpenAndroidBuildIssue)
+            }
+        }
         if (apkFiles.isNotEmpty()) {
             item(key = "built-apks-card") {
                 ListSection(modifier = Modifier.padding(bottom = PocketSpacing.lg), header = "Built APKs") {
@@ -1293,12 +1708,32 @@ private fun FilesTab(
                 Modifier.fillMaxWidth().padding(start = ListInset, end = ListInset - PocketSpacing.sm),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (selectionMode) {
+                    SectionHeader("Select files to export", Modifier.weight(1f))
+                    SheetTextButton(
+                        if (allSelected) "Deselect all" else "Select all",
+                        { onSelectionChange(if (allSelected) ExportSelection.None else ExportSelection.All) },
+                        enabled = !exportRunning,
+                    )
+                    SheetTextButton("Cancel", onCancelSelection, enabled = !exportRunning)
+                    return@Row
+                }
                 SectionHeader("Files", Modifier.weight(1f))
                 if (expandedDirectories.isNotEmpty()) {
                     SheetTextButton("Collapse all", { expandedDirectories = emptyList() })
                 }
+                PocketIconButton(
+                    Icons.Outlined.Add,
+                    "New file or folder",
+                    { rootMenuOpen = true },
+                    modifier = Modifier.overlayAnchor(rootMenuAnchor),
+                    enabled = fileOpsEnabled,
+                )
+                GlassMenu(expanded = rootMenuOpen, onDismiss = { rootMenuOpen = false }, anchor = rootMenuAnchor) {
+                    FolderMenuItems(parentPath = "", actions = entryActions)
+                }
                 if (!loading && files.any { !it.isDirectory }) {
-                    PocketIconButton(Icons.Outlined.Download, "Export project as ZIP", onExport)
+                    PocketIconButton(Icons.Outlined.Download, "Export project as ZIP", onEnterSelection, enabled = fileOpsEnabled)
                 }
                 if (loading) {
                     Box(Modifier.size(LiquidGlassTokens.MinTouchTarget), contentAlignment = Alignment.Center) {
@@ -1325,35 +1760,313 @@ private fun FilesTab(
                 ),
                 separatorStart = ListInset + (entry.depth * 16).dp + 52.dp,
             ) {
+                val toggleExpanded = {
+                    expandedDirectories = if (entry.path in expandedSet) {
+                        expandedDirectories.filterNot { it == entry.path || it.startsWith("${entry.path}/") }
+                    } else {
+                        expandedDirectories + entry.path
+                    }
+                }
                 FileRow(
                     entry = entry,
                     expanded = entry.path in expandedSet,
                     childCount = directChildCounts[entry.path] ?: 0,
                     onClick = {
                         val isApk = !entry.isDirectory && entry.name.endsWith(".apk", ignoreCase = true)
-                        if (entry.isDirectory) {
-                            expandedDirectories = if (entry.path in expandedSet) {
-                                expandedDirectories.filterNot { it == entry.path || it.startsWith("${entry.path}/") }
-                            } else {
-                                expandedDirectories + entry.path
-                            }
+                        if (selectionMode) {
+                            if (!exportRunning) onSelectionChange(exportSelection.toggled(entry.path, entry.isDirectory))
+                        } else if (entry.isDirectory) {
+                            toggleExpanded()
                         } else if (isApk) {
                             onInstallApk(entry)
                         } else {
                             onOpenFile(entry)
                         }
                     },
+                    actions = if (selectionMode) null else entryActions,
+                    selection = if (selectionMode) selectionMarks[entry.path] ?: SelectionMark.NONE else null,
+                    onToggleExpanded = toggleExpanded,
+                )
+            }
+        }
+        if (selectionMode) {
+            item(key = "download-selection") {
+                PocketButton(
+                    if (exportRunning) "Creating ZIP…" else "Download ZIP",
+                    onExport,
+                    modifier = Modifier.padding(horizontal = ListInset).padding(top = PocketSpacing.lg),
+                    enabled = anySelected && !exportRunning && fileOpsEnabled,
+                    fullWidth = true,
                 )
             }
         }
     }
+    BackHandler(enabled = selectionMode && !exportRunning, onBack = onCancelSelection)
+
+    nameDialog?.let { dialog ->
+        EntryNameAlert(
+            dialog = dialog,
+            onDismiss = { nameDialog = null },
+            onConfirm = { name ->
+                nameDialog = null
+                when (dialog) {
+                    is EntryNameDialog.Create -> onCreateEntry(dialog.parentPath, name, dialog.isDirectory)
+                    is EntryNameDialog.Rename -> onRenameEntry(dialog.path, name)
+                }
+            },
+        )
+    }
+    deleteTarget?.let { entry ->
+        PocketAlert(
+            onDismiss = { deleteTarget = null },
+            title = "Delete ${entry.name}?",
+            message = if (entry.isDirectory) {
+                "This folder and everything in it will be permanently deleted."
+            } else {
+                "This file will be permanently deleted."
+            },
+            actions = listOf(
+                AlertAction("Cancel", AlertRole.Cancel) { deleteTarget = null },
+                AlertAction("Delete", AlertRole.Destructive) {
+                    deleteTarget = null
+                    onDeleteEntry(entry.path)
+                },
+            ),
+        )
+    }
 }
 
-/** One entry of the tree: a disclosure chevron for folders, indented by depth. */
+/** Keeps an [ExportSelection] in saved instance state. */
+private val ExportSelectionSaver = listSaver<ExportSelection, Any>(
+    save = { selection ->
+        listOf(
+            selection.defaultIncluded,
+            selection.skipBuildOutput,
+            ArrayList(selection.overrides.keys),
+            selection.overrides.values.toBooleanArray(),
+        )
+    },
+    restore = { saved ->
+        @Suppress("UNCHECKED_CAST")
+        val keys = saved[2] as List<String>
+        val values = saved[3] as BooleanArray
+        ExportSelection(
+            overrides = keys.zip(values.toList()).toMap(),
+            defaultIncluded = saved[0] as Boolean,
+            skipBuildOutput = saved[1] as Boolean,
+        )
+    },
+)
+
+/** What the Files tab's menus can do. Changes are disabled (not hidden) while [enabled] is false. */
+private class EntryActions(
+    val enabled: Boolean,
+    val onNewFile: (parentPath: String) -> Unit,
+    val onNewFolder: (parentPath: String) -> Unit,
+    val onUpload: (parentPath: String) -> Unit,
+    val onRename: (WorkspaceEntry) -> Unit,
+    val onDelete: (WorkspaceEntry) -> Unit,
+    val onShare: (WorkspaceEntry) -> Unit,
+    val onSaveCopy: (WorkspaceEntry) -> Unit,
+)
+
+private sealed interface EntryNameDialog {
+    data class Create(val parentPath: String, val isDirectory: Boolean) : EntryNameDialog
+    data class Rename(val path: String, val currentName: String) : EntryNameDialog
+}
+
+/** What the Files tab shows about the project's one-tap Android build. */
+internal data class AndroidBuildUi(
+    val running: Boolean,
+    val cancelling: Boolean,
+    val message: String?,
+    val failed: Boolean,
+    val startedAtMillis: Long? = null,
+    val typicalMillis: Long? = null,
+    val issues: List<AndroidBuildIssue> = emptyList(),
+)
+
+internal enum class AndroidBuildRequest { BUILD_AND_RUN, BUILD_ONLY, FORCE_REBUILD }
+
+private const val MAX_VISIBLE_BUILD_ISSUES = 8
+
+/** Build & run, Build only and Force rebuild for an Android Gradle project, with live progress and Cancel. */
 @Composable
-private fun FileRow(entry: WorkspaceEntry, expanded: Boolean, childCount: Int, onClick: () -> Unit) {
+private fun AndroidBuildSection(
+    build: AndroidBuildUi,
+    onBuild: (AndroidBuildRequest) -> Unit,
+    onCancel: () -> Unit,
+    onOpenIssue: (AndroidBuildIssue) -> Unit,
+) {
+    val colors = PocketColors.current
+    // A one-second clock only while a Gradle build is running and this section is on screen.
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(build.running, build.startedAtMillis) {
+        while (build.running && build.startedAtMillis != null) {
+            now = System.currentTimeMillis()
+            kotlinx.coroutines.delay(1_000L)
+        }
+    }
+    val elapsed = build.startedAtMillis?.let { (now - it).coerceAtLeast(0L) }
+    val progressText = when {
+        build.running && elapsed != null -> listOfNotNull(
+            "${formatBuildDuration(elapsed)} elapsed",
+            androidBuildEstimateText(running = true, elapsedMillis = elapsed, typicalMillis = build.typicalMillis),
+        ).joinToString(" · ")
+        else -> null
+    }
+    val usualText = androidBuildEstimateText(running = false, elapsedMillis = 0L, typicalMillis = build.typicalMillis)
+    ListSection(
+        modifier = Modifier.padding(bottom = PocketSpacing.lg),
+        header = "Android app",
+        footer = if (build.running) null else listOfNotNull(
+            usualText?.let { "$it per build." },
+            "Unchanged projects reuse the last APK. Force rebuild always runs Gradle.",
+        ).joinToString(" "),
+    ) {
+        if (build.running) {
+            ListRow(
+                build.message ?: "Building debug APK…",
+                subtitle = progressText,
+                leading = { ProgressRing(progress = null, size = 22.dp, strokeWidth = 2.5.dp) },
+                trailing = {
+                    PocketButton(
+                        if (build.cancelling) "Stopping…" else "Cancel",
+                        onCancel,
+                        style = PocketButtonStyle.Tinted,
+                        size = PocketButtonSize.Small,
+                        destructive = true,
+                        enabled = !build.cancelling,
+                    )
+                },
+            )
+        } else {
+            build.message?.let { message ->
+                ListRow(
+                    if (build.failed) "Build failed" else "Last build",
+                    subtitle = message,
+                    subtitleMaxLines = 6,
+                    subtitleColor = if (build.failed) colors.red else null,
+                    icon = if (build.failed) Icons.Outlined.Warning else Icons.Outlined.Check,
+                    iconTile = if (build.failed) colors.red else colors.green,
+                )
+            }
+            build.issues.take(MAX_VISIBLE_BUILD_ISSUES).forEach { issue ->
+                val location = issue.filePath?.let { path ->
+                    listOfNotNull(path, issue.line?.toString(), issue.column?.toString()).joinToString(":")
+                }
+                ListRow(
+                    location ?: issue.title,
+                    subtitle = if (location != null) "${issue.title}: ${issue.detail}" else issue.detail,
+                    subtitleMaxLines = 4,
+                    icon = Icons.Outlined.Description,
+                    iconTile = colors.orange,
+                    accessory = if (issue.filePath != null) ListRowAccessory.Chevron else ListRowAccessory.None,
+                    onClick = issue.filePath?.let { { onOpenIssue(issue) } },
+                )
+            }
+            if (build.issues.size > MAX_VISIBLE_BUILD_ISSUES) {
+                ListRow("${build.issues.size - MAX_VISIBLE_BUILD_ISSUES} more issues not shown", enabled = false)
+            }
+            ListRow(
+                "Build & run",
+                subtitle = "Build the debug APK, then install and open it",
+                icon = Icons.Outlined.PlayArrow,
+                iconTile = colors.green,
+                onClick = { onBuild(AndroidBuildRequest.BUILD_AND_RUN) },
+            )
+            ListRow(
+                "Build only",
+                subtitle = "Build the debug APK without installing it",
+                icon = Icons.Outlined.Build,
+                iconTile = colors.blue,
+                onClick = { onBuild(AndroidBuildRequest.BUILD_ONLY) },
+            )
+            ListRow(
+                "Force rebuild",
+                subtitle = "Run Gradle even if nothing changed",
+                icon = Icons.Outlined.Refresh,
+                iconTile = colors.orange,
+                onClick = { onBuild(AndroidBuildRequest.FORCE_REBUILD) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun FolderMenuItems(parentPath: String, actions: EntryActions) {
+    GlassMenuItem("New file", { actions.onNewFile(parentPath) }, icon = Icons.AutoMirrored.Outlined.NoteAdd, enabled = actions.enabled)
+    GlassMenuItem("New folder", { actions.onNewFolder(parentPath) }, icon = Icons.Outlined.CreateNewFolder, enabled = actions.enabled)
+    GlassMenuItem("Upload here", { actions.onUpload(parentPath) }, icon = Icons.Outlined.Upload, enabled = actions.enabled)
+}
+
+/** The actions for one entry of the tree, from its "…" button or a long press. */
+@Composable
+private fun EntryMenuItems(entry: WorkspaceEntry, actions: EntryActions) {
+    if (entry.isDirectory) {
+        FolderMenuItems(entry.path, actions)
+    } else {
+        GlassMenuItem("Share", { actions.onShare(entry) }, icon = Icons.Outlined.Share)
+        GlassMenuItem("Save a copy", { actions.onSaveCopy(entry) }, icon = Icons.Outlined.Download)
+    }
+    GlassMenuDivider()
+    GlassMenuItem("Rename", { actions.onRename(entry) }, icon = Icons.Outlined.DriveFileRenameOutline, enabled = actions.enabled)
+    GlassMenuItem("Delete", { actions.onDelete(entry) }, icon = Icons.Outlined.Delete, destructive = true, enabled = actions.enabled)
+    if (!entry.isDirectory) ModMenuItems(com.jarves.mh.mods.ModMenuPlace.FILE, entry.path.trim('/'))
+}
+
+/** Asks for the name of a new file or folder, or a new name for an entry. Problems show under the field. */
+@Composable
+private fun EntryNameAlert(dialog: EntryNameDialog, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    val initial = (dialog as? EntryNameDialog.Rename)?.currentName.orEmpty()
+    var name by remember(dialog) { mutableStateOf(initial) }
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(dialog) { runCatching { focusRequester.requestFocus() } }
+    val problem = if (name.isEmpty()) null else entryNameProblem(name)
+    val canConfirm = name.isNotEmpty() && problem == null && name != initial
+    val folder = when (dialog) {
+        is EntryNameDialog.Create -> dialog.parentPath
+        is EntryNameDialog.Rename -> dialog.path.substringBeforeLast('/', "")
+    }
+    PocketAlert(
+        onDismiss = onDismiss,
+        title = when (dialog) {
+            is EntryNameDialog.Create -> if (dialog.isDirectory) "New folder" else "New file"
+            is EntryNameDialog.Rename -> "Rename"
+        },
+        message = "In /$folder",
+        actions = listOf(
+            AlertAction("Cancel", AlertRole.Cancel, onClick = onDismiss),
+            AlertAction(if (dialog is EntryNameDialog.Rename) "Rename" else "Create", enabled = canConfirm) { onConfirm(name) },
+        ),
+    ) {
+        PocketTextField(
+            value = name,
+            onValueChange = { name = it },
+            placeholder = "Name",
+            error = problem,
+            keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { if (canConfirm) onConfirm(name) }),
+            focusRequester = focusRequester,
+        )
+    }
+}
+
+/** One entry of the tree: a disclosure chevron for folders, indented by depth, and a menu of actions. */
+@Composable
+private fun FileRow(
+    entry: WorkspaceEntry,
+    expanded: Boolean,
+    childCount: Int,
+    onClick: () -> Unit,
+    actions: EntryActions? = null,
+    selection: SelectionMark? = null,
+    onToggleExpanded: () -> Unit = {},
+) {
     val colors = PocketColors.current
     val isApk = !entry.isDirectory && entry.name.endsWith(".apk", ignoreCase = true)
+    var menuOpen by remember { mutableStateOf(false) }
+    val menuAnchor = rememberOverlayAnchor()
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val highlight by animateColorAsState(
@@ -1366,30 +2079,65 @@ private fun FileRow(entry: WorkspaceEntry, expanded: Boolean, childCount: Int, o
         Modifier
             .fillMaxWidth()
             .background(highlight)
-            .clickable(
+            .combinedClickable(
                 interactionSource = interaction,
                 indication = null,
                 role = Role.Button,
                 onClickLabel = when {
+                    selection != null -> if (selection == SelectionMark.ALL) "Leave out of the export" else "Include in the export"
                     entry.isDirectory -> if (expanded) "Collapse folder" else "Expand folder"
                     isApk -> "Install"
                     else -> "Open"
                 },
+                onLongClickLabel = if (actions != null) "More actions" else null,
+                onLongClick = if (actions != null) ({ menuOpen = true }) else null,
                 onClick = onClick,
             )
             .heightIn(min = LiquidGlassTokens.MinTouchTarget)
-            .padding(start = ListInset + (entry.depth * 16).dp, end = ListInset - 2.dp, top = 10.dp, bottom = 10.dp),
+            .padding(
+                start = ListInset + (entry.depth * 16).dp,
+                end = if (actions != null) PocketSpacing.xs else ListInset - 2.dp,
+                top = if (actions != null) 6.dp else 10.dp,
+                bottom = if (actions != null) 6.dp else 10.dp,
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (selection != null) {
+            Icon(
+                when (selection) {
+                    SelectionMark.ALL -> Icons.Rounded.CheckCircle
+                    SelectionMark.SOME -> Icons.Rounded.RemoveCircle
+                    SelectionMark.NONE -> Icons.Outlined.Circle
+                },
+                contentDescription = when (selection) {
+                    SelectionMark.ALL -> "Selected"
+                    SelectionMark.SOME -> "Partly selected"
+                    SelectionMark.NONE -> "Not selected"
+                },
+                tint = if (selection == SelectionMark.NONE) colors.tertiaryLabel else MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp),
+            )
+            Spacer(Modifier.width(PocketSpacing.sm))
+        }
         if (entry.isDirectory) {
             Icon(
                 Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                contentDescription = null,
+                contentDescription = if (selection != null) (if (expanded) "Collapse folder" else "Expand folder") else null,
                 tint = colors.tertiaryLabel,
-                modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = chevron },
+                modifier = Modifier
+                    .then(
+                        // While selecting, a tap on the row selects; the chevron still opens the folder.
+                        if (selection != null) {
+                            Modifier.clip(CircleShape).clickable(role = Role.Button, onClick = onToggleExpanded).padding(PocketSpacing.xs)
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .size(18.dp)
+                    .graphicsLayer { rotationZ = chevron },
             )
         } else {
-            Spacer(Modifier.width(18.dp))
+            Spacer(Modifier.width(if (selection != null) 18.dp + PocketSpacing.xs * 2 else 18.dp))
         }
         Spacer(Modifier.width(PocketSpacing.xs))
         Icon(
@@ -1423,13 +2171,33 @@ private fun FileRow(entry: WorkspaceEntry, expanded: Boolean, childCount: Int, o
             if (isApk) {
                 Spacer(Modifier.width(PocketSpacing.sm))
                 Text("Install", style = PocketType.footnote.emphasized, color = colors.green)
-            } else {
+            } else if (actions == null && selection == null) {
                 Icon(
                     Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                     contentDescription = null,
                     tint = colors.tertiaryLabel,
                     modifier = Modifier.size(18.dp),
                 )
+            }
+        }
+        if (actions != null) {
+            Box(
+                Modifier
+                    .overlayAnchor(menuAnchor)
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .clickable(role = Role.Button, onClickLabel = "More actions for ${entry.name}") { menuOpen = true },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.MoreHoriz,
+                    contentDescription = "More actions for ${entry.name}",
+                    tint = colors.secondaryLabel,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            GlassMenu(expanded = menuOpen, onDismiss = { menuOpen = false }, anchor = menuAnchor) {
+                EntryMenuItems(entry, actions)
             }
         }
     }
@@ -1491,6 +2259,7 @@ private fun ChatTab(
     onRemoveAttachment: (String) -> Unit,
     onOpenAttachment: (ChatAttachment) -> Unit,
     onRunInTerminal: (String) -> Unit,
+    onTakePhoto: () -> Unit = {},
     readOnly: Boolean = false,
     readOnlyBlocked: Boolean = false,
     loading: Boolean = false,
@@ -1500,7 +2269,9 @@ private fun ChatTab(
     skills: List<SkillInfo> = emptyList(),
     onPromptChanged: (String) -> Unit = {},
     onOpenInspector: () -> Unit = {},
+    onOpenMemoryViewer: () -> Unit = {},
     onOpenSkills: () -> Unit = {},
+    liveWorkStatus: WorkStatus = WorkStatus.WORKING,
     subagentsCount: Int = 0,
     tasksCount: Int = 0,
     mentionMenuVisible: Boolean = false,
@@ -1511,6 +2282,11 @@ private fun ChatTab(
     bottomBarClearance: Dp = 0.dp,
     hasOlderMessages: Boolean = false,
     onLoadOlderMessages: () -> Unit = {},
+    queuedFollowUps: List<QueuedFollowUp> = emptyList(),
+    onSteerFollowUp: (String) -> Unit = {},
+    onRemoveFollowUp: (String) -> Unit = {},
+    composerDraft: String? = null,
+    onComposerDraftConsumed: () -> Unit = {},
 ) {
     val view = LocalView.current
     // Keep the screen on while the selected agent is working in this chat. Released automatically
@@ -1526,9 +2302,15 @@ private fun ChatTab(
         inputState = value
         onPromptChanged(value.text)
     }
+    // A mod's prompt.draft: it fills only an empty composer and is never sent by itself.
+    LaunchedEffect(composerDraft) {
+        val draft = composerDraft ?: return@LaunchedEffect
+        if (inputState.text.isBlank()) setInput(TextFieldValue(draft, selection = TextRange(draft.length)))
+        onComposerDraftConsumed()
+    }
     val chatScope = rememberCoroutineScope()
     // True while the newest item (message, live panel, or approval card) is on screen.
-    val readerAtBottom by remember {
+    val readerAtBottom by remember(listState) {
         derivedStateOf {
             !listState.canScrollForward
         }
@@ -1539,10 +2321,16 @@ private fun ChatTab(
     val colors = PocketColors.current
     // Programmatic scrolls (Latest, auto-follow) dispatch no nested scroll, so recapture the shared
     // backdrop whenever the scroll position moves; the source throttles the actual captures.
+    // Auto-follow moves the list on every streamed update; outside an animated scroll those
+    // moves recapture at the content rate instead of re-blurring every glass surface each chunk.
     LaunchedEffect(listState, backdrop) {
         if (backdrop == null) return@LaunchedEffect
         snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
-            .collect { backdrop.requestCapture() }
+            .conflate()
+            .collect {
+                backdrop.requestCapture()
+                if (!listState.isScrollInProgress) delay(CONTENT_RECAPTURE_INTERVAL_MS)
+            }
     }
     // Older messages stay on disk until the reader nears the top. Rows are keyed, so the list keeps the row on screen
     // in place as older ones arrive above it. Restarting on each new row asks again if the reader is still near the top.
@@ -1621,14 +2409,14 @@ private fun ChatTab(
                     }
                 }
             }
-            if (liveProcess.isNotEmpty() || thinkingActive) {
+            if (isRunning || liveProcess.isNotEmpty() || thinkingActive) {
                 item(key = "live-claude-process") {
                     LiveClaudeProcess(
                         processItems = liveProcess,
                         isRunning = isRunning,
                         startedAtMillis = taskStartedAtMillis,
                         finishedAtMillis = taskFinishedAtMillis,
-                        thinkingActive = thinkingActive,
+                        status = liveWorkStatus,
                     )
                 }
             }
@@ -1684,11 +2472,30 @@ private fun ChatTab(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .then(bottomChromeModifier)
-                    .padding(start = PocketSpacing.lg, top = PocketSpacing.sm, end = PocketSpacing.lg, bottom = PocketSpacing.sm),
+                    .padding(start = PocketSpacing.lg, top = PocketSpacing.xs, end = PocketSpacing.lg, bottom = PocketSpacing.xs),
                 verticalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 if (activeCount > 0) ActivityCapsule(activeCount, onOpenInspector)
+                if (queuedFollowUps.isNotEmpty()) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 180.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(PocketSpacing.xs),
+                    ) {
+                        queuedFollowUps.forEach { followUp ->
+                            key(followUp.id) {
+                                QueuedFollowUpCard(
+                                    followUp = followUp,
+                                    onSteer = { onSteerFollowUp(followUp.id) },
+                                    onRemove = { onRemoveFollowUp(followUp.id) },
+                                )
+                            }
+                        }
+                    }
+                }
                 if (pendingAttachments.isNotEmpty()) {
                     Row(
                         Modifier
@@ -1706,12 +2513,23 @@ private fun ChatTab(
                     }
                 }
 
+                ModProjectStrip()
+
                 if (slashCommandsVisible) {
                     SlashCommandMenu(
                         commands = slashCommands,
                         skills = skills,
                         onSelect = { cmd ->
-                            if (cmd.isLocalOnly && cmd.parameterHint == null) {
+                            val template = cmd.insertText
+                            if (template != null) {
+                                // A mod's prompt template: its text replaces the "/query" segment.
+                                val currentText = inputState.text
+                                val cursorPos = inputState.selection.end
+                                val slashIdx = currentText.lastIndexOf('/', cursorPos)
+                                val before = if (slashIdx >= 0) currentText.substring(0, slashIdx) else currentText
+                                val after = if (slashIdx >= 0) currentText.substring(cursorPos) else ""
+                                setInput(TextFieldValue(text = before + template + after, selection = TextRange(before.length + template.length)))
+                            } else if (cmd.isLocalOnly && cmd.parameterHint == null) {
                                 // Local instant commands: dispatch immediately and clear input
                                 onSend(cmd.syntax)
                                 setInput(TextFieldValue(""))
@@ -1789,7 +2607,7 @@ private fun ChatTab(
                     isRunning = isRunning,
                     isStopping = isStopping,
                     canSend = inputState.text.isNotBlank() || pendingAttachments.isNotEmpty(),
-                    attachEnabled = !isRunning && pendingAttachments.size < 5,
+                    attachEnabled = pendingAttachments.size < 5,
                     hasAttachments = pendingAttachments.isNotEmpty(),
                     activeCount = activeCount,
                     onSend = {
@@ -1798,12 +2616,14 @@ private fun ChatTab(
                     },
                     onStop = onStop,
                     onAttach = onAttach,
+                    onTakePhoto = onTakePhoto,
                     onToggleCommands = {
                         val newText = if (inputState.text.startsWith("/")) "" else "/"
                         setInput(TextFieldValue(newText, TextRange(newText.length)))
                     },
                     onOpenSkills = onOpenSkills,
                     onOpenInspector = onOpenInspector,
+                    onOpenMemoryViewer = onOpenMemoryViewer,
                 )
             }
         }
@@ -1828,9 +2648,11 @@ private fun Composer(
     onSend: () -> Unit,
     onStop: () -> Unit,
     onAttach: () -> Unit,
+    onTakePhoto: () -> Unit,
     onToggleCommands: () -> Unit,
     onOpenSkills: () -> Unit,
     onOpenInspector: () -> Unit,
+    onOpenMemoryViewer: () -> Unit,
 ) {
     val colors = PocketColors.current
     val accent = MaterialTheme.colorScheme.primary
@@ -1874,7 +2696,7 @@ private fun Composer(
                     onValueChange = onInputChange,
                     modifier = Modifier
                         .weight(1f)
-                        .padding(vertical = 15.dp)
+                        .padding(vertical = PocketSpacing.md)
                         .heightIn(min = 22.dp, max = 132.dp),
                     minLines = 1,
                     maxLines = 6,
@@ -1897,7 +2719,7 @@ private fun Composer(
                     },
                 )
                 Spacer(Modifier.width(PocketSpacing.xs))
-                Box(Modifier.padding(vertical = PocketSpacing.xs)) {
+                Row(Modifier.padding(vertical = PocketSpacing.xxs)) {
                     if (isRunning) {
                         ComposerActionButton(
                             contentDescription = "Stop AI task",
@@ -1910,9 +2732,11 @@ private fun Composer(
                                 Icon(Icons.Outlined.Stop, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                             }
                         }
-                    } else {
+                    }
+                    // While a task runs, Send appears beside Stop once there is something to queue.
+                    if (!isRunning || canSend) {
                         ComposerActionButton(
-                            contentDescription = "Send",
+                            contentDescription = if (isRunning) "Queue follow-up" else "Send",
                             container = if (canSend) accent else colors.secondaryFill,
                             enabled = canSend,
                             onClick = onSend,
@@ -1920,7 +2744,7 @@ private fun Composer(
                             Icon(
                                 Icons.Outlined.ArrowUpward,
                                 contentDescription = null,
-                                tint = if (canSend) Color.White else colors.secondaryLabel,
+                                tint = if (canSend) MaterialTheme.colorScheme.onPrimary else colors.secondaryLabel,
                                 modifier = Modifier.size(20.dp),
                             )
                         }
@@ -1930,15 +2754,18 @@ private fun Composer(
         }
     }
     GlassMenu(expanded = toolsOpen, onDismiss = { toolsOpen = false }, anchor = toolsAnchor) {
+        GlassMenuItem("Take photo", onTakePhoto, icon = Icons.Outlined.PhotoCamera, enabled = attachEnabled)
         GlassMenuItem("Attach files", onAttach, icon = Icons.Outlined.AttachFile, enabled = attachEnabled)
         GlassMenuItem("Commands", onToggleCommands, icon = Icons.Outlined.Code)
         GlassMenuItem("Skills", onOpenSkills, icon = Icons.Outlined.AutoAwesome)
+        GlassMenuItem("Memory", onOpenMemoryViewer, icon = Icons.Outlined.Psychology)
         GlassMenuDivider()
         GlassMenuItem(if (activeCount > 0) "Activity · $activeCount running" else "Activity", onOpenInspector, icon = Icons.Outlined.Layers)
+        ModMenuItems(com.jarves.mh.mods.ModMenuPlace.CHAT)
     }
 }
 
-/** A 34 dp filled circle inside a 44 dp touch area that dips slightly while pressed. */
+/** A compact filled circle inside an Android-sized touch area. */
 @Composable
 private fun ComposerActionButton(
     contentDescription: String,
@@ -1976,6 +2803,52 @@ private fun ComposerActionButton(
                 .clearAndSetSemantics { },
             contentAlignment = Alignment.Center,
         ) { content() }
+    }
+}
+
+/** A follow-up waiting for the running task: Steer runs it next (stopping the task), the cross removes it. */
+@Composable
+private fun QueuedFollowUpCard(
+    followUp: QueuedFollowUp,
+    onSteer: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    val colors = PocketColors.current
+    LiquidGlassSurface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = PocketShape.lg,
+        layerSource = LiquidGlassLayers.Background,
+        role = GlassRoles.Composer,
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = LiquidGlassTokens.MinTouchTarget)
+                .padding(start = PocketSpacing.md, end = PocketSpacing.xs, top = PocketSpacing.xs, bottom = PocketSpacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
+        ) {
+            SymbolTile(Icons.Outlined.Schedule, colors.gray, size = 28.dp)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    followUp.prompt.ifBlank { "Attached files" },
+                    style = PocketType.subheadline,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (followUp.attachments.isNotEmpty()) {
+                    val count = followUp.attachments.size
+                    Text(
+                        "$count attachment${if (count == 1) "" else "s"}",
+                        style = PocketType.caption2,
+                        color = colors.secondaryLabel,
+                    )
+                }
+            }
+            PocketButton("Steer", onSteer, style = PocketButtonStyle.Tinted, size = PocketButtonSize.Small)
+            PocketIconButton(Icons.Rounded.Cancel, "Remove queued follow-up", onRemove, tint = colors.tertiaryLabel, iconSize = 18.dp)
+        }
     }
 }
 
@@ -2051,69 +2924,53 @@ private fun LiveClaudeProcess(
     processItems: List<ActivityItem>,
     isRunning: Boolean,
     startedAtMillis: Long?,
-    @Suppress("UNUSED_PARAMETER") finishedAtMillis: Long?,
-    thinkingActive: Boolean,
+    finishedAtMillis: Long?,
+    status: WorkStatus,
 ) {
-    val elapsedSeconds = startedAtMillis?.let { rememberLiveElapsedSeconds(it).toLong() } ?: 0L
-    ClaudeActivityDisclosure(
-        items = processItems,
-        headline = activityHeadline(processItems, elapsedSeconds, thinkingActive),
-        isRunning = isRunning,
-    )
-}
-
-@Composable
-private fun WorkBlockCard(message: ChatMessage) {
-    val seconds = (message.workedMillis / 1_000L).coerceAtLeast(1L)
-    Column {
+    val elapsedSeconds = rememberLiveElapsedSeconds(startedAtMillis, finishedAtMillis, isRunning)
+    key(startedAtMillis) {
         ClaudeActivityDisclosure(
-            items = message.workItems,
-            headline = activityHeadline(message.workItems, seconds, message.workItems.isEmpty()),
+            items = processItems,
+            headline = "${if (isRunning) status.label else "View activity"} · ${formatDuration(elapsedSeconds)}",
+            isRunning = isRunning && status !in setOf(WorkStatus.WAITING_FOR_INPUT, WorkStatus.WAITING_FOR_APPROVAL),
+            liveDetail = processItems.lastOrNull()?.takeIf { isRunning && status == WorkStatus.WORKING }?.let(::compactActivityText),
         )
-        if (message.workItems.lastOrNull()?.title?.startsWith("Task stopped") == true) {
-            Text(
-                text = "Worked for ${formatDuration(seconds)}",
-                modifier = Modifier.padding(start = 29.dp, bottom = 6.dp),
-                style = PocketType.footnote,
-                color = PocketColors.current.secondaryLabel,
-            )
-        }
     }
 }
 
 @Composable
-private fun ClaudeActivityDisclosure(
+private fun WorkBlockCard(message: ChatMessage) {
+    ClaudeActivityDisclosure(items = message.workItems, headline = workBlockHeadline(message))
+}
+
+@Composable
+internal fun ClaudeActivityDisclosure(
     items: List<ActivityItem>,
     headline: String,
     isRunning: Boolean = false,
+    liveDetail: String? = null,
 ) {
-    var expandedItems by rememberSaveable { mutableStateOf(emptyList<Int>()) }
-    Column(Modifier.fillMaxWidth().padding(horizontal = PocketSpacing.xs, vertical = 6.dp)) {
-        if (items.isEmpty()) {
-            ActivitySummaryRow(
-                item = null,
-                text = headline,
-                expanded = 0 in expandedItems,
-                showProgress = isRunning,
-                onToggle = {
-                    expandedItems = if (0 in expandedItems) expandedItems - 0 else expandedItems + 0
-                },
-            )
-            ActivityDetailReveal(visible = 0 in expandedItems) {
-                ActivityExpandedDetail(null, "Reviewing the request and planning the next action.")
-            }
-        } else {
-            items.forEachIndexed { index, item ->
-                ActivitySummaryRow(
-                    item = item,
-                    text = compactActivityText(item),
-                    expanded = index in expandedItems,
-                    showProgress = isRunning && !item.isComplete,
-                    onToggle = {
-                        expandedItems = if (index in expandedItems) expandedItems - index else expandedItems + index
-                    },
-                )
-                ActivityDetailReveal(visible = index in expandedItems) {
+    // One disclosure per stable chat message: appending/trimming events cannot move expansion.
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    var visibleCount by rememberSaveable { mutableIntStateOf(32) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = PocketSpacing.xs, vertical = PocketSpacing.xs)) {
+        ActivitySummaryRow(
+            item = items.lastOrNull(), text = headline, expanded = expanded,
+            showProgress = isRunning, onToggle = { expanded = !expanded },
+        )
+        if (!expanded && liveDetail != null) {
+            Text(liveDetail, Modifier.padding(start = 24.dp, bottom = PocketSpacing.xs), style = PocketType.footnote,
+                color = PocketColors.current.secondaryLabel, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        ActivityDetailReveal(visible = expanded) {
+            Column {
+                if (items.isEmpty()) ActivityExpandedDetail(null, "Reviewing the request and planning the next action.")
+                if (items.size > visibleCount) {
+                    PocketButton("Show earlier activity (${items.size - visibleCount})", { visibleCount += 32 }, style = PocketButtonStyle.Plain)
+                }
+                items.takeLast(visibleCount).forEach { item ->
+                    Text(activityName(item), Modifier.padding(start = 24.dp, top = PocketSpacing.sm, bottom = PocketSpacing.xs),
+                        style = PocketType.footnote.emphasized, color = PocketColors.current.secondaryLabel)
                     ActivityExpandedDetail(item, activityDetail(item))
                 }
             }
@@ -2124,6 +2981,10 @@ private fun ClaudeActivityDisclosure(
 /** Expanded activity detail grows open and folds shut on a spring instead of popping in. */
 @Composable
 private fun ActivityDetailReveal(visible: Boolean, content: @Composable () -> Unit) {
+    if (LocalLiquidGlassConfig.current.reduceMotion) {
+        if (visible) content()
+        return
+    }
     AnimatedVisibility(
         visible = visible,
         enter = expandVertically(PocketMotion.spec(Token.Smooth, IntSize.VisibilityThreshold)) + fadeIn(PocketMotion.spec(Token.Quick)),
@@ -2136,6 +2997,11 @@ internal fun AnimatedThinkingDots(
     modifier: Modifier = Modifier,
     dotColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
 ) {
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
+    if (LocalLiquidGlassConfig.current.reduceMotion || !lifecycleState.isAtLeast(Lifecycle.State.STARTED)) {
+        Text("…", modifier, color = dotColor, style = PocketType.footnote)
+        return
+    }
     val transition = rememberInfiniteTransition(label = "thinking_dots")
     // Each dot lifts and brightens in turn, 180 ms apart, then rests until the next cycle.
     val offsets = listOf(0, 180, 360).map { delayMillis ->
@@ -2208,6 +3074,7 @@ private fun ActivitySummaryRow(
     Row(
         Modifier
             .fillMaxWidth()
+            .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" }
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -2215,13 +3082,13 @@ private fun ActivitySummaryRow(
                 onClickLabel = if (expanded) "Collapse activity" else "Expand activity",
                 onClick = onToggle,
             )
-            .heightIn(min = 32.dp)
-            .padding(vertical = 6.dp),
+            .heightIn(min = LiquidGlassTokens.MinTouchTarget)
+            .padding(vertical = PocketSpacing.xs),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(activityIcon(item), contentDescription = null, modifier = Modifier.size(16.dp), tint = muted)
-        Spacer(Modifier.width(9.dp))
-        Text(text, Modifier.weight(1f), style = PocketType.footnote, color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.width(PocketSpacing.sm))
+        Text(text, Modifier.weight(1f), style = PocketType.footnote, color = muted)
         if (showProgress) {
             AnimatedThinkingDots(dotColor = muted)
             Spacer(Modifier.width(6.dp))
@@ -2230,7 +3097,7 @@ private fun ActivitySummaryRow(
             Icons.AutoMirrored.Outlined.KeyboardArrowRight,
             contentDescription = null,
             modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = chevron },
-            tint = colors.tertiaryLabel,
+            tint = colors.secondaryLabel,
         )
     }
 }
@@ -2280,7 +3147,8 @@ private fun ActivityExpandedDetail(item: ActivityItem?, detail: String) {
     }
 }
 
-private fun compactActivityText(item: ActivityItem): String = "${activityName(item)} · ${activityDetail(item).replace(Regex("\\s+"), " ").take(105)}"
+private fun compactActivityText(item: ActivityItem): String =
+    "${activityName(item)} · ${activityDetail(item).take(180).replace(Regex("\\s+"), " ").take(105)}"
 
 private fun activityDetail(item: ActivityItem): String {
     if (item.title == "Think" && item.detail.contains("reasoning tokens processed", true)) {
@@ -2289,28 +3157,24 @@ private fun activityDetail(item: ActivityItem): String {
     return item.detail.ifBlank { item.title }
 }
 
-private fun activityHeadline(items: List<ActivityItem>, seconds: Long, thinking: Boolean): String {
-    val latest = items.lastOrNull()
-    if (latest == null) return "Think · Analyzing the request · ${formatDuration(seconds)}"
-    if (thinking && latest.title == "Think") return "Think · ${latest.detail} · ${formatDuration(seconds)}"
-    val detail = latest.detail.replace(Regex("\\s+"), " ").trim().ifBlank { latest.title }
-    return "${activityName(latest)} · ${detail.take(100)} · ${formatDuration(seconds)}"
-}
-
 private fun activityName(item: ActivityItem): String = item.title
     .removePrefix("Running ")
     .removeSuffix(" completed")
     .replaceFirstChar { it.uppercase() }
 
 @Composable
-private fun rememberLiveElapsedSeconds(startedAtMillis: Long): Int {
-    var seconds by remember(startedAtMillis) {
-        mutableIntStateOf(((System.currentTimeMillis() - startedAtMillis) / 1000L).toInt().coerceAtLeast(0))
+private fun rememberLiveElapsedSeconds(startedAtMillis: Long?, finishedAtMillis: Long?, isRunning: Boolean): Long {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var seconds by remember(startedAtMillis, finishedAtMillis, isRunning) {
+        mutableLongStateOf(startedAtMillis?.let { elapsedWorkSeconds(it, finishedAtMillis, System.currentTimeMillis()) } ?: 0L)
     }
-    LaunchedEffect(startedAtMillis) {
-        while (true) {
-            delay(1_000)
-            seconds = ((System.currentTimeMillis() - startedAtMillis) / 1000L).toInt().coerceAtLeast(0)
+    LaunchedEffect(startedAtMillis, finishedAtMillis, isRunning, lifecycle) {
+        if (startedAtMillis == null || finishedAtMillis != null || !isRunning) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                seconds = elapsedWorkSeconds(startedAtMillis, null, System.currentTimeMillis())
+                delay(1_000)
+            }
         }
     }
     return seconds
@@ -2356,6 +3220,16 @@ private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Uni
         if (message.fromUser) {
             UserBubble(message, onCopy = copyAction)
         } else {
+            message.origin?.takeIf { it.startsWith("mod:") }?.let { origin ->
+                Row(
+                    modifier = Modifier.padding(start = PocketSpacing.xs, bottom = PocketSpacing.xs),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Outlined.Extension, contentDescription = null, modifier = Modifier.size(12.dp), tint = colors.secondaryLabel)
+                    Spacer(Modifier.width(PocketSpacing.xs))
+                    Text("From mod ${origin.removePrefix("mod:")}", style = PocketType.caption1, color = colors.secondaryLabel)
+                }
+            }
             SelectionContainer {
                 MarkdownText(
                     markdown = message.text,
@@ -2390,7 +3264,7 @@ private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Uni
                     icon = if (isCopied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
                     contentDescription = if (isCopied) "Message copied to clipboard" else "Copy entire message",
                     onClick = copyAction,
-                    tint = if (isCopied) colors.green else colors.tertiaryLabel,
+                    tint = if (isCopied) colors.green else colors.secondaryLabel,
                     iconSize = 15.dp,
                 )
             }
@@ -2552,7 +3426,7 @@ private fun formatFileSize(bytes: Long): String = when {
 
 /** A local web preview: an address field for loopback URLs over a sandboxed WebView. */
 @Composable
-private fun PreviewTab(ready: Boolean, url: String?) {
+private fun PreviewTab(ready: Boolean, url: String?, project: com.jarves.mh.model.Project?) {
     var address by rememberSaveable(url) { mutableStateOf(if (ready) url.orEmpty() else "") }
     var activeUrl by rememberSaveable(url) { mutableStateOf(if (ready) url else null) }
     var addressError by remember { mutableStateOf<String?>(null) }
@@ -2631,11 +3505,21 @@ private fun PreviewTab(ready: Boolean, url: String?) {
                 factory = { context ->
                     WebView(context).apply {
                         webView = this
+                        project?.let { owner ->
+                            val base = java.io.File(context.filesDir, "workspaces/${owner.id}").canonicalFile
+                            val root = if (owner.rootPath.isBlank()) base else java.io.File(base, owner.rootPath).canonicalFile
+                            if (root.toPath().startsWith(base.toPath()))
+                                com.jarves.mh.runtime.PreviewInspectionHost.attach(this, root, "/workspace/${owner.slug}")
+                        }
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         webChromeClient = object : WebChromeClient() {
                             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                                 loading = newProgress < 100
+                            }
+                            override fun onConsoleMessage(message: android.webkit.ConsoleMessage?): Boolean {
+                                if (message != null) com.jarves.mh.runtime.PreviewInspectionHost.console(this@apply, message)
+                                return true
                             }
                         }
                         webViewClient = object : WebViewClient() {
@@ -2650,6 +3534,7 @@ private fun PreviewTab(ready: Boolean, url: String?) {
                             }
 
                             override fun onPageStarted(view: WebView?, pageUrl: String?, favicon: android.graphics.Bitmap?) {
+                                if (view != null) com.jarves.mh.runtime.PreviewInspectionHost.navigation(view)
                                 pageUrl?.takeIf { normalizePreviewUrl(it) != null }?.let { address = it }
                             }
 
@@ -2671,6 +3556,7 @@ private fun PreviewTab(ready: Boolean, url: String?) {
                     }
                 },
                 onRelease = { current ->
+                    com.jarves.mh.runtime.PreviewInspectionHost.detach(current)
                     current.stopLoading()
                     current.webChromeClient = null
                     current.destroy()
@@ -2706,3 +3592,14 @@ private fun Uri.isLoopbackPreviewUrl(): Boolean =
 
 private fun blockedPreviewResponse(): WebResourceResponse =
     WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+
+/** Creates an empty cache file for the camera app to write into, shared through our FileProvider. */
+private fun createCameraPhotoUri(context: Context): Uri {
+    val folder = java.io.File(context.cacheDir, "camera").apply { mkdirs() }
+    // Photos are copied into the project as attachments, so older captures are no longer needed.
+    val staleBefore = System.currentTimeMillis() - 60 * 60 * 1000L
+    folder.listFiles()?.filter { it.lastModified() < staleBefore }?.forEach { it.delete() }
+    val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+    val file = java.io.File(folder, "photo-$stamp.jpg")
+    return androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+}

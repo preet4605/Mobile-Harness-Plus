@@ -7,6 +7,7 @@ import com.jarves.mh.model.ProviderProtocol
 import com.jarves.mh.model.providerProtocolForAgent
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class ProviderApiClientTest {
@@ -104,5 +105,49 @@ class ProviderApiClientTest {
         org.junit.Assert.assertTrue("expected a size-limit failure, got $result", result is ModelDiscoveryResult.Failure)
         org.junit.Assert.assertTrue((result as ModelDiscoveryResult.Failure).message.contains("limit"))
         org.junit.Assert.assertTrue("connection left open after an oversized body", connection.disconnected)
+    }
+
+    @Test
+    fun openRouterProbeIncludesRequestedProviderOrder() {
+        val body = JSONObject(
+            ProviderApiClient().validationBody(
+                model = "anthropic/claude-sonnet-4.6",
+                protocol = ProviderProtocol.OPENROUTER,
+                openRouterProviderOrder = " anthropic, amazon-bedrock, anthropic ",
+                openRouterAllowFallbacks = false,
+            ),
+        )
+
+        val routing = body.getJSONObject("provider")
+        assertEquals(listOf("anthropic", "amazon-bedrock"), routing.getJSONArray("order").let { array ->
+            (0 until array.length()).map(array::getString)
+        })
+        assertFalse(routing.getBoolean("allow_fallbacks"))
+    }
+
+    @Test
+    fun modCompletionsUseEachProtocolsShapeAndCountTokens() {
+        val client = ProviderApiClient()
+        val anthropic = JSONObject(client.completionBody("m", ProviderProtocol.ANTHROPIC, "hi", "be brief", 50))
+        assertEquals("be brief", anthropic.getString("system"))
+        assertEquals(50, anthropic.getInt("max_tokens"))
+        val chat = JSONObject(client.completionBody("m", ProviderProtocol.OPENAI_CHAT, "hi", "be brief", 50))
+        assertEquals("system", chat.getJSONArray("messages").getJSONObject(0).getString("role"))
+        val responses = JSONObject(client.completionBody("m", ProviderProtocol.OPENAI_RESPONSES, "hi", null, 50))
+        assertEquals("hi", responses.getString("input"))
+        assertFalse(responses.has("instructions"))
+
+        assertEquals(
+            ModelCompletion("Hello", 3, 2),
+            client.parseCompletion("""{"content":[{"type":"text","text":"Hel"},{"type":"text","text":"lo"}],"usage":{"input_tokens":3,"output_tokens":2}}""", ProviderProtocol.ANTHROPIC),
+        )
+        assertEquals(
+            ModelCompletion("Hi", 4, 1),
+            client.parseCompletion("""{"choices":[{"message":{"content":"Hi"}}],"usage":{"prompt_tokens":4,"completion_tokens":1}}""", ProviderProtocol.OPENAI_CHAT),
+        )
+        assertEquals(
+            ModelCompletion("Yo", 5, 6),
+            client.parseCompletion("""{"output":[{"type":"message","content":[{"type":"output_text","text":"Yo"}]}],"usage":{"input_tokens":5,"output_tokens":6}}""", ProviderProtocol.OPENAI_RESPONSES),
+        )
     }
 }

@@ -6,6 +6,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume
 import org.junit.Rule
@@ -33,6 +34,108 @@ class ChatPagedStorageTest {
     private fun page(root: File, index: Int): File = File(pagesDir(root), String.format("%08d.json", index))
 
     private fun fileKey(file: File): Any? = Files.readAttributes(file.toPath(), BasicFileAttributes::class.java).fileKey()
+
+    @Test
+    fun impossibleMetadataCountIsRejectedBeforeReadingPages() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        prefs.saveMessages("p", "c", messages(0..39))
+        File(pagesDir(root), "meta.json").writeText(
+            JSONObject().put("format", 2).put("pageSize", 1).put("count", Int.MAX_VALUE).toString(),
+        )
+        // Inspect admission directly so the old billion-iteration reader cannot hang the test worker.
+        val readMeta = AppPreferences::class.java.getDeclaredMethod("readChatPagesMeta", File::class.java)
+        readMeta.isAccessible = true
+        assertNull(readMeta.invoke(prefs, pagesDir(root)))
+        assertEquals(ids(15..39), prefs.loadMessageWindow("p", "c", 15).messages.map { it.id })
+    }
+
+    @Test
+    fun impossiblePageSizeFallsBackToExistingPageInventory() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        prefs.saveMessages("p", "c", messages(0..39))
+        File(pagesDir(root), "meta.json").writeText(
+            JSONObject().put("format", 2).put("pageSize", Int.MAX_VALUE).put("count", 40).toString(),
+        )
+        assertEquals(ids(15..39), prefs.loadMessageWindow("p", "c", 15).messages.map { it.id })
+        assertEquals(ids(0..39), prefs.loadPromptHistory("p", "c", Int.MAX_VALUE).map { it.id })
+    }
+
+    @Test
+    fun interruptedPageOverwriteRestoresThePreviousTranscript() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        prefs.saveMessages("p", "c", messages(0..39))
+        val rollback = File(pagesDir(root), ".rollback").apply { mkdirs() }
+        page(root, 0).copyTo(File(rollback, page(root, 0).name))
+        File(rollback, "journal.json").writeText(
+            JSONObject().put("token", "uncommitted").put("pages", JSONArray().put(
+                JSONObject().put("index", 0).put("existed", true),
+            )).toString(),
+        )
+        page(root, 0).writeText(JSONArray().put(JSONObject().put("id", "new").put("fromUser", true).put("text", "new")).toString())
+
+        assertEquals(ids(0..39), AppPreferences(baseChatsDir = root).loadMessages("p", "c").map { it.id })
+        assertFalse(rollback.exists())
+    }
+
+    @Test
+    fun committedJournalKeepsTheNewPages() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        prefs.saveMessages("p", "c", messages(0..39))
+        val rollback = File(pagesDir(root), ".rollback").apply { mkdirs() }
+        page(root, 0).copyTo(File(rollback, page(root, 0).name))
+        File(rollback, "journal.json").writeText(
+            JSONObject().put("token", "committed").put("pages", JSONArray().put(
+                JSONObject().put("index", 0).put("existed", true),
+            )).toString(),
+        )
+        val meta = File(pagesDir(root), "meta.json")
+        meta.writeText(JSONObject(meta.readText()).put("transaction", "committed").toString())
+        page(root, 0).writeText(JSONArray().put(JSONObject().put("id", "new").put("fromUser", true).put("text", "new")).toString())
+
+        assertEquals(listOf("new") + ids(15..39), AppPreferences(baseChatsDir = root).loadMessages("p", "c").map { it.id })
+        assertFalse(rollback.exists())
+    }
+
+    @Test
+    fun missingInteriorPageDoesNotHideReadableLaterPages() {
+        val root = tmp.newFolder("chats")
+        AppPreferences(baseChatsDir = root).saveMessages("p", "c", messages(0..44))
+        page(root, 1).delete()
+        assertEquals(ids(0..14) + ids(30..44), AppPreferences(baseChatsDir = root).loadMessages("p", "c").map { it.id })
+        File(pagesDir(root), "meta.json").delete()
+        assertEquals(ids(0..14) + ids(30..44), AppPreferences(baseChatsDir = root).loadMessages("p", "c").map { it.id })
+    }
+
+    @Test
+    fun failedMetadataCommitRestoresOverwrittenPagesAndRemovesNewPages() {
+        val root = tmp.newFolder("chats")
+        val prefs = AppPreferences(baseChatsDir = root)
+        prefs.saveMessages("p", "c", messages(0..29))
+        val obstruction = File(pagesDir(root), ".meta.json.tmp").apply { mkdirs() }
+        val failed = runCatching { prefs.saveMessages("p", "c", messages(0..44) { "changed $it" }) }
+        assertTrue(failed.isFailure)
+        obstruction.delete()
+
+        assertEquals(ids(0..29), AppPreferences(baseChatsDir = root).loadMessages("p", "c").map { it.id })
+        assertEquals("message 0", AppPreferences(baseChatsDir = root).loadMessages("p", "c").first().text)
+        assertEquals("message 29", AppPreferences(baseChatsDir = root).loadMessages("p", "c").last().text)
+        assertFalse(page(root, 2).exists())
+        assertFalse(File(pagesDir(root), ".rollback").exists())
+    }
+
+    @Test
+    fun interruptedJournalCleanupDoesNotRollBackAgain() {
+        val root = tmp.newFolder("chats")
+        AppPreferences(baseChatsDir = root).saveMessages("p", "c", messages(0..29))
+        val cleanup = File(pagesDir(root), ".rollback-cleanup").apply { mkdirs() }
+        File(cleanup, "journal.json").writeText("{broken partially deleted old journal")
+        assertEquals(ids(0..29), AppPreferences(baseChatsDir = root).loadMessages("p", "c").map { it.id })
+        assertFalse(cleanup.exists())
+    }
 
     @Test
     fun savedChatLoadsWholeInOrder() {

@@ -258,6 +258,21 @@ class WorkspaceCheckpoints(
         return true
     }
 
+    /** Keep: the current file becomes the baseline. False, never an exception, for a path that leaves the project. */
+    fun acceptFileChange(projectId: String, path: String): Boolean = runCatching {
+        if (isInternalRuntimePath(path) || path !in readChangedPaths(projectId)) return false
+        val current = safeWorkspaceFile(ensureWorkspace(projectId), path)
+        val baseline = safeWorkspaceFile(File(checkpointDir(projectId), "project"), path)
+        if (current.isFile) {
+            baseline.parentFile?.mkdirs()
+            current.copyTo(baseline, overwrite = true)
+        } else if (baseline.isFile) {
+            baseline.delete()
+        }
+        removeChangedPath(projectId, path)
+        true
+    }.getOrDefault(false)
+
     fun saveChangedPaths(projectId: String, paths: List<String>) =
         saveChangedPaths(projectId, paths, DEFAULT_CHECKPOINT_TAG)
 
@@ -557,10 +572,10 @@ class WorkspaceCheckpoints(
     }
 
     /** Diffs never read through a final symlink: snapshot() skips links, so a link that replaced a tracked file reads as absent. */
-    private fun regularChangeFile(root: File, relative: String): File? =
-        safeWorkspaceFile(root, relative).takeIf { file ->
-            file.isFile && !java.nio.file.Files.isSymbolicLink(file.toPath())
-        }
+    private fun regularChangeFile(root: File, relative: String): File? {
+        if (java.nio.file.Files.isSymbolicLink(File(root, relative).toPath())) return null
+        return safeWorkspaceFile(root, relative).takeIf { it.isFile }
+    }
 
     private fun isBinaryFile(file: File?): Boolean {
         if (file == null || !file.isFile || file.length() == 0L) return false
@@ -693,6 +708,12 @@ class WorkspaceCheckpoints(
         val rootPath = root.canonicalFile.toPath()
         val parentPath = (file.parentFile ?: root).canonicalFile.toPath()
         require(parentPath.startsWith(rootPath)) { "Workspace path escapes project" }
+        // The parent check does not cover the last component: a link there (dangling included)
+        // would let a read or write follow it out of the project.
+        if (java.nio.file.Files.isSymbolicLink(file.toPath())) {
+            val target = runCatching { file.toPath().toRealPath() }.getOrNull()
+            require(target != null && target.startsWith(rootPath)) { "Workspace path escapes project" }
+        }
         return file
     }
 

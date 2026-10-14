@@ -34,11 +34,6 @@ val appUpdateManifestUrl =
 val runtimeBundleDir = rootProject.layout.projectDirectory.dir("dist/runtime-bundles")
 val generatedRuntimeAssets = layout.buildDirectory.dir("generated/runtime-assets")
 
-val prepareBundledAgentAssets = tasks.register<Sync>("prepareBundledAgentAssets") {
-    from(runtimeBundleDir.file("pocketdev-agy-arm64-2026.09.1.tar.zst"))
-    into(generatedRuntimeAssets.map { it.dir("shared/runtime") })
-}
-
 val requiredOfflineArchives = listOf(
     "pocketdev-core-arm64-2026.09.5.tar.zst", "pocketdev-claude-arm64-2026.09.1.tar.zst",
     "pocketdev-python-arm64-2026.09.2.tar.zst", "pocketdev-android-arm64-2026.09.1.tar.zst",
@@ -79,6 +74,7 @@ val prepareOfflineRuntimeAssets = tasks.register<Sync>("prepareOfflineRuntimeAss
         runtimeBundleDir.file("pocketdev-python-arm64-2026.09.2.tar.zst"),
         runtimeBundleDir.file("pocketdev-android-arm64-2026.09.1.tar.zst"),
         runtimeBundleDir.file("pocketdev-dsh-arm64-2026.09.1.tar.zst"),
+        runtimeBundleDir.file("pocketdev-agy-arm64-2026.09.1.tar.zst"),
         runtimeBundleDir.file("codex-0.161.0-linux-arm64.tgz"),
     )
     into(generatedRuntimeAssets.map { it.dir("offline/runtime") })
@@ -163,7 +159,6 @@ android {
     }
 
     sourceSets.getByName("offline").assets.srcDir(generatedRuntimeAssets.map { it.dir("offline") })
-    sourceSets.getByName("main").assets.srcDir(generatedRuntimeAssets.map { it.dir("shared") })
 
     buildTypes {
         debug {
@@ -237,6 +232,8 @@ android {
 
 // Screenshot tests are opt-in: ./gradlew :app:testOnlineDebugUnitTest -Pscreenshots
 tasks.withType<Test>().configureEach {
+    // Phone JVMs lack Conscrypt's optional ARM64 native provider. Opt in for non-TLS tests only.
+    if (project.hasProperty("phoneTests")) systemProperty("robolectric.conscryptMode", "OFF")
     if (!project.hasProperty("screenshots")) {
         exclude("**/*ScreenshotTest*")
     } else {
@@ -248,12 +245,6 @@ tasks.withType<Test>().configureEach {
 
 tasks.matching { it.name.startsWith("mergeOffline") && it.name.endsWith("Assets") }
     .configureEach { dependsOn(prepareOfflineRuntimeAssets) }
-
-tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }
-    .configureEach { dependsOn(prepareBundledAgentAssets) }
-
-tasks.matching { it.name.contains("lint", ignoreCase = true) }
-    .configureEach { dependsOn(prepareBundledAgentAssets) }
 
 tasks.matching { it.name.contains("Offline") && it.name.contains("lint", ignoreCase = true) }
     .configureEach { dependsOn(prepareOfflineRuntimeAssets) }
@@ -286,8 +277,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.apache.commons:commons-compress:1.27.1")
+    implementation("org.yaml:snakeyaml:2.3")
     implementation("com.github.luben:zstd-jni:1.5.6-9@aar")
     implementation("com.github.BuildItCode:LiquidGlass:0.2.5")
+    implementation("androidx.javascriptengine:javascriptengine:1.1.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250107")

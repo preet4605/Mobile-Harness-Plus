@@ -110,6 +110,42 @@ class DshSdkProtocolParserTest {
     }
 
     @Test
+    fun boundsLargeCumulativeReasoningToItsLatestContent() {
+        val hugePrefix = "old reasoning ".repeat(1_000)
+        parser.parseLine(
+            sessionEvent(
+                "assistant/chunk",
+                JSONObject().put("turn", 4).put("step", 1).put(
+                    "chunk",
+                    JSONObject().put("type", "reasoning-delta").put("index", 0).put("text", hugePrefix),
+                ),
+            ),
+        )
+        val latest = parser.parseLine(
+            sessionEvent(
+                "assistant/chunk",
+                JSONObject().put("turn", 4).put("step", 1).put(
+                    "chunk",
+                    JSONObject().put("type", "reasoning-delta").put("index", 0).put("text", "LATEST_MARKER"),
+                ),
+            ),
+        )
+
+        assertTrue(latest is DshSdkProtocolEvent.Reasoning)
+        latest as DshSdkProtocolEvent.Reasoning
+        assertTrue(latest.text.length <= 8_000)
+        assertTrue(latest.text.endsWith("LATEST_MARKER"))
+    }
+
+    @Test
+    fun compactsOnlyABoundedWindowOfLargeOutput() {
+        val compact = compactDshText("ignored".repeat(10_000) + "\n  useful   tail ", 100, 80)
+
+        assertTrue(compact.length <= 80)
+        assertTrue(compact.endsWith("useful tail"))
+    }
+
+    @Test
     fun parsesToolCallResultAndAssistantText() {
         val call = parser.parseLine(sessionEvent("tool/call", JSONObject()
             .put("callId", "call-1").put("name", "bash")
@@ -161,6 +197,39 @@ class DshSdkProtocolParserTest {
         )
 
         assertEquals(DshSdkProtocolEvent.TurnCompleted, completed)
+    }
+
+    @Test
+    fun nullJsonRpcErrorUsesUsefulFallback() {
+        val failed = parser.parseLine(
+            JSONObject()
+                .put("jsonrpc", "2.0")
+                .put("id", 2)
+                .put("error", JSONObject().put("message", JSONObject.NULL))
+                .toString(),
+        )
+
+        assertEquals(
+            DshSdkProtocolEvent.Failed("DeepSeek Harness SDK request 2 failed"),
+            failed,
+        )
+    }
+
+    @Test
+    fun nullTurnErrorUsesUsefulFallback() {
+        val failed = parser.parseLine(
+            sessionEvent(
+                "turn/end",
+                JSONObject().put(
+                    "reason",
+                    JSONObject()
+                        .put("kind", "error")
+                        .put("error", JSONObject().put("message", JSONObject.NULL)),
+                ),
+            ),
+        )
+
+        assertEquals(DshSdkProtocolEvent.Failed("DeepSeek Harness turn failed"), failed)
     }
 
     private fun sessionEvent(type: String, data: JSONObject): String = notification(
@@ -421,6 +490,36 @@ class AgentProviderPresetTest {
         assertTrue(legacy.contains("llm-pi-ai:"))
         assertTrue(legacy.contains("api: openai-completions"))
         assertTrue(legacy.contains("baseURL: 'https://api.example.com/v1'"))
+    }
+
+    @Test
+    fun modGateMountsTheHooksBridgeOnlyWhenModsGateAndThePackageIsThere() {
+        val tempRootfs = java.io.File(System.getProperty("java.io.tmpdir", "/tmp"), "test-dsh-gate-${System.nanoTime()}")
+        try {
+            val profile = ProviderProfile(kind = ProviderKind.DEEPSEEK, model = "deepseek-chat")
+            val route = DshRouteMapper.forProfile(profile)
+            val patchFile = java.io.File(tempRootfs, "root/.dsh/cordis.patch.yml")
+            val hooksFile = java.io.File(tempRootfs, "root/.dsh/mh-mod-hooks.json")
+            // No hooks package in this install: dsh must still start, so nothing is mounted.
+            DshRuntimeBridge.writeDshSettings(tempRootfs, route, profile, modGate = true)
+            assertFalse(patchFile.readText().contains("mh-mod-gate"))
+            assertFalse(hooksFile.exists())
+
+            java.io.File(tempRootfs, "usr/local/lib/dsh/node_modules/@deepseek-ai/dsh-hooks-claude-code").apply { mkdirs() }
+                .resolve("package.json").writeText("{}")
+            DshRuntimeBridge.writeDshSettings(tempRootfs, route, profile, modGate = false)
+            assertFalse(patchFile.readText().contains("mh-mod-gate"))
+            DshRuntimeBridge.writeDshSettings(tempRootfs, route, profile, modGate = true)
+            val patch = patchFile.readText()
+            assertTrue(patch.contains("- id: agent-default-model"))
+            assertTrue(patch, patch.contains("- insert:\n    - id: mh-mod-gate\n      name: '@deepseek-ai/dsh-hooks-claude-code'"))
+            assertTrue(patch.contains("configPath: /root/.dsh/mh-mod-hooks.json"))
+            val hook = JSONObject(hooksFile.readText()).getJSONObject("hooks").getJSONArray("PreToolUse").getJSONObject(0)
+            assertEquals("*", hook.getString("matcher"))
+            assertEquals("/usr/local/bin/harness-tools gate --harness deepseek", hook.getJSONArray("hooks").getJSONObject(0).getString("command"))
+        } finally {
+            tempRootfs.deleteRecursively()
+        }
     }
 
     @Test

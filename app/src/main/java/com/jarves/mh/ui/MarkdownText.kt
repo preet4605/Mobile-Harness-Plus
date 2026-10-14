@@ -101,7 +101,7 @@ fun MarkdownText(
                 is MarkdownBlock.Paragraph -> {
                     RichInlineText(
                         text = block.text,
-                        style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+                        style = PocketType.body,
                         color = color,
                     )
                 }
@@ -152,7 +152,7 @@ private fun BulletBlock(item: MarkdownBlock.BulletItem, color: Color) {
         }
         RichInlineText(
             text = item.text,
-            style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+            style = PocketType.body,
             color = color,
             modifier = Modifier.weight(1f),
         )
@@ -167,13 +167,13 @@ private fun NumberedBlock(item: MarkdownBlock.NumberedItem, color: Color) {
     ) {
         Text(
             text = item.number,
-            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant),
+            style = PocketType.body.copy(fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant),
             softWrap = false,
             modifier = Modifier.width(ListMarkerWidth),
         )
         RichInlineText(
             text = item.text,
-            style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+            style = PocketType.body,
             color = color,
             modifier = Modifier.weight(1f),
         )
@@ -199,7 +199,7 @@ private fun QuoteBlock(quote: MarkdownBlock.BlockQuote) {
         Spacer(Modifier.width(PocketSpacing.sm))
         InlineMarkdownText(
             text = formatInlineMarkdown(quote.text),
-            style = MaterialTheme.typography.bodyMedium.copy(
+            style = PocketType.body.copy(
                 fontStyle = FontStyle.Italic,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             ),
@@ -242,7 +242,7 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
                     if (onRunCode != null && shellLanguage) {
                         IconButton(
                             onClick = { onRunCode(block.code.trim()) },
-                            modifier = Modifier.size(28.dp),
+                            modifier = Modifier.size(48.dp),
                         ) {
                             Icon(
                                 Icons.Outlined.PlayArrow,
@@ -261,7 +261,7 @@ private fun CodeSnippetBlock(block: MarkdownBlock.CodeBlock, onRunCode: ((String
                                 copied = false
                             }
                         },
-                        modifier = Modifier.size(28.dp),
+                        modifier = Modifier.size(48.dp),
                     ) {
                         Icon(
                             imageVector = if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,

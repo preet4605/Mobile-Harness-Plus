@@ -128,6 +128,11 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
     }
 
     private val fallbackDeciders = ConcurrentHashMap<String, TaskFallbackDecider>()
+    private val stopHandlers = ConcurrentHashMap<String, suspend (Boolean) -> Unit>()
+
+    /** A native protocol may need to persist pause before generic process termination. */
+    internal fun registerStopHandler(taskId: String, handler: suspend (Boolean) -> Unit) { stopHandlers[taskId] = handler }
+    internal fun unregisterStopHandler(taskId: String) { stopHandlers.remove(taskId) }
 
     fun registerFallbackDecider(taskId: String, decider: TaskFallbackDecider) {
         fallbackDeciders[taskId] = decider
@@ -270,8 +275,16 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             if (resolvedPid == null || resolvedPid <= 0) {
                 Log.w(TAG, "Process PID is missing or invalid for task $taskId (session $sessionId)")
             }
-            processSupervisor.register(taskId, process, resolvedPid, sessionId)
-            val updated = stateStore.bindProcess(taskId, sessionId, resolvedPid ?: -1)
+            val updated = synchronized(stateStore) {
+                val owner = stateStore.get(taskId) ?: error("Cannot bind process to missing task $taskId")
+                check(!owner.status.isTerminal) { "Cannot bind process to terminal task $taskId" }
+                val sessionOwner = stateStore.getBySessionId(sessionId)
+                check(sessionOwner == null || sessionOwner.taskId == taskId) { "Session already belongs to another task" }
+                // Persistence must accept ownership before the child becomes stoppable by this task's aliases.
+                stateStore.bindProcess(taskId, sessionId, resolvedPid ?: -1).also {
+                    processSupervisor.register(taskId, process, resolvedPid, sessionId)
+                }
+            }
             if (resolvedPid != null && resolvedPid > 0) {
                 healthMonitor.onTaskProcessBound(updated.taskId, resolvedPid)
             }
@@ -279,6 +292,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             Log.i(TAG, "Successfully bound process (PID $resolvedPid) for task ${updated.taskId}, session $sessionId")
             true
         } catch (t: Throwable) {
+            com.jarves.mh.runtime.closeAuthProcess(process)
+            if (processSupervisor.getProcess(taskId) === process) processSupervisor.unregister(taskId)
             Log.e(TAG, "Failed to bind process for task $taskId, session $sessionId", t)
             false
         }
@@ -693,7 +708,9 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         constraints: List<String> = emptyList(),
         acceptanceCriteria: List<String> = emptyList(),
         plan: ExecutionPlan? = null,
-        objective: String? = null
+        objective: String? = null,
+        nativeControlJson: String? = null,
+        singleOperation: Boolean = false,
     ): DurableTaskRecord {
         val existingCanonical = canonicalTaskRepository.getTask(taskId)
         val record = stateStore.get(taskId) ?: DurableTaskRecord(
@@ -705,7 +722,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             providerJson = providerJson,
             prompt = prompt,
             status = TaskExecutionStatus.CREATED,
-            maxRetries = maxRetries
+            maxRetries = maxRetries,
+            nativeControlJson = nativeControlJson,
         )
 
         if (existingCanonical != null && existingCanonical.plan.steps.isNotEmpty()) {
@@ -726,7 +744,13 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             listOf("Fulfill objective: $effectiveObjective")
         }
 
-        val executionPlan = if (plan != null) {
+        val executionPlan = if (nativeControlJson != null || singleOperation) {
+            PlanBuilder(planId, taskId, title = "Native Codex operation").addStep(
+                ExecutionStep(stepId = "$taskId-step-0", stepOrder = 0, title = "Execute native Codex operation",
+                    objective = "Execute native Codex operation: $effectiveObjective", acceptanceCriteria = effCriteria,
+                    maxAttempts = 1, planId = planId)
+            ).build()
+        } else if (plan != null) {
             val validation = validateExecutionPlan(plan)
             require(validation.isValid) { "Invalid execution plan for task $taskId: ${validation.errorMessage}" }
             val deterministicSteps = plan.steps.mapIndexed { index, s ->
@@ -917,6 +941,10 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             return task
         }
 
+        // The foreground service and its wake lock are shared by every running task. A task
+        // that ends while another one still runs (a refused second launch, another project)
+        // only posts its result; the last task to end stops the service.
+        val anotherTaskRunning = activeJobs.any { (id, job) -> id != targetTaskId && job.isActive }
         val finalizedRecord = when (status) {
             TaskExecutionStatus.COMPLETED, TaskExecutionStatus.UNVERIFIED -> {
                 if (task.status != TaskExecutionStatus.COMPLETING) {
@@ -929,7 +957,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                         context = appContext,
                         title = if (status == TaskExecutionStatus.UNVERIFIED) "Task finished — unverified" else "Task completed",
                         detail = if (status == TaskExecutionStatus.UNVERIFIED) "No deterministic check was available for ${task.projectSlug}." else "Mobile Harness finished working in ${task.projectSlug}.",
-                        failed = false
+                        failed = false,
+                        stopService = !anotherTaskRunning,
                     )
                 }
                 completed
@@ -948,7 +977,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                         context = appContext,
                         title = if (recoveryRequired) "Task needs attention" else "Task failed",
                         detail = failureDetail,
-                        failed = true
+                        failed = true,
+                        stopService = !anotherTaskRunning,
                     )
                 }
                 failed
@@ -959,7 +989,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                     it.copy(lastError = cancelDetail)
                 }
                 healthMonitor.onTaskCompleted(targetTaskId, pid ?: cancelled.pid)
-                if (appContext != null) {
+                if (appContext != null && !anotherTaskRunning) {
                     RuntimeExecutionService.cancel(appContext)
                 }
                 val cancelFeedback = ExecutionFeedback(
@@ -1006,6 +1036,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         wakeLockManager?.release(targetTaskId)
         healthMonitor.onWakeLockChanged(wakeLockManager?.isHeld == true, wakeLockManager?.activeTaskCount ?: 0)
         processSupervisor.unregister(targetTaskId)
+        unregisterStopHandler(targetTaskId)
         outputBuffers.remove(targetTaskId)
         fallbackDeciders.remove(targetTaskId)
         activeJobs.remove(targetTaskId)
@@ -1066,7 +1097,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             return supervisorScope.launch { /* no-op job */ }
         }
 
-        val job = supervisorScope.launch {
+        // Registered before it starts, so a launch that fails at once cannot leave a stale entry.
+        val job = supervisorScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             startupReconciliation?.join()
             var executionOwnedElsewhere = false
             try {
@@ -2194,6 +2226,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         }
 
         activeJobs[taskId] = job
+        job.start()
         return job
     }
 
@@ -2206,6 +2239,9 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         if (resolvedSessionId != null) {
             processSupervisor.markCancellationRequested(resolvedSessionId)
         }
+        stopHandlers[resolvedTaskId]?.let { handler -> runCatching {
+            kotlinx.coroutines.withTimeout(8_000L) { handler(force) }
+        } }
         val stopped = processSupervisor.terminate(resolvedTaskId, force = force)
         activeJobs[resolvedTaskId]?.cancel()
         finalizeTask(resolvedTaskId, TaskExecutionStatus.CANCELLED, error = "Stop requested by user")

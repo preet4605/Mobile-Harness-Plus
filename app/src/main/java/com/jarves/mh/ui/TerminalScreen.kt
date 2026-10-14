@@ -82,6 +82,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarves.mh.ui.theme.AppThemeMode
@@ -101,7 +103,7 @@ fun TerminalScreen(
     onToggleTheme: () -> Unit,
     themeMode: AppThemeMode,
     title: String = "Linux Terminal",
-    subtitle: String = "Ubuntu 24.04 · PRoot Sandbox",
+    subtitle: String = "Ubuntu 20.04 · PRoot Sandbox",
     liveOutput: String = "",
     currentCommand: String? = null,
     commandDraft: String? = null,
@@ -337,7 +339,7 @@ fun TerminalScreen(
                                     TerminalCommandPrompt(promptPath = terminalPromptPath, command = item.command, isDark = isDark)
                                     if (item.output.isNotEmpty()) {
                                         Text(
-                                            text = sanitizeTerminalOutput(item.output),
+                                            text = remember(item.output) { sanitizeTerminalOutput(item.output) },
                                             style = PocketType.codeSmall.copy(lineHeight = 18.sp),
                                             color = if (item.exitCode != 0) MaterialTheme.colorScheme.error else outputTextColor,
                                             modifier = Modifier.padding(start = 8.dp),
@@ -351,8 +353,9 @@ fun TerminalScreen(
                             }
 
                             if (liveOutput.isNotBlank()) {
+                                // Already sanitized by the ViewModel as it streams.
                                 Text(
-                                    sanitizeTerminalOutput(liveOutput),
+                                    liveOutput,
                                     style = PocketType.codeSmall.copy(lineHeight = 18.sp),
                                     color = outputTextColor,
                                 )
@@ -487,7 +490,8 @@ private fun TerminalKeyButton(
     androidx.compose.material3.OutlinedButton(
         onClick = onClick,
         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-        modifier = Modifier.height(34.dp).then(if (fixedWidth) Modifier.width(78.dp) else Modifier),
+        modifier = Modifier.height(34.dp).then(if (fixedWidth) Modifier.width(78.dp) else Modifier)
+            .semantics { contentDescription = description },
         colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
             containerColor = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent,
             contentColor = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,

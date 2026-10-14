@@ -17,22 +17,42 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.Before
 import java.time.Instant
 import java.util.UUID
 
 class BrainDatabaseMigrationTest {
+
+    @Before fun loadJdbcDriverForThisClassLoader() { Class.forName("org.sqlite.JDBC") }
+
+    @Test fun version2UpgradePreservesStoredTaskAndAddsNullableNativeIntent() {
+        val driver = BrainDatabaseDriverFactory.createInMemoryDriver()
+        val previous = BrainDatabase(driver)
+        val tasks = com.jarves.mh.runtime.task.TaskStateStore(previous)
+        tasks.save(com.jarves.mh.runtime.task.DurableTaskRecord("legacy", "project", "slug", "chat", "CODEX", "CHATGPT", "saved prompt",
+            com.jarves.mh.runtime.task.TaskExecutionStatus.CREATED))
+        driver.execute("ALTER TABLE durable_task_states DROP COLUMN native_control_json")
+        driver.execute("PRAGMA user_version = 2")
+        val reopened = BrainDatabase(driver)
+        val stored = com.jarves.mh.runtime.task.TaskStateStore(reopened).get("legacy")!!
+        assertEquals(3, reopened.schemaVersion)
+        assertEquals("saved prompt", stored.prompt)
+        assertEquals("chat", stored.chatId)
+        assertNull(stored.nativeControlJson)
+        reopened.close()
+    }
 
     @Test
     fun testFreshDatabaseInitializationIsVersion2() {
         val driver = BrainDatabaseDriverFactory.createInMemoryDriver()
         val db = BrainDatabase(driver)
 
-        assertEquals(2, db.schemaVersion)
+        assertEquals(3, db.schemaVersion)
 
         val version = driver.query("PRAGMA user_version") { row ->
             row.getInt("user_version") ?: 0
         }.firstOrNull()
-        assertEquals(2, version)
+        assertEquals(3, version)
 
         // Verify V2 tables exist
         val tables = driver.query("SELECT name FROM sqlite_master WHERE type='table'") { row ->
@@ -138,7 +158,7 @@ class BrainDatabaseMigrationTest {
 
         // 3. Open BrainDatabase which runs the migration
         val db = BrainDatabase(driver)
-        assertEquals(2, db.schemaVersion)
+        assertEquals(3, db.schemaVersion)
 
         val repo = ContextMemoryRepository(db)
         val entry1 = repo.getById("1")
@@ -345,7 +365,7 @@ class BrainDatabaseMigrationTest {
 
         // Migrate to V2
         val db = BrainDatabase(driver)
-        assertEquals(2, db.schemaVersion)
+        assertEquals(3, db.schemaVersion)
         val repo = ContextMemoryRepository(db)
 
         // 1. EPISODIC remains identifiable as legacy EPISODIC
@@ -455,7 +475,7 @@ class BrainDatabaseMigrationTest {
 
         // 3. Now run the genuine BrainDatabase migration cleanly
         val db = BrainDatabase(driver)
-        assertEquals(2, db.schemaVersion)
+        assertEquals(3, db.schemaVersion)
         val finalCols = driver.query("PRAGMA table_info(memory_entries)") { it.getString("name") ?: "" }.toSet()
         assertTrue("knowledge_type should exist now", "knowledge_type" in finalCols)
         assertTrue("canonical_tasks table should exist", "canonical_tasks" in driver.query("SELECT name FROM sqlite_master WHERE type='table'") { it.getString("name") ?: "" }.toSet())

@@ -326,12 +326,22 @@ data class ProviderProfile(
     val claudeThinkingLevel: String = "default",
     /** Stable id of a multi-profile custom provider; blank for built-ins and the legacy single custom profile. */
     val profileId: String = "",
+    /** Comma-separated OpenRouter provider slugs, tried in order. Blank keeps automatic routing. */
+    val openRouterProviderOrder: String = "",
+    /** Whether OpenRouter may use providers outside [openRouterProviderOrder]. */
+    val openRouterAllowFallbacks: Boolean = true,
 ) {
     /** Vault id for this profile's API keys. Legacy and built-in profiles keep the kind-scoped id. */
     val secretId: String get() = if (profileId.isBlank()) kind.name else "custom:$profileId"
 
     /** Effective base URL: fixed kinds always resolve to their constant, ignoring stored drift. */
     val resolvedBaseUrl: String get() = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl
+
+    val openRouterProviders: List<String>
+        get() = openRouterProviderOrder.split(',')
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
 }
 
 enum class ProjectKind { PROJECT, QUICK_PROJECT }
@@ -477,6 +487,11 @@ sealed interface RuntimeEvent {
         val toolName: String,
         val detail: String,
     ) : RuntimeEvent
+    data class ToolProgress(
+        override val sessionId: String,
+        val toolName: String,
+        val detail: String,
+    ) : RuntimeEvent
     data class RuntimeLog(
         override val sessionId: String,
         val title: String,
@@ -508,7 +523,21 @@ data class ChatMessage(
     val workItems: List<ActivityItem> = emptyList(),
     val workedMillis: Long = 0L,
     val activeSkill: String? = null,
+    /**
+     * Who wrote a message that is neither the user's nor the agent's, as `mod:<id>` for a mod's
+     * chat post. Shown in the chat, never sent to the agent as conversation.
+     */
+    val origin: String? = null,
+    /** Explicit supervisor outcome. Absent on legacy history and intermediate work segments. */
+    val workStatus: WorkStatus? = null,
 )
+
+enum class WorkStatus(val label: String) {
+    WORKING("Working"), CHECKING("Checking result"), WAITING_FOR_APPROVAL("Waiting for approval"),
+    WAITING_FOR_INPUT("Waiting for input"), RECOVERING("Recovering"), STOPPING("Stopping"),
+    COMPLETED("Completed"), UNVERIFIED("Finished · unverified"), FAILED("Failed"),
+    STOPPED("Stopped"), INTERRUPTED("Interrupted"),
+}
 
 data class ChatAttachment(
     val id: String = UUID.randomUUID().toString(),
@@ -646,6 +675,7 @@ enum class SlashCommandCategory(val title: String) {
     CONFIG("Configuration"),
     DIAGNOSTICS("Diagnostics"),
     VCS("Version Control"),
+    MODS("Mods"),
 }
 
 data class SlashCommand(
@@ -656,6 +686,10 @@ data class SlashCommand(
     val isLocalOnly: Boolean = false,
     val parameterHint: String? = null,
     val supportedAgents: Set<AgentKind> = AgentKind.entries.toSet(),
+    /** A prompt template: choosing it puts this text in the composer instead of the command. */
+    val insertText: String? = null,
+    /** The mod that added this command, shown in the `/` menu. */
+    val source: String? = null,
 )
 
 enum class SkillSource(val title: String) {
@@ -663,7 +697,8 @@ enum class SkillSource(val title: String) {
     LINKED("Linked from Other Project"),
     GLOBAL("Global Library"),
     BUNDLED("Built-in System"),
-    OTHER_PROJECT("Available in Other Project");
+    OTHER_PROJECT("Available in Other Project"),
+    MOD("Installed Mod");
 }
 
 data class LinkedSkillReference(
@@ -733,6 +768,9 @@ data class SkillInfo(
     val sourceProjectName: String? = null,
     val isReadOnly: Boolean = false,
     val isMissingSource: Boolean = false,
+    val guestFilePath: String? = null,
+    val sourceWorkspacePath: String? = null,
+    val allowImplicitInvocation: Boolean = true,
 )
 
 data class ProjectRule(

@@ -157,7 +157,7 @@ object LiquidGlassTokens {
     val PressHighlightLight = Color(0x0D000000)
 
     // Standard touch-target and radius tokens (concentric with PocketRadius)
-    val MinTouchTarget: Dp = 44.dp
+    val MinTouchTarget: Dp = 48.dp
     val ControlRadius: Dp = 14.dp
     val PillRadius: Dp = 999.dp
     val SheetRadius: Dp = 28.dp

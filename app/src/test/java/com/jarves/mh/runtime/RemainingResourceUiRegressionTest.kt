@@ -32,7 +32,7 @@ class RemainingResourceUiRegressionTest {
         val vm = source("ui/MainViewModel.kt").substringAfter("fun addChatAttachments").substringBefore("fun removePendingAttachment")
         assertTrue(vm.contains("state.activeProject?.id != project.id"))
         assertTrue(vm.contains("state.activeChatId != chatId"))
-        assertTrue(vm.contains("state.isRunning"))
+        assertTrue(vm.contains("composerSends != sendsAtImport"))
         val preview = source("ui/WorkspaceScreen.kt").substringAfter("private fun PreviewTab")
         assertFalse(preview.contains("current.url != targetUrl"))
         assertTrue(preview.contains("onRelease"))

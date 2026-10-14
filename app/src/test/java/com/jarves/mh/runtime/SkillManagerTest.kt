@@ -102,11 +102,13 @@ class SkillManagerTest {
         )
         assertNotNull(skillInfo)
 
-        val index = manager.buildProgressiveDisclosureIndex(listOf(skillInfo!!))
+        val index = manager.buildProgressiveDisclosureIndex(listOf(skillInfo!!.copy(guestFilePath = "/workspace/project/.agents/skills/xml/SKILL.md")))
         assertTrue(index.contains("<skills>"))
         assertTrue(index.contains("xml-test &amp; more"))
         assertTrue(index.contains("Tests &lt;xml&gt; &amp; 'escaping'"))
         assertFalse(index.contains("<xml>"))
+        assertFalse(index.contains(skillFile.absolutePath))
+        assertFalse(index.contains("view_file"))
     }
 
     @Test

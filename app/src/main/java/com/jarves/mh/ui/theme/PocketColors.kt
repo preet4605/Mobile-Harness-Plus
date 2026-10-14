@@ -4,6 +4,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 
@@ -110,10 +111,36 @@ internal val DarkColorRoles = PocketColorRoles(
     gray = Color(0xFF8E8E93),
 )
 
+/** The roles [PocketTheme] chose (its accent may come from a mod); null outside it. */
+internal val LocalPocketColorRoles = staticCompositionLocalOf<PocketColorRoles?> { null }
+
 /** Colour roles for the current theme (follows the app's theme setting, not the system's). */
 object PocketColors {
     val current: PocketColorRoles
         @Composable
         @ReadOnlyComposable
-        get() = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) DarkColorRoles else LightColorRoles
+        get() {
+            val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+            // A subtree with its own light or dark scheme keeps the plain roles for it.
+            val chosen = LocalPocketColorRoles.current
+            return if (chosen != null && chosen.isDark == dark) chosen else if (dark) DarkColorRoles else LightColorRoles
+        }
+}
+
+/** A design-token colour by name (`blue`, `purple`...), as mods name them; null for an unknown name. */
+fun PocketColorRoles.named(name: String): Color? = when (name) {
+    "red" -> red
+    "orange" -> orange
+    "yellow" -> yellow
+    "green" -> green
+    "mint" -> mint
+    "teal" -> teal
+    "cyan" -> cyan
+    "blue" -> blue
+    "indigo" -> indigo
+    "purple" -> purple
+    "pink" -> pink
+    "brown" -> brown
+    "gray" -> gray
+    else -> null
 }

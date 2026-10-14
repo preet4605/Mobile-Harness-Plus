@@ -24,7 +24,8 @@ class BoundedOutputBuffer(
     fun appendLine(line: String) {
         val trimmed = line.trimEnd('\r')
         if (isErrorLine(trimmed)) {
-            lastErrorCandidate = trimmed
+            // The diagnostic survives line eviction, so it needs its own retention bound.
+            lastErrorCandidate = trimmed.take((maxBytes / 2).coerceAtLeast(0))
         }
 
         val lineBytes = trimmed.length * 2 // approx memory bytes

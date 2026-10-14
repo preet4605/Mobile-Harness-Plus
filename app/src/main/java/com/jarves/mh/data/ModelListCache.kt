@@ -10,9 +10,10 @@ import org.json.JSONObject
 internal object ModelListCache {
 
     /** Fixed-endpoint providers ignore whatever URL was typed last. */
-    fun key(agent: AgentKind, kind: ProviderKind, baseUrl: String): String {
+    fun key(agent: AgentKind, kind: ProviderKind, baseUrl: String, accountId: String? = null): String {
         val endpoint = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl.trim().trimEnd('/')
-        return "model_list_v1|${agent.stableId}|${kind.name}|$endpoint"
+        val accountScope = if (kind == ProviderKind.CHATGPT && accountId != null) "|account:$accountId" else ""
+        return "model_list_v1|${agent.stableId}|${kind.name}|$endpoint$accountScope"
     }
 
     fun encode(models: List<DiscoveredModel>): String {

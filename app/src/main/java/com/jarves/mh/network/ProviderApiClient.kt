@@ -1,5 +1,6 @@
 package com.jarves.mh.network
 
+import com.jarves.mh.model.ProviderProfile
 import com.jarves.mh.model.ProviderProtocol
 import org.json.JSONArray
 import org.json.JSONObject
@@ -86,9 +87,11 @@ class ProviderApiClient(
         apiKey: String,
         protocol: ProviderProtocol,
         discoveredModels: List<DiscoveredModel>,
+        openRouterProviderOrder: String = "",
+        openRouterAllowFallbacks: Boolean = true,
     ): ConnectionValidation = withContext(Dispatchers.IO) {
-        if (baseUrl.isBlank() || model.isBlank() || apiKey.isBlank()) {
-            return@withContext ConnectionValidation.Failure("Base URL, model, and API key are required.")
+        if (baseUrl.isBlank() || model.isBlank()) {
+            return@withContext ConnectionValidation.Failure("Base URL and model are required.")
         }
         if (com.jarves.mh.provider.isRevokedProvider(baseUrl) || com.jarves.mh.provider.isRevokedProvider(model)) {
             return@withContext ConnectionValidation.Failure(
@@ -97,7 +100,7 @@ class ProviderApiClient(
             )
         }
         val endpoint = messagesEndpoint(baseUrl, protocol)
-        val body = validationBody(model, protocol)
+        val body = validationBody(model, protocol, openRouterProviderOrder, openRouterAllowFallbacks)
         // Gateways may need to cold-start a model before returning the first token.
         // A ten-second validation timeout produced false "network" failures even
         // though discovery and the endpoint itself were healthy.
@@ -152,6 +155,79 @@ class ProviderApiClient(
         }
     }
 
+    /**
+     * One non-streamed answer (mod `$.model.complete`, spec v2 P10). Throws with the provider's
+     * reason when it fails.
+     */
+    suspend fun complete(
+        baseUrl: String,
+        model: String,
+        apiKey: String,
+        protocol: ProviderProtocol,
+        prompt: String,
+        system: String?,
+        maxTokens: Int,
+    ): ModelCompletion = withContext(Dispatchers.IO) {
+        val endpoint = messagesEndpoint(baseUrl, protocol)
+        val response = request(endpoint, "POST", apiKey, completionBody(model, protocol, prompt, system, maxTokens), protocol, readTimeoutMs = 90_000)
+        if (response.code !in 200..299) {
+            error(providerErrorMessage(response.body) ?: response.error ?: friendlyHttpError(response.code))
+        }
+        parseCompletion(response.body, protocol)
+    }
+
+    internal fun completionBody(model: String, protocol: ProviderProtocol, prompt: String, system: String?, maxTokens: Int): String = when (protocol) {
+        ProviderProtocol.OPENAI_RESPONSES -> JSONObject()
+            .put("model", model)
+            .put("input", prompt)
+            .put("max_output_tokens", maxTokens)
+            .apply { if (system != null) put("instructions", system) }
+        ProviderProtocol.OPENAI_CHAT -> JSONObject()
+            .put("model", model)
+            .put("max_tokens", maxTokens)
+            .put("messages", JSONArray().apply {
+                if (system != null) put(JSONObject().put("role", "system").put("content", system))
+                put(JSONObject().put("role", "user").put("content", prompt))
+            })
+        else -> JSONObject()
+            .put("model", model)
+            .put("max_tokens", maxTokens)
+            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
+            .apply { if (system != null) put("system", system) }
+    }.toString()
+
+    internal fun parseCompletion(body: String, protocol: ProviderProtocol): ModelCompletion {
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: error("The provider's answer wasn't JSON.")
+        val usage = root.optJSONObject("usage")
+        return when (protocol) {
+            ProviderProtocol.OPENAI_CHAT -> ModelCompletion(
+                root.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content").orEmpty(),
+                usage?.optInt("prompt_tokens") ?: 0,
+                usage?.optInt("completion_tokens") ?: 0,
+            )
+            ProviderProtocol.OPENAI_RESPONSES -> {
+                val text = root.optString("output_text").ifEmpty {
+                    val output = root.optJSONArray("output") ?: JSONArray()
+                    (0 until output.length()).mapNotNull { output.optJSONObject(it) }
+                        .filter { it.optString("type") == "message" }
+                        .flatMap { item -> item.optJSONArray("content")?.let { c -> (0 until c.length()).mapNotNull { c.optJSONObject(it) } }.orEmpty() }
+                        .filter { it.optString("type") == "output_text" }
+                        .joinToString("") { it.optString("text") }
+                }
+                ModelCompletion(text, usage?.optInt("input_tokens") ?: 0, usage?.optInt("output_tokens") ?: 0)
+            }
+            else -> {
+                val content = root.optJSONArray("content") ?: JSONArray()
+                ModelCompletion(
+                    (0 until content.length()).mapNotNull { content.optJSONObject(it) }
+                        .filter { it.optString("type") == "text" }.joinToString("") { it.optString("text") },
+                    usage?.optInt("input_tokens") ?: 0,
+                    usage?.optInt("output_tokens") ?: 0,
+                )
+            }
+        }
+    }
+
     private fun request(
         endpoint: String,
         method: String,
@@ -163,6 +239,9 @@ class ProviderApiClient(
     ): HttpResult {
         if (com.jarves.mh.provider.isRevokedProvider(endpoint)) {
             return HttpResult(403, "Blocked: revoked phishing provider", "Connection blocked: revoked phishing provider")
+        }
+        if (!LocalNetwork.isPlainHttpAllowed(endpoint)) {
+            return HttpResult(0, "", "Plain http:// is only allowed for local network addresses. Use https:// for this server.")
         }
         return runCatching {
             val connection = openConnection(endpoint).apply {
@@ -239,7 +318,12 @@ class ProviderApiClient(
             url.path.trimEnd('/').endsWith("/models")
     }.getOrDefault(false)
 
-    internal fun validationBody(model: String, protocol: ProviderProtocol): String = when (protocol) {
+    internal fun validationBody(
+        model: String,
+        protocol: ProviderProtocol,
+        openRouterProviderOrder: String = "",
+        openRouterAllowFallbacks: Boolean = true,
+    ): String = when (protocol) {
         ProviderProtocol.OPENAI_RESPONSES -> JSONObject()
             .put("model", model)
             .put(
@@ -265,8 +349,23 @@ class ProviderApiClient(
             .toString()
         else -> JSONObject()
             .put("model", model)
-            .put("max_tokens", 1)
+            .put("max_tokens", 8)
             .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "Reply OK")))
+            .let { body ->
+                // Test the same provider routing the agent run will use.
+                if (protocol == ProviderProtocol.OPENROUTER) {
+                    com.jarves.mh.runtime.applyOpenRouterRouting(
+                        body,
+                        ProviderProfile(
+                            kind = com.jarves.mh.model.ProviderKind.LLM_ROUTER,
+                            openRouterProviderOrder = openRouterProviderOrder,
+                            openRouterAllowFallbacks = openRouterAllowFallbacks,
+                        ),
+                    )
+                } else {
+                    body
+                }
+            }
             .toString()
     }
 
@@ -300,6 +399,9 @@ class ProviderApiClient(
 
     private data class HttpResult(val code: Int, val body: String, val error: String? = null)
 }
+
+/** One answer from [ProviderApiClient.complete], with the tokens the provider counted. */
+data class ModelCompletion(val text: String, val inputTokens: Int, val outputTokens: Int)
 
 object ModelResponseParser {
     fun parse(json: String): List<DiscoveredModel> = runCatching {

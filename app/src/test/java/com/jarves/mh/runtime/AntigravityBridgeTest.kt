@@ -129,6 +129,69 @@ class AntigravityBridgeTest {
     }
 
     @Test
+    fun `workspace prompt gives Android builds an offline fast path and an online first build`() {
+        val prompt = antigravityWorkspacePrompt("bold-kalam", "Build the app")
+        assertTrue("timeout 15m" in prompt)
+        assertTrue("timeout 5m" in prompt)
+        assertTrue("--offline" in prompt)
+        assertTrue("no existing debug APK" in prompt)
+        assertTrue("existing debug APK" in prompt)
+        assertTrue("assembleDebug" in prompt)
+    }
+
+    @Test
+    fun `shows completed command output instead of repeating command`() {
+        val parsed = AntigravityEventParser.parse(
+            """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"gradle assembleDebug"},"output":"Preparing\r\nBUILD SUCCESSFUL\r\n"}}}""",
+        )
+        assertEquals(
+            AntigravityParsedEvent.ToolCompleted("Bash", "Preparing\nBUILD SUCCESSFUL"),
+            parsed,
+        )
+    }
+
+    @Test
+    fun `shows tool errors as completed activity`() {
+        val parsed = AntigravityEventParser.parse(
+            """{"event":"step_update","step_update":{"state":"ERROR","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"gradle assembleDebug"},"error":{"type":"TOOL_ERROR","message":"context canceled"}}}}""",
+        )
+        assertEquals(
+            AntigravityParsedEvent.ToolCompleted("Bash", "context canceled"),
+            parsed,
+        )
+    }
+
+    @Test
+    fun `Gradle heartbeat reports elapsed time before command output arrives`() {
+        val detail = antigravityGradleProgress("gradle assembleDebug", 42_900L)
+
+        assertTrue(detail.startsWith("Gradle is running · 42s"))
+        assertTrue("gradle assembleDebug" in detail)
+        assertTrue("Full output will appear" in detail)
+    }
+
+    @Test
+    fun `network timeout during silent auth is not reported as signed out`() {
+        val message = antigravityFriendlyError(
+            "You are not logged into Antigravity",
+            "userinfo request failed: dial tcp: lookup www.googleapis.com: i/o timeout",
+        )
+
+        assertEquals(
+            "Antigravity could not reach Google. Check your internet or DNS connection, then try again.",
+            message,
+        )
+    }
+
+    @Test
+    fun `genuine missing authentication still asks for Google sign in`() {
+        assertEquals(
+            "Antigravity needs Google sign-in. Open Settings → Coding agent.",
+            antigravityFriendlyError("You are not logged into Antigravity"),
+        )
+    }
+
+    @Test
     fun `quota error detection identifies rate limits and exhausted resource errors`() {
         assertTrue(isQuotaError("Resource has been exhausted (e.g. check quota)"))
         assertTrue(isQuotaError("HTTP 429: Too Many Requests"))

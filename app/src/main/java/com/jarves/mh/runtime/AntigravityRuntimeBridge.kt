@@ -85,9 +85,17 @@ internal object AntigravityEventParser {
                     }.ifBlank { type.ifBlank { "Tool" } }
                     val name = antigravityToolDisplayName(rawName)
                     val detail = antigravityToolDetail(step, rawName).ifBlank { name }
-                    val isDone = step.optString("state") == "DONE"
+                    val isDone = step.optString("state") in setOf("DONE", "ERROR")
                     if (isDone) {
-                        results.add(AntigravityParsedEvent.ToolCompleted(name, detail))
+                        val info = step.optJSONObject("tool_info")
+                        val output = info?.optString("output")
+                            ?.takeIf(String::isNotBlank)
+                            ?.let(::antigravityToolOutput)
+                        val error = info?.optJSONObject("error")
+                            ?.optString("message")
+                            ?.takeIf(String::isNotBlank)
+                            ?.let(::redactToolDetail)
+                        results.add(AntigravityParsedEvent.ToolCompleted(name, output ?: error ?: detail))
                     } else {
                         results.add(AntigravityParsedEvent.ToolStarted(name, detail))
                     }
@@ -326,6 +334,22 @@ private fun redactToolDetail(value: String): String = value
     .trim()
     .take(500)
 
+internal fun antigravityGradleProgress(command: String, elapsedMillis: Long): String {
+    val elapsedSeconds = (elapsedMillis.coerceAtLeast(0L) / 1_000L)
+    return "Gradle is running · ${elapsedSeconds}s\n$command\nFull output will appear when the command completes."
+}
+
+/** Command output keeps its line breaks, so it is redacted without collapsing whitespace. */
+private fun antigravityToolOutput(value: String): String {
+    val redacted = value
+        .replace(Regex("(?i)(api[_-]?key|token|secret|password)(\\s*[=:]\\s*)([^\\s'\"]+)"), "$1$2••••")
+        .replace(Regex("(?i)(authorization:\\s*bearer\\s+)[^\\s'\"]+"), "$1••••")
+        .replace("\r\n", "\n")
+        .replace('\r', '\n')
+        .trim()
+    return if (redacted.length <= 6_000) redacted else "…\n" + redacted.takeLast(6_000)
+}
+
 /** Official Antigravity CLI bridge. OAuth and credentials remain owned by agy. */
 private const val HELLO_TIMEOUT_MILLIS = 90_000L
 class AntigravityRuntimeBridge(
@@ -480,6 +504,7 @@ class AntigravityRuntimeBridge(
         }
         val effectiveAttemptId = attemptId ?: snapshot?.attemptId
         val injectedPrompt = ControlledBrainInjector.inject(prompt, snapshot, taskId, effectiveAttemptId)
+        val sessionStartedAtMillis = System.currentTimeMillis()
         activeSessionId = sessionId
         activeTaskId = taskId
         val cancellationActive = taskId != null && runCatching {
@@ -513,7 +538,16 @@ class AntigravityRuntimeBridge(
             }
 
             val attemptedAccountIds = mutableSetOf<String>()
-            val existingConvId = conversationId(projectId)
+            val taskSupervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
+            val owner = taskId?.let { taskSupervisor.stateStore.get(it) }
+            val previousChatTask = owner?.let {
+                taskSupervisor.stateStore.getLatestTaskForChatAnyAgent(projectId, it.chatId, it.taskId)
+            }
+            val canResumeNativeConversation = NativeConversationScope.mayResumeFrom(
+                previousChatTask, owner, com.jarves.mh.model.AgentKind.ANTIGRAVITY,
+            )
+            var currentConversationId = if (canResumeNativeConversation) conversationId(projectId) else null
+            val existingConvId = currentConversationId
             val initialStickyAccountId = if (!existingConvId.isNullOrBlank()) conversationAccount?.invoke(projectId) else null
             var currentStickyAccountId = initialStickyAccountId
             var sessionCompleted = false
@@ -546,7 +580,7 @@ class AntigravityRuntimeBridge(
                 } else "/root"
                 val env = if (useAccount) mapOf("HOME" to guestHome) else emptyMap()
 
-                val currentConvId = conversationId(projectId) ?: existingConvId
+                val currentConvId = currentConversationId
                 val isStickyTurn = (useAccount && account!!.id == currentStickyAccountId && !currentConvId.isNullOrBlank())
                 val targetConvId = if (isStickyTurn) currentConvId else null
                 val effectivePrompt = if (!isStickyTurn && conversationHistory.isNotEmpty()) {
@@ -564,6 +598,8 @@ class AntigravityRuntimeBridge(
                     }
                     startForegroundRuntime(projectSlug, taskId)
                     val installed = installer.installedRuntime()
+                    // Mods' guest tools (mod plan row 11); Antigravity reaches them as commands.
+                    com.jarves.mh.mods.ModGuestTools.prepare(installed.rootfs, com.jarves.mh.mods.ModRegistry.getInstance(context).snapshot.value)
                     val workspace = checkpoints.ensureWorkspace(projectId)
                     checkpoints.createCheckpoint(projectId, workspace)
                     val before = checkpoints.snapshot(workspace)
@@ -578,6 +614,7 @@ class AntigravityRuntimeBridge(
                         guestWorkspacePath = "/workspace/$projectSlug",
                         credentialHome = guestHome,
                         emulateHardLinks = false,
+                        maxOutputBytes = NativeSpawnProcess.STREAMING_OUTPUT_BYTES,
                     )
                     activeProcess = process
                     val nativePid = (process as? NativeSpawnProcess)?.processPid
@@ -588,9 +625,7 @@ class AntigravityRuntimeBridge(
                         process = process,
                         pid = nativePid
                     )
-                    if (!bound) {
-                        Log.w("AntigravityBridge", "Process binding failed for task $taskId / session $sessionId (PID: $nativePid)")
-                    }
+                    check(bound) { "Antigravity process no longer belongs to an active task" }
                     if (userStopRequested) process.destroy()
                     val request = JSONObject()
                         .put("event", "user")
@@ -605,10 +640,15 @@ class AntigravityRuntimeBridge(
                     val pending = CodexLineAssembler()
                     var resultSeen = false
                     var assistantTextSeen = false
+                    var activeToolName: String? = null
+                    var activeToolDetail = ""
+                    var activeToolStartedAtMillis = 0L
+                    var lastToolProgressAtMillis = 0L
                     suspend fun handleLine(line: String) {
                         AntigravityEventParser.parseEvents(line).forEach { event ->
                             when (event) {
                                 is AntigravityParsedEvent.Initialized -> {
+                                    currentConversationId = event.conversationId
                                     saveConversationId(projectId, event.conversationId)
                                     if (useAccount) saveConversationAccount?.invoke(projectId, account!!.id)
                                 }
@@ -618,9 +658,16 @@ class AntigravityRuntimeBridge(
                                 }
                                 is AntigravityParsedEvent.ToolStarted -> {
                                     attemptHadTools = true
+                                    activeToolName = event.name
+                                    activeToolDetail = event.detail
+                                    activeToolStartedAtMillis = System.currentTimeMillis()
+                                    lastToolProgressAtMillis = activeToolStartedAtMillis
                                     eventBus.emit(RuntimeEvent.ToolStarted(sessionId, event.name, event.detail))
                                 }
-                                is AntigravityParsedEvent.ToolCompleted -> eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, event.name, event.detail))
+                                is AntigravityParsedEvent.ToolCompleted -> {
+                                    if (activeToolName == event.name) activeToolName = null
+                                    eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, event.name, event.detail))
+                                }
                                 is AntigravityParsedEvent.Subagent -> eventBus.emit(RuntimeEvent.SubagentUpdated(sessionId, event.subagent))
                                 is AntigravityParsedEvent.Task -> eventBus.emit(RuntimeEvent.TaskUpdated(sessionId, event.task))
                                 is AntigravityParsedEvent.Artifact -> eventBus.emit(RuntimeEvent.ArtifactDiscovered(sessionId, event.artifact))
@@ -628,6 +675,7 @@ class AntigravityRuntimeBridge(
                                 is AntigravityParsedEvent.TokenUsage -> eventBus.emit(RuntimeEvent.TokenUsageUpdated(sessionId, event.metrics))
                                 is AntigravityParsedEvent.Result -> {
                                     event.conversationId?.let {
+                                        currentConversationId = it
                                         saveConversationId(projectId, it)
                                         if (useAccount) saveConversationAccount?.invoke(projectId, account!!.id)
                                     }
@@ -643,9 +691,23 @@ class AntigravityRuntimeBridge(
                         }
                     }
                     var lastOutputTime = System.currentTimeMillis()
+                    val idle = IdlePoll(50)
                     while (process.isAlive || native.outputFile.length() > offset) {
                         val available = native.outputFile.length() - offset
                         if (available <= 0) {
+                            val now = System.currentTimeMillis()
+                            if (activeToolName == "Bash" && activeToolDetail.contains("gradle", ignoreCase = true) &&
+                                now - activeToolStartedAtMillis >= 10_000L && now - lastToolProgressAtMillis >= 10_000L
+                            ) {
+                                lastToolProgressAtMillis = now
+                                eventBus.emit(
+                                    RuntimeEvent.ToolProgress(
+                                        sessionId,
+                                        "Bash",
+                                        antigravityGradleProgress(activeToolDetail, now - activeToolStartedAtMillis),
+                                    ),
+                                )
+                            }
                             // Watchdog: If result was observed and output drained, don't hang indefinitely on Node.js event loop
                             if (resultSeen && (System.currentTimeMillis() - lastOutputTime >= 1500L)) {
                                 Log.i("AntigravityBridge", "Result observed and output drained; closing process gracefully")
@@ -655,9 +717,10 @@ class AntigravityRuntimeBridge(
                                 }
                                 break
                             }
-                            delay(50)
+                            idle.await()
                             continue
                         }
+                        idle.reset()
                         lastOutputTime = System.currentTimeMillis()
                         val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
                         val count = RandomAccessFile(native.outputFile, "r").use { file ->
@@ -677,7 +740,9 @@ class AntigravityRuntimeBridge(
                     }
                     val exit = process.waitFor()
                     native.checkCapture()
-                    val success = (exit == 0) && (resultSeen || assistantTextSeen)
+                    // A SUCCESS result event is terminal. The watchdog above stops agy when it keeps
+                    // running afterwards, so the signal exit code (143/137) must not fail the task.
+                    val success = resultSeen || (exit == 0 && assistantTextSeen)
                     if (success) {
                         if (useAccount) {
                             accountManager!!.recordUsage(account!!.id)
@@ -721,6 +786,7 @@ class AntigravityRuntimeBridge(
                         accountManager?.selectAccountForTurn(excludeAccountIds = attemptedAccountIds) != null
 
                     if (!userStopRequested && !retryBlockedByChanges && (isQuota || isAuth) && hasMoreAccounts) {
+                        currentConversationId = null
                         currentStickyAccountId = null
                         activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
                         activeProcess = null
@@ -750,7 +816,8 @@ class AntigravityRuntimeBridge(
                         activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
                         val failure = if (!userStopRequested && attemptHadTools)
                             AntigravitySessionException("REPLAY_UNSAFE: An interrupted attempt ran tools. Review its changes and external actions before trying again.") else error
-                        val message = if (userStopRequested) "Stopped by user" else friendlyError(failure.message.orEmpty())
+                        val message = if (userStopRequested) "Stopped by user"
+                        else friendlyError(failure.message.orEmpty(), recentAntigravityDiagnostic(sessionStartedAtMillis))
                         emitFailure(sessionId, message)
                         if (userStopRequested) cancelForegroundRuntime()
                         else finishForegroundRuntime(false, projectSlug, message)
@@ -761,7 +828,8 @@ class AntigravityRuntimeBridge(
             }
             sessionId
         } catch (error: Throwable) {
-            val message = if (userStopRequested) "Stopped by user" else friendlyError(error.message.orEmpty())
+            val message = if (userStopRequested) "Stopped by user"
+            else friendlyError(error.message.orEmpty(), recentAntigravityDiagnostic(sessionStartedAtMillis))
             emitFailure(sessionId, message)
             if (userStopRequested) cancelForegroundRuntime()
             else finishForegroundRuntime(false, projectSlug, message)
@@ -858,17 +926,7 @@ class AntigravityRuntimeBridge(
     }
 
     override suspend fun acceptFileChange(projectId: String, path: String): Boolean = withContext(Dispatchers.IO) {
-        if (path !in checkpoints.readChangedPaths(projectId)) return@withContext false
-        val workspace = checkpoints.ensureWorkspace(projectId)
-        val backup = File(checkpoints.checkpointDir(projectId), "project")
-        val current = checkpoints.safeWorkspaceFile(workspace, path)
-        val baseline = checkpoints.safeWorkspaceFile(backup, path)
-        if (current.isFile) {
-            baseline.parentFile?.mkdirs()
-            current.copyTo(baseline, overwrite = true)
-        } else baseline.delete()
-        checkpoints.removeChangedPath(projectId, path)
-        true
+        checkpoints.acceptFileChange(projectId, path)
     }
 
     private suspend fun emitCompleted(sessionId: String) {
@@ -914,26 +972,56 @@ class AntigravityRuntimeBridge(
         }
     }
 
-    private fun friendlyError(raw: String): String {
-        val value = raw.replace(Regex("\\s+"), " ").trim()
-        return when {
-            value.contains("authentication required", true) ||
-                value.contains("authentication failed", true) ||
-                value.contains("not signed in", true) ->
-                "Antigravity needs Google sign-in. Open Settings → Coding agent."
-            value.contains("out of credits", true) || value.contains("quota", true) ->
-                "Your Antigravity account is out of credits. Check the account plan or wait for credits to reset."
-            isNetworkError(value) ->
-                "Network connection interrupted. Please check your internet connection."
-            value.contains("timed out", true) || value.contains("timeout", true) ->
-                "Antigravity reached the 60-minute task limit. Your files were kept."
-            value.contains("model", true) && (value.contains("invalid", true) || value.contains("unknown", true)) ->
-                "The selected Antigravity model is unavailable. Refresh models in Settings."
-            value.isBlank() -> "Antigravity could not complete the task."
-            else -> value.take(500)
-        }
+    private fun friendlyError(raw: String, diagnostic: String = ""): String = antigravityFriendlyError(raw, diagnostic)
+
+    /** Newest Antigravity CLI log written since [sinceMillis], tail only. Empty when none is found. */
+    private fun recentAntigravityDiagnostic(sinceMillis: Long): String = runCatching {
+        val logDir = File(installer.installedRuntime().rootfs, "root/.gemini/antigravity-cli/log")
+        val latest = logDir.listFiles()
+            ?.filter { it.isFile && it.name.startsWith("cli-") && it.lastModified() >= sinceMillis - 2_000L }
+            ?.maxByOrNull(File::lastModified)
+            ?: return@runCatching ""
+        latest.readTailText(12_000)
+    }.getOrDefault("")
+}
+
+/**
+ * The CLI log can hold lines from before this task started, so [diagnostic] is only read for the
+ * network and sign-in branches. Quota, timeout and model messages come from [raw] alone.
+ */
+internal fun antigravityFriendlyError(raw: String, diagnostic: String = ""): String {
+    val value = raw.replace(Regex("\\s+"), " ").trim()
+    val diag = diagnostic.replace(Regex("\\s+"), " ").trim()
+    val combined = "$value $diag"
+    return when {
+        ANTIGRAVITY_NETWORK_ERRORS.any { combined.contains(it, ignoreCase = true) } ->
+            "Antigravity could not reach Google. Check your internet or DNS connection, then try again."
+        combined.contains("authentication required", true) ||
+            combined.contains("authentication failed", true) ||
+            combined.contains("not signed in", true) ||
+            combined.contains("not logged in", true) ->
+            "Antigravity needs Google sign-in. Open Settings → Coding agent."
+        value.contains("out of credits", true) || value.contains("quota", true) ->
+            "Your Antigravity account is out of credits. Check the account plan or wait for credits to reset."
+        value.contains("timed out", true) || value.contains("timeout", true) ->
+            "Antigravity reached the 60-minute task limit. Your files were kept."
+        value.contains("model", true) && (value.contains("invalid", true) || value.contains("unknown", true)) ->
+            "The selected Antigravity model is unavailable. Refresh models in Settings."
+        value.isBlank() -> "Antigravity could not complete the task."
+        else -> value.take(500)
     }
 }
+
+private val ANTIGRAVITY_NETWORK_ERRORS = listOf(
+    "dial tcp",
+    "i/o timeout",
+    "network is unreachable",
+    "no address associated with hostname",
+    "temporary failure in name resolution",
+    "unknownhost",
+    "failed to fetch user info",
+    "userinfo request failed",
+)
 
 private class AntigravitySessionException(message: String) : IllegalStateException(message)
 
@@ -975,6 +1063,13 @@ internal fun antigravityWorkspacePrompt(
     return buildString {
         appendLine("<pocketdev_workspace>")
         appendLine("The active project workspace is /workspace/$projectSlug. Create, edit, read, run, and build project files only inside this directory. Do not create project output under ~/.gemini/antigravity-cli/scratch or any other scratch directory.")
+        appendLine()
+        appendLine("For Android projects, never use plain `gradle build` or start a Gradle daemon. Build only the debug APK. First check whether `app/build/outputs/apk/debug/` already contains an APK.")
+        appendLine("- For a first build with no existing debug APK, allow dependency resolution and use:")
+        appendLine("  `timeout 15m gradle -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 --init-script /root/.gradle/init.d/pocketdev-android.gradle -Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 assembleDebug --console=plain --stacktrace`")
+        appendLine("- For a later build with an existing debug APK, prefer the cached fast path:")
+        appendLine("  `timeout 5m gradle -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 --offline --init-script /root/.gradle/init.d/pocketdev-android.gradle -Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 assembleDebug --console=plain --stacktrace`")
+        appendLine("PocketDev bundles the standard Android dependencies locally. If and only if the cached build finishes with a clear missing-cached-dependency error, retry once online with `timeout 15m`, removing only `--offline` and retaining all other flags. Do not retry a timed-out or resource-failed build unchanged.")
         appendLine("</pocketdev_workspace>")
         if (memoryBlock.isNotBlank()) {
             appendLine()

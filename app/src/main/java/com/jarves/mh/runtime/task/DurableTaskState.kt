@@ -116,4 +116,5 @@ data class DurableTaskRecord(
     val cancellationRequested: Boolean = false,
     val recoveryRequired: Boolean = false,
     val checkpointId: String? = null,
+    val nativeControlJson: String? = null,
 )

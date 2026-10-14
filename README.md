@@ -380,7 +380,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
   ```bash
   ./gradlew -PplayBuild=true assembleDebug
   ```
-  Refer to the [Google Play Release Checklist](docs/PLAY_STORE_CHECKLIST.md) for signing and permission policies.
+  Refer to [Release readiness](docs/tasks.md#release-readiness) for signing, declarations and remaining release checks.
 
 </details>
 
@@ -417,8 +417,13 @@ Mobile-Harness/
 │   ├── assets/         # Verified rootfs checksums, licenses, base configuration
 │   └── res/            # Android icons, XML drawables, vector assets
 ├── fastlane/           # Play Store metadata, graphics, and release automation
-└── docs/               # In-depth architectural notes & Play Store review guides
+└── docs/               # prd, architecture, rules, design, tasks and memory
 ```
+
+The six maintained project documents are [requirements](docs/prd.md),
+[architecture](docs/architecture.md), [coding rules](docs/rules.md),
+[UI/UX direction](docs/design.md), [tasks and progress](docs/tasks.md),
+and [project context](docs/memory.md).
 
 </details>
 

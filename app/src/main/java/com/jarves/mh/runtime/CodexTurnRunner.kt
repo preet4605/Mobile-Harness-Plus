@@ -71,6 +71,7 @@ internal data class CodexRunResult(
     val failure: String,
     val exitCode: Int,
     val threadId: String?,
+    val goalStatus: String? = null,
 )
 
 /**
@@ -135,6 +136,7 @@ internal class CodexTurnRunner(
         var stopSignalAt = NONE
         var forceKilledAt = NONE
         var stuckReads = 0
+        val idle = IdlePoll(config.pollMs)
 
         fun terminate(t: Long) {
             if (terminateAt == NONE) {
@@ -212,9 +214,10 @@ internal class CodexTurnRunner(
 
                 val available = length - offset
                 if (available <= 0L) {
-                    delay(config.pollMs)
+                    idle.await()
                     continue
                 }
+                idle.reset()
                 val count = io.readOutput(offset, buffer, minOf(available, buffer.size.toLong()).toInt())
                 if (count <= 0) {
                     // The capture file shrank or cannot be read; do not spin on it forever.

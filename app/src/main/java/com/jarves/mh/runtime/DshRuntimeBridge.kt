@@ -127,7 +127,7 @@ class DshRuntimeBridge(
         val secret = if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER) {
             secretFor(provider)?.ifBlank { "antigravity-local-token" } ?: "antigravity-local-token"
         } else {
-            secretFor(provider).orEmpty()
+            secretFor(provider).orEmpty().ifBlank { localServerPlaceholderKey(provider) }
         }
         if (secret.isBlank()) {
             val message = "No API key is saved for ${provider.kind.title}."
@@ -143,6 +143,7 @@ class DshRuntimeBridge(
         }
 
         var antigravityGateway: AntigravityGatewayServer? = null
+        var openRouterGateway: OpenRouterRoutingGateway? = null
         runCatching {
             RuntimeTaskController.stopAction = {
                 userStopRequested = true
@@ -162,14 +163,21 @@ class DshRuntimeBridge(
             }
             installer.cleanDshNativeCache()
             installer.ensureDshAndroidCompatibility()
+            // Mods' guest tools (mod plan row 11); DeepSeek reaches them as commands.
+            com.jarves.mh.mods.ModGuestTools.prepare(installed.rootfs, com.jarves.mh.mods.ModRegistry.getInstance(context).snapshot.value)
             val workspace = checkpoints.ensureWorkspace(projectId)
             checkpoints.createCheckpoint(projectId, workspace)
             val before = checkpoints.snapshot(workspace)
             if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER) {
                 antigravityGateway = AntigravityGatewayServer(effectiveAccountMgr, targetModel = { provider.model }).start()
+            } else if (provider.kind == ProviderKind.LLM_ROUTER && provider.openRouterProviders.isNotEmpty() && secret.isNotBlank()) {
+                openRouterGateway = OpenRouterRoutingGateway(provider, secret).start()
             }
-            val route = DshRouteMapper.forProfile(provider, localGatewayUrl = antigravityGateway?.url)
-            writeDshSettings(installed.rootfs, route, provider)
+            val route = DshRouteMapper.forProfile(
+                provider,
+                localGatewayUrl = antigravityGateway?.url ?: openRouterGateway?.url,
+            )
+            writeDshSettings(installed.rootfs, route, provider, modGate = com.jarves.mh.mods.ModHost.current.value?.toolGateMatcher != null)
             val dshSecret = if (provider.kind == ProviderKind.ANTIGRAVITY_SERVER && antigravityGateway != null) {
                 antigravityGateway.gatewaySecret
             } else {
@@ -193,6 +201,7 @@ class DshRuntimeBridge(
                 // hard-link emulation turns that rename into a dangling `.l2s`
                 // symlink after the temp file is removed, losing the real file.
                 emulateHardLinks = false,
+                maxOutputBytes = NativeSpawnProcess.STREAMING_OUTPUT_BYTES,
             )
             activeProcess = process
             val nativePid = (process as? NativeSpawnProcess)?.processPid
@@ -203,9 +212,7 @@ class DshRuntimeBridge(
                 process = process,
                 pid = nativePid
             )
-            if (!bound) {
-                Log.w("DshBridge", "Process binding failed for task $taskId / session $sessionId (PID: $nativePid)")
-            }
+            check(bound) { "DeepSeek process no longer belongs to an active task" }
             if (userStopRequested) process.destroy()
             val sdkResult = runSdkSession(
                 process = process,
@@ -227,7 +234,10 @@ class DshRuntimeBridge(
             } else if (!File(checkpoints.checkpointDir(projectId), "changes.json").isFile) {
                 acceptLastChanges(projectId)
             }
-            if (exit == 0 && sdkResult.completed && !userStopRequested) {
+            // `turn/end` is the authoritative result. Some Android/PRoot builds keep
+            // the SDK wrapper alive after acknowledging shutdown, so cleanup may end
+            // it with SIGKILL and produce 137 even though the turn completed normally.
+            if (sdkResult.completed && sdkResult.failure.isBlank() && !userStopRequested) {
                 emitCompletedOnce(sessionId)
                 finishForegroundRuntime(
                     completed = true,
@@ -256,6 +266,7 @@ class DshRuntimeBridge(
                 if (activeSessionId == sessionId) {
                     (activeProcess as? NativeSpawnProcess)?.outputFile?.delete()
                     antigravityGateway?.close()
+                    openRouterGateway?.close()
                     activeProcess = null
                     activeSessionId = null
                     activeTaskId = null
@@ -267,6 +278,7 @@ class DshRuntimeBridge(
         if (activeSessionId == sessionId) {
             (activeProcess as? NativeSpawnProcess)?.outputFile?.delete()
             antigravityGateway?.close()
+            openRouterGateway?.close()
             activeProcess = null
             activeSessionId = null
             activeTaskId = null
@@ -295,6 +307,7 @@ class DshRuntimeBridge(
         var sawActivity = false
         var shutdownSent = false
         var shutdownSentAt = 0L
+        var forcedShutdown = false
         var inputClosed = false
         var failure = ""
 
@@ -393,20 +406,25 @@ class DshRuntimeBridge(
             }
         }
 
+        val idle = IdlePoll(50)
         while (process.isAlive || nativeProcess.outputFile.length() > outputOffset) {
             if (
                 process.isAlive &&
+                !forcedShutdown &&
                 shutdownSentAt > 0L &&
                 android.os.SystemClock.elapsedRealtime() - shutdownSentAt >= SDK_SHUTDOWN_TIMEOUT_MS
             ) {
                 closeInput()
+                forcedShutdown = true
+                Log.w("DshBridge", "SDK acknowledged completion but did not exit; stopping its runtime wrapper")
                 process.destroyForcibly()
             }
             val available = nativeProcess.outputFile.length() - outputOffset
             if (available <= 0) {
-                delay(50)
+                idle.await()
                 continue
             }
+            idle.reset()
             val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
             val count = RandomAccessFile(nativeProcess.outputFile, "r").use { file ->
                 file.seek(outputOffset)
@@ -498,19 +516,7 @@ class DshRuntimeBridge(
     }
 
     override suspend fun acceptFileChange(projectId: String, path: String): Boolean = withContext(Dispatchers.IO) {
-        if (checkpoints.isInternalRuntimePath(path) || path !in checkpoints.readChangedPaths(projectId)) return@withContext false
-        val workspace = checkpoints.ensureWorkspace(projectId)
-        val backup = File(checkpoints.checkpointDir(projectId), "project")
-        val current = checkpoints.safeWorkspaceFile(workspace, path)
-        val baseline = checkpoints.safeWorkspaceFile(backup, path)
-        if (current.isFile) {
-            baseline.parentFile?.mkdirs()
-            current.copyTo(baseline, overwrite = true)
-        } else if (baseline.isFile) {
-            baseline.delete()
-        }
-        checkpoints.removeChangedPath(projectId, path)
-        true
+        checkpoints.acceptFileChange(projectId, path)
     }
 
     private suspend fun emitReasoningSummary(
@@ -521,22 +527,23 @@ class DshRuntimeBridge(
         isFinal: Boolean,
         force: Boolean = false,
     ) {
-        val summary = text.replace(Regex("\\s+"), " ").trim().take(2_000)
-        if (summary.isBlank()) return
         val now = android.os.SystemClock.elapsedRealtime()
-        if (force || now - lastThinkingUpdateAt >= 400) {
-            lastThinkingUpdateAt = now
-            eventBus.emit(
-                RuntimeEvent.ReasoningSummary(
-                    sessionId = sessionId,
-                    summary = summary,
-                    blockId = blockId,
-                    startsNewBlock = startsNewBlock,
-                    isFinal = isFinal,
-                ),
-            )
-            pushForegroundProgress("Thinking…")
-        }
+        // Reasoning arrives as a cumulative value. Skip throttled frames before doing
+        // any text work so a long-running agent cannot repeatedly scan a multi-MB string.
+        if (!force && now - lastThinkingUpdateAt < 400) return
+        val summary = compactDshText(text, MAX_DSH_REASONING_BUFFER, MAX_DSH_REASONING_SUMMARY)
+        if (summary.isBlank()) return
+        lastThinkingUpdateAt = now
+        eventBus.emit(
+            RuntimeEvent.ReasoningSummary(
+                sessionId = sessionId,
+                summary = summary,
+                blockId = blockId,
+                startsNewBlock = startsNewBlock,
+                isFinal = isFinal,
+            ),
+        )
+        pushForegroundProgress("Thinking…")
     }
 
     private suspend fun emitCompletedOnce(sessionId: String) {
@@ -568,7 +575,7 @@ class DshRuntimeBridge(
     private fun friendlyError(error: Throwable): String {
         val message = error.message.orEmpty()
         return when {
-            error is DshSessionException -> message
+            error is DshSessionException && message.isMeaningfulDshText() -> message
             message.contains("authentication", true) ||
                 message.contains("invalid api key", true) ||
                 message.contains("autherror", true) ||
@@ -589,7 +596,7 @@ class DshRuntimeBridge(
                 message.contains("connection reset", true) ->
                 "Network connection interrupted. Please check your internet connection."
             message.contains("not installed", true) -> message.take(300)
-            message.isBlank() -> "DeepSeek Harness could not start."
+            !message.isMeaningfulDshText() -> "DeepSeek Harness could not start."
             else -> message.take(500)
         }
     }
@@ -761,9 +768,40 @@ class DshRuntimeBridge(
             }
         }
 
-        internal fun writeDshSettings(rootfs: File, route: DshRoute, provider: ProviderProfile) {
+        /** The DeepSeek Harness package that runs Claude-style command hooks; it ships with dsh. */
+        private const val DSH_HOOKS_PACKAGE = "@deepseek-ai/dsh-hooks-claude-code"
+        private const val DSH_MOD_HOOKS_PATH = "$DSH_HOME_GUEST_PATH/mh-mod-hooks.json"
+
+        /**
+         * Mods' tool gate for DeepSeek (mod plan row 6): dsh's Claude-hooks bridge runs
+         * `harness-tools gate --harness deepseek` before every tool call. That bridge honors deny
+         * only, which is all [com.jarves.mh.mods.ModHost.gateDeepSeekTool] answers.
+         */
+        internal fun buildDshModGatePatch(): String = buildString {
+            appendLine("- insert:")
+            appendLine("    - id: mh-mod-gate")
+            appendLine("      name: '$DSH_HOOKS_PACKAGE'")
+            appendLine("      config:")
+            appendLine("        configPath: $DSH_MOD_HOOKS_PATH")
+            appendLine("        defaultTimeoutMs: 10000")
+        }
+
+        internal fun buildDshModHooks(): String = JSONObject().put("hooks", JSONObject().put("PreToolUse", JSONArray().put(
+            JSONObject().put("matcher", "*").put("hooks", JSONArray().put(
+                JSONObject().put("type", "command").put("command", "/usr/local/bin/harness-tools gate --harness deepseek").put("timeout", 10),
+            )),
+        ))).toString()
+
+        /**
+         * Writes dsh's settings. [modGate] (a running mod gates tool calls) adds the mods' tool gate,
+         * but only when this dsh install has the hooks package, so an older install still starts.
+         */
+        internal fun writeDshSettings(rootfs: File, route: DshRoute, provider: ProviderProfile, modGate: Boolean = false) {
             val home = File(rootfs, DSH_HOME_GUEST_PATH.removePrefix("/")).apply { mkdirs() }
-            val cordisPatch = buildDshCordisPatch(route, provider)
+            val hooksPackage = File(rootfs, "usr/local/lib/dsh/node_modules/$DSH_HOOKS_PACKAGE/package.json")
+            val gate = modGate && hooksPackage.isFile
+            if (gate) File(home, "mh-mod-hooks.json").writeText(buildDshModHooks())
+            val cordisPatch = buildDshCordisPatch(route, provider) + if (gate) "\n" + buildDshModGatePatch() else ""
             File(home, "cordis.patch.yml").writeText(cordisPatch)
             val sdkProfileDir = File(home, "profiles/sdk")
             if (sdkProfileDir.isDirectory) {
@@ -811,7 +849,7 @@ internal object DshRouteMapper {
                 name = "mh-openrouter",
                 keyEnv = DshRuntimeBridge.FALLBACK_KEY_ENV,
                 defaultModel = model,
-                custom = DshCustomRoute("anthropic-messages", profile.resolvedBaseUrl),
+                custom = DshCustomRoute("anthropic-messages", localGatewayUrl ?: profile.resolvedBaseUrl),
             )
             ProviderKind.KIMI -> DshRoute(
                 name = "mh-kimi",
@@ -890,11 +928,15 @@ internal sealed interface DshSdkProtocolEvent {
     data object Ignored : DshSdkProtocolEvent
 }
 
+/** The SDK sometimes reports a JSON null as the literal text "null"; treat that as no message. */
+private fun String.isMeaningfulDshText(): Boolean =
+    isNotBlank() && !trim().equals("null", ignoreCase = true)
+
 /** Stateful parser for the pinned dsh SDK's newline-delimited JSON-RPC stream. */
 internal class DshSdkProtocolParser(private val expectedSessionId: String) {
     private val reasoningByBlock = mutableMapOf<Long, StringBuilder>()
     private val textByBlock = mutableMapOf<Long, StringBuilder>()
-    private val streamedTextSinceMessage = StringBuilder()
+    private var streamedTextSinceMessage = false
     private val toolNames = mutableMapOf<String, String>()
     private val usageByStep = mutableMapOf<Long, com.jarves.mh.model.SessionTokenMetrics>()
     private val children = mutableMapOf<String, com.jarves.mh.model.SubagentInfo>()
@@ -902,7 +944,11 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
     fun parseLine(line: String): DshSdkProtocolEvent {
         val frame = runCatching { JSONObject(line) }.getOrNull()
             ?: return if (line.startsWith("dsh:", ignoreCase = true)) {
-                DshSdkProtocolEvent.Failed(line.removePrefix("dsh:").trim())
+                DshSdkProtocolEvent.Failed(
+                    line.removePrefix("dsh:").trim().meaningfulDshText(
+                        "DeepSeek Harness reported an unspecified error",
+                    ),
+                )
             } else {
                 DshSdkProtocolEvent.Ignored
             }
@@ -911,7 +957,7 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
             val id = frame.optInt("id", -1)
             frame.optJSONObject("error")?.let { error ->
                 return DshSdkProtocolEvent.Failed(
-                    error.optString("message").ifBlank { "DeepSeek Harness SDK request $id failed" },
+                    error.optString("message").meaningfulDshText("DeepSeek Harness SDK request $id failed"),
                 )
             }
             return when (id) {
@@ -942,10 +988,10 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
             "assistant/chunk" -> parseAssistantChunk(data)
             "assistant/message" -> {
                 val content = data.optJSONObject("message")?.optJSONArray("content")
-                val text = if (streamedTextSinceMessage.isNotEmpty()) {
+                val text = if (streamedTextSinceMessage) {
                     // `assistant/message` repeats the completed content after the SDK has
                     // already delivered its text deltas. The UI has appended those deltas.
-                    streamedTextSinceMessage.clear()
+                    streamedTextSinceMessage = false
                     ""
                 } else contentText(content)
                 val metrics = data.optJSONObject("usage")?.let { parseUsage(data, it) }
@@ -970,12 +1016,11 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
                 val name = toolNames.remove(callId) ?: "Tool"
                 val error = data.optJSONObject("error")
                 val text = contentText(resultBlock?.optJSONArray("content"))
-                val summary = error?.optString("message").orEmpty()
-                    .ifBlank { text }
-                    .replace(Regex("\\s+"), " ")
-                    .trim()
-                    .take(180)
-                    .ifBlank { "$name completed" }
+                val summary = compactDshText(
+                    error?.optString("message").orEmpty().meaningfulDshText(text),
+                    MAX_DSH_TOOL_RAW_TEXT,
+                    180,
+                ).ifBlank { "$name completed" }
                 DshSdkProtocolEvent.ToolCompleted(callId, name, summary, LocalPreviewDiscovery.candidate(text))
             }
             "turn/end" -> {
@@ -983,7 +1028,7 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
                 when (reason?.optString("kind")) {
                     "error" -> DshSdkProtocolEvent.Failed(
                         reason.optJSONObject("error")?.optString("message").orEmpty()
-                            .ifBlank { "DeepSeek Harness turn failed" },
+                            .meaningfulDshText("DeepSeek Harness turn failed"),
                     )
                     "blocked" -> DshSdkProtocolEvent.Failed("DeepSeek Harness was blocked from completing the task")
                     else -> DshSdkProtocolEvent.TurnCompleted
@@ -992,6 +1037,9 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
             else -> DshSdkProtocolEvent.Ignored
         }
     }
+
+    private fun String.meaningfulDshText(fallback: String): String =
+        if (isMeaningfulDshText()) trim() else fallback
 
     private fun parseAssistantChunk(data: JSONObject): DshSdkProtocolEvent {
         val chunk = data.optJSONObject("chunk") ?: return DshSdkProtocolEvent.Ignored
@@ -1003,14 +1051,15 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
             "text-delta" -> {
                 val delta = chunk.optString("text")
                 if (delta.isEmpty()) return DshSdkProtocolEvent.Ignored
-                textByBlock.getOrPut(blockId) { StringBuilder() }.append(delta)
-                streamedTextSinceMessage.append(delta)
+                textByBlock.getOrPut(blockId) { StringBuilder() }
+                    .appendBounded(delta, MAX_DSH_TEXT_BLOCK_BUFFER)
+                streamedTextSinceMessage = true
                 DshSdkProtocolEvent.AssistantText(delta)
             }
             "reasoning-delta" -> {
                 val buffer = reasoningByBlock.getOrPut(blockId) { StringBuilder() }
                 val starts = buffer.isEmpty()
-                buffer.append(chunk.optString("text"))
+                buffer.appendBounded(chunk.optString("text"), MAX_DSH_REASONING_BUFFER)
                 DshSdkProtocolEvent.Reasoning(blockId, buffer.toString(), starts, isFinal = false)
             }
             "block-end" -> {
@@ -1018,13 +1067,17 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
                 if (block?.optString("type") == "text") {
                     val streamed = textByBlock.remove(blockId)?.toString().orEmpty()
                     val complete = block.optString("text")
-                    val missingSuffix = complete.takeIf { it.startsWith(streamed) }?.removePrefix(streamed).orEmpty()
+                    // Text deltas are already delivered directly. The completed block normally
+                    // repeats them, so avoid retaining or comparing the full response.
+                    val missingSuffix = if (streamed.isEmpty()) complete.takeLast(MAX_DSH_TEXT_BLOCK_BUFFER) else ""
                     if (missingSuffix.isBlank()) return DshSdkProtocolEvent.Ignored
-                    streamedTextSinceMessage.append(missingSuffix)
+                    streamedTextSinceMessage = true
                     return DshSdkProtocolEvent.AssistantText(missingSuffix)
                 }
                 if (block?.optString("type") != "reasoning") return DshSdkProtocolEvent.Ignored
-                val text = block.optString("text").ifBlank { reasoningByBlock[blockId]?.toString().orEmpty() }
+                val text = block.optString("text")
+                    .ifBlank { reasoningByBlock[blockId]?.toString().orEmpty() }
+                    .takeLast(MAX_DSH_REASONING_BUFFER)
                 val starts = blockId !in reasoningByBlock
                 reasoningByBlock.remove(blockId)
                 if (text.isBlank()) DshSdkProtocolEvent.Ignored
@@ -1099,20 +1152,61 @@ internal class DshSdkProtocolParser(private val expectedSessionId: String) {
             listOf("path", "file_path", "command", "pattern", "query")
                 .firstNotNullOfOrNull { key -> json.optString(key).takeIf(String::isNotBlank) }
         }.orEmpty()
-        return detail.ifBlank { arguments }.replace(Regex("\\s+"), " ").trim().take(240)
+        return compactDshText(detail.ifBlank { arguments }, MAX_DSH_TOOL_RAW_TEXT, 240)
             .ifBlank { "Working in the project" }
     }
 
     private fun contentText(content: JSONArray?): String {
         if (content == null) return ""
-        return buildList {
-            for (index in 0 until content.length()) {
-                val block = content.optJSONObject(index) ?: continue
-                when (block.optString("type")) {
-                    "text" -> block.optString("text").takeIf(String::isNotBlank)?.let(::add)
-                    "tool-result" -> contentText(block.optJSONArray("content")).takeIf(String::isNotBlank)?.let(::add)
-                }
+        val result = StringBuilder()
+        for (index in 0 until content.length()) {
+            val block = content.optJSONObject(index) ?: continue
+            val text = when (block.optString("type")) {
+                "text" -> block.optString("text")
+                "tool-result" -> contentText(block.optJSONArray("content"))
+                else -> ""
             }
-        }.joinToString("\n")
+            if (text.isBlank()) continue
+            if (result.isNotEmpty()) result.append('\n')
+            result.appendBounded(text, MAX_DSH_CONTENT_TEXT)
+        }
+        return result.toString()
     }
+}
+
+private const val MAX_DSH_REASONING_BUFFER = 8_000
+private const val MAX_DSH_REASONING_SUMMARY = 2_000
+private const val MAX_DSH_TOOL_RAW_TEXT = 4_000
+private const val MAX_DSH_TEXT_BLOCK_BUFFER = 8_000
+private const val MAX_DSH_CONTENT_TEXT = 16_000
+
+/** Appends and keeps only the newest [maxChars] characters, so long agent output cannot grow unbounded. */
+private fun StringBuilder.appendBounded(value: String, maxChars: Int) {
+    if (value.length >= maxChars) {
+        clear()
+        append(value.takeLast(maxChars))
+        return
+    }
+    append(value)
+    val overflow = length - maxChars
+    if (overflow > 0) delete(0, overflow)
+}
+
+/** Collapses whitespace while inspecting only a bounded tail of untrusted agent output. */
+internal fun compactDshText(value: String, rawLimit: Int, outputLimit: Int): String {
+    if (value.isEmpty() || rawLimit <= 0 || outputLimit <= 0) return ""
+    val start = (value.length - rawLimit).coerceAtLeast(0)
+    val result = StringBuilder(value.length - start)
+    var pendingSpace = false
+    for (index in start until value.length) {
+        val char = value[index]
+        if (char.isWhitespace()) {
+            pendingSpace = result.isNotEmpty()
+        } else {
+            if (pendingSpace) result.append(' ')
+            pendingSpace = false
+            result.append(char)
+        }
+    }
+    return result.toString().takeLast(outputLimit)
 }

@@ -228,6 +228,12 @@ fun AgentScreen(
     onCancelCodexLogin: () -> Unit = {},
     onLogoutCodex: () -> Unit = {},
     onRefreshCodexAuth: () -> Unit = {},
+    onSelectCodexAccount: (String) -> Unit = {},
+    onCodexAccountBalancing: (Boolean) -> Unit = {},
+    onReconnectCodexAccount: (String) -> Unit = {},
+    onEnableCodexAccount: (String, Boolean) -> Unit = { _, _ -> },
+    onRemoveCodexAccount: (String) -> Unit = {},
+    onRenameCodexAccount: (String, String) -> Unit = { _, _ -> },
     listState: LazyListState = rememberLazyListState(),
 ) {
     val scope = rememberCoroutineScope()
@@ -236,13 +242,19 @@ fun AgentScreen(
     var baseUrl by rememberSaveable(state.provider.baseUrl) { mutableStateOf(state.provider.baseUrl) }
     var model by rememberSaveable(state.provider.model) { mutableStateOf(state.provider.model) }
     var dshApi by rememberSaveable(state.provider.dshApi) { mutableStateOf(state.provider.dshApi) }
+    var openRouterProviderOrder by rememberSaveable(state.provider.openRouterProviderOrder) {
+        mutableStateOf(state.provider.openRouterProviderOrder)
+    }
+    var openRouterAllowFallbacks by rememberSaveable(state.provider.openRouterAllowFallbacks) {
+        mutableStateOf(state.provider.openRouterAllowFallbacks)
+    }
     var apiKey by rememberSaveable(selectedKind) { mutableStateOf(getSavedApiKey(selectedKind)) }
     var savedKeys by remember(selectedKind, state.activeApiKeyName) {
         mutableStateOf(getSavedApiKeys(selectedKind))
     }
     var newKeyName by rememberSaveable(selectedKind) { mutableStateOf("") }
     var newApiKey by rememberSaveable(selectedKind) { mutableStateOf("") }
-    var models by remember(selectedKind, baseUrl) {
+    var models by remember(selectedKind, baseUrl, state.selectedCodexAccountId, state.codexAccountRevision) {
         mutableStateOf(startingModels(selectedKind, baseUrl, loadSavedModels))
     }
     var modelSearch by rememberSaveable(selectedKind) { mutableStateOf("") }
@@ -252,6 +264,10 @@ fun AgentScreen(
     var status by remember { mutableStateOf<String?>(null) }
     var statusOk by remember { mutableStateOf(false) }
     var statusProviderMessage by remember { mutableStateOf<String?>(null) }
+    // Claude setup-token test: 0 idle, 1 requested, 2 running. The result is read only after the
+    // test was seen running, so a stale result from an earlier check is never shown.
+    var claudeTestPhase by remember { mutableStateOf(0) }
+    var claudeTestKeyId by remember { mutableStateOf<String?>(null) }
     var keyConnectionStatuses by remember(selectedKind) {
         mutableStateOf<Map<String, KeyConnectionStatus>>(emptyMap())
     }
@@ -307,6 +323,7 @@ fun AgentScreen(
         val supportsPublicDiscovery = selectedKind == ProviderKind.LLM_ROUTER ||
             selectedKind == ProviderKind.OPENCODE_ZEN ||
             selectedKind == ProviderKind.CHATGPT ||
+            selectedKind == ProviderKind.CUSTOM ||
             isAntigravityServer
         if (effectiveKey.isBlank() && !supportsPublicDiscovery) {
             status = "Add an API key first to discover models."
@@ -322,7 +339,14 @@ fun AgentScreen(
             statusProviderMessage = null
             val kind = selectedKind
             val url = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl.trim()
-            val profile = ProviderProfile(kind, url, model.trim(), dshApi = dshApi)
+            val profile = ProviderProfile(
+                kind,
+                url,
+                model.trim(),
+                dshApi = dshApi,
+                openRouterProviderOrder = openRouterProviderOrder,
+                openRouterAllowFallbacks = openRouterAllowFallbacks,
+            )
             when (val result = onDiscoverModels(profile, effectiveKey)) {
                 is ModelDiscoveryResult.Success -> {
                     models = result.models
@@ -353,6 +377,21 @@ fun AgentScreen(
     // Shown only if the selected model accepts it; with no catalog data the stored level is what gets sent.
     val shownCodexEffort = state.codexReasoningEffort.takeIf { codexLevels.isEmpty() || it in codexLevels }.orEmpty()
 
+    LaunchedEffect(state.apiPingStatus, claudeTestPhase) {
+        when {
+            claudeTestPhase == 1 && state.apiPingStatus == ApiPingStatus.PINGING -> claudeTestPhase = 2
+            claudeTestPhase == 2 && (state.apiPingStatus == ApiPingStatus.OK || state.apiPingStatus == ApiPingStatus.FAILED) -> {
+                val ok = state.apiPingStatus == ApiPingStatus.OK
+                val message = state.apiPingMessage ?: if (ok) "Claude subscription works!" else "Claude Code could not answer."
+                status = message
+                statusOk = ok
+                claudeTestKeyId?.let {
+                    keyConnectionStatuses = keyConnectionStatuses + (it to KeyConnectionStatus(message, ok))
+                }
+                claudeTestPhase = 0
+            }
+        }
+    }
     LaunchedEffect(selectedKind) {
         if (selectedKind == ProviderKind.ANTIGRAVITY_SERVER) {
             val url = selectedKind.defaultBaseUrl
@@ -369,6 +408,8 @@ fun AgentScreen(
         baseUrl = kind.defaultBaseUrl
         model = kind.defaultModel
         dshApi = defaultDshApiForProvider(kind)
+        openRouterProviderOrder = ""
+        openRouterAllowFallbacks = true
         models = startingModels(kind, kind.defaultBaseUrl, loadSavedModels)
         modelSearch = ""
         newKeyName = ""
@@ -444,14 +485,34 @@ fun AgentScreen(
             } else {
                 state.provider.claudeAuthMode
             }
-            val profile = ProviderProfile(kind, url, model.trim(), dshApi = dshApi, claudeAuthMode = authMode)
+            val profile = ProviderProfile(
+                kind,
+                url,
+                model.trim(),
+                dshApi = dshApi,
+                claudeAuthMode = authMode,
+                openRouterProviderOrder = openRouterProviderOrder,
+                openRouterAllowFallbacks = openRouterAllowFallbacks,
+            )
             if (kind == ProviderKind.CLAUDE) {
                 onSaveProvider(profile, apiKey.trim())
-                status = "Claude subscription token saved securely. Send a message to verify your subscription."
-                statusOk = true
-                activeKeyId?.let {
-                    keyConnectionStatuses = keyConnectionStatuses +
-                        (it to KeyConnectionStatus("Subscription token saved", true, label = "Saved"))
+                if (authMode == ClaudeAuthMode.SETUP_TOKEN_LEGACY) {
+                    status = "Token saved. Testing it with Claude Code…"
+                    statusOk = true
+                    activeKeyId?.let {
+                        keyConnectionStatuses = keyConnectionStatuses +
+                            (it to KeyConnectionStatus("Testing with Claude Code…"))
+                    }
+                    claudeTestKeyId = activeKeyId
+                    claudeTestPhase = 1
+                    onPing()
+                } else {
+                    status = "Claude subscription token saved securely. Send a message to verify your subscription."
+                    statusOk = true
+                    activeKeyId?.let {
+                        keyConnectionStatuses = keyConnectionStatuses +
+                            (it to KeyConnectionStatus("Subscription token saved", true, label = "Saved"))
+                    }
                 }
             } else when (val result = onValidateProvider(profile, apiKey.trim(), models)) {
                 is ConnectionValidation.Success -> {
@@ -641,17 +702,29 @@ fun AgentScreen(
                             CodexAccountCard(
                                 auth = state.codexAuth,
                                 codexInstalled = state.installedAgentVersions.containsKey(AgentKind.CODEX),
-                                busy = state.isRunning || state.agentInstalling != null,
+                                busy = state.isRunning || state.isStopping || state.queuedFollowUps.isNotEmpty() || state.codexAccountsInUse.isNotEmpty() || state.agentInstalling != null,
                                 onSignIn = onStartCodexLogin,
                                 onCancel = onCancelCodexLogin,
                                 onSignOut = onLogoutCodex,
                                 onRefresh = onRefreshCodexAuth,
+                                accounts = state.codexAccounts,
+                                selectedAccountId = state.selectedCodexAccountId,
+                                inUse = state.codexAccountsInUse,
+                                onSelectAccount = onSelectCodexAccount,
+                                balancingEnabled = state.codexAccountBalancing,
+                                onBalancingChanged = onCodexAccountBalancing,
+                                onReconnectAccount = onReconnectCodexAccount,
+                                onEnableAccount = onEnableCodexAccount,
+                                onRemoveAccount = onRemoveCodexAccount,
+                                onRenameAccount = onRenameCodexAccount,
                             )
                         }
                         item(key = "model") {
                             ListSection(
                                 header = "Model",
-                                footer = "Leave this on Codex default unless you need a specific model.",
+                                footer = if (model.isNotBlank() && models.isNotEmpty() && models.none { it.id == model })
+                                    "This model is not in the selected account's saved catalog. Discover models or choose Codex default."
+                                else "Leave this on Codex default unless you need a specific model.",
                             ) {
                                 ListRow(
                                     "Model",
@@ -679,6 +752,41 @@ fun AgentScreen(
                                 baseUrl = baseUrl,
                                 onBaseUrl = onBaseUrl,
                             )
+                        }
+                        if (selectedKind == ProviderKind.LLM_ROUTER) {
+                            item(key = "openrouter-routing") {
+                                ListSection(
+                                    header = "Provider routing",
+                                    footer = "Optional OpenRouter provider slugs, separated by commas and tried in order.",
+                                ) {
+                                    Box(Modifier.fillMaxWidth().padding(horizontal = ListInset, vertical = PocketSpacing.md)) {
+                                        PocketTextField(
+                                            value = openRouterProviderOrder,
+                                            onValueChange = {
+                                                openRouterProviderOrder = it
+                                                status = null
+                                                statusProviderMessage = null
+                                                keyConnectionStatuses = emptyMap()
+                                            },
+                                            placeholder = "exacto, together",
+                                            label = "Provider order",
+                                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                        )
+                                    }
+                                    ToggleRow(
+                                        "Allow provider fallbacks",
+                                        checked = openRouterAllowFallbacks,
+                                        onCheckedChange = {
+                                            openRouterAllowFallbacks = it
+                                            status = null
+                                            statusProviderMessage = null
+                                            keyConnectionStatuses = emptyMap()
+                                        },
+                                        subtitle = "Turn off to use only the providers listed above.",
+                                        enabled = openRouterProviderOrder.isNotBlank(),
+                                    )
+                                }
+                            }
                         }
                         if (state.agentKind == AgentKind.DEEPSEEK_HARNESS && selectedKind in DSH_PROTOCOL_PROVIDERS && !selectedKind.fixedProtocol) {
                             item(key = "protocol") {
@@ -764,7 +872,7 @@ fun AgentScreen(
                                 state.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN
                             val canValidate = !isDiscovering && !isValidating && (
                                 (isAntigravityServer && hasAntigravityAuth && model.isNotBlank()) ||
-                                    (!isAntigravityServer && apiKey.isNotBlank() && (selectedKind == ProviderKind.CLAUDE || (baseUrl.isNotBlank() && model.isNotBlank())))
+                                    (!isAntigravityServer && (apiKey.isNotBlank() || selectedKind == ProviderKind.CUSTOM) && (selectedKind == ProviderKind.CLAUDE || (baseUrl.isNotBlank() && model.isNotBlank())))
                                 )
                             val footer = status?.let { s -> statusProviderMessage?.let { "$s\nProvider: $it" } ?: s }
                             ListSection(footer = footer) {
@@ -972,6 +1080,14 @@ private fun AgentUsageSection(state: AppUiState, onRefresh: () -> Unit) {
         header = "Usage",
         footer = "Session totals come from this chat. Limits are read only when you refresh.",
     ) {
+        if (state.agentKind == AgentKind.CODEX && state.provider.kind == ProviderKind.CHATGPT) {
+            state.codexAccounts.firstOrNull { it.id == state.selectedCodexAccountId }?.let {
+                ListRow("Plan limits for", subtitle = it.label, subtitleMaxLines = 2)
+            }
+            usage.checkedAtMillis?.let { checked ->
+                ListRow("Last refreshed", subtitle = java.text.DateFormat.getDateTimeInstance().format(java.util.Date(checked)))
+            }
+        }
         ListRow(
             "This session",
             subtitle = "${tokens.promptTokens} in · ${tokens.completionTokens} out · ${tokens.cachedTokens} cached tokens",

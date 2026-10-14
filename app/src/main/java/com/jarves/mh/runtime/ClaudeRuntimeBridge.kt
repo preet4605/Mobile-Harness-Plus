@@ -28,6 +28,8 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -238,7 +240,7 @@ class ClaudeRuntimeBridge(
         } else if (isNativeSubscription) {
             null
         } else {
-            secretFor(provider).orEmpty()
+            secretFor(provider).orEmpty().ifBlank { localServerPlaceholderKey(provider) }
         }
         if (!isNativeSubscription && secret.isNullOrBlank()) {
             val message = if (provider.kind == ProviderKind.CLAUDE) {
@@ -253,6 +255,7 @@ class ClaudeRuntimeBridge(
 
         var formatGateway: LocalFormatGateway? = null
         var antigravityGateway: AntigravityGatewayServer? = null
+        var openRouterGateway: OpenRouterRoutingGateway? = null
         runCatching {
             RuntimeTaskController.stopAction = {
                 userStopRequested = true
@@ -284,8 +287,11 @@ class ClaudeRuntimeBridge(
                 )) {
                 formatGateway = LocalFormatGateway(provider, secret.orEmpty()).start()
                 gatewayAuthToken = formatGateway.gatewaySecret
+            } else if (provider.kind == ProviderKind.LLM_ROUTER && provider.openRouterProviders.isNotEmpty() && !secret.isNullOrBlank()) {
+                // The gateway authenticates callers with the same OpenRouter key Claude Code sends.
+                openRouterGateway = OpenRouterRoutingGateway(provider, secret).start()
             }
-            val localGatewayUrl = antigravityGateway?.url ?: formatGateway?.url
+            val localGatewayUrl = antigravityGateway?.url ?: formatGateway?.url ?: openRouterGateway?.url
             val launch = RuntimeLaunchConfigBuilder.build(provider, authToken = gatewayAuthToken ?: secret, localGatewayUrl = localGatewayUrl)
             Log.d("ClaudeBridge", "Provider: ${provider.kind}, Model: ${provider.model}, BaseUrl: ${provider.baseUrl}")
             Log.d("ClaudeBridge", "Launch environment keys: ${launch.environment.keys}")
@@ -294,12 +300,19 @@ class ClaudeRuntimeBridge(
             val guestWorkspacePath = "/workspace/$projectSlug"
             val prefs = com.jarves.mh.data.AppPreferences(context)
             installer.ensureSettingsAndHooks(prefs.claudeInteractiveApprovals)
-            val owner = taskId?.let { com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context).stateStore.get(it) }
+            val taskSupervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)
+            val owner = taskId?.let { taskSupervisor.stateStore.get(it) }
+            val previousChatTask = owner?.let {
+                taskSupervisor.stateStore.getLatestTaskForChatAnyAgent(projectId, it.chatId, it.taskId)
+            }
+            val canResumeNativeConversation = NativeConversationScope.mayResumeFrom(
+                previousChatTask, owner, com.jarves.mh.model.AgentKind.CLAUDE_CODE,
+            )
             val identity = if (provider.kind == ProviderKind.CLAUDE) File(installed.rootfs, "root/.claude/.credentials.json").lastModified().toString()
                 else com.jarves.mh.data.ApiKeyVault(context).credentials(provider.secretId).firstOrNull { it.isActive }?.id.orEmpty()
             val conversationScope = owner?.chatId?.let { NativeConversationScope.key(it, workspace, provider, identity) }
             val savedId = conversationScope?.let { prefs.consumeAgentConversation(com.jarves.mh.model.AgentKind.CLAUDE_CODE, projectId, it) }
-            val resumeId = if (owner?.retryCount == 0 && conversationHistory.count { it.fromUser } > 1)
+            val resumeId = if (canResumeNativeConversation && owner?.retryCount == 0 && conversationHistory.count { it.fromUser } > 1)
                 NativeConversationScope.validId(savedId) else null
             val contextPrompt = buildContextPrompt(injectedPrompt, if (resumeId == null) conversationHistory else emptyList(), guestWorkspacePath, projectKind, memory)
 
@@ -312,6 +325,7 @@ class ClaudeRuntimeBridge(
                 effort = effort,
                 resumeSessionId = resumeId,
                 maxTurns = prefs.claudeMaxTurns,
+                mcpConfig = claudeMcpConfig(installed.rootfs),
             )
             Log.d("ClaudeBridge", "Launching command: $command")
             val process = installer.process(
@@ -322,6 +336,7 @@ class ClaudeRuntimeBridge(
                 command,
                 guestWorkspacePath = guestWorkspacePath,
                 credentialHome = "/root/.claude",
+                maxOutputBytes = NativeSpawnProcess.STREAMING_OUTPUT_BYTES,
             )
             activeProcess = process
             val nativePid = (process as? NativeSpawnProcess)?.processPid
@@ -332,9 +347,7 @@ class ClaudeRuntimeBridge(
                 process = process,
                 pid = nativePid
             )
-            if (!bound) {
-                Log.w("ClaudeBridge", "Process binding failed for task $taskId / session $sessionId (PID: $nativePid)")
-            }
+            check(bound) { "Claude process no longer belongs to an active task" }
             if (userStopRequested) process.destroy()
             coroutineScope {
                 val permissionWatcher = launch { watchPermissionRequests(sessionId) }
@@ -348,6 +361,7 @@ class ClaudeRuntimeBridge(
                         ?: error("Unsupported Android runtime process")
                     var outputOffset = 0L
                     var lastOutputTime = System.currentTimeMillis()
+                    val idle = IdlePoll(50)
                     var terminatedAfterResult = false
                     while (process.isAlive || nativeProcess.outputFile.length() > outputOffset) {
                         val available = nativeProcess.outputFile.length() - outputOffset
@@ -361,9 +375,10 @@ class ClaudeRuntimeBridge(
                                 }
                                 break
                             }
-                            delay(50)
+                            idle.await()
                             continue
                         }
+                        idle.reset()
                         lastOutputTime = System.currentTimeMillis()
                         val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
                         val count = RandomAccessFile(nativeProcess.outputFile, "r").use { file ->
@@ -459,6 +474,7 @@ class ClaudeRuntimeBridge(
                     (activeProcess as? NativeSpawnProcess)?.outputFile?.delete()
                     formatGateway?.close()
                     antigravityGateway?.close()
+                    openRouterGateway?.close()
                     activeProcess = null
                     activeSessionId = null
                     activeTaskId = null
@@ -471,12 +487,72 @@ class ClaudeRuntimeBridge(
             (activeProcess as? NativeSpawnProcess)?.outputFile?.delete()
             formatGateway?.close()
             antigravityGateway?.close()
+            openRouterGateway?.close()
             activeProcess = null
             activeSessionId = null
             activeTaskId = null
             RuntimeTaskController.stopAction = null
         }
         sessionId
+    }
+
+    /**
+     * Runs a one-turn "reply ok" prompt with the saved setup token to prove Claude Code can
+     * authenticate. Claude subscriptions have no HTTP endpoint the app could ping directly.
+     * Returns the reply, or throws with Claude Code's error text.
+     */
+    suspend fun hello(provider: ProviderProfile, timeoutMillis: Long = 90_000L): String = withContext(Dispatchers.IO) {
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        val secret = secretFor(provider).orEmpty()
+        check(secret.isNotBlank()) { "No Claude subscription token is saved." }
+        val installed = installer.installedRuntime()
+        val probeDir = File(context.cacheDir, "claude-hello").apply { mkdirs() }
+        val outputFile = File(context.cacheDir, "claude-hello-${System.nanoTime()}.log")
+        val launch = RuntimeLaunchConfigBuilder.build(provider, authToken = secret)
+        val command = listOf(
+            launch.executable,
+            "-p", "Reply with exactly: ok",
+            "--output-format", "json",
+            "--max-turns", "1",
+            "--model", launch.environment["ANTHROPIC_MODEL"] ?: provider.model,
+        )
+        val process = installer.process(
+            installed.proot,
+            installed.rootfs,
+            probeDir,
+            launch.environment,
+            command,
+            guestWorkspacePath = "/workspace/claude-hello",
+            emulateHardLinks = false,
+            outputFile = outputFile,
+            credentialHome = "/root/.claude",
+        )
+        try {
+            // Close stdin so Claude Code doesn't wait for piped input.
+            runCatching { process.outputStream.close() }
+            withTimeout(timeoutMillis) {
+                while (process.isAlive) delay(200)
+            }
+            val output = outputFile.readTailText(64 * 1024)
+            val result = output.lineSequence()
+                .map(String::trim)
+                .filter { it.startsWith("{") }
+                .mapNotNull { runCatching { JSONObject(it) }.getOrNull() }
+                .lastOrNull { it.optString("type") == "result" }
+            when {
+                result == null -> error(output.trim().takeLast(300).ifBlank { "Claude Code did not answer." })
+                result.optBoolean("is_error") -> error(result.optString("result").ifBlank { result.optString("subtype") })
+                else -> result.optString("result").trim().ifBlank { "ok" }
+            }
+        } catch (e: TimeoutCancellationException) {
+            error("Claude Code did not answer in time. Check your connection and try again.")
+        } finally {
+            runCatching { process.destroy() }
+            runCatching { if (process.isAlive) process.destroyForcibly() }
+            runCatching { outputFile.delete() }
+            runCatching { probeDir.deleteRecursively() }
+            Log.d("ClaudeBridge", "Connection test took ${android.os.SystemClock.elapsedRealtime() - startedAt} ms")
+        }
     }
 
     override suspend fun respondToApproval(request: ToolRequest, approved: Boolean) = withContext(Dispatchers.IO) {
@@ -552,19 +628,7 @@ class ClaudeRuntimeBridge(
     }
 
     override suspend fun acceptFileChange(projectId: String, path: String): Boolean = withContext(Dispatchers.IO) {
-        if (isInternalRuntimePath(path) || path !in readChangedPaths(projectId)) return@withContext false
-        val workspace = ensureWorkspace(projectId)
-        val backup = File(checkpointDir(projectId), "project")
-        val current = safeWorkspaceFile(workspace, path)
-        val baseline = safeWorkspaceFile(backup, path)
-        if (current.isFile) {
-            baseline.parentFile?.mkdirs()
-            current.copyTo(baseline, overwrite = true)
-        } else if (baseline.isFile) {
-            baseline.delete()
-        }
-        removeChangedPath(projectId, path)
-        true
+        checkpoints.acceptFileChange(projectId, path)
     }
 
     private suspend fun watchPermissionRequests(sessionId: String) {
@@ -596,6 +660,25 @@ class ClaudeRuntimeBridge(
                 }
             }
         } finally { observer.stopWatching(); changes.close() }
+    }
+
+    /**
+     * Claude's `--mcp-config`: the app's mods server while a running mod may give tools, plus the
+     * MCP servers of mods allowed guest.tools (written per task next to their files). Null for none.
+     */
+    private fun claudeMcpConfig(rootfs: File): String? {
+        val base = File(rootfs, RuntimeInstaller.CLAUDE_MOD_TOOLS_CONFIG.removePrefix("/"))
+        val modsServer = com.jarves.mh.mods.ModHost.current.value
+            ?.let { host -> host.toolsPossible || host.snapshot.value.tools.isNotEmpty() } == true && base.isFile
+        val servers = com.jarves.mh.mods.ModGuestTools.prepare(rootfs, com.jarves.mh.mods.ModRegistry.getInstance(context).snapshot.value)
+        if (servers.isEmpty()) return RuntimeInstaller.CLAUDE_MOD_TOOLS_CONFIG.takeIf { modsServer }
+        return runCatching {
+            val config = com.jarves.mh.mods.ModGuestTools.claudeConfig(
+                if (modsServer) JSONObject(base.readText()) else JSONObject().put("mcpServers", JSONObject()), servers)
+            val path = "${com.jarves.mh.mods.ModGuestTools.GUEST_ROOT}/claude.mcp.json"
+            File(rootfs, path.removePrefix("/")).writeText(config.toString())
+            path
+        }.getOrElse { RuntimeInstaller.CLAUDE_MOD_TOOLS_CONFIG.takeIf { modsServer } }
     }
 
     private fun writeApprovalResponse(file: File, approved: Boolean): Boolean = runCatching {
@@ -652,7 +735,7 @@ class ClaudeRuntimeBridge(
                 when (delta?.optString("type")) {
                     "thinking_delta" -> delta.optString("thinking").takeIf(String::isNotEmpty)?.let {
                         streamedThinking.append(it)
-                        emitReasoningSummary(sessionId, streamedThinking.toString())
+                        emitReasoningSummary(sessionId, streamedThinking)
                     }
                     "text_delta", "" -> delta.optString("text").takeIf(String::isNotEmpty)?.let {
                         streamedText.append(it)
@@ -743,7 +826,7 @@ class ClaudeRuntimeBridge(
                         val toolName = toolNames.remove(toolId) ?: "Tool"
                         val result = block.optString("content")
                             .ifBlank { if (block.optBoolean("is_error")) "Tool failed" else "Completed successfully" }
-                        eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, toolName, sanitizeForDisplay(result), LocalPreviewDiscovery.candidate(result)))
+                        eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, toolName, sanitizeForDisplay(result.take(SUMMARY_SOURCE_CHARS)), LocalPreviewDiscovery.candidate(result)))
                         if (toolName == "Bash") {
                             eventBus.emit(
                                 RuntimeEvent.TaskUpdated(
@@ -807,27 +890,29 @@ class ClaudeRuntimeBridge(
 
     private suspend fun emitReasoningSummary(
         sessionId: String,
-        text: String,
+        text: CharSequence,
         force: Boolean = false,
         startsNewBlock: Boolean = false,
         isFinal: Boolean = false,
     ) {
-        val summary = sanitizeForDisplay(text).trim().take(2_000)
-        if (summary.isBlank() && !startsNewBlock) return
         val now = android.os.SystemClock.elapsedRealtime()
-        if (startsNewBlock || isFinal || force || now - lastThinkingUpdateAt >= 150) {
-            lastThinkingUpdateAt = now
-            eventBus.emit(
-                RuntimeEvent.ReasoningSummary(
-                    sessionId = sessionId,
-                    summary = summary,
-                    blockId = currentThinkingBlockId,
-                    startsNewBlock = startsNewBlock,
-                    isFinal = isFinal,
-                ),
-            )
-            pushForegroundProgress("Thinking…")
-        }
+        // Check the throttle before any text work: this runs for every thinking token, and
+        // copying plus scanning the whole growing block each time is quadratic.
+        if (!(startsNewBlock || isFinal || force || now - lastThinkingUpdateAt >= 150)) return
+        // The display keeps only the first 600 characters, so the rest is never scanned.
+        val summary = sanitizeForDisplay(text.take(SUMMARY_SOURCE_CHARS).toString()).trim().take(2_000)
+        if (summary.isBlank() && !startsNewBlock) return
+        lastThinkingUpdateAt = now
+        eventBus.emit(
+            RuntimeEvent.ReasoningSummary(
+                sessionId = sessionId,
+                summary = summary,
+                blockId = currentThinkingBlockId,
+                startsNewBlock = startsNewBlock,
+                isFinal = isFinal,
+            ),
+        )
+        pushForegroundProgress("Thinking…")
     }
 
     private suspend fun emitReasoningProgress(sessionId: String, tokens: Int) {
@@ -1122,6 +1207,8 @@ class ClaudeRuntimeBridge(
             effort: String? = null,
             resumeSessionId: String? = null,
             maxTurns: Int = 25,
+            /** Guest path of an MCP config to load, for tools running mods give (spec v2 P8). */
+            mcpConfig: String? = null,
         ): List<String> {
             val command = mutableListOf(
                 executable,
@@ -1145,15 +1232,21 @@ class ClaudeRuntimeBridge(
             command.add("--max-turns")
             require(maxTurns in 1..200) { "Claude turn budget must be between 1 and 200" }
             command.add(maxTurns.toString())
+            mcpConfig?.let { command.addAll(listOf("--mcp-config", it)) }
             NativeSpawnProcess.validateArgv(command)
             return command
         }
 
+        private const val SUMMARY_SOURCE_CHARS = 8_000
+        private val SECRET_KEY = Regex("sk-[A-Za-z0-9_-]{8,}")
+        private val SECRET_FIELD = Regex("(?i)(authorization|api[_-]?key|bearer|token|oauth_token)(\\s*[:=]\\s*|\\s+)[^\\s,}]+")
+        private val WHITESPACE_RUN = Regex("\\s+")
+
         fun sanitizeForDisplay(value: String): String {
             return value
-                .replace(Regex("sk-[A-Za-z0-9_-]{8,}"), "sk-••••")
-                .replace(Regex("(?i)(authorization|api[_-]?key|bearer|token|oauth_token)(\\s*[:=]\\s*|\\s+)[^\\s,}]+"), "${'$'}1: ••••")
-                .replace(Regex("\\s+"), " ")
+                .replace(SECRET_KEY, "sk-••••")
+                .replace(SECRET_FIELD, "${'$'}1: ••••")
+                .replace(WHITESPACE_RUN, " ")
                 .trim()
                 .take(600)
         }

@@ -254,7 +254,15 @@ class CanonicalTaskRepository(private val db: BrainDatabase) {
                 )
             }
         }
+        savedListeners.forEach { listener -> runCatching { listener(task) } }
     }
+
+    /** Called on the saving thread after each [saveTask]; mods hear about plan changes this way. */
+    private val savedListeners = java.util.concurrent.CopyOnWriteArraySet<(CanonicalTask) -> Unit>()
+
+    fun addSavedListener(listener: (CanonicalTask) -> Unit) { savedListeners += listener }
+
+    fun removeSavedListener(listener: (CanonicalTask) -> Unit) { savedListeners -= listener }
 
     fun getTask(taskId: String): CanonicalTask? {
         val taskRow = db.driver.query(

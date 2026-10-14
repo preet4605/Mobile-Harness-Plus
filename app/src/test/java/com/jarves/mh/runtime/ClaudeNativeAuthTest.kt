@@ -68,7 +68,8 @@ class ClaudeNativeAuthTest {
         val customConfig = RuntimeLaunchConfigBuilder.build(customProfile, authToken = "sk-custom-secret")
         assertEquals("sk-custom-secret", customConfig.environment["ANTHROPIC_API_KEY"])
         assertEquals("sk-custom-secret", customConfig.environment["ANTHROPIC_AUTH_TOKEN"])
-        assertEquals("https://custom.api.test/v1", customConfig.environment["ANTHROPIC_BASE_URL"])
+        // Claude Code appends /v1/messages itself, so a trailing /v1 is dropped (matches e06c269).
+        assertEquals("https://custom.api.test", customConfig.environment["ANTHROPIC_BASE_URL"])
 
         val openRouterProfile = ProviderProfile(
             kind = ProviderKind.LLM_ROUTER,

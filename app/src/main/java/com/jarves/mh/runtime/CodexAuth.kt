@@ -80,10 +80,16 @@ internal object CodexLoginOutput {
                 text.contains("connection", ignoreCase = true) ||
                 text.contains("network", ignoreCase = true) ->
                 "Couldn't reach OpenAI. Check your internet connection and try again."
-            text.contains("PermissionDenied", ignoreCase = true) || text.contains("workspace", ignoreCase = true) ->
+            text.contains("PermissionDenied", ignoreCase = true) ||
+                (text.contains("workspace", ignoreCase = true) &&
+                    (text.contains("restrict", ignoreCase = true) ||
+                        text.contains("not allowed", ignoreCase = true) ||
+                        text.contains("denied", ignoreCase = true) ||
+                        text.contains("unauthorized", ignoreCase = true))) ->
                 "This ChatGPT workspace isn't allowed to sign in to Codex."
             exitCode == 126 || exitCode == 127 -> "Codex could not start. Reinstall it from Settings → Coding agent."
             exitCode == 137 -> "Codex was killed, likely because the device ran low on memory."
+            exitCode == 0 -> "Sign-in was approved in your browser, but credentials could not be saved locally. Try again."
             else -> "Sign in didn't finish. Try again."
         }
     }
@@ -126,6 +132,7 @@ internal class CodexLoginEngine(
     }
 
     suspend fun run(): Outcome {
+        if (cancelled.get()) return cancelledOutcome()
         onState(CodexAuthState(status = CodexAuthStatus.STARTING))
         val proc = try {
             launch()
@@ -166,9 +173,9 @@ internal class CodexLoginEngine(
                 }
                 delay(pollMs)
             }
+            val exit = proc.exitCode()
             append(output, proc.readNewOutput())
             if (cancelled.get()) return cancelledOutcome()
-            val exit = proc.exitCode()
             return if (exit == 0 && hasCredentials()) {
                 onState(CodexAuthState(status = CodexAuthStatus.SIGNED_IN))
                 Outcome.SignedIn
@@ -203,5 +210,21 @@ internal class CodexLoginEngine(
         /** Codex prints the code right after one request; if nothing usable shows up, stop waiting. */
         const val CODE_WAIT_MS = 60_000L
         private const val MAX_OUTPUT_CHARS = 64 * 1024
+    }
+}
+
+/** Local CLI status is authoritative; an unavailable check is not proof of sign-out. */
+internal enum class CodexCredentialStatus { CHATGPT, SIGNED_OUT, UNAVAILABLE }
+
+internal fun codexCredentialStatus(output: String, exitCode: Int?): CodexCredentialStatus {
+    val text = CodexLoginOutput.clean(output).trim()
+    return when {
+        exitCode == 0 && text.lineSequence().any { it.trim() == "Logged in using ChatGPT" } -> CodexCredentialStatus.CHATGPT
+        exitCode == 0 && text.contains("Logged in using an API key") -> CodexCredentialStatus.SIGNED_OUT
+        exitCode == 1 && (text.lineSequence().any { it.trim() == "Not logged in" } ||
+            text.startsWith("Error checking login status: expected value") ||
+            text.startsWith("Error checking login status: invalid") ||
+            text.startsWith("Error checking login status: missing field")) -> CodexCredentialStatus.SIGNED_OUT
+        else -> CodexCredentialStatus.UNAVAILABLE
     }
 }

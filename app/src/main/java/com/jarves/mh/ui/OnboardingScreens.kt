@@ -1628,7 +1628,8 @@ private fun ProviderCredentialsStep(
     var statusOk by remember { mutableStateOf(false) }
     var showModels by rememberSaveable { mutableStateOf(false) }
     var modelSearch by rememberSaveable { mutableStateOf("") }
-    val hasKey = apiKey.isNotBlank() || hasStoredSecret || provider == ProviderKind.ANTIGRAVITY_SERVER
+    val hasKey = apiKey.isNotBlank() || hasStoredSecret || provider == ProviderKind.ANTIGRAVITY_SERVER ||
+        provider == ProviderKind.CUSTOM
     val filteredModels = remember(models, modelSearch) {
         val query = modelSearch.trim()
         if (query.isEmpty()) models else models.filter {

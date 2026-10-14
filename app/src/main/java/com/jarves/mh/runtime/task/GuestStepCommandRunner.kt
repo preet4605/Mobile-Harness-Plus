@@ -27,7 +27,8 @@ class GuestStepCommandRunner(
                 environment = emptyMap(),
                 guestCommand = listOf("/usr/bin/bash", "-lc", checkedCommand),
                 guestWorkspacePath = "/workspace/${task.projectSlug}",
-                // Every launch now drains output through a bounded pipe capture.
+                // Every launch drains output through a bounded pipe capture; builds log a lot.
+                maxOutputBytes = com.jarves.mh.runtime.NativeSpawnProcess.STREAMING_OUTPUT_BYTES,
             )
         }
         return runner.execute(command, workingDir, timeoutSeconds)

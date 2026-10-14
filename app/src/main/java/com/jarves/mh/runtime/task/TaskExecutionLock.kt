@@ -2,6 +2,8 @@ package com.jarves.mh.runtime.task
 
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
 class DuplicateExecutionException(message: String) : IllegalStateException(message)
@@ -42,10 +44,12 @@ class TaskExecutionLock {
         try {
             return block()
         } finally {
-            mutex.withLock {
-                activeTasks.remove(taskId)
-                if (exclusiveProject) {
-                    activeProjects.remove(projectId)
+            withContext(NonCancellable) {
+                mutex.withLock {
+                    activeTasks.remove(taskId)
+                    if (exclusiveProject) {
+                        activeProjects.remove(projectId)
+                    }
                 }
             }
         }

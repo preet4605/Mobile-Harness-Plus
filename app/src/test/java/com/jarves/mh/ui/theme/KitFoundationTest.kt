@@ -4,6 +4,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -68,6 +69,17 @@ class KitFoundationTest {
     private fun contrast(a: Color, b: Color): Float {
         val (hi, lo) = listOf(a.luminance(), b.luminance()).sortedDescending()
         return (hi + 0.05f) / (lo + 0.05f)
+    }
+
+    @Test fun badgeAndActionForegroundsRemainReadableAfterCompositing() {
+        listOf(LightColors, DarkColors).forEach { scheme ->
+            assertTrue("Badge text AA", contrast(scheme.onPrimary.compositeOver(scheme.primary), scheme.primary) >= 4.5f)
+        }
+        listOf(LightColorRoles, DarkColorRoles).forEach { roles ->
+            listOf(roles.groupedSurface, roles.groupedBackground).forEach { background ->
+                assertTrue("Disclosure/copy controls AA", contrast(roles.secondaryLabel.compositeOver(background), background) >= 4.5f)
+            }
+        }
     }
 
     @Test

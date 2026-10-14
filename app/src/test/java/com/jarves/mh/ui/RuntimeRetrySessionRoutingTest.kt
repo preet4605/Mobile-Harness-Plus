@@ -223,6 +223,8 @@ class RuntimeRetrySessionRoutingTest {
     @Test
     fun `supervisor retry loop delivers the retried answer to the chat`() = runBlocking {
         ControlledBrainInjector.clearAll()
+        // A preceding Robolectric test can initialize service discovery in its own classloader.
+        Class.forName("org.sqlite.JDBC")
         val db = BrainDatabase(BrainDatabaseDriverFactory.createInMemoryDriver())
         val supervisor = TaskSupervisor.createForTesting(context = null, database = db)
         val workspace = tempFolder.newFolder("workspace")

@@ -131,6 +131,27 @@ class TaskStateStoreTest {
     }
 
     @Test
+    fun `latest task for chat includes other engines and excludes requested task`() {
+        fun save(taskId: String, projectId: String, chatId: String, agentKind: String, createdAt: Long) {
+            store.save(DurableTaskRecord(
+                taskId = taskId, projectId = projectId, projectSlug = "slug", chatId = chatId,
+                agentKind = agentKind, providerJson = "{}", prompt = taskId,
+                status = TaskExecutionStatus.COMPLETED, createdAt = createdAt
+            ))
+        }
+
+        save("codex-old", "p-1", "c-1", "CODEX", 10L)
+        save("claude-new", "p-1", "c-1", "CLAUDE", 20L)
+        save("other-project", "p-2", "c-1", "GEMINI", 30L)
+        save("other-chat", "p-1", "c-2", "GEMINI", 40L)
+
+        assertEquals("claude-new", store.getLatestTaskForChatAnyAgent("p-1", "c-1")?.taskId)
+        assertEquals("codex-old", store.getLatestTaskForChatAnyAgent("p-1", "c-1", "claude-new")?.taskId)
+        assertNull(store.getLatestTaskForChatAnyAgent("p-9", "c-1"))
+        assertNull(store.getLatestTaskForChatAnyAgent("p-1", "c-9"))
+    }
+
+    @Test
     fun `test error recording transitions to RECOVERING when retries remain and FAILED when exhausted`() {
         val record = DurableTaskRecord(
             taskId = "t-retry",

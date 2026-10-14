@@ -11,6 +11,7 @@ import com.jarves.mh.ui.theme.heldWhileExiting
 import com.jarves.mh.ui.theme.isTransitionTarget
 import com.jarves.mh.ui.theme.glass.BackdropSourceScope
 import com.jarves.mh.ui.kit.*
+import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Settings
@@ -32,6 +33,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
@@ -39,6 +41,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
@@ -63,6 +66,7 @@ import androidx.compose.material.icons.outlined.SmartToy
 private enum class RootScreen(val label: String, val icon: ImageVector, val selectedIcon: ImageVector) {
     PROJECTS("Projects", Icons.Outlined.Folder, Icons.Rounded.Folder),
     AGENT("Agent", Icons.Outlined.SmartToy, Icons.Rounded.SmartToy),
+    MODS("Mods", Icons.Outlined.Extension, Icons.Rounded.Extension),
     SETTINGS("Settings", Icons.Outlined.Settings, Icons.Rounded.Settings),
 }
 
@@ -73,8 +77,18 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
     val context = LocalContext.current
     val preferences = remember(context) { AppPreferences(context) }
     var reduceTransparency by remember(preferences) { mutableStateOf(preferences.reduceTransparency) }
-    val glassConfig = remember(reduceTransparency) {
-        LiquidGlassConfig.resolve(context, userPreference = reduceTransparency)
+    var glassConfig by remember(context, reduceTransparency) {
+        mutableStateOf(LiquidGlassConfig.resolve(context, userPreference = reduceTransparency))
+    }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, context, reduceTransparency) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                glassConfig = LiquidGlassConfig.resolve(context, userPreference = reduceTransparency)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     val setReduceTransparency = { on: Boolean ->
         preferences.reduceTransparency = on
@@ -82,6 +96,15 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
     }
     SideEffect { PocketMotion.reduced = glassConfig.reduceMotion }
     val projectsListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    // A mod's `$.storage.pick`: the system picker opens once per request; cancelling answers null.
+    val modPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri -> viewModel.completeModPick(uri) }
+    LaunchedEffect(state.modPickTypes) {
+        val types = state.modPickTypes ?: return@LaunchedEffect
+        viewModel.modPickShown()
+        runCatching { modPicker.launch(types.toTypedArray()) }.onFailure { viewModel.completeModPick(null) }
+    }
     val banner = remember { BannerState() }
     LaunchedEffect(state.toastMessage) {
         state.toastMessage?.let { message ->
@@ -188,6 +211,8 @@ private fun AppScreen(
     reduceTransparency: Boolean,
     setReduceTransparency: (Boolean) -> Unit,
 ) {
+    // Mods' items in the chat, file and project menus (mod plan row 18).
+    val modMenus = remember(state.modMenuItems, viewModel) { ModMenuActions(state.modMenuItems, viewModel::runModMenuItem) }
     when (destination) {
         AppDestination.Loading -> StartupLoadingScreen(
             state = state,
@@ -271,16 +296,40 @@ private fun AppScreen(
             onSwitchChat = viewModel::switchReadOnlyChat,
             onContinueHere = viewModel::activateReadOnlyProject,
         )
-        AppDestination.Workspace -> WorkspaceScreen(
+        AppDestination.Workspace -> CompositionLocalProvider(LocalModMenus provides modMenus) { WorkspaceScreen(
             state = state,
             onBack = viewModel::closeProject,
             onSend = viewModel::sendPrompt,
             onStop = viewModel::stopTask,
+            onSteerFollowUp = viewModel::steerQueuedFollowUp,
+            onRemoveFollowUp = viewModel::removeQueuedFollowUp,
+            onComposerDraftConsumed = viewModel::consumeComposerDraft,
             onApproval = viewModel::answerApproval,
             onRefreshFiles = viewModel::refreshProjectFiles,
             onOpenFile = viewModel::openFile,
             onInstallApk = viewModel::installApk,
+            onAndroidBuild = { request ->
+                when (request) {
+                    AndroidBuildRequest.BUILD_AND_RUN -> viewModel.buildAndRunAndroidApp()
+                    AndroidBuildRequest.BUILD_ONLY -> viewModel.buildAndroidApp()
+                    AndroidBuildRequest.FORCE_REBUILD -> viewModel.forceRebuildAndroidApp()
+                }
+            },
+            onCancelAndroidBuild = viewModel::cancelAndroidBuild,
+            onOpenAndroidBuildIssue = viewModel::openAndroidBuildIssue,
             onCloseFile = viewModel::closeFile,
+            onBeginFileEdit = viewModel::beginFileEdit,
+            onUpdateFileDraft = viewModel::updateFileDraft,
+            onCancelFileEdit = viewModel::cancelFileEdit,
+            onSaveFile = viewModel::saveOpenedFile,
+            onReloadFile = viewModel::reloadOpenedFile,
+            onDismissFileConflict = viewModel::dismissFileConflict,
+            onCreateWorkspaceEntry = viewModel::createWorkspaceEntry,
+            onRenameWorkspaceEntry = viewModel::renameWorkspaceEntry,
+            onDeleteWorkspaceEntry = viewModel::deleteWorkspaceEntry,
+            onUploadToWorkspace = viewModel::uploadToWorkspace,
+            onShareWorkspaceFile = viewModel::shareWorkspaceFile,
+            onSaveWorkspaceFileCopy = viewModel::saveWorkspaceFileCopy,
             onUndoChanges = viewModel::undoLastChanges,
             onKeepChanges = viewModel::keepLastChanges,
             onUndoFileChange = viewModel::undoFileChange,
@@ -298,6 +347,7 @@ private fun AppScreen(
             onTerminalClear = viewModel::clearProjectTerminal,
             onTerminalConfirm = viewModel::confirmProjectTerminalCommand,
             onTerminalCancel = viewModel::cancelProjectTerminalCommand,
+            onModConfirm = viewModel::answerModConfirm,
             onUseSuggestedProjectRoot = viewModel::useSuggestedProjectRoot,
             onExportProject = viewModel::exportActiveProject,
             onAddAttachments = viewModel::addChatAttachments,
@@ -317,7 +367,7 @@ private fun AppScreen(
             onSetCustomizationScopeMode = viewModel::setCustomizationScopeMode,
             onToggleSkill = viewModel::toggleSkill,
             onToggleRule = viewModel::toggleRule,
-            onLinkSkill = viewModel::linkSkill,
+            onLinkSkill = { source, name, path -> viewModel.linkSkill(source, name, path) },
             onUnlinkSkill = viewModel::unlinkSkill,
             onImportSkill = viewModel::importSkill,
             onPromoteSkillToGlobal = viewModel::promoteSkillToGlobal,
@@ -335,7 +385,7 @@ private fun AppScreen(
             onDeleteMemoryEntry = viewModel::deleteMemory,
             onClearAutoMemory = viewModel::clearAutoMemory,
             onClearAllMemory = viewModel::clearMemory,
-        )
+        ) }
         AppDestination.Root -> RootScreenHost(state, viewModel, projectsListState, reduceTransparency, setReduceTransparency)
     }
 }
@@ -362,8 +412,12 @@ private fun RootScreenHost(
     val terminalLiveOutput by viewModel.terminalLiveOutput.collectAsStateWithLifecycle()
     val terminalCurrentCommand by viewModel.terminalCurrentCommand.collectAsStateWithLifecycle()
 
+    // A mod's own page after the built-in tabs, when one is switched on (mod plan row 18).
+    val modTab = rememberModTab()
+    var onModTab by rememberSaveable { mutableStateOf(false) }
+    val showModTab = onModTab && modTab != null
     val minimize = rememberTabBarMinimizeState()
-    LaunchedEffect(screen) { minimize.expand() }
+    LaunchedEffect(screen, showModTab) { minimize.expand() }
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         containerColor = MaterialTheme.colorScheme.background,
@@ -384,9 +438,20 @@ private fun RootScreenHost(
                         },
                 ) {
                     FloatingTabBar(
-                        tabs = RootScreen.entries.map { TabItem(it.label, it.icon, it.selectedIcon) },
-                        selectedIndex = screen.ordinal,
-                        onSelect = { screen = RootScreen.entries[it] },
+                        tabs = RootScreen.entries.map { TabItem(it.label, it.icon, it.selectedIcon) } +
+                            listOfNotNull(modTab?.let { TabItem(it.name.take(12), Icons.Outlined.Extension, Icons.Rounded.Extension) }),
+                        selectedIndex = if (showModTab) RootScreen.entries.size else screen.ordinal,
+                        onSelect = {
+                            val next = RootScreen.entries.getOrNull(it)
+                            if (next == null) {
+                                viewModel.cancelProjectOpening()
+                                onModTab = true
+                            } else if (next != screen || showModTab) {
+                                viewModel.cancelProjectOpening()
+                                onModTab = false
+                                screen = next
+                            }
+                        },
                         minimized = minimize.minimized,
                         onExpand = minimize::expand,
                         accessory = {
@@ -414,12 +479,14 @@ private fun RootScreenHost(
             modifier = Modifier.fillMaxSize().nestedScroll(minimize.connection),
         ) {
             AnimatedContent(
-                targetState = screen,
+                // Null: the mod's tab.
+                targetState = if (showModTab) null else screen,
                 transitionSpec = { PocketTransitions.crossFade() },
                 label = "root tab",
             ) { tab ->
             BackdropSourceScope(active = isTransitionTarget) {
             when (tab) {
+                null -> modTab?.let { ModTabPage(it.modId, bottomPadding = floatingNavClearance) }
                 RootScreen.PROJECTS -> ProjectsScreen(
                     state = state,
                     listState = projectsListState,
@@ -482,6 +549,20 @@ private fun RootScreenHost(
                     onCancelCodexLogin = viewModel::cancelCodexLogin,
                     onLogoutCodex = viewModel::logoutCodex,
                     onRefreshCodexAuth = viewModel::refreshCodexAuthStatus,
+                    onSelectCodexAccount = viewModel::selectCodexAccount,
+                    onCodexAccountBalancing = viewModel::setCodexAccountBalancing,
+                    onReconnectCodexAccount = viewModel::reconnectCodexAccount,
+                    onEnableCodexAccount = viewModel::setCodexAccountEnabled,
+                    onRemoveCodexAccount = viewModel::removeCodexAccount,
+                    onRenameCodexAccount = viewModel::renameCodexAccount,
+                )
+                RootScreen.MODS -> ModsScreen(
+                    bottomBarPadding = floatingNavClearance,
+                    projects = state.projects,
+                    agents = AgentKind.entries.filter { it == state.agentKind || it in state.installedAgentVersions },
+                    currentAgent = state.agentKind,
+                    onBuildMod = viewModel::createModDraft,
+                    onOpenProject = viewModel::openProject,
                 )
                 RootScreen.SETTINGS -> Box(
                     modifier = Modifier.fillMaxSize(),
@@ -499,6 +580,8 @@ private fun RootScreenHost(
                         onSetDebugUpdateManifestUrl = viewModel::setDebugUpdateManifestUrl,
                         onClearDebugUpdateManifestUrl = viewModel::clearDebugUpdateManifestUrl,
                         onOpenAgent = { screen = RootScreen.AGENT },
+                        onRefreshDiagnostics = { viewModel.refreshDiagnostics() },
+                        onClearRuntimeCache = viewModel::clearRuntimeOutputCache,
                     )
                 }
             }

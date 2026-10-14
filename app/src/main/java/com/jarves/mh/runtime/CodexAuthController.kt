@@ -1,13 +1,14 @@
 package com.jarves.mh.runtime
 
 import android.content.Context
-import android.content.Intent
-import androidx.core.content.ContextCompat
 import java.io.File
 import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,15 +18,24 @@ import kotlinx.coroutines.withContext
  * Manages Codex's ChatGPT sign-in through `codex login --device-auth`.
  *
  * Codex itself owns the OAuth device flow, token storage and refresh. This class only runs the
- * CLI, shows its link and one-time code, and checks whether `$CODEX_HOME/auth.json` exists. It
+ * CLI, shows its link and one-time code, and validates the selected home with local login status. It
  * never reads or logs the contents of that file.
  */
-class CodexAuthController(
+class CodexAuthController internal constructor(
     private val context: Context,
     private val onSignedInChanged: (Boolean) -> Unit = {},
     private val onLoginCompleted: () -> Unit = {},
+    private val onAccountsChanged: (List<CodexAccount>, String?) -> Unit = { _, _ -> },
+    private val canModifyAccounts: () -> Boolean = { true },
+    private val readAccount: (String) -> CodexAccountDetails? = { CodexModelCatalog(context).readAccount(it) },
+    private val readStatus: ((String) -> CodexCredentialStatus)? = null,
+    private val launchOverride: ((List<String>, File, String) -> Process)? = null,
 ) {
     private val installer = RuntimeInstaller(context)
+    private var foregroundOwner: Any? = null
+    internal val accounts = CodexAccounts(installer.rootfs)
+    private val generation = AtomicLong()
+    private val cancelRequested = AtomicBoolean(false)
     private val mutableState = MutableStateFlow(CodexAuthState())
     val state: StateFlow<CodexAuthState> = mutableState.asStateFlow()
 
@@ -34,62 +44,177 @@ class CodexAuthController(
 
     val isLoginInFlight: Boolean get() = loginInFlight.get()
 
-    fun hasCredentials(): Boolean = CodexRuntimeBridge.hasChatGptCredentials(installer.rootfs)
+    fun hasCredentials(): Boolean = mutableState.value.status == CodexAuthStatus.SIGNED_IN &&
+        runCatching { accounts.selected() }.isSuccess
 
-    /** File check only; starts no process. A sign-in in progress owns the state. */
+    private fun publishAccounts() = onAccountsChanged(accounts.list(), accounts.selectedId())
+
     suspend fun refreshStatus() = withContext(Dispatchers.IO) {
         if (loginInFlight.get()) return@withContext
-        val signedIn = hasCredentials()
-        mutableState.value = if (signedIn) {
-            CodexAuthState(status = CodexAuthStatus.SIGNED_IN)
-        } else {
-            CodexAuthState(status = CodexAuthStatus.SIGNED_OUT)
+        val token = synchronized(this@CodexAuthController) { generation.incrementAndGet() }
+        if (!accounts.legacyRegistered() && credentialStatus(CodexAccounts.LEGACY) == CodexCredentialStatus.CHATGPT) {
+            val legacy = runCatching { readAccount(CodexAccounts.LEGACY) }.getOrNull()
+            currentCoroutineContext().ensureActive()
+            synchronized(this@CodexAuthController) {
+                if (token != generation.get() || loginInFlight.get()) return@withContext
+                accounts.migrateLegacy(legacy?.label ?: "ChatGPT account")
+            }
         }
-        onSignedInChanged(signedIn)
+        val id = accounts.selectedId()
+        val usable = id?.let { runCatching { accounts.requireUsable(it) }.getOrNull() }
+        val status = usable?.let { credentialStatus(it.id) } ?: CodexCredentialStatus.SIGNED_OUT
+        currentCoroutineContext().ensureActive()
+        synchronized(this@CodexAuthController) {
+            if (token != generation.get() || id != accounts.selectedId() || loginInFlight.get()) return@withContext
+            if (status == CodexCredentialStatus.SIGNED_OUT && usable != null) accounts.markExpired(usable.id)
+            val signedIn = status == CodexCredentialStatus.CHATGPT ||
+                (status == CodexCredentialStatus.UNAVAILABLE && mutableState.value.status == CodexAuthStatus.SIGNED_IN &&
+                    usable != null && accounts.credentialFile(usable.id).isFile)
+            mutableState.value = CodexAuthState(status = if (signedIn) CodexAuthStatus.SIGNED_IN else CodexAuthStatus.SIGNED_OUT)
+            publishAccounts()
+            onSignedInChanged(signedIn)
+        }
     }
 
-    suspend fun beginLogin() = withContext(Dispatchers.IO) {
-        if (!loginInFlight.compareAndSet(false, true)) return@withContext
+    @Synchronized
+    fun selectAccount(id: String) {
+        check(!loginInFlight.get()) { "Wait for sign-in to finish." }
+        accounts.select(id)
+        generation.incrementAndGet()
+        mutableState.value = CodexAuthState(status = CodexAuthStatus.SIGNED_OUT)
+        onSignedInChanged(false)
+        publishAccounts()
+    }
+
+    @Synchronized
+    fun renameAccount(id: String, label: String) {
+        check(!loginInFlight.get()) { "Wait for sign-in to finish." }
+        accounts.rename(id, label)
+        publishAccounts()
+    }
+
+    @Synchronized
+    fun setAccountEnabled(id: String, enabled: Boolean) {
+        check(!loginInFlight.get() && canModifyAccounts()) { "Wait for running and queued tasks to finish." }
+        generation.incrementAndGet()
+        accounts.setEnabled(id, enabled)
+        publishAccounts()
+        if (id == accounts.selectedId() && !enabled) {
+            mutableState.value = CodexAuthState(status = CodexAuthStatus.SIGNED_OUT)
+            onSignedInChanged(false)
+        }
+    }
+
+    suspend fun beginLogin(reconnectId: String? = null) = withContext(Dispatchers.IO) {
+        synchronized(this@CodexAuthController) {
+            if (!loginInFlight.compareAndSet(false, true)) return@withContext
+            generation.incrementAndGet()
+            cancelRequested.set(false)
+        }
+        var accountId: String? = null
+        var loginProcess: Process? = null
+        var keepDefault = false
         val capture = File(context.cacheDir, "codex-auth-login.log")
         try {
-            if (!installer.isCodexInstalled()) {
+            check(canModifyAccounts()) { "Wait for running and queued tasks to finish." }
+            if (launchOverride == null && !installer.isCodexInstalled()) {
                 mutableState.value = CodexAuthState(
                     status = CodexAuthStatus.ERROR,
                     message = "Install Codex first, then sign in.",
                 )
                 return@withContext
             }
+            if (reconnectId != null) {
+                check(accounts.list().any { it.id == reconnectId }) { "Account no longer exists." }
+            }
+            val selected = accounts.selectedId()?.let { runCatching { accounts.requireUsable(it) }.getOrNull() }
+            if (selected != null) {
+                val status = credentialStatus(selected.id)
+                keepDefault = status == CodexCredentialStatus.CHATGPT ||
+                    (status == CodexCredentialStatus.UNAVAILABLE && mutableState.value.status == CodexAuthStatus.SIGNED_IN &&
+                        accounts.credentialFile(selected.id).isFile)
+                if (status == CodexCredentialStatus.SIGNED_OUT) accounts.markExpired(selected.id)
+            }
+            currentCoroutineContext().ensureActive()
+            check(!cancelRequested.get()) { "Sign in cancelled." }
+            // Never reuse a home from an interrupted login: its old child may still exist after app death.
+            val account = accounts.create()
+            accountId = account.id
+            publishAccounts()
             capture.delete()
             val engine = CodexLoginEngine(
-                launch = { CapturedCodexLoginProcess(launchCli(LOGIN_ARGS, capture), capture) },
-                hasCredentials = ::hasCredentials,
-                onState = { mutableState.value = it },
+                launch = {
+                    check(!cancelRequested.get()) { "Sign in cancelled." }
+                    val native = launchCli(LOGIN_ARGS, capture, account.id)
+                    loginProcess = native
+                    CapturedCodexLoginProcess(native, capture)
+                },
+                hasCredentials = { !cancelRequested.get() && credentialStatus(account.id) == CodexCredentialStatus.CHATGPT },
+                onState = { if (!cancelRequested.get()) mutableState.value = it },
             )
             loginEngine = engine
+            if (cancelRequested.get()) engine.cancel()
             startForegroundWhileSigningIn()
             val outcome = engine.run()
-            if (outcome is CodexLoginEngine.Outcome.SignedIn) {
-                onSignedInChanged(true)
-                onLoginCompleted()
+            currentCoroutineContext().ensureActive()
+            val validated = if (outcome is CodexLoginEngine.Outcome.SignedIn && !cancelRequested.get())
+                runCatching { readAccount(account.id) }.getOrNull() else null
+            currentCoroutineContext().ensureActive()
+            synchronized(this@CodexAuthController) {
+                if (outcome is CodexLoginEngine.Outcome.SignedIn && !cancelRequested.get()) {
+                    val wasSelected = reconnectId != null && reconnectId == accounts.selectedId()
+                    accounts.complete(account.id, validated?.label ?: account.label)
+                    if (wasSelected || accounts.selectedId() == null || !keepDefault) {
+                        accounts.select(account.id)
+                    }
+                    reconnectId?.let { accounts.remove(it) } // Retain the retired private home; do not race an orphan's writes.
+                    publishAccounts()
+                    onSignedInChanged(true)
+                    onLoginCompleted()
+                }
             }
         } catch (cancelled: CancellationException) {
-            mutableState.value = CodexAuthState(status = CodexAuthStatus.SIGNED_OUT, message = "Sign in cancelled.")
+            val hasSelected = runCatching { accounts.selected() }.isSuccess
+            mutableState.value = if (hasSelected) {
+                CodexAuthState(status = CodexAuthStatus.SIGNED_IN)
+            } else {
+                CodexAuthState(status = CodexAuthStatus.SIGNED_OUT, message = "Sign in cancelled.")
+            }
             throw cancelled
         } catch (t: Throwable) {
             mutableState.value = CodexAuthState(
                 status = CodexAuthStatus.ERROR,
-                message = CodexLoginOutput.failureMessage("", 127),
+                message = t.message?.takeIf { it.isNotBlank() } ?: CodexLoginOutput.failureMessage("", 127),
             )
         } finally {
             loginEngine = null
-            runCatching { capture.delete() }
-            stopForegroundAfterSigningIn()
-            loginInFlight.set(false)
+            val closed = loginProcess?.let(::closeAuthProcess) ?: true
+            if (closed) {
+                runCatching { capture.delete() }
+                // Failed new attempts stay unpublished. Remove their credentials only after child exit.
+                accountId?.takeIf { accounts.list().none { a -> a.id == it } }?.let {
+                    runCatching { accounts.credentialFile(it).delete() }
+                    runCatching { accounts.remove(it) }
+                }
+                loginInFlight.set(false)
+            }
+            if (cancelRequested.get()) {
+                val hasSelected = runCatching { accounts.selected() }.isSuccess
+                mutableState.value = if (hasSelected) {
+                    CodexAuthState(status = CodexAuthStatus.SIGNED_IN)
+                } else {
+                    CodexAuthState(status = CodexAuthStatus.SIGNED_OUT, message = "Sign in cancelled.")
+                }
+            }
+            publishAccounts()
+            if (closed) stopForegroundAfterSigningIn()
         }
         Unit
     }
 
+    @Synchronized
     fun cancelLogin() {
+        cancelRequested.set(true)
         val engine = loginEngine
         if (engine != null) {
             engine.cancel()
@@ -99,8 +224,13 @@ class CodexAuthController(
     }
 
     /** Called when a running session reports that the saved ChatGPT session was rejected. */
-    fun markExpired() {
-        if (loginInFlight.get()) return
+    @Synchronized
+    fun markExpired(accountId: String? = accounts.selectedId()) {
+        if (accountId == null) return
+        generation.incrementAndGet()
+        runCatching { accounts.markExpired(accountId) }
+        publishAccounts()
+        if (loginInFlight.get() || accountId != accounts.selectedId()) return
         mutableState.value = CodexAuthState(
             status = CodexAuthStatus.ERROR,
             message = "Your ChatGPT session expired. Sign in again.",
@@ -108,41 +238,77 @@ class CodexAuthController(
         onSignedInChanged(false)
     }
 
-    suspend fun logout() = withContext(Dispatchers.IO) {
-        if (loginInFlight.get()) return@withContext
-        if (installer.isCodexInstalled()) runCliBlocking(listOf("logout"))
-        // `codex logout` removes the file; make sure it is gone even if the CLI could not run.
-        runCatching { credentialFile().delete() }
+    suspend fun logout(accountId: String? = accounts.selectedId()) = withContext(Dispatchers.IO) {
+        if (accountId == null) return@withContext
+        synchronized(this@CodexAuthController) {
+            if (!loginInFlight.compareAndSet(false, true)) return@withContext
+            generation.incrementAndGet()
+        }
+        var childClosed = true
+        try {
+            check(canModifyAccounts()) { "Wait for running and queued tasks to finish." }
+            check(accounts.list().any { it.id == accountId }) { "Account no longer exists." }
+            accounts.markExpired(accountId)
+            publishAccounts()
+            val output = File(context.cacheDir, "codex-auth-logout.log")
+            if (installer.isCodexInstalled()) {
+                val process = launchCli(listOf("logout"), output, accountId)
+                childClosed = false
+                val deadline = System.nanoTime() + CLI_TIMEOUT_MS * 1_000_000
+                try {
+                    while (process.isAlive && System.nanoTime() < deadline) Thread.sleep(50)
+                } finally {
+                    childClosed = closeAuthProcess(process)
+                    check(childClosed) { "Codex sign-out is still closing. Try again later." }
+                    output.delete()
+                }
+            }
+            CredentialMounts.removeLegacyCopy(context.cacheDir, accountId)
+            val credential = accounts.credentialFile(accountId)
+            check(!credential.exists() || credential.delete()) { "Could not remove account credentials." }
+            accounts.remove(accountId)
+            publishAccounts()
+        } finally {
+            if (childClosed) loginInFlight.set(false)
+        }
         refreshStatus()
     }
 
-    private fun credentialFile(): File =
-        File(installer.rootfs, CodexLaunchBuilder.CODEX_HOME_GUEST_PATH.removePrefix("/") + "/auth.json")
-
-    /** Runs a short non-interactive CLI command; the process is always killed on timeout and the log removed. */
-    private fun runCliBlocking(args: List<String>, timeoutMs: Long = CLI_TIMEOUT_MS) {
-        val output = File(context.cacheDir, "codex-auth-${args.joinToString("-").filter(Char::isLetterOrDigit)}.log")
-        output.delete()
-        val process = runCatching { launchCli(args, output) }.getOrNull() ?: return
-        try {
-            val deadline = System.currentTimeMillis() + timeoutMs
-            while (process.isAlive && System.currentTimeMillis() < deadline) Thread.sleep(50)
+    private fun credentialStatus(accountId: String): CodexCredentialStatus {
+        readStatus?.let { return it(accountId) }
+        // A missing canonical file must never be resurrected from an old mask.
+        if (!accounts.credentialFile(accountId).isFile) return CodexCredentialStatus.SIGNED_OUT
+        if (!installer.isCodexInstalled()) return CodexCredentialStatus.UNAVAILABLE
+        val output = File(context.cacheDir, "codex-auth-status-${java.util.UUID.randomUUID()}.log")
+        val process = runCatching { launchCli(listOf("login", "status", "-c", "cli_auth_credentials_store=\"file\""), output, accountId) }
+            .getOrElse { return CodexCredentialStatus.UNAVAILABLE }
+        return try {
+            val deadline = System.nanoTime() + CLI_TIMEOUT_MS * 1_000_000
+            while (process.isAlive && System.nanoTime() < deadline) Thread.sleep(50)
+            if (process.isAlive) CodexCredentialStatus.UNAVAILABLE else {
+                val exit = process.exitValue()
+                codexCredentialStatus(output.takeIf { it.length() <= 64 * 1024 }?.readText().orEmpty(), exit)
+            }
         } finally {
-            runCatching { if (process.isAlive) process.destroyForcibly() }
-            runCatching { output.delete() }
+            if (closeAuthProcess(process)) output.delete()
         }
     }
 
-    private fun launchCli(args: List<String>, outputFile: File): NativeSpawnProcess {
+    private fun launchCli(args: List<String>, outputFile: File, accountId: String): Process {
+        launchOverride?.let { return it(args, outputFile, accountId) }
         val runtime = installer.installedRuntime()
+        val home = accounts.home(accountId)
+        accounts.hostHome(accountId).mkdirs()
+        accounts.credentialFile(accountId) // Reject dangling credential symlinks before the CLI touches them.
         val workspace = File(context.filesDir, "workspaces/$AUTH_WORKSPACE").apply { mkdirs() }
         val process = installer.process(
             proot = runtime.proot,
             rootfs = runtime.rootfs,
             workspace = workspace,
-            environment = CodexLaunchBuilder.environment(CodexRoute.ChatGptLogin(""), null),
+            environment = CodexLaunchBuilder.environment(CodexRoute.ChatGptLogin("", home), null),
             guestCommand = listOf(CodexLaunchBuilder.CODEX_GUEST_PATH) + args,
             guestWorkspacePath = "/workspace/$AUTH_WORKSPACE",
+            credentialHome = home,
             emulateHardLinks = false,
             outputFile = outputFile,
         )
@@ -151,34 +317,18 @@ class CodexAuthController(
 
     /** Keeps the app alive while the user is away in the browser; reuses the existing runtime service. */
     private fun startForegroundWhileSigningIn() {
-        runCatching {
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, RuntimeExecutionService::class.java)
-                    .setAction(RuntimeExecutionService.ACTION_START)
-                    .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, "Codex sign-in")
-                    .putExtra(RuntimeExecutionService.EXTRA_TITLE, "Signing in to ChatGPT")
-                    .putExtra(RuntimeExecutionService.EXTRA_CAN_STOP, false),
-            )
-        }
+        foregroundOwner = runCatching { AuthForegroundService.acquire(context, "Signing in to ChatGPT") }.getOrNull()
     }
 
     private fun stopForegroundAfterSigningIn() {
-        // A coding session that started meanwhile owns the service; do not stop it from here.
-        if (RuntimeTaskController.stopAction != null) return
-        runCatching {
-            context.startService(
-                Intent(context, RuntimeExecutionService::class.java)
-                    .setAction(RuntimeExecutionService.ACTION_CANCELLED),
-            )
-        }.onFailure {
-            runCatching { context.stopService(Intent(context, RuntimeExecutionService::class.java)) }
-        }
+        val owner = foregroundOwner ?: return
+        foregroundOwner = null
+        runCatching { AuthForegroundService.release(context, owner) }
     }
 
     /** Adapts the native process and its capture file to the engine's process abstraction. */
     private class CapturedCodexLoginProcess(
-        private val native: NativeSpawnProcess,
+        private val native: Process,
         private val outputFile: File,
     ) : CodexLoginProcess {
         private var offset = 0L
