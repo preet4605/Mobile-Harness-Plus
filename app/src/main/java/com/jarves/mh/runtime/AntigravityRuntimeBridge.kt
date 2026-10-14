@@ -691,6 +691,7 @@ class AntigravityRuntimeBridge(
                         }
                     }
                     var lastOutputTime = System.currentTimeMillis()
+                    val idle = IdlePoll(50)
                     while (process.isAlive || native.outputFile.length() > offset) {
                         val available = native.outputFile.length() - offset
                         if (available <= 0) {
@@ -716,9 +717,10 @@ class AntigravityRuntimeBridge(
                                 }
                                 break
                             }
-                            delay(50)
+                            idle.await()
                             continue
                         }
+                        idle.reset()
                         lastOutputTime = System.currentTimeMillis()
                         val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
                         val count = RandomAccessFile(native.outputFile, "r").use { file ->

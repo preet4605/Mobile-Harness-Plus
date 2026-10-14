@@ -406,6 +406,7 @@ class DshRuntimeBridge(
             }
         }
 
+        val idle = IdlePoll(50)
         while (process.isAlive || nativeProcess.outputFile.length() > outputOffset) {
             if (
                 process.isAlive &&
@@ -420,9 +421,10 @@ class DshRuntimeBridge(
             }
             val available = nativeProcess.outputFile.length() - outputOffset
             if (available <= 0) {
-                delay(50)
+                idle.await()
                 continue
             }
+            idle.reset()
             val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
             val count = RandomAccessFile(nativeProcess.outputFile, "r").use { file ->
                 file.seek(outputOffset)

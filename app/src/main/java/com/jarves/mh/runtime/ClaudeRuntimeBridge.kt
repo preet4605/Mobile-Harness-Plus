@@ -361,6 +361,7 @@ class ClaudeRuntimeBridge(
                         ?: error("Unsupported Android runtime process")
                     var outputOffset = 0L
                     var lastOutputTime = System.currentTimeMillis()
+                    val idle = IdlePoll(50)
                     var terminatedAfterResult = false
                     while (process.isAlive || nativeProcess.outputFile.length() > outputOffset) {
                         val available = nativeProcess.outputFile.length() - outputOffset
@@ -374,9 +375,10 @@ class ClaudeRuntimeBridge(
                                 }
                                 break
                             }
-                            delay(50)
+                            idle.await()
                             continue
                         }
+                        idle.reset()
                         lastOutputTime = System.currentTimeMillis()
                         val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
                         val count = RandomAccessFile(nativeProcess.outputFile, "r").use { file ->
@@ -733,7 +735,7 @@ class ClaudeRuntimeBridge(
                 when (delta?.optString("type")) {
                     "thinking_delta" -> delta.optString("thinking").takeIf(String::isNotEmpty)?.let {
                         streamedThinking.append(it)
-                        emitReasoningSummary(sessionId, streamedThinking.toString())
+                        emitReasoningSummary(sessionId, streamedThinking)
                     }
                     "text_delta", "" -> delta.optString("text").takeIf(String::isNotEmpty)?.let {
                         streamedText.append(it)
@@ -824,7 +826,7 @@ class ClaudeRuntimeBridge(
                         val toolName = toolNames.remove(toolId) ?: "Tool"
                         val result = block.optString("content")
                             .ifBlank { if (block.optBoolean("is_error")) "Tool failed" else "Completed successfully" }
-                        eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, toolName, sanitizeForDisplay(result), LocalPreviewDiscovery.candidate(result)))
+                        eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, toolName, sanitizeForDisplay(result.take(SUMMARY_SOURCE_CHARS)), LocalPreviewDiscovery.candidate(result)))
                         if (toolName == "Bash") {
                             eventBus.emit(
                                 RuntimeEvent.TaskUpdated(
@@ -888,27 +890,29 @@ class ClaudeRuntimeBridge(
 
     private suspend fun emitReasoningSummary(
         sessionId: String,
-        text: String,
+        text: CharSequence,
         force: Boolean = false,
         startsNewBlock: Boolean = false,
         isFinal: Boolean = false,
     ) {
-        val summary = sanitizeForDisplay(text).trim().take(2_000)
-        if (summary.isBlank() && !startsNewBlock) return
         val now = android.os.SystemClock.elapsedRealtime()
-        if (startsNewBlock || isFinal || force || now - lastThinkingUpdateAt >= 150) {
-            lastThinkingUpdateAt = now
-            eventBus.emit(
-                RuntimeEvent.ReasoningSummary(
-                    sessionId = sessionId,
-                    summary = summary,
-                    blockId = currentThinkingBlockId,
-                    startsNewBlock = startsNewBlock,
-                    isFinal = isFinal,
-                ),
-            )
-            pushForegroundProgress("Thinking…")
-        }
+        // Check the throttle before any text work: this runs for every thinking token, and
+        // copying plus scanning the whole growing block each time is quadratic.
+        if (!(startsNewBlock || isFinal || force || now - lastThinkingUpdateAt >= 150)) return
+        // The display keeps only the first 600 characters, so the rest is never scanned.
+        val summary = sanitizeForDisplay(text.take(SUMMARY_SOURCE_CHARS).toString()).trim().take(2_000)
+        if (summary.isBlank() && !startsNewBlock) return
+        lastThinkingUpdateAt = now
+        eventBus.emit(
+            RuntimeEvent.ReasoningSummary(
+                sessionId = sessionId,
+                summary = summary,
+                blockId = currentThinkingBlockId,
+                startsNewBlock = startsNewBlock,
+                isFinal = isFinal,
+            ),
+        )
+        pushForegroundProgress("Thinking…")
     }
 
     private suspend fun emitReasoningProgress(sessionId: String, tokens: Int) {
@@ -1233,11 +1237,16 @@ class ClaudeRuntimeBridge(
             return command
         }
 
+        private const val SUMMARY_SOURCE_CHARS = 8_000
+        private val SECRET_KEY = Regex("sk-[A-Za-z0-9_-]{8,}")
+        private val SECRET_FIELD = Regex("(?i)(authorization|api[_-]?key|bearer|token|oauth_token)(\\s*[:=]\\s*|\\s+)[^\\s,}]+")
+        private val WHITESPACE_RUN = Regex("\\s+")
+
         fun sanitizeForDisplay(value: String): String {
             return value
-                .replace(Regex("sk-[A-Za-z0-9_-]{8,}"), "sk-••••")
-                .replace(Regex("(?i)(authorization|api[_-]?key|bearer|token|oauth_token)(\\s*[:=]\\s*|\\s+)[^\\s,}]+"), "${'$'}1: ••••")
-                .replace(Regex("\\s+"), " ")
+                .replace(SECRET_KEY, "sk-••••")
+                .replace(SECRET_FIELD, "${'$'}1: ••••")
+                .replace(WHITESPACE_RUN, " ")
                 .trim()
                 .take(600)
         }
