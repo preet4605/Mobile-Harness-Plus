@@ -1,5 +1,22 @@
 # Tasks and progress
 
+## Lag, heat and crash fixes — 2026-10-14
+
+Audit: project files `audits/perf-heat-crash-audit-2026-10-14.md` (static reading; nothing measured on a phone). One commit per batch:
+
+1. Streamed tokens: consecutive assistant deltas merge into one UI update per 50 ms (`coalesceAssistantDeltas`, order kept); events that change nothing saved (usage, timers, task list) no longer rewrite the transcript; the queued transcript write is an `AtomicReference` so a write queued during a flush is not dropped.
+2. Output budget: agent sessions, both terminals, Android builds and verification commands get a 128 MB capture budget (`NativeSpawnProcess.STREAMING_OUTPUT_BYTES`); helper captures keep 5 MB. Long Claude/Codex tasks were SIGKILLed at 5 MB.
+3. Service lifetime: finish/cancel stop the foreground service with an ordered `ACTION_CANCELLED` intent (a bare `stopService` before `startForeground` crashes the app); a task that ends while another task's job runs leaves the shared service and wake lock alone; the service releases every task id it held.
+4. Terminals: `TerminalOutputTail` sanitizes each chunk once and keeps a 200k-char tail; live output publishes at most every 100 ms; idle polling backs off 50 → 250 ms; history saved off Main; quick-terminal history capped at 100.
+5. Harness loops: idle polling backs off 50 → 250 ms (`IdlePoll`) in Claude, DeepSeek, Antigravity and Codex; Claude thinking checks its throttle before copying and sanitizing, regexes hoisted.
+6. Seccomp: PRoot seccomp acceleration on in the dev (debug) app only (`RuntimeInstaller.PROOT_SECCOMP_ENABLED`), as Love chose; stable keeps `PROOT_NO_SECCOMP=1`.
+7. Glass while streaming: the progress ring spins on its own layer; auto-follow scrolls recapture the backdrop at the 250 ms content rate; `GlassLook` is a data class and the tab list is remembered.
+8. Main thread and crash guards: runtime event collectors catch and log non-cancellation exceptions; fallback key/profile sets are concurrent; workspace emptiness checks stop at the first file (app start and close project); end-of-task memory extraction runs on IO; a failed mod-registry state write no longer fails registry start; local gateway accept loops cannot spin.
+
+- VERIFIED: full online suite 1582 tests, 0 failures; `assembleOnlineDebug assembleOnlineRelease` succeeded; both APKs signed with Love's keystore (SHA-1 0a4ca212…6d26).
+- NOT RUN: phone tests (heat, frame timing, seccomp under PRoot, foreground-service race); offline suite.
+- Not done (lower impact): incremental Markdown parsing while streaming, checkpoint copy/hash dedupe, guest process priority, unbounded `activity`/`backgroundTasks` lists, mod schedule/watchdog timers.
+
 ## Developer-level mod control (design/mod-platform/developer-mods-plan.md) — 2026-10-14
 
 Love chose "All ten phases" (04:05 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair. Native code in mods (plan row 24) is not built; mods running with the app closed (row 15) and sharing beyond .mhmod (row 16) stay deferred.
