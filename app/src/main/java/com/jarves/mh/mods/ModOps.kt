@@ -71,6 +71,8 @@ enum class ModOp(
     TERMINAL_RUN("terminal.run", ModCapability.TERMINAL_RUN, needsProject = true, slow = true),
     BUILD_RUN("build.run", ModCapability.BUILD_RUN, needsProject = true, slow = true),
     MEMORY_LIST("memory.list", ModCapability.MEMORY_READ, needsProject = true),
+    SETTINGS_GET("settings.get", ModCapability.SETTINGS_READ),
+    SETTINGS_SET("settings.set", ModCapability.SETTINGS_WRITE, slow = true),
     ;
 
     companion object {
@@ -184,6 +186,44 @@ internal object ModJson {
  * The events simple hooks know (`ModEvent`, v1 names) under their mod-code names (spec v2 §4.2).
  * Events with no entry here reach mod code through their own call sites, or not yet.
  */
+/**
+ * The app settings mods may read (`settings.read`) and, in Developer mode, change (`settings.write`;
+ * mod plan row 17). Changes go through the same setters as the app's own screens. API keys,
+ * sign-ins and the keystore are not settings here, so no mod can read or change them.
+ */
+object ModAppSettings {
+    val KEYS = listOf("harness", "model", "effort", "theme", "antigravityBalancing", "antigravityFailover", "codexAccountBalancing")
+    private val THEMES = setOf("system", "light", "dark")
+    private val BALANCING = setOf("least_recently_used", "round_robin", "primary_only")
+
+    fun requireKey(key: String) = require(key in KEYS) {
+        "\"$key\" isn't a setting mods can use. They can use ${KEYS.joinToString()}; API keys, sign-ins and the keystore never."
+    }
+
+    /** [value] for [key] as the app stores it, or an error that says what fits. */
+    fun check(key: String, value: Any?): Any {
+        requireKey(key)
+        fun text(max: Int): String {
+            val text = (value as? String)?.trim()
+            require(text != null && text.length <= max && text.none { it.isISOControl() }) { "\$.settings.set: $key must be text up to $max characters" }
+            return text
+        }
+        fun oneOf(options: Set<String>): String {
+            val text = (value as? String)?.trim()?.lowercase()
+            require(text != null && text in options) { "\$.settings.set: $key must be one of ${options.joinToString()}" }
+            return text
+        }
+        return when (key) {
+            "harness" -> oneOf(setOf("claude", "deepseek", "antigravity", "codex"))
+            "model" -> text(200)
+            "effort" -> text(40).also { require(it.isNotEmpty()) { "\$.settings.set: effort can't be empty" } }
+            "theme" -> oneOf(THEMES)
+            "antigravityBalancing" -> oneOf(BALANCING)
+            else -> value as? Boolean ?: throw IllegalArgumentException("\$.settings.set: $key must be true or false")
+        }
+    }
+}
+
 internal object ModCodeEvents {
     fun name(event: ModEvent): String? = when (event) {
         ModEvent.TASK_STARTED -> "run.start"
@@ -194,6 +234,7 @@ internal object ModCodeEvents {
         ModEvent.ASSISTANT_MESSAGE_COMPLETED -> "message.end"
         ModEvent.CHAT_SWITCHED -> "chat.switch"
         ModEvent.BUILD_FINISHED -> "build.end"
+        ModEvent.PROJECT_OPENED -> "project.open"
         else -> null
     }
 
@@ -202,9 +243,15 @@ internal object ModCodeEvents {
         vars.forEach { (key, value) -> put(key.substringAfter('.'), value) }
     }
 
-    /** Fields a mod sees only with the capability: the agent's reply needs chat.read, as for simple hooks. */
-    fun private(event: ModEvent): Map<String, ModCapability> =
-        if (event == ModEvent.ASSISTANT_MESSAGE_COMPLETED) mapOf("text" to ModCapability.CHAT_READ) else emptyMap()
+    /**
+     * Fields a mod sees only with the capability: the agent's reply needs chat.read, as for simple
+     * hooks; a build's log (which quotes project code) needs files.read.
+     */
+    fun private(event: ModEvent): Map<String, ModCapability> = when (event) {
+        ModEvent.ASSISTANT_MESSAGE_COMPLETED -> mapOf("text" to ModCapability.CHAT_READ)
+        ModEvent.BUILD_FINISHED -> mapOf("log" to ModCapability.FILES_READ)
+        else -> emptyMap()
+    }
 }
 
 /**

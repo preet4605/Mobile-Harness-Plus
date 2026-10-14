@@ -669,6 +669,33 @@ class MainViewModel(
             return written
         }
 
+        override fun appSettings(): JSONObject = JSONObject(modAppSettingValues(_state.value))
+
+        override suspend fun setAppSetting(key: String, value: Any): Unit = withContext(Dispatchers.Main.immediate) {
+            val current = _state.value
+            when (key) {
+                "harness" -> {
+                    val kind = com.jarves.mh.mods.ModManifestParser.harnessFromId(value as String) ?: error("No harness $value.")
+                    check(!current.isRunning) { "Stop the current task before switching harness." }
+                    check(kind == current.agentKind || kind in current.installedAgentVersions) { "${kind.title} is not installed. Install it from Settings first." }
+                    selectAgent(kind)
+                    check(_state.value.agentKind == kind) { "Couldn't switch to ${kind.title}." }
+                }
+                "model" -> check(applyModelChoice(value as String) != com.jarves.mh.model.ModelChoiceCheck.REJECTED) {
+                    "${current.agentKind.title} doesn't offer the model $value."
+                }
+                "effort" -> (applyEffortChoice(value as String) as? EffortChange.Refused)?.let { error(it.reason) }
+                "theme" -> setThemeMode(com.jarves.mh.ui.theme.AppThemeMode.valueOf((value as String).uppercase()))
+                "antigravityBalancing" -> setAntigravityLoadBalancingStrategy(AntigravityLoadBalancingStrategy.valueOf((value as String).uppercase()))
+                "antigravityFailover" -> setAntigravityFailoverEnabled(value as Boolean)
+                "codexAccountBalancing" -> {
+                    setCodexAccountBalancing(value as Boolean)
+                    check(_state.value.codexAccountBalancing == value) { "ChatGPT account balancing can't change now." }
+                }
+                else -> error("\"$key\" isn't a setting mods can use.")
+            }
+        }
+
         override suspend fun modelComplete(mod: InstalledMod, prompt: String, system: String?, maxTokens: Int): JSONObject {
             val profile = _state.value.provider
             require(
@@ -1740,6 +1767,8 @@ class MainViewModel(
         val foreground = java.util.concurrent.atomic.AtomicBoolean(false)
         viewModelScope.launch(Dispatchers.IO) {
             var outputFile: File? = null
+            // The end of Gradle's output for the mods' build.end event, read before the log is deleted.
+            var logTail: String? = null
             val outcome: AndroidBuildOutcome = try {
                 val workspace = findAndroidGradleProjectRoot(projectWorkspaceRoot(project))
                     ?: error("No Android Gradle project found yet. Ask Claude to create it, then wait for the task to finish.")
@@ -1808,6 +1837,9 @@ class MainViewModel(
                 // Never leave Gradle running behind a finished, failed or cancelled build.
                 androidBuildProcess?.let { if (it.isAlive) it.destroyForcibly() }
                 androidBuildProcess = null
+                if (modHost?.listens("build.end") == true) {
+                    logTail = outputFile?.let { runCatching { sanitizeTerminalOutput(it.readTailText(MOD_BUILD_LOG_BYTES)) }.getOrNull() }
+                }
                 outputFile?.delete()
                 if (RuntimeTaskController.stopAction === stopAction) RuntimeTaskController.stopAction = null
             }
@@ -1840,7 +1872,9 @@ class MainViewModel(
                     AndroidBuildOutcome.Cancelled -> "stopped"
                 }
                 lastAndroidBuildStatus = buildStatus
-                emitModEvent(ModEvent.BUILD_FINISHED, { mapOf("build.status" to buildStatus, "build.detail" to message) }, buildStatus, project)
+                emitModEvent(ModEvent.BUILD_FINISHED, { mapOf("build.status" to buildStatus, "build.detail" to message) }, buildStatus, project) {
+                    JSONObject().put("status", buildStatus).put("detail", message).put("log", logTail ?: "")
+                }
                 if (installAfterBuild) {
                     val runStatus = if (outcome is AndroidBuildOutcome.Done) "completed" else "failed"
                     emitModEvent(ModEvent.RUN_FINISHED, {
@@ -2907,6 +2941,24 @@ class MainViewModel(
                                 host.updateContext(context, scope.running)
                             }
                     }
+                    // settings.change and harness.switch (mod plan row 23), whoever made the change.
+                    launch {
+                        var previous: Map<String, Any?>? = null
+                        _state.map { modAppSettingValues(it) }.distinctUntilChanged().collect { now ->
+                            val before = previous
+                            previous = now
+                            if (before == null) return@collect
+                            now.filter { (key, value) -> before[key] != value }.forEach { (key, value) ->
+                                val old = before[key]
+                                if (key == "harness") host.emit("harness.switch", JSONObject().put("from", old).put("to", value))
+                                host.emit(
+                                    "settings.change",
+                                    JSONObject().put("key", key).put("value", value ?: JSONObject.NULL).put("before", old ?: JSONObject.NULL),
+                                    mapOf("value" to com.jarves.mh.mods.ModCapability.SETTINGS_READ, "before" to com.jarves.mh.mods.ModCapability.SETTINGS_READ),
+                                )
+                            }
+                        }
+                    }
                 }
             launch {
                 delay(MOD_STABLE_AFTER_MS)
@@ -2963,6 +3015,26 @@ class MainViewModel(
             runCatching { host.emit(codeEvent, data?.invoke() ?: ModCodeEvents.payload(values), ModCodeEvents.private(event)) }
         }
     }
+
+    /** The app settings mods may read (mod plan row 17), keyed as [com.jarves.mh.mods.ModAppSettings.KEYS]. */
+    private fun modAppSettingValues(state: AppUiState): Map<String, Any?> = mapOf(
+        "harness" to com.jarves.mh.mods.ModManifestParser.harnessId(state.agentKind),
+        "model" to when (modelSlotFor(state.agentKind, state.provider.kind)) {
+            com.jarves.mh.model.ModelSlot.ANTIGRAVITY -> state.antigravityModel
+            com.jarves.mh.model.ModelSlot.CLAUDE_SUBSCRIPTION -> state.claudeModel
+            com.jarves.mh.model.ModelSlot.PROVIDER -> state.provider.model
+        },
+        "effort" to when (state.agentKind) {
+            AgentKind.CLAUDE_CODE -> state.claudeThinkingLevel
+            AgentKind.ANTIGRAVITY -> state.antigravityEffort
+            AgentKind.CODEX -> state.codexReasoningEffort
+            AgentKind.DEEPSEEK_HARNESS -> state.dshReasoningEffort
+        },
+        "theme" to state.themeMode.name.lowercase(),
+        "antigravityBalancing" to state.antigravityLoadBalancingStrategy.name.lowercase(),
+        "antigravityFailover" to state.antigravityFailoverEnabled,
+        "codexAccountBalancing" to state.codexAccountBalancing,
+    )
 
     /** What mod code sees of where the user is; a change ends and starts the mods' session. */
     private data class ModScope(
@@ -5180,6 +5252,7 @@ class MainViewModel(
                 }
             }
             val savedFingerprint = result.getOrNull()
+            if (savedFingerprint != null) modHost?.emit("file.saved", JSONObject().put("path", path.trim('/')))
             // The viewer moved to another file or closed while saving; the save itself still happened.
             if (request != fileReadGeneration || _state.value.openedFilePath != path) {
                 if (savedFingerprint != null) _state.update { it.copy(toastMessage = "$name saved") }
@@ -8130,6 +8203,8 @@ class MainViewModel(
         private const val MAX_PROJECT_TERMINAL_OUTPUT = 200_000
         private const val MAX_ATTACHMENTS_PER_MESSAGE = 5
         private const val MAX_PROCESS_OUTPUT_BYTES = 512 * 1024
+        /** How much of a build's log the mods' `build.end` event carries. */
+        private const val MOD_BUILD_LOG_BYTES = 16 * 1024
         private const val ANDROID_BUILD_STOP_GRACE_SECONDS = 3L
         private const val ANDROID_BUILD_STAGE_READ_BYTES = 64L * 1024
         private const val MAX_ANDROID_BUILD_DURATIONS = 5

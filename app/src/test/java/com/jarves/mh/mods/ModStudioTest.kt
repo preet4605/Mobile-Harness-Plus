@@ -108,6 +108,7 @@ class ModStudioTest {
         assertEquals("studio.you.build-notes", parsed.id)
         ModEvent.entries.forEach { assertTrue("guide lists ${it.id}", "`${it.id}`" in guide) }
         ModCapability.entries.filter { it.usable }.forEach { assertTrue("guide lists ${it.id}", "`${it.id}`" in guide) }
+        assertTrue("guide lists the settings", ModAppSettings.KEYS.joinToString { "`$it`" } in guide)
     }
 
     @Test

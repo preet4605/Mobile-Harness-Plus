@@ -95,6 +95,8 @@ data class ModsSnapshot(
     val developerMode: Boolean = false,
     /** Projects where mods' tool gates also answer Codex's approval requests (Developer mode only). */
     val codexGateProjects: Set<String> = emptySet(),
+    /** App settings mods changed, newest first, each with the value to undo it to. */
+    val settingChanges: List<ModSettingChange> = emptyList(),
 ) {
     /** Whether Codex in [projectId] asks the mods' tool gates before it runs commands and edits. */
     fun codexGate(projectId: String?): Boolean = developerMode && projectId != null && projectId in codexGateProjects
@@ -368,6 +370,26 @@ class ModRegistry(
         publishLocked()
     }
 
+    /** Keeps an app setting [modId] changed, so the user can undo it; the newest [MAX_SETTING_CHANGES] stay. */
+    fun recordSettingChange(modId: String, key: String, before: Any?, after: Any?): ModSettingChange = synchronized(lock) {
+        val record = state.mods[modId]
+        val change = ModSettingChange(UUID.randomUUID().toString(), modId, key, before, after, System.currentTimeMillis())
+        state = state.copy(settingChanges = (listOf(change) + state.settingChanges).take(MAX_SETTING_CHANGES))
+        writeStateLocked()
+        auditLocked(modId, record?.version.orEmpty(), "settings.set", ModCapability.SETTINGS_WRITE.id, "allowed", "$key: ${before ?: "none"} → ${after ?: "none"}")
+        publishLocked()
+        change
+    }
+
+    /** Forgets change [id]; [undone] when the user undid it. */
+    fun removeSettingChange(id: String, undone: Boolean) = synchronized(lock) {
+        val change = state.settingChanges.firstOrNull { it.id == id } ?: return@synchronized
+        state = state.copy(settingChanges = state.settingChanges - change)
+        writeStateLocked()
+        if (undone) auditLocked(change.modId, state.mods[change.modId]?.version.orEmpty(), "settings.undo", ModCapability.SETTINGS_WRITE.id, "allowed", "${change.key}: back to ${change.before ?: "none"}")
+        publishLocked()
+    }
+
     // ---- hooks and audit -----------------------------------------------------------------
 
     /**
@@ -501,6 +523,7 @@ class ModRegistry(
             safeMode = safeMode,
             developerMode = state.developerMode,
             codexGateProjects = state.codexGateProjects,
+            settingChanges = state.settingChanges,
         )
     }
 
@@ -579,6 +602,7 @@ class ModRegistry(
         const val MAX_HOOK_FAILURES = 5
         const val SAFE_MODE_STARTS = 3
         const val MAX_AUDIT_BYTES = 1024L * 1024
+        const val MAX_SETTING_CHANGES = 20
 
         @Volatile private var instance: ModRegistry? = null
 
@@ -663,12 +687,14 @@ private data class PersistedState(
     val mods: Map<String, PersistedMod> = emptyMap(),
     val developerMode: Boolean = false,
     val codexGateProjects: Set<String> = emptySet(),
+    val settingChanges: List<ModSettingChange> = emptyList(),
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("schemaVersion", SCHEMA_VERSION)
         .put("modsEnabled", modsEnabled)
         .put("developerMode", developerMode)
         .put("codexGateProjects", JSONArray(codexGateProjects.sorted()))
+        .put("settingChanges", JSONArray(settingChanges.map { it.toJson() }))
         .put("unstableStarts", unstableStarts)
         .put("mods", JSONObject().apply { mods.forEach { (id, record) -> put(id, record.toJson()) } })
 
@@ -682,10 +708,35 @@ private data class PersistedState(
                 unstableStarts = o.optInt("unstableStarts", 0),
                 developerMode = o.optBoolean("developerMode", false),
                 codexGateProjects = o.optJSONArray("codexGateProjects").strings().toSet(),
+                settingChanges = o.optJSONArray("settingChanges")?.let { array ->
+                    (0 until array.length()).mapNotNull { array.optJSONObject(it)?.let(ModSettingChange::fromJson) }
+                }.orEmpty(),
                 mods = mods?.keys()?.asSequence()?.mapNotNull { id ->
                     runCatching { id to PersistedMod.fromJson(mods.getJSONObject(id)) }.getOrNull()
                 }?.toMap().orEmpty(),
             )
+        }
+    }
+}
+
+/** An app setting a mod changed with `$.settings.set` (mod plan row 17); [before] is what Undo puts back. */
+data class ModSettingChange(
+    val id: String,
+    val modId: String,
+    val key: String,
+    val before: Any?,
+    val after: Any?,
+    val at: Long,
+) {
+    fun toJson(): JSONObject = JSONObject().put("id", id).put("modId", modId).put("key", key)
+        .put("before", before ?: JSONObject.NULL).put("after", after ?: JSONObject.NULL).put("at", at)
+
+    companion object {
+        fun fromJson(o: JSONObject): ModSettingChange? {
+            val id = o.optString("id").takeIf { it.isNotBlank() } ?: return null
+            val key = o.optString("key").takeIf { it in ModAppSettings.KEYS } ?: return null
+            fun value(name: String) = o.opt(name).takeIf { it is String || it is Boolean }
+            return ModSettingChange(id, o.optString("modId"), key, value("before"), value("after"), o.optLong("at"))
         }
     }
 }

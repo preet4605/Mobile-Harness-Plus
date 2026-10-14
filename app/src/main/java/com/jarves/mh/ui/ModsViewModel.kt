@@ -126,6 +126,14 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
         emitAll(live.panelMessages.filter { it.modId == modId && it.panelId == panelId }.map { it.text })
     }
 
+    /** Puts back an app setting a mod changed. */
+    fun undoSettingChange(id: String) {
+        viewModelScope.launch {
+            val problem = host.await()?.undoSettingChange(id) ?: return@launch
+            _messages.emit("Couldn't undo: $problem".take(300))
+        }
+    }
+
     /** A web panel's page sent its mod a message. */
     fun panelMessage(modId: String, panelId: String, text: String) {
         hostRef?.panelMessage(modId, panelId, text)

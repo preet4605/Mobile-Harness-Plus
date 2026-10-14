@@ -93,6 +93,15 @@ interface ModHostEffects : ModHookEffects {
      * restores it. Answers what [write] answered.
      */
     suspend fun checkpointedWrite(context: ModEventContext, path: String, write: () -> Int): Int
+
+    /** The [ModAppSettings.KEYS] values as the app has them now. */
+    fun appSettings(): JSONObject
+
+    /**
+     * Changes app setting [key] to [value] (already checked by [ModAppSettings.check]) through the
+     * app's own setter; throws with the app's reason when it refuses (a task is running, say).
+     */
+    suspend fun setAppSetting(key: String, value: Any)
 }
 
 /** What `$.agent.ask` may pick besides the harness: model and effort ids, and [chat] ("new" or a chat id). */
@@ -407,6 +416,25 @@ class ModHost(
     private val _panelMessages = MutableSharedFlow<ModPanelMessage>(extraBufferCapacity = 32, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     /** What mods sent their web panels with `$.ui.post`; the open panel posts its own to the page. */
     val panelMessages: SharedFlow<ModPanelMessage> = _panelMessages.asSharedFlow()
+
+    /**
+     * Puts back the app setting of change [id] (a mod's `$.settings.set`) and forgets the change.
+     * Null when it worked, else why not.
+     */
+    suspend fun undoSettingChange(id: String): String? = withContext(hostContext) {
+        val change = registry.snapshot.value.settingChanges.firstOrNull { it.id == id } ?: return@withContext null
+        val before = change.before ?: return@withContext "There's no earlier value to put back.".also { registry.removeSettingChange(id, undone = false) }
+        val app = effects ?: return@withContext "Open the app's main screen first."
+        try {
+            app.setAppSetting(change.key, ModAppSettings.check(change.key, before))
+            registry.removeSettingChange(id, undone = true)
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            e.message ?: "The app didn't take the old value."
+        }
+    }
 
     /** A message the open web panel of [modId] sent: the mod's `panel.message` hooks get it. */
     fun panelMessage(modId: String, panelId: String, text: String) {
@@ -1578,6 +1606,25 @@ class ModHost(
                 (effects ?: error("The app screen is closed")).runBuild(mod, scoped!!, install)
             }
             ModOp.MEMORY_LIST -> (effects ?: error("The app screen is closed")).projectMemory(scoped!!) ?: error("That project is not open")
+            ModOp.SETTINGS_GET -> {
+                val all = (effects ?: error("The app screen is closed")).appSettings()
+                if (args.isNull(0)) all else text(args).also(ModAppSettings::requireKey).let { all.opt(it) ?: JSONObject.NULL }
+            }
+            ModOp.SETTINGS_SET -> {
+                val key = text(args)
+                val value = ModAppSettings.check(key, args.opt(1))
+                val app = effects ?: error("The app screen is closed")
+                val before = app.appSettings().opt(key)?.takeIf { it != JSONObject.NULL }
+                if (before == value) {
+                    JSONObject().put("key", key).put("value", value).put("before", value).put("changed", false)
+                } else {
+                    app.setAppSetting(key, value)
+                    val after = app.appSettings().opt(key)?.takeIf { it != JSONObject.NULL }
+                    registry.recordSettingChange(mod.id, key, before, after)
+                    addLog(mod.id, "info", "Changed the app setting $key from ${before ?: "none"} to ${after ?: "none"}.")
+                    JSONObject().put("key", key).put("value", after ?: JSONObject.NULL).put("before", before ?: JSONObject.NULL).put("changed", true)
+                }
+            }
             ModOp.MODS_TOOLS -> JSONArray(running.values.filter { it.ready }.flatMap { it.provided.values }.map { tool ->
                 JSONObject().put("name", tool.exposed).put("mod", tool.modId).put("description", tool.description).put("inputSchema", JSONObject(tool.inputSchema))
             })

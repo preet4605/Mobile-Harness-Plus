@@ -15,7 +15,8 @@ const CAPABILITIES = ['app.info', 'project.info', 'ui.toast', 'storage', 'notify
   'prompt.send', 'events.subscribe', 'files.read', 'files.write', 'git.read', 'browser.open', 'terminal.run', 'net.fetch',
   'secrets', 'memory.read', 'agent.ask', 'prompt.transform', 'ui.status', 'ui.band', 'ui.pane', 'ui.webpane',
   'prompt.compose', 'files.gate', 'changes.read', 'changes.undo', 'terminal.gate', 'tools.gate', 'tools.provide',
-  'model.complete', 'agent.chain', 'mods.call', 'git.write', 'build.run', 'guest.tools', 'tools.approve', 'engine.memory'];
+  'model.complete', 'agent.chain', 'mods.call', 'git.write', 'build.run', 'guest.tools', 'tools.approve', 'engine.memory',
+  'settings.read', 'settings.write'];
 const ID = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,4}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const MAX_MODULE = 512 * 1024;

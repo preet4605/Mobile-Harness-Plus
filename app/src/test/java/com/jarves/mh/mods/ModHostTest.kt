@@ -96,6 +96,13 @@ class ModHostTest {
         }
         override fun projectMemory(context: ModEventContext): JSONArray =
             JSONArray().put(JSONObject().put("key", "language").put("value", "Kotlin"))
+        val settings = java.util.concurrent.ConcurrentHashMap<String, Any>(mapOf("harness" to "claude", "model" to "sonnet", "effort" to "default",
+            "theme" to "dark", "antigravityBalancing" to "round_robin", "antigravityFailover" to true, "codexAccountBalancing" to false))
+        override fun appSettings(): JSONObject = JSONObject(settings as Map<*, *>)
+        override suspend fun setAppSetting(key: String, value: Any) {
+            check(!(key == "model" && value == "nope")) { "Claude Code doesn't offer the model nope." }
+            settings[key] = value
+        }
         val checkpointed = CopyOnWriteArrayList<String>()
         override suspend fun checkpointedWrite(context: ModEventContext, path: String, write: () -> Int): Int {
             // Like the app: the path is kept only once the write went through.
@@ -1084,10 +1091,79 @@ class ModHostTest {
         listOf("dev.test.a", "dev.test.b", "dev.test.c").forEach { registry.setGranted(it, ModCapability.ENGINE_MEMORY, true) }
         waitFor("a and b to reload with 32 MB") { heaps().sorted() == listOf(small, big, big) && listOf("a", "b").all { host.info("dev.test.$it")?.state == ModRunState.RUNNING } }
         waitFor("the log") { "It has 32 MB of memory." in host.logText("dev.test.a") }
-        assertTrue(host.logText("dev.test.c"), "only 2 mods may have 32 MB" in host.logText("dev.test.c"))
+        waitFor("c's log") { "only 2 mods may have 32 MB" in host.logText("dev.test.c") }
 
         // Developer mode off: back to 16 MB each.
         registry.setDeveloperMode(false)
         waitFor("everyone back at 16 MB") { heaps() == listOf(small, small, small) }
+    }
+
+    @Test
+    fun `settings are read with settings-read and changed only in Developer mode, with undo`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            const answer = async (f) => { try { return { text: String(await f()) } } catch (e) { return { text: 'ERR ' + e.message } } }
+            export function register(on) {
+              on('command.run', { name: 'read' }, ($) => answer(async () => (await $.settings.get('model')) + '|' + (await $.settings.get()).theme))
+              on('command.run', { name: 'secret' }, ($) => answer(() => $.settings.get('apiKey')))
+              on('command.run', { name: 'set' }, ($, e) => answer(async () => {
+                const [key, value] = e.args.split('=')
+                const r = await $.settings.set(key, value === 'true' ? true : value)
+                return r.before + '>' + r.value + ':' + r.changed
+              }))
+              on('settings.change', async ($, e) => { await $.ui.status(e.key + '=' + e.value) })
+              on('harness.switch', async ($, e) => { await $.ui.toast(e.from + '->' + e.to) })
+            }
+        """.trimIndent(), permissions = listOf("settings.read", "settings.write", "ui.status", "ui.toast")) {
+            put("contributes", JSONObject().put("slashCommands", JSONArray(listOf("read", "secret", "set").map {
+                JSONObject().put("name", it).put("description", "Test $it")
+            })))
+        }
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod") { host.info()?.state == ModRunState.RUNNING }
+        assertEquals(ModCodeCommandOutcome.Reply("sonnet|dark"), host.runCommand("dev.test.sample", "read", ""))
+        suspend fun reply(args: String, name: String = "set") = (host.runCommand("dev.test.sample", name, args) as ModCodeCommandOutcome.Reply).text
+        assertTrue(reply("", "secret"), "API keys, sign-ins and the keystore never" in reply("", "secret"))
+
+        // settings.write is a developer permission: refused until Developer mode is on and it is granted.
+        assertTrue(reply("model=opus"), "settings.write" in reply("model=opus"))
+        registry.setDeveloperMode(true)
+        registry.setGranted("dev.test.sample", ModCapability.SETTINGS_WRITE, true)
+        waitFor("the grant") { registry.snapshot.value.mods.single().let { ModCapability.SETTINGS_WRITE in it.granted } }
+        Thread.sleep(200)
+        assertEquals(ModCodeCommandOutcome.Reply("sonnet>opus:true"), host.runCommand("dev.test.sample", "set", "model=opus"))
+        assertEquals(ModCodeCommandOutcome.Reply("opus>opus:false"), host.runCommand("dev.test.sample", "set", "model=opus"))
+        assertEquals(ModCodeCommandOutcome.Reply("false>true:true"), host.runCommand("dev.test.sample", "set", "codexAccountBalancing=true"))
+        assertTrue(reply("model=nope"), "doesn't offer the model nope" in reply("model=nope"))
+        assertTrue(reply("theme=purple"), reply("theme=purple").startsWith("ERR"))
+        assertTrue(reply("apiKey=x"), reply("apiKey=x").startsWith("ERR"))
+        assertEquals("opus", effects.settings["model"])
+
+        // Each change keeps an undo snapshot, kept across restarts; undo puts the old value back.
+        val changes = registry.snapshot.value.settingChanges
+        assertEquals(listOf("codexAccountBalancing", "model"), changes.map { it.key })
+        assertEquals(listOf("model"), registry().snapshot.value.settingChanges.filter { it.before == "sonnet" }.map { it.key })
+        assertEquals(null, host.undoSettingChange(changes.last().id))
+        assertEquals("sonnet", effects.settings["model"])
+        assertEquals(listOf("codexAccountBalancing"), registry.snapshot.value.settingChanges.map { it.key })
+        assertTrue(registry.readAudit("dev.test.sample").any { it.op == "settings.undo" })
+
+        // The app tells mods about changes, whoever made them; values only with settings.read.
+        host.emit("settings.change", JSONObject().put("key", "theme").put("value", "light").put("before", "dark"),
+            mapOf("value" to ModCapability.SETTINGS_READ, "before" to ModCapability.SETTINGS_READ))
+        waitFor("settings.change") { host.info()?.status == "theme=light" }
+        host.emit("harness.switch", JSONObject().put("from", "claude").put("to", "codex"))
+        waitFor("harness.switch") { effects.toasts.any { it.endsWith("claude->codex") } }
+    }
+
+    @Test
+    fun `app settings checks values and never knows secrets`() {
+        assertEquals("codex", ModAppSettings.check("harness", "Codex"))
+        assertEquals("round_robin", ModAppSettings.check("antigravityBalancing", "ROUND_ROBIN"))
+        assertEquals(true, ModAppSettings.check("antigravityFailover", true))
+        listOf("harness" to "gemini", "theme" to "blue", "antigravityFailover" to "yes", "effort" to "", "model" to "a\nb", "apiKey" to "x", "keystore" to "x")
+            .forEach { (key, value) -> assertTrue("$key=$value", runCatching { ModAppSettings.check(key, value) }.isFailure) }
+        assertFalse(ModAppSettings.KEYS.any { "key" in it.lowercase() || "token" in it.lowercase() || "account" == it })
     }
 }

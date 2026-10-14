@@ -264,7 +264,11 @@ object ModAuthoringGuide {
         | `files.changed` | The agent changed files | `paths`, `count` |
         | `usage.update` | Token use changed (at most once a second) | `promptTokens`, `completionTokens`, `cachedTokens`, `contextLimit`, `costUsd` |
         | `terminal.end` | A terminal command finished | `command`, `exitCode` |
-        | `build.end` | An Android build ended | `status`, `detail` |
+        | `build.end` | An Android build ended | `status`, `detail`, `log` (the last 16 KB of Gradle's output; only with `files.read`) |
+        | `project.open` | A project finished opening | |
+        | `harness.switch` | The harness changed (by the user or a mod) | `from`, `to` |
+        | `settings.change` | One of the settings `${'$'}.settings` knows changed, whoever changed it | `key`, and with `settings.read` `value` and `before` |
+        | `file.saved` | The user saved a file in Files | `path` (in the project) |
         | `app.foreground`, `app.background` | The app is shown or hidden | |
         | `command.run` | The user ran one of the mod's commands | `name`, `args` |
         | `plan.update` | The open chat's task plan changed | `taskId`, `plan` (`title`, `status`, `current`, `steps`; only with `project.info`) |
@@ -315,6 +319,8 @@ object ModAuthoringGuide {
         | `${'$'}.terminal.run(command, { cwd, timeoutMs })` | `terminal.run` | Runs a bash command in the project folder (or `cwd` inside it) in the Linux guest: 2 minutes by default, 10 at most, 1 MB of output; resolves `{ exitCode, output, timedOut, truncated }`. It passes the same `terminal.command` gates as the user's commands, and a gate asking to confirm stops it. One at a time, never while a task, terminal command or build runs; stopping the mod kills it |
         | `${'$'}.build.run({ install })` | `build.run` | Builds the project's Android app (and installs it) through the app's own build, after the `build.start` gates; resolves `{ status, message, issues }` when it ends |
         | `${'$'}.memory.list()` | `memory.read` | The project's memory: `{ key, value, source, updatedAt }` |
+        | `${'$'}.settings.get(key?)` | `settings.read` | One app setting, or all of them as an object: `harness`, `model`, `effort`, `theme`, `antigravityBalancing`, `antigravityFailover`, `codexAccountBalancing`. API keys, sign-ins and the keystore are never settings |
+        | `${'$'}.settings.set(key, value)` | `settings.write` | Changes one of those through the app's own setter (refused with the app's reason, such as switching harness while a task runs); resolves `{ key, value, before, changed }`. `harness` is `claude`, `deepseek`, `antigravity` or `codex`; `theme` `system`, `light` or `dark`; `antigravityBalancing` `least_recently_used`, `round_robin` or `primary_only`; the last two are true or false. The user can undo each change from the mod's page |
         | `${'$'}.ui.open({ id, title })`, `${'$'}.ui.close(id)` | `ui.pane` | Adds a panel (8 at most; `id` is lowercase letters, digits, dashes) or removes one; `open` returns `{ isPlaced }`, whether it is on screen now |
         | `${'$'}.ui.post(panel, data)` | `ui.webpane` | Sends the mod's web panel `panel` a message (text, or JSON for anything else; at most 64 KB). Dropped when that panel isn't open |
         | `${'$'}.ui.redraw(id?)` | none | Draws the mod's shown surfaces again (or just pane `id`) |

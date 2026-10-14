@@ -63,6 +63,7 @@ import com.jarves.mh.mods.ModRuntimeInfo
 import com.jarves.mh.mods.ModHookAction
 import com.jarves.mh.mods.ModManifest
 import com.jarves.mh.mods.ModSetting
+import com.jarves.mh.mods.ModSettingChange
 import com.jarves.mh.mods.ModSettingType
 import com.jarves.mh.mods.ModStatus
 import com.jarves.mh.mods.ModTrust
@@ -526,7 +527,7 @@ private fun ModPage(
                 ModPageTab.DASHBOARD -> dashboardTab(mod, shownRuntime, surfaces, pane?.id, onSelectPane = { paneId = it }, viewModel)
                 ModPageTab.CONTROLS -> controlsTab(mod, shownRuntime, viewModel, onPreview = showText, onEdit = { editing = it }, onOpenPanel = { panelId = it.id })
                 ModPageTab.PERMISSIONS -> permissionsTab(mod, viewModel, onConfirmHigh = { confirmHigh = it })
-                ModPageTab.ACTIVITY -> activityTab(mod, audit, log, viewModel)
+                ModPageTab.ACTIVITY -> activityTab(mod, audit, log, snapshot.settingChanges.filter { it.modId == mod.id }, viewModel)
                 ModPageTab.ABOUT -> aboutTab(
                     mod,
                     onExport = { exportLauncher.launch("${mod.manifest.name.replace(Regex("[^A-Za-z0-9._-]+"), "-")}-${mod.manifest.version}.mhmod") },
@@ -970,7 +971,27 @@ private fun LazyListScope.permissionsTab(mod: InstalledMod, viewModel: ModsViewM
     }
 }
 
-private fun LazyListScope.activityTab(mod: InstalledMod, audit: List<ModAuditEntry>, log: List<ModLogEntry>, viewModel: ModsViewModel) {
+private fun LazyListScope.activityTab(
+    mod: InstalledMod,
+    audit: List<ModAuditEntry>,
+    log: List<ModLogEntry>,
+    settingChanges: List<ModSettingChange>,
+    viewModel: ModsViewModel,
+) {
+    if (settingChanges.isNotEmpty()) {
+        item(key = "settingChanges") {
+            ListSection(header = "Settings it changed", footer = "Undo puts the setting back as it was before this change.") {
+                settingChanges.forEach { change ->
+                    ListRow(
+                        title = change.key,
+                        subtitle = "${change.before ?: "none"} → ${change.after ?: "none"} · ${formatTime(change.at)}",
+                        value = "Undo",
+                        onClick = { viewModel.undoSettingChange(change.id) },
+                    )
+                }
+            }
+        }
+    }
     if (mod.manifest.hooksModule != null) {
         item(key = "modlog") {
             val colors = PocketColors.current

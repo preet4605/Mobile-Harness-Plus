@@ -4,7 +4,18 @@
 
 Love chose "All ten phases" (04:05 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair. Native code in mods (plan row 24) is not built; mods running with the app closed (row 15) and sharing beyond .mhmod (row 16) stay deferred.
 
+### Phase 7: app settings and more app events
+
+- `settings.read` (usable): `$.settings.get(key?)` for `harness`, `model`, `effort`, `theme`, `antigravityBalancing`, `antigravityFailover`, `codexAccountBalancing` (`ModAppSettings.KEYS`). Any other key, including API keys, sign-ins and the keystore, is refused by name.
+- `settings.write` (developer): `$.settings.set(key, value)` checks the value (`ModAppSettings.check`), then goes through the same MainViewModel setters as the app's screens (`selectAgent`, `applyModelChoice`, `applyEffortChoice`, `setThemeMode`, the Antigravity and Codex balancing setters), so their refusals hold (no harness switch while a task runs, models the harness offers). Each change is kept as an undo snapshot (`ModsSnapshot.settingChanges`, newest 20, in `_state.json`), audited `settings.set`/`settings.undo`, and listed on the mod's Activity tab with Undo.
+- Events: `project.open`, `harness.switch` (`from`, `to`), `settings.change` (`key`; `value`/`before` with `settings.read`) for changes by anyone, `file.saved` (`path`) after the user saves in Files, and `build.end` now carries `log`, the last 16 KB of Gradle output (only with `files.read`). Task start and stop were already `run.start`/`run.end`.
+- Defaults taken: a fixed allowlist of seven settings (provider and permission settings that hold keys or sign-ins are left out); undo restores the value from before the change even if the user changed it since; the build log needs `files.read`.
+- VERIFIED (full suite 1516 tests, 0 failures; node 17/17): `ModHostTest` (read, unknown and secret keys refused, set refused without Developer mode, set/no-op/refusal from the app, undo snapshot persisted and undone, events with value hiding), `ModAppSettings.check` cases.
+- NOT RUN: on a phone (the real setters from a mod, the event diff collector in MainViewModel).
+
 ### Phase 6: memory limits
+
+COMPLETE (pushed to harness-dev as 78ee811).
 
 - Every mod keeps 16 MB. `engine.memory` (developer, review risk) gives a mod 32 MB; at most 2 mods have it at once (the first two allowed, by id), the rest keep 16 MB and their log says why. A grant or Developer mode change reloads the mod with its new heap; Developer mode off puts every mod back at 16 MB.
 - Unchanged by design: one mod over its cap still takes the whole engine down and every mod reloads (engine test 2). The cap message names the mod's own limit.
