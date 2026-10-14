@@ -206,7 +206,7 @@ data class TerminalOutputLine(
     val exitCode: Int = 0,
 )
 
-private val ANSI_TERMINAL_SEQUENCE = Regex("\\u001B(?:\\][^\\u0007]*(?:\\u0007|\\u001B\\\\)|\\[[0-?]*[ -/]*[@-~]|[()][A-Z0-9])")
+internal val ANSI_TERMINAL_SEQUENCE = Regex("\\u001B(?:\\][^\\u0007]*(?:\\u0007|\\u001B\\\\)|\\[[0-?]*[ -/]*[@-~]|[()][A-Z0-9])")
 
 internal fun sanitizeTerminalOutput(text: String): String = text
     .replace(ANSI_TERMINAL_SEQUENCE, "")
@@ -1348,15 +1348,19 @@ class MainViewModel(
                     terminalProcess = proc
                     val native = proc as? NativeSpawnProcess
                     var offset = 0L
-                    val streamed = StringBuilder()
+                    val streamed = TerminalOutputTail(MAX_PROJECT_TERMINAL_OUTPUT)
                     var autoConfirmed = false
+                    var idleSleep = TERMINAL_IDLE_POLL_MIN_MS
+                    var lastPublishAt = 0L
                     while (proc.isAlive || (native?.outputFile?.length() ?: 0L) > offset) {
                         val file = native?.outputFile
                         val available = (file?.length() ?: 0L) - offset
                         if (file == null || available <= 0) {
-                            Thread.sleep(50)
+                            Thread.sleep(idleSleep)
+                            idleSleep = (idleSleep * 2).coerceAtMost(TERMINAL_IDLE_POLL_MAX_MS)
                             continue
                         }
+                        idleSleep = TERMINAL_IDLE_POLL_MIN_MS
                         val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
                         val count = RandomAccessFile(file, "r").use { input ->
                             input.seek(offset)
@@ -1365,10 +1369,12 @@ class MainViewModel(
                         if (count > 0) {
                             offset += count
                             streamed.append(bytes.decodeToString(0, count))
-                            _terminalLiveOutput.value = sanitizeTerminalOutput(streamed.toString())
-                                .trimEnd()
-                                .takeLast(MAX_PROJECT_TERMINAL_OUTPUT)
-                            if (!autoConfirmed && shouldAutoConfirmPackageCommand(command, streamed.toString())) {
+                            val now = SystemClock.elapsedRealtime()
+                            if (now - lastPublishAt >= TERMINAL_PUBLISH_INTERVAL_MS || available <= count) {
+                                lastPublishAt = now
+                                _terminalLiveOutput.value = streamed.text().trimEnd()
+                            }
+                            if (!autoConfirmed && shouldAutoConfirmPackageCommand(command, streamed.recent(500))) {
                                 proc.outputStream.write("y\n".toByteArray())
                                 proc.outputStream.flush()
                                 autoConfirmed = true
@@ -1377,12 +1383,13 @@ class MainViewModel(
                     }
                     val exit = proc.waitFor()
                     runCatching { proc.outputStream.close() }
-                    val out = sanitizeTerminalOutput(streamed.toString()).trim()
+                    streamed.finish()
+                    val out = streamed.text().trim()
                     val finalOut = if (out.isNotEmpty() || exit == 0) out else "Process exited with code $exit"
                     finalOut to exit
                 }.getOrElse { "Error: ${it.message}" to 1 }
             }
-            _terminalLines.update { it + TerminalOutputLine(command = command, output = output, exitCode = exitCode) }
+            _terminalLines.update { (it + TerminalOutputLine(command = command, output = output, exitCode = exitCode)).takeLast(MAX_PROJECT_TERMINAL_HISTORY) }
             _terminalLiveOutput.value = ""
             _terminalCurrentCommand.value = null
             _isTerminalRunning.value = false
@@ -1661,7 +1668,8 @@ class MainViewModel(
                 exitCode = result.exitCode,
             )
             val updatedLines = (existingLines + completedLine).takeLast(MAX_PROJECT_TERMINAL_HISTORY)
-            saveProjectTerminal(project.id, result.cwd, updatedLines)
+            // Up to 100 x 200 KB of JSON: keep it off the main thread.
+            withContext(Dispatchers.IO) { saveProjectTerminal(project.id, result.cwd, updatedLines) }
             emitModEvent(ModEvent.TERMINAL_COMMAND_FINISHED, {
                 mapOf("terminal.command" to command, "terminal.exitCode" to result.exitCode.toString())
             }, project = project)
@@ -1740,14 +1748,20 @@ class MainViewModel(
         val native = process as? NativeSpawnProcess
             ?: return ProjectTerminalResult("Unsupported terminal process.", 1, cwd)
         var offset = 0L
-        val output = StringBuilder()
+        // The cwd marker is printed last, so it is always inside the kept tail.
+        val output = TerminalOutputTail(MAX_PROJECT_TERMINAL_OUTPUT)
         var autoConfirmed = false
+        var idleSleep = TERMINAL_IDLE_POLL_MIN_MS
+        var lastPublishAt = 0L
+        var lastPreviewUrl: String? = null
         while (process.isAlive || native.outputFile.length() > offset) {
             val available = native.outputFile.length() - offset
             if (available <= 0) {
-                Thread.sleep(50)
+                Thread.sleep(idleSleep)
+                idleSleep = (idleSleep * 2).coerceAtMost(TERMINAL_IDLE_POLL_MAX_MS)
                 continue
             }
+            idleSleep = TERMINAL_IDLE_POLL_MIN_MS
             val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
             val count = RandomAccessFile(native.outputFile, "r").use { file ->
                 file.seek(offset)
@@ -1756,14 +1770,19 @@ class MainViewModel(
             if (count > 0) {
                 offset += count
                 output.append(bytes.decodeToString(0, count))
-                val visible = sanitizeTerminalOutput(output.toString().substringBefore(marker))
-                    .takeLast(MAX_PROJECT_TERMINAL_OUTPUT)
-                if (!autoConfirmed && shouldAutoConfirmPackageCommand(command, visible)) {
+                val recent = output.recent(4096).substringBefore(marker)
+                if (!autoConfirmed && shouldAutoConfirmPackageCommand(command, recent)) {
                     process.outputStream.write("y\n".toByteArray())
                     process.outputStream.flush()
                     autoConfirmed = true
                 }
-                val detectedPreviewUrl = detectPreviewUrl(visible)
+                val detectedPreviewUrl = detectPreviewUrl(recent)
+                val now = SystemClock.elapsedRealtime()
+                val newPreviewUrl = detectedPreviewUrl != null && detectedPreviewUrl != lastPreviewUrl
+                if (!newPreviewUrl && now - lastPublishAt < TERMINAL_PUBLISH_INTERVAL_MS && available > count) continue
+                lastPublishAt = now
+                lastPreviewUrl = detectedPreviewUrl ?: lastPreviewUrl
+                val visible = output.text().substringBefore(marker)
                 _state.update { current ->
                     if (current.activeProject?.id == projectId) {
                         current.copy(
@@ -1777,16 +1796,15 @@ class MainViewModel(
         }
         val exitCode = process.waitFor()
         runCatching { process.outputStream.close() }
-        val raw = output.toString()
+        output.finish()
+        val raw = output.text()
         val cwdAfter = raw.substringAfter(marker, "")
             .lineSequence()
             .firstOrNull()
             ?.trim()
             ?.takeIf { it == guestWorkspacePath || it.startsWith("$guestWorkspacePath/") }
             ?: cwd
-        val cleanOutput = sanitizeTerminalOutput(raw.substringBefore(marker))
-            .trim()
-            .takeLast(MAX_PROJECT_TERMINAL_OUTPUT)
+        val cleanOutput = raw.substringBefore(marker).trim()
         return ProjectTerminalResult(cleanOutput, exitCode, cwdAfter)
     }
 

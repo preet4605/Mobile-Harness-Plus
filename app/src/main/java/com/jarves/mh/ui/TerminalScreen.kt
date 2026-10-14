@@ -339,7 +339,7 @@ fun TerminalScreen(
                                     TerminalCommandPrompt(promptPath = terminalPromptPath, command = item.command, isDark = isDark)
                                     if (item.output.isNotEmpty()) {
                                         Text(
-                                            text = sanitizeTerminalOutput(item.output),
+                                            text = remember(item.output) { sanitizeTerminalOutput(item.output) },
                                             style = PocketType.codeSmall.copy(lineHeight = 18.sp),
                                             color = if (item.exitCode != 0) MaterialTheme.colorScheme.error else outputTextColor,
                                             modifier = Modifier.padding(start = 8.dp),
@@ -353,8 +353,9 @@ fun TerminalScreen(
                             }
 
                             if (liveOutput.isNotBlank()) {
+                                // Already sanitized by the ViewModel as it streams.
                                 Text(
-                                    sanitizeTerminalOutput(liveOutput),
+                                    liveOutput,
                                     style = PocketType.codeSmall.copy(lineHeight = 18.sp),
                                     color = outputTextColor,
                                 )
