@@ -996,7 +996,8 @@ class MainViewModel(
     private var composerSends = 0L
     private val failedApiKeyIds = mutableSetOf<String>()
     private val attemptedProfileIds = mutableSetOf<String>()
-    @Volatile private var pendingTranscriptWrite: TranscriptWrite? = null
+    // getAndSet keeps a write queued during a flush from being dropped with the one being written.
+    private val pendingTranscriptWrite = java.util.concurrent.atomic.AtomicReference<TranscriptWrite?>(null)
     private var transcriptDebounceJob: kotlinx.coroutines.Job? = null
     private var previewDiscoverySession: String? = null
     private val previewDiscoveryJobs = mutableMapOf<String, Job>()
@@ -1151,9 +1152,9 @@ class MainViewModel(
                 }
             }
         }
-        viewModelScope.launch { dshRuntime.events.collect { onRuntimeEvent(it, AgentKind.DEEPSEEK_HARNESS) } }
-        viewModelScope.launch { antigravityRuntime.events.collect { onRuntimeEvent(it, AgentKind.ANTIGRAVITY) } }
-        viewModelScope.launch { codexRuntime.events.collect { onRuntimeEvent(it, AgentKind.CODEX) } }
+        viewModelScope.launch { dshRuntime.events.coalesceAssistantDeltas().collect { onRuntimeEvent(it, AgentKind.DEEPSEEK_HARNESS) } }
+        viewModelScope.launch { antigravityRuntime.events.coalesceAssistantDeltas().collect { onRuntimeEvent(it, AgentKind.ANTIGRAVITY) } }
+        viewModelScope.launch { codexRuntime.events.coalesceAssistantDeltas().collect { onRuntimeEvent(it, AgentKind.CODEX) } }
         viewModelScope.launch {
             antigravityAuthController.state.collect { auth ->
                 _state.update { it.copy(antigravityAuth = auth) }
@@ -2355,7 +2356,7 @@ class MainViewModel(
 
     init {
         viewModelScope.launch { RuntimeSetupController.snapshot.collect(::onSetupSnapshot) }
-        viewModelScope.launch { claudeRuntime.events.collect { onRuntimeEvent(it, AgentKind.CLAUDE_CODE) } }
+        viewModelScope.launch { claudeRuntime.events.coalesceAssistantDeltas().collect { onRuntimeEvent(it, AgentKind.CLAUDE_CODE) } }
         viewModelScope.launch { bootstrap() }
     }
 
@@ -4166,7 +4167,7 @@ class MainViewModel(
         val active = _state.value.activeProject
         if (active != null) emitModEvent(ModEvent.PROJECT_CLOSED, project = active)
         // A write that is queued or still flushing is not on disk yet, so the emptiness check must not trust the disk.
-        val writeInFlight = pendingTranscriptWrite != null || transcriptDebounceJob?.isActive == true
+        val writeInFlight = pendingTranscriptWrite.get() != null || transcriptDebounceJob?.isActive == true
         persistMessages()
         if (_state.value.isRunning || _state.value.projectTerminalRunning || _state.value.androidBuildRunning) {
             _state.update {
@@ -4195,7 +4196,7 @@ class MainViewModel(
             ) {
                 // Unused empty project; delete immediately so it does not clutter the project list.
                 // Drop the write queued above so the deleted project's folder is not written again.
-                pendingTranscriptWrite = null
+                pendingTranscriptWrite.set(null)
                 transcriptDebounceJob?.cancel()
                 _state.update { current -> current.copy(projects = current.projects.filterNot { it.id == active.id }) }
                 preferences.saveProjects(_state.value.projects)
@@ -7859,6 +7860,7 @@ class MainViewModel(
             task?.taskId?.let(::finishSupervisedTask)
             return
         }
+        val stateBeforeEvent = _state.value
         var accepted = false
         _state.update { current ->
             accepted = RuntimeSessionRouting.acceptsOwned(current, event, activeUiTaskId, task, source)
@@ -8133,7 +8135,13 @@ class MainViewModel(
         // final results. If Android kills the process, the last displayed timeline
         // is restored as an interrupted work block rather than disappearing.
         val isTerminalEvent = event is RuntimeEvent.SessionCompleted || event is RuntimeEvent.SessionFailed
-        persistMessages(includeLiveProcess = true, immediate = isTerminalEvent)
+        // Usage, timer and task-list events change nothing that is saved; skipping them keeps
+        // the transcript from being rewritten for every status tick of a long task.
+        val stateAfterEvent = _state.value
+        val transcriptChanged = stateAfterEvent.messages !== stateBeforeEvent.messages ||
+            stateAfterEvent.liveProcess !== stateBeforeEvent.liveProcess ||
+            stateAfterEvent.liveThinking != stateBeforeEvent.liveThinking
+        if (isTerminalEvent || transcriptChanged) persistMessages(includeLiveProcess = true, immediate = isTerminalEvent)
         // The outcome may already be durable while the final bridge event was buffered.
         if (isTerminalEvent) task?.taskId?.let(::finishSupervisedTask)
     }
@@ -8333,7 +8341,7 @@ class MainViewModel(
         // Messages before the loaded window stay on disk; the save starts where the window starts.
         val startIndex = if (current.messageWindowKey == messageWindowKey(project.id, chatId)) current.olderMessageCount else 0
         val write = TranscriptWrite(project.id, chatId, messages, startIndex)
-        pendingTranscriptWrite = write
+        pendingTranscriptWrite.set(write)
         if (immediate) {
             transcriptDebounceJob?.cancel()
             flushPendingTranscriptWrite()
@@ -8348,8 +8356,7 @@ class MainViewModel(
     }
 
     private fun flushPendingTranscriptWrite() {
-        val write = pendingTranscriptWrite ?: return
-        pendingTranscriptWrite = null
+        val write = pendingTranscriptWrite.getAndSet(null) ?: return
         runCatching {
             preferences.saveMessages(write.projectId, write.chatId, write.messages, write.startIndex)
         }
