@@ -75,6 +75,7 @@ function validate(dir) {
   }
   const file = hooksFile(dir, manifest);
   if (manifest.hooks !== undefined && !file) problems.push('"hooks" must be { "module": "hooks/register.js" }.');
+  problems.push(...contributesProblems(dir, manifest, new Set(permissions.map(p => p && p.capability)), !!file));
   if (file) {
     if (!fs.existsSync(file)) return [...problems, `The hooks module ${manifest.hooks.module} is missing.`];
     const source = fs.readFileSync(file, 'utf8');
@@ -88,6 +89,60 @@ function validate(dir) {
     } catch (error) {
       problems.push(error instanceof SyntaxError ? `${manifest.hooks.module}: ${error.message}` : error.message);
     }
+  }
+  return problems;
+}
+
+const CONTRIBUTES = ['panels', 'menuItems', 'schedules', 'slashCommands', 'promptTemplates', 'settings', 'rules', 'skills', 'hooks', 'guestTools', 'mcpServers'];
+const ITEM_ID = /^[a-z0-9][a-z0-9-]*$/;
+
+/** The `contributes` rules the app checks for menus, panels, schedules and guest programs. */
+function contributesProblems(dir, manifest, requested, hasModule) {
+  const c = manifest.contributes;
+  if (c === undefined) return [];
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return ['"contributes" must be an object.'];
+  const problems = Object.keys(c).filter(key => !CONTRIBUTES.includes(key)).map(key => `Unknown field "contributes.${key}".`);
+  const list = (key, max) => {
+    if (c[key] === undefined) return [];
+    if (!Array.isArray(c[key])) { problems.push(`"contributes.${key}" must be a list.`); return []; }
+    if (c[key].length > max) problems.push(`"contributes.${key}" has more than ${max} entries.`);
+    return c[key].filter(item => item && typeof item === 'object');
+  };
+  const unique = (items, what) => {
+    const ids = items.map(item => item.id);
+    new Set(ids.filter((id, i) => ids.indexOf(id) !== i)).forEach(id => problems.push(`Two ${what}s are called ${id}.`));
+  };
+  const commands = list('slashCommands', 32).map(command => command.name);
+  const menuItems = list('menuItems', 8);
+  menuItems.forEach((item, i) => {
+    if (typeof item.id !== 'string' || !ITEM_ID.test(item.id)) problems.push(`contributes.menuItems[${i}].id must be lowercase letters, digits or dashes.`);
+    if (typeof item.title !== 'string' || !item.title || item.title.length > 40) problems.push(`contributes.menuItems[${i}].title must be 1 to 40 characters.`);
+    if (!['chat', 'file', 'project'].includes(item.place)) problems.push(`contributes.menuItems[${i}].place must be chat, file or project.`);
+    const command = typeof item.command === 'string' ? item.command.replace(/^\//, '') : '';
+    if (!commands.includes(command)) problems.push(`Menu item ${item.id} runs /${command}, which isn't one of the mod's slashCommands.`);
+  });
+  unique(menuItems, 'menu item');
+  const panels = list('panels', 4);
+  panels.forEach((panel, i) => {
+    if (typeof panel.id !== 'string' || !ITEM_ID.test(panel.id)) problems.push(`contributes.panels[${i}].id must be lowercase letters, digits or dashes.`);
+    if (typeof panel.entry !== 'string' || !panel.entry.endsWith('.html') || !fs.existsSync(path.join(dir, panel.entry))) {
+      problems.push(`contributes.panels[${i}].entry must be a .html file in the mod.`);
+    }
+  });
+  unique(panels, 'web panel');
+  if (panels.length && !requested.has('ui.webpane')) problems.push('Web panels need the ui.webpane permission.');
+  const schedules = list('schedules', 3);
+  schedules.forEach((schedule, i) => {
+    if (typeof schedule.id !== 'string' || !ITEM_ID.test(schedule.id)) problems.push(`contributes.schedules[${i}].id must be lowercase letters, digits or dashes.`);
+    if (!Number.isInteger(schedule.everyMinutes) || schedule.everyMinutes < 15 || schedule.everyMinutes > 1440) {
+      problems.push(`contributes.schedules[${i}].everyMinutes must be 15 to 1440: Android wakes apps at most every 15 minutes.`);
+    }
+  });
+  unique(schedules, 'schedule');
+  if (schedules.length && !requested.has('schedules')) problems.push('Schedules need the schedules permission.');
+  if (schedules.length && !hasModule) problems.push('Schedules need a hooks module to answer schedule.run.');
+  if ((list('guestTools', 8).length || list('mcpServers', 4).length) && !requested.has('guest.tools')) {
+    problems.push('Guest tools and MCP servers run in the Linux guest, so the mod must ask for guest.tools.');
   }
   return problems;
 }

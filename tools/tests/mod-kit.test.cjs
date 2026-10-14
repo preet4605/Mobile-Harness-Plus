@@ -33,6 +33,30 @@ test('validate names what the app would refuse', t => {
   writeMod(dir, 'export function register(on) { on("run.end", (') ;
   assert.ok(kit.validate(dir).some(p => p.startsWith('hooks/register.js:')));
 });
+test('validate checks contributes like the app: menus, panels, schedules, guest programs', t => {
+  const dir = folder(t);
+  writeMod(dir, 'export function register(on) {}', {contributes: {
+    slashCommands: [{name: 'lint', description: 'Lint'}],
+    menuItems: [{id: 'lint', title: 'Lint', place: 'chat', command: '/lint'}, {id: 'x', title: 'X', place: 'toolbar', command: 'deploy'}],
+    panels: [{id: 'board', title: 'Board', entry: 'web/missing.html'}],
+    schedules: [{id: 'often', everyMinutes: 5}],
+    guestTools: [{name: 'fmt', command: ['./fmt']}],
+    widgets: [],
+  }});
+  const problems = kit.validate(dir);
+  for (const fragment of ['Unknown field "contributes.widgets"', 'place must be chat, file or project', "runs /deploy, which isn't one",
+    'entry must be a .html file', 'need the ui.webpane permission', 'everyMinutes must be 15 to 1440', 'need the schedules permission', 'must ask for guest.tools']) {
+    assert.ok(problems.some(p => p.includes(fragment)), `${fragment} in ${JSON.stringify(problems)}`);
+  }
+  assert.ok(!problems.some(p => p.includes('Menu item lint')));
+  fs.mkdirSync(path.join(dir, 'web'));
+  fs.writeFileSync(path.join(dir, 'web', 'board.html'), '<p>hi</p>');
+  writeMod(dir, 'export function register(on) {}', {
+    permissions: [{capability: 'ui.webpane', reason: 'r'}, {capability: 'schedules', reason: 'r'}],
+    contributes: {panels: [{id: 'board', title: 'Board', entry: 'web/board.html'}], schedules: [{id: 'hourly', everyMinutes: 60}]},
+  });
+  assert.deepEqual(kit.validate(dir), []);
+});
 test('a loaded mod answers events, gates, drawing and taps through the real shim', async t => {
   const dir = folder(t);
   writeMod(dir, `
