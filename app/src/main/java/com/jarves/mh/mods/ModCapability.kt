@@ -27,12 +27,12 @@ enum class ModCapability(
     EVENTS_SUBSCRIBE("events.subscribe", RiskLevel.REVIEW, "Watch the agent's live log while its panel is open", usable = true),
     FILES_READ("files.read", RiskLevel.REVIEW, "Read project files", usable = true),
     FILES_WRITE("files.write", RiskLevel.HIGH, "Change project files", usable = true),
-    GIT_READ("git.read", RiskLevel.REVIEW, "Read git status and diffs"),
+    GIT_READ("git.read", RiskLevel.REVIEW, "Read git status, diffs and history", usable = true),
     BROWSER_OPEN("browser.open", RiskLevel.REVIEW, "Open web pages", usable = true),
-    TERMINAL_RUN("terminal.run", RiskLevel.HIGH, "Run terminal commands"),
+    TERMINAL_RUN("terminal.run", RiskLevel.HIGH, "Run terminal commands in your projects", usable = true, developer = true),
     NET_FETCH("net.fetch", RiskLevel.HIGH, "Connect to the websites it names", usable = true),
     SECRETS("secrets", RiskLevel.REVIEW, "Keep its own secrets", usable = true),
-    MEMORY_READ("memory.read", RiskLevel.REVIEW, "Read project memory"),
+    MEMORY_READ("memory.read", RiskLevel.REVIEW, "Read project memory", usable = true),
     AGENT_ASK("agent.ask", RiskLevel.HIGH, "Start agent tasks on any of your harnesses", usable = true),
     PROMPT_TRANSFORM("prompt.transform", RiskLevel.REVIEW, "Change or stop your messages before they are sent", usable = true),
     UI_STATUS("ui.status", RiskLevel.SAFE, "Show a status line", usable = true),
@@ -49,6 +49,8 @@ enum class ModCapability(
     MODEL_COMPLETE("model.complete", RiskLevel.HIGH, "Call the AI model on your account (daily token limit)", usable = true),
     AGENT_CHAIN("agent.chain", RiskLevel.HIGH, "Keep the agent working for up to 25 follow-ups per message", usable = true, developer = true),
     MODS_CALL("mods.call", RiskLevel.REVIEW, "Use tools other mods give", usable = true),
+    GIT_WRITE("git.write", RiskLevel.HIGH, "Commit and switch git branches in your projects", usable = true, developer = true),
+    BUILD_RUN("build.run", RiskLevel.HIGH, "Build and install the project's Android app", usable = true, developer = true),
     ;
 
     companion object {

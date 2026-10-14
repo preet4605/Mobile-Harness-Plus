@@ -281,7 +281,7 @@ object ModAuthoringGuide {
         | `${'$'}.chat.append(text)` | `chat.post` | Adds the mod's own message to the chat; the agent never sees it |
         | `${'$'}.prompt.draft(text)` | `prompt.draft` | Fills an empty message box; never sends |
         | `${'$'}.fs.read(path)` / `${'$'}.fs.list(dir)` / `${'$'}.fs.stat(path)` / `${'$'}.fs.exists(path)` | `files.read` | The open project's files (1 MB per read, 500 entries per list), only paths in the permission's `scope.paths` when it has any |
-        | `${'$'}.fs.write(path, text)` | `files.write` | Replaces or creates a file (1 MB) inside `scope.paths`, which this permission needs |
+        | `${'$'}.fs.write(path, text)` | `files.write` | Replaces or creates a file (1 MB) inside `scope.paths`, which this permission needs. The edit shows in Changes, where the user can undo it |
         | `${'$'}.secrets.get(key)` / `${'$'}.secrets.set(key, value)` | `secrets` | The mod's own encrypted secrets, including its secret settings; `null` removes one |
         | `${'$'}.prompt.send(text)` | `prompt.send` | Sends a message to the agent in the open chat (at most 3 after each message from the user) |
         | `${'$'}.browser.open(url)` | `browser.open` | Opens an https page in the browser |
@@ -296,6 +296,11 @@ object ModAuthoringGuide {
         | `${'$'}.agent.ask({ harness, prompt, model, effort, chat, timeoutMs })` | `agent.ask` | Runs a task in the open chat (or another chat of the project) on a harness and resolves when it ends (see "Agent tasks") |
         | `${'$'}.agent.stop(taskId)` | `agent.ask` | Stops a task the mod's `agent.ask` started; `true` when it was running |
         | `${'$'}.mods.tools()`, `${'$'}.mods.call(name, input)` | `mods.call` | Other mods' tools (see "Tools for the agents") |
+        | `${'$'}.git.status()`, `${'$'}.git.diff({ path, staged })`, `${'$'}.git.log(n)` | `git.read` | The open project's repository: `{ branch, tracking, clean, files: [{ path, index, worktree }] }`, `{ text, truncated }`, and up to 100 `{ hash, author, time, subject }` |
+        | `${'$'}.git.commit({ message, all })`, `${'$'}.git.branch(name)`, `${'$'}.git.switch(name)` | `git.write` | Commits (adding every change unless `all: false`) and resolves `{ hash }`; makes and switches to a branch, or switches. Never pushes, resets or forces: git refuses a switch that would lose changes. Waits for no task, terminal command or build to run |
+        | `${'$'}.terminal.run(command, { cwd, timeoutMs })` | `terminal.run` | Runs a bash command in the project folder (or `cwd` inside it) in the Linux guest: 2 minutes by default, 10 at most, 1 MB of output; resolves `{ exitCode, output, timedOut, truncated }`. It passes the same `terminal.command` gates as the user's commands, and a gate asking to confirm stops it. One at a time, never while a task, terminal command or build runs; stopping the mod kills it |
+        | `${'$'}.build.run({ install })` | `build.run` | Builds the project's Android app (and installs it) through the app's own build, after the `build.start` gates; resolves `{ status, message, issues }` when it ends |
+        | `${'$'}.memory.list()` | `memory.read` | The project's memory: `{ key, value, source, updatedAt }` |
         | `${'$'}.ui.open({ id, title })`, `${'$'}.ui.close(id)` | `ui.pane` | Adds a panel (8 at most; `id` is lowercase letters, digits, dashes) or removes one; `open` returns `{ isPlaced }`, whether it is on screen now |
         | `${'$'}.ui.redraw(id?)` | none | Draws the mod's shown surfaces again (or just pane `id`) |
         | `${'$'}.ui.resolve(e)` | none | The element names, so `const { Column, Text } = ${'$'}.ui.resolve(e)` works as in other mod systems |

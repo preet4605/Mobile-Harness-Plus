@@ -71,6 +71,32 @@ class ModHostTest {
             undone += path
             return true
         }
+        val commands = CopyOnWriteArrayList<ModGuestCommand>()
+        override suspend fun guestRun(context: ModEventContext, command: ModGuestCommand): ModGuestResult {
+            commands += command
+            val argv = command.argv
+            return when {
+                "status" in argv -> ModGuestResult(0, "## main...origin/main [ahead 1]\n M src/a.kt\n?? new file.txt\n")
+                "log" in argv -> ModGuestResult(0, "abc123\u001fLove\u001f1700000000\u001fFirst commit\n")
+                "rev-parse" in argv -> ModGuestResult(0, "deadbeef\n")
+                "diff" in argv -> ModGuestResult(0, "+added line")
+                "main" in argv && "switch" in argv -> ModGuestResult(1, "error: Your local changes would be overwritten by checkout.\nAborting")
+                argv.first() == "/usr/bin/bash" -> ModGuestResult(0, "hi\n")
+                else -> ModGuestResult(0, "")
+            }
+        }
+        val builds = CopyOnWriteArrayList<Boolean>()
+        override suspend fun runBuild(mod: InstalledMod, context: ModEventContext, install: Boolean): JSONObject {
+            builds += install
+            return JSONObject().put("status", "completed").put("message", "Built")
+        }
+        override fun projectMemory(context: ModEventContext): JSONArray =
+            JSONArray().put(JSONObject().put("key", "language").put("value", "Kotlin"))
+        val checkpointed = CopyOnWriteArrayList<String>()
+        override suspend fun checkpointedWrite(context: ModEventContext, path: String, write: () -> Int): Int {
+            // Like the app: the path is kept only once the write went through.
+            return write().also { checkpointed += path }
+        }
     }
 
     @Before
@@ -732,6 +758,7 @@ class ModHostTest {
         assertTrue(log, "plain refused:" in log)
         assertTrue(log, "page true" in log)
         assertEquals("hello", File(root, "src/out.txt").readText())
+        assertEquals(listOf("src/out.txt"), effects.checkpointed.toList())
         assertEquals("keep", File(root, "notes.md").readText())
         assertEquals("s3cret", secretValues["dev.test.sample:token"])
         assertEquals(listOf("https://example.com/docs"), effects.opened.toList())
@@ -837,5 +864,82 @@ class ModHostTest {
         assertEquals(ModHost.MAX_FOLLOW_UPS, effects.followUpLimits.last())
         assertTrue(ModCapability.AGENT_CHAIN in registry.snapshot.value.mods.first { it.id == "dev.test.boss" }.granted)
         assertTrue(registry.readAudit(null).any { it.op == "developer.on" })
+    }
+
+    @Test
+    fun `git, terminal, builds and memory need their permissions, and the risky ones Developer mode`() = runBlocking {
+        val registry = registry()
+        registry.setDeveloperMode(true)
+        install(registry, """
+            export function register(on) {
+              on('command.run', { name: 'dev' }, async ($) => {
+                const r = (p) => p.then(v => JSON.stringify(v), err => 'refused: ' + err.message)
+                const out = []
+                out.push('status ' + await r($.git.status()))
+                out.push('log ' + await r($.git.log(2)))
+                out.push('diff ' + await r($.git.diff({ path: 'src', staged: true })))
+                out.push('commit ' + await r($.git.commit('Add a thing')))
+                out.push('badbranch ' + await r($.git.branch('../x')))
+                out.push('branch ' + await r($.git.branch('feature/x')))
+                out.push('switch ' + await r($.git.switch('main')))
+                out.push('run ' + await r($.terminal.run('echo hi', { cwd: 'src', timeoutMs: 5000 })))
+                out.push('escape ' + await r($.terminal.run('ls', { cwd: '../x' })))
+                out.push('curl ' + await r($.terminal.run('curl example.com')))
+                out.push('build ' + await r($.build.run({ install: true })))
+                out.push('memory ' + await r($.memory.list()))
+                return { text: out.join('\n') }
+              })
+            }
+        """.trimIndent(), id = "dev.test.dev", permissions = listOf("git.read", "git.write", "terminal.run", "build.run", "memory.read"))
+        install(registry, """
+            export function register(on) {
+              on('terminal.command', { command: /^curl / }, () => ({ deny: 'No network from the terminal' }))
+              on('terminal.command', { command: /^echo / }, ($, e, next) => next({ ...e, command: e.command + ' there' }))
+            }
+        """.trimIndent(), id = "dev.test.guard", name = "Guard", permissions = listOf("terminal.gate"))
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("both mods") { host.snapshot.value.mods.values.count { it.state == ModRunState.RUNNING } == 2 }
+        val text = (host.runCommand("dev.test.dev", "dev", "") as ModCodeCommandOutcome.Reply).text
+        val lines = text.lines().associate { it.substringBefore(' ') to it.substringAfter(' ') }
+        val status = JSONObject(lines.getValue("status"))
+        assertEquals("main", status.getString("branch"))
+        assertEquals("origin/main [ahead 1]", status.getString("tracking"))
+        assertEquals(listOf("src/a.kt", "new file.txt"), (0 until 2).map { status.getJSONArray("files").getJSONObject(it).getString("path") })
+        assertEquals("?", status.getJSONArray("files").getJSONObject(1).getString("index"))
+        assertEquals("First commit", JSONArray(lines.getValue("log")).getJSONObject(0).getString("subject"))
+        assertEquals(1_700_000_000_000L, JSONArray(lines.getValue("log")).getJSONObject(0).getLong("time"))
+        assertEquals("+added line", JSONObject(lines.getValue("diff")).getString("text"))
+        assertEquals("deadbeef", JSONObject(lines.getValue("commit")).getString("hash"))
+        assertTrue(text, lines.getValue("badbranch").startsWith("refused: \$.git.branch(name)"))
+        assertEquals("\"feature/x\"", lines.getValue("branch"))
+        assertTrue(text, lines.getValue("switch").startsWith("refused: git switch failed: error: Your local changes"))
+        assertEquals(0, JSONObject(lines.getValue("run")).getInt("exitCode"))
+        assertTrue(text, lines.getValue("escape").startsWith("refused: \$.terminal.run: cwd"))
+        assertTrue(text, lines.getValue("curl").startsWith("refused: Guard stopped the command: No network"))
+        assertEquals("completed", JSONObject(lines.getValue("build")).getString("status"))
+        assertEquals("Kotlin", JSONArray(lines.getValue("memory")).getJSONObject(0).getString("value"))
+
+        val argvs = effects.commands.map { it.argv }
+        assertEquals(listOf("git", "-c", "core.quotepath=off", "--no-pager", "add", "-A"), argvs.first { "add" in it })
+        assertEquals(listOf("commit", "-m", "Add a thing"), argvs.first { "commit" in it }.takeLast(3))
+        assertEquals(listOf("switch", "-c", "feature/x"), argvs.first { "feature/x" in it }.takeLast(3))
+        assertTrue(argvs.none { "--force" in it || "-f" in it || "reset" in it || "push" in it })
+        // The gate rewrote the command; the mod's command runs in its folder and alone.
+        val shell = effects.commands.single { it.argv.first() == "/usr/bin/bash" }
+        assertEquals("cd -- 'src' || exit 1\necho hi there", shell.argv.last())
+        assertTrue(shell.exclusive)
+        assertEquals(5_000L, shell.timeoutMs)
+        assertEquals(listOf(true), effects.builds.toList())
+        assertTrue(registry.readAudit("dev.test.dev").any { it.op == "git.commit" })
+
+        // Developer mode off: reading still works, writing, running and building stop.
+        registry.setDeveloperMode(false)
+        Thread.sleep(200)
+        val after = (host.runCommand("dev.test.dev", "dev", "") as ModCodeCommandOutcome.Reply).text.lines()
+            .associate { it.substringBefore(' ') to it.substringAfter(' ') }
+        assertFalse(after.getValue("status").startsWith("refused"))
+        listOf("commit", "branch", "run", "build").forEach { assertTrue(it + after, after.getValue(it).startsWith("refused")) }
+        assertEquals(1, effects.builds.size)
     }
 }

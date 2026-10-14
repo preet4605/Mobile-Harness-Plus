@@ -187,6 +187,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -609,6 +610,63 @@ class MainViewModel(
             undone
         }
 
+        override suspend fun guestRun(context: ModEventContext, command: com.jarves.mh.mods.ModGuestCommand): com.jarves.mh.mods.ModGuestResult {
+            val project = withContext(Dispatchers.Main.immediate) {
+                _state.value.activeProject?.takeIf { it.id == context.projectId } ?: error("That project is not open")
+            }
+            if (!command.exclusive) return withContext(Dispatchers.IO) { runModGuestProcess(project, command) }
+            return modCommandLock.withLock {
+                withContext(Dispatchers.Main.immediate) {
+                    val now = _state.value
+                    check(!now.isRunning && !now.projectTerminalRunning && !now.androidBuildRunning && !androidBuildActive.get()) {
+                        "Wait for the running task, terminal command or build to finish."
+                    }
+                }
+                withContext(Dispatchers.IO) { runModGuestProcess(project, command) }
+            }
+        }
+
+        override suspend fun runBuild(mod: InstalledMod, context: ModEventContext, install: Boolean): JSONObject = withContext(Dispatchers.Main.immediate) {
+            check(_state.value.activeProject?.id == context.projectId) { "That project is not open" }
+            check(!_state.value.androidBuildRunning && !androidBuildActive.get()) { "A build is already running." }
+            val toastBefore = _state.value.toastMessage
+            lastAndroidBuildStatus = null
+            startAndroidBuildNow(install, force = false)
+            check(_state.value.androidBuildRunning) {
+                _state.value.toastMessage?.takeIf { it != toastBefore } ?: "The build didn't start."
+            }
+            postModMessage(ChatMessage(fromUser = false, text = "${mod.manifest.name} started a build.", origin = "mod:${mod.id}"), context)
+            val done = _state.first { !it.androidBuildRunning }
+            JSONObject().put("status", lastAndroidBuildStatus ?: "failed").put("message", done.androidBuildMessage ?: "")
+                .put("issues", done.androidBuildIssues.size)
+        }
+
+        override fun projectMemory(context: ModEventContext): JSONArray? {
+            val project = _state.value.activeProject?.takeIf { it.id == context.projectId } ?: return null
+            return JSONArray(memoryStore.load(project.id).entries.map { entry ->
+                JSONObject().put("key", entry.key).put("value", entry.value)
+                    .put("source", entry.source.name.lowercase(Locale.ROOT)).put("updatedAt", entry.updatedAt.toEpochMilli())
+            })
+        }
+
+        override suspend fun checkpointedWrite(context: ModEventContext, path: String, write: () -> Int): Int {
+            val (project, running) = withContext(Dispatchers.Main.immediate) {
+                (_state.value.activeProject?.takeIf { it.id == context.projectId } ?: error("That project is not open")) to _state.value.isRunning
+            }
+            val written = withContext(Dispatchers.IO) {
+                val checkpoints = WorkspaceCheckpoints(getApplication<Application>().filesDir)
+                // A running task owns the baseline: it was taken when the task started, so only add the path to it.
+                if (!running) checkpoints.createCheckpoint(project.id, projectWorkspaceRoot(project), WorkspaceCheckpoints.DEFAULT_CHECKPOINT_TAG)
+                val bytes = write()
+                if (checkpoints.checkpointExists(project.id)) checkpoints.saveChangedPaths(project.id, listOf(path))
+                bytes
+            }
+            runRequest { activeRuntime().loadPendingChanges(project.id) }.onSuccess { pending ->
+                if (_state.value.activeProject?.id == project.id) _state.update { it.copy(changes = pending) }
+            }
+            return written
+        }
+
         override suspend fun modelComplete(mod: InstalledMod, prompt: String, system: String?, maxTokens: Int): JSONObject {
             val profile = _state.value.provider
             require(
@@ -648,6 +706,10 @@ class MainViewModel(
     private var modPromptJob: Job? = null
     /** What runs when the user confirms [AppUiState.pendingModConfirm]. Main thread. */
     private var modConfirmAction: (() -> Unit)? = null
+    /** One mod `terminal.run` command at a time. */
+    private val modCommandLock = kotlinx.coroutines.sync.Mutex()
+    /** How the last Android build ended ("completed", "failed", "stopped"), for a mod's `$.build.run`. Main thread. */
+    private var lastAndroidBuildStatus: String? = null
     /** One mod agent task at a time; the next waits its turn. */
     private val modAskLock = kotlinx.coroutines.sync.Mutex()
     /** Mod agent tasks by task id, answered when the task ends. Main thread only. */
@@ -1775,6 +1837,7 @@ class MainViewModel(
                     is AndroidBuildOutcome.Failed -> "failed"
                     AndroidBuildOutcome.Cancelled -> "stopped"
                 }
+                lastAndroidBuildStatus = buildStatus
                 emitModEvent(ModEvent.BUILD_FINISHED, { mapOf("build.status" to buildStatus, "build.detail" to message) }, buildStatus, project)
                 if (installAfterBuild) {
                     val runStatus = if (outcome is AndroidBuildOutcome.Done) "completed" else "failed"
@@ -6813,6 +6876,44 @@ class MainViewModel(
             .also { taskId?.let(modAsks::remove) }
     }
 
+    /**
+     * A mod's guest command (`$.terminal.run`, `$.git.*`): runs in the project folder with no input,
+     * killed with its process group on timeout, when its output passes [MAX_MOD_COMMAND_LOG] bytes,
+     * or when the mod's call is cancelled (the mod stopped). Returns the tail of its output.
+     */
+    private suspend fun runModGuestProcess(project: Project, command: com.jarves.mh.mods.ModGuestCommand): com.jarves.mh.mods.ModGuestResult {
+        check(installer.isInstalled()) { "The Linux environment is not ready yet." }
+        val installed = installer.installedRuntime()
+        val log = File(getApplication<Application>().cacheDir, "mod-command-${System.nanoTime()}.log")
+        val process = installer.process(
+            installed.proot, installed.rootfs, projectWorkspaceRoot(project), emptyMap(),
+            command.argv, projectGuestRoot(project), outputFile = log,
+        )
+        try {
+            runCatching { process.outputStream.close() }
+            val deadline = System.currentTimeMillis() + command.timeoutMs
+            var timedOut = false
+            var flooded = false
+            while (!process.waitFor(200, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                currentCoroutineContext().ensureActive()
+                if (log.length() > MAX_MOD_COMMAND_LOG) { flooded = true; break }
+                if (System.currentTimeMillis() > deadline) { timedOut = true; break }
+            }
+            if (process.isAlive) process.destroyForcibly()
+            val output = sanitizeTerminalOutput(log.readTailText(command.maxBytes)) +
+                if (flooded) "\n[stopped: it printed more than ${MAX_MOD_COMMAND_LOG / (1024 * 1024)} MB]" else ""
+            return com.jarves.mh.mods.ModGuestResult(
+                exitCode = if (timedOut || flooded) -1 else process.exitValue(),
+                output = output,
+                timedOut = timedOut,
+                truncated = flooded || log.length() > command.maxBytes,
+            )
+        } finally {
+            if (process.isAlive) process.destroyForcibly()
+            log.delete()
+        }
+    }
+
     private fun modAskCanStart(state: AppUiState): Boolean =
         !state.isRunning && !state.isStopping && !state.chatLoading && !state.projectTerminalRunning &&
             !state.androidBuildRunning && state.queuedFollowUps.isEmpty()
@@ -8009,6 +8110,7 @@ class MainViewModel(
         private const val MAX_PENDING_MOD_POSTS = 5
         private const val MAX_MOD_ASK_REPLY = 50_000
         private const val MAX_MOD_PROMPT = 100_000
+        private const val MAX_MOD_COMMAND_LOG = 16L * 1024 * 1024
         private const val MOD_CHECK_NOTICE_MS = 700L
         private const val DIAGNOSTICS_REFRESH_COOLDOWN_MS = 1_000L
         private const val RECENT_EXIT_CACHE_MS = 60_000L

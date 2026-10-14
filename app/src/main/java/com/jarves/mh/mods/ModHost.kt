@@ -73,6 +73,22 @@ interface ModHostEffects : ModHookEffects {
 
     /** Undoes the agent's change to [path] in [context]'s project from its checkpoint; false when there is none. */
     suspend fun undoChange(context: ModEventContext, path: String): Boolean
+
+    /** Runs [command] in [context]'s project in the Linux guest; cancelling the call kills it. */
+    suspend fun guestRun(context: ModEventContext, command: ModGuestCommand): ModGuestResult
+
+    /** Builds [context]'s Android app (and installs it when [install]) and answers `{ status, message }` when done. */
+    suspend fun runBuild(mod: InstalledMod, context: ModEventContext, install: Boolean): JSONObject
+
+    /** The project memory of [context]'s project: `{ key, value, source, updatedAt }`; null when it isn't open. */
+    fun projectMemory(context: ModEventContext): JSONArray?
+
+    /**
+     * Runs [write] (a mod's `$.fs.write` to [path]) so the change is kept like an agent's: the
+     * project's checkpoint keeps the file as it was, and the path shows in Changes, where Undo
+     * restores it. Answers what [write] answered.
+     */
+    suspend fun checkpointedWrite(context: ModEventContext, path: String, write: () -> Int): Int
 }
 
 /** What `$.agent.ask` may pick besides the harness: model and effort ids, and [chat] ("new" or a chat id). */
@@ -321,6 +337,8 @@ class ModHost(
         var fetching = 0
         /** Tools it gave the agents with `$.tool.register`, by name. */
         val provided = LinkedHashMap<String, ModTool>()
+        /** Its slow `$` calls in flight; stopping the mod cancels them, which also kills its guest commands. */
+        val slowJobs = HashSet<Job>()
         var consumer: Job? = null
         var settle: Job? = null
         var callsInFlight = 0
@@ -876,6 +894,8 @@ class ModHost(
         if (running[loaded.id] === loaded) running.remove(loaded.id)
         loaded.timers.values.forEach { it.cancel() }
         loaded.timers.clear()
+        loaded.slowJobs.toList().forEach { it.cancel() }
+        loaded.slowJobs.clear()
         loaded.dispatches.values.forEach { it.watchdog?.cancel(); it.result?.complete(null) }
         loaded.dispatches.clear()
         loaded.settle?.cancel()
@@ -1149,8 +1169,19 @@ class ModHost(
             answer(loaded, callId, result)
         }
         // A slow call must not hold up the mod's other messages, which are handled one at a time.
-        if (op.slow) scope.launch { complete(runOp(loaded, mod, op, args, scoped)) }
-        else complete(runOp(loaded, mod, op, args, scoped))
+        if (op.slow) {
+            val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+                try {
+                    complete(runOp(loaded, mod, op, args, scoped))
+                } finally {
+                    coroutineContext[Job]?.let(loaded.slowJobs::remove)
+                }
+            }
+            loaded.slowJobs += job
+            job.start()
+        } else {
+            complete(runOp(loaded, mod, op, args, scoped))
+        }
     }
 
     private suspend fun runOp(loaded: Loaded, mod: InstalledMod, op: ModOp, args: JSONArray, scoped: ModEventContext?): Result<Any?> = try {
@@ -1261,7 +1292,9 @@ class ModHost(
                 require(scope.isNotEmpty()) { "files.write needs scope.paths" }
                 val path = args.optString(0).trim().trim('/')
                 require(!args.isNull(1) && args.opt(1) is String) { "\$.fs.write(path, text) needs text" }
-                val written = withContext(ioContext) { ModFiles.write(root, path, args.getString(1), scope) }
+                val content = args.getString(1)
+                val written = effects?.checkpointedWrite(scoped, path) { ModFiles.write(root, path, content, scope) }
+                    ?: withContext(ioContext) { ModFiles.write(root, path, content, scope) }
                 registry.recordCall(mod.id, "fs.write $path", ModCapability.FILES_WRITE, "allowed", null)
                 addLog(mod.id, "info", "Wrote $path ($written bytes)")
                 written
@@ -1358,6 +1391,88 @@ class ModHost(
                 if (stopped) addLog(mod.id, "info", "Stopped the agent task it started")
                 stopped
             }
+            ModOp.GIT_STATUS -> {
+                val result = git(scoped!!, listOf("status", "--porcelain=v1", "--branch", "--untracked-files=all"))
+                val lines = result.output.lines().filter { it.isNotBlank() }
+                val branch = lines.firstOrNull { it.startsWith("## ") }?.removePrefix("## ")
+                val files = lines.filterNot { it.startsWith("## ") }.take(MAX_GIT_FILES).map { line ->
+                    JSONObject().put("index", line.take(1).trim()).put("worktree", line.drop(1).take(1).trim())
+                        .put("path", line.drop(3).substringAfter(" -> ").trim('"'))
+                }
+                JSONObject()
+                    .put("branch", branch?.substringBefore("...")?.substringBefore(" ")?.removePrefix("No commits yet on ") ?: JSONObject.NULL)
+                    .put("tracking", branch?.substringAfter("...", "")?.ifEmpty { null } ?: JSONObject.NULL)
+                    .put("clean", files.isEmpty())
+                    .put("files", JSONArray(files))
+            }
+            ModOp.GIT_DIFF -> {
+                val spec = args.optJSONObject(0) ?: JSONObject().put("path", if (args.isNull(0)) "" else args.optString(0))
+                val path = spec.optString("path").trim().trim('/')
+                require(path.isEmpty() || ModManifestParser.isSafeRelativePath(path)) { "\$.git.diff: path must be inside the project" }
+                val argv = listOf("diff", "--no-color", "--no-ext-diff") + (if (spec.optBoolean("staged")) listOf("--cached") else emptyList()) +
+                    (if (path.isEmpty()) emptyList() else listOf("--", path))
+                val result = git(scoped!!, argv)
+                JSONObject().put("text", result.output).put("truncated", result.truncated)
+            }
+            ModOp.GIT_LOG -> {
+                val count = (if (args.isNull(0)) 20 else args.optInt(0, 20)).coerceIn(1, 100)
+                val result = git(scoped!!, listOf("log", "-n", count.toString(), "--format=%H%x1f%an%x1f%at%x1f%s"))
+                JSONArray(result.output.lines().filter { it.contains('\u001f') }.map { line ->
+                    val parts = line.split('\u001f')
+                    JSONObject().put("hash", parts[0]).put("author", parts.getOrElse(1) { "" })
+                        .put("time", (parts.getOrElse(2) { "0" }.toLongOrNull() ?: 0L) * 1000).put("subject", parts.getOrElse(3) { "" })
+                })
+            }
+            ModOp.GIT_COMMIT -> {
+                val spec = args.optJSONObject(0) ?: JSONObject().put("message", text(args))
+                val message = spec.optString("message").trim()
+                require(message.isNotEmpty() && message.length <= 2_000) { "\$.git.commit({ message }) needs a message of up to 2,000 characters" }
+                if (spec.optBoolean("all", true)) git(scoped!!, listOf("add", "-A"), exclusive = true)
+                git(scoped!!, listOf("commit", "-m", message), exclusive = true)
+                val hash = git(scoped, listOf("rev-parse", "HEAD")).output.trim()
+                addLog(mod.id, "info", "Committed ${hash.take(12)}: ${firstLine(message).take(120)}")
+                registry.recordCall(mod.id, "git.commit", ModCapability.GIT_WRITE, "allowed", hash.take(12))
+                JSONObject().put("hash", hash)
+            }
+            ModOp.GIT_BRANCH, ModOp.GIT_SWITCH -> {
+                val name = text(args).trim()
+                require(GIT_BRANCH_NAME.matches(name) && ".." !in name && !name.endsWith(".lock") && !name.endsWith("/")) {
+                    "\$.${op.id}(name): \"$name\" is not a branch name this app accepts"
+                }
+                // Never forced: git refuses a switch that would lose changes, and that error is the answer.
+                git(scoped!!, if (op == ModOp.GIT_BRANCH) listOf("switch", "-c", name) else listOf("switch", name), exclusive = true)
+                addLog(mod.id, "info", if (op == ModOp.GIT_BRANCH) "Made and switched to branch $name" else "Switched to branch $name")
+                registry.recordCall(mod.id, op.id, ModCapability.GIT_WRITE, "allowed", name)
+                name
+            }
+            ModOp.TERMINAL_RUN -> {
+                val command = text(args).trim()
+                require(command.isNotEmpty() && command.length <= MAX_COMMAND) { "\$.terminal.run(command) needs a command of up to $MAX_COMMAND characters" }
+                val spec = args.optJSONObject(1) ?: JSONObject()
+                val cwd = spec.optString("cwd").trim().trim('/')
+                require(cwd.isEmpty() || ModManifestParser.isSafeRelativePath(cwd)) { "\$.terminal.run: cwd must be a folder inside the project" }
+                val timeout = spec.optLong("timeoutMs", DEFAULT_COMMAND_MS).coerceIn(1_000, MAX_COMMAND_MS)
+                // The same gate the user's terminal commands pass; a mod's command is never confirmed for it.
+                val gated = runGate("terminal.command", JSONObject().put("command", command), ModCapability.TERMINAL_GATE,
+                    setOf("deny", "confirm"), limits.gateBudgetMs, compose = false)
+                if (gated.verdict != null) error("${gated.modName} stopped the command: ${gated.reason}")
+                val script = (if (cwd.isEmpty()) "" else "cd -- ${shellQuote(cwd)} || exit 1\n") + gated.input.optString("command", command)
+                addLog(mod.id, "info", "Ran: ${firstLine(command).take(120)}")
+                registry.recordCall(mod.id, "terminal.run", ModCapability.TERMINAL_RUN, "allowed", firstLine(command).take(200))
+                val result = (effects ?: error("The app screen is closed"))
+                    .guestRun(scoped!!, ModGuestCommand(listOf("/usr/bin/bash", "-lc", script), timeout, MAX_COMMAND_OUTPUT, exclusive = true))
+                JSONObject().put("exitCode", result.exitCode).put("output", result.output)
+                    .put("timedOut", result.timedOut).put("truncated", result.truncated)
+            }
+            ModOp.BUILD_RUN -> {
+                val install = args.optJSONObject(0)?.optBoolean("install") ?: false
+                val gated = runGate("build.start", JSONObject().put("install", install).put("force", false), ModCapability.TERMINAL_GATE,
+                    setOf("deny", "confirm"), limits.gateBudgetMs, compose = false)
+                if (gated.verdict != null) error("${gated.modName} stopped the build: ${gated.reason}")
+                registry.recordCall(mod.id, "build.run", ModCapability.BUILD_RUN, "allowed", if (install) "install" else null)
+                (effects ?: error("The app screen is closed")).runBuild(mod, scoped!!, install)
+            }
+            ModOp.MEMORY_LIST -> (effects ?: error("The app screen is closed")).projectMemory(scoped!!) ?: error("That project is not open")
             ModOp.MODS_TOOLS -> JSONArray(running.values.filter { it.ready }.flatMap { it.provided.values }.map { tool ->
                 JSONObject().put("name", tool.exposed).put("mod", tool.modId).put("description", tool.description).put("inputSchema", JSONObject(tool.inputSchema))
             })
@@ -1583,6 +1698,20 @@ class ModHost(
     private fun allowed(mod: InstalledMod, capability: ModCapability): Boolean = capability in mod.granted && mod.canHold(capability)
 
     /** Follow-ups mods may chain after one message from the user: more for a mod allowed `agent.chain`. */
+    /**
+     * Runs git in [context]'s project; a non-zero exit throws with git's own words. [exclusive]
+     * (changes to the repository) waits for no task, terminal command or build to be running.
+     */
+    private suspend fun git(context: ModEventContext, argv: List<String>, exclusive: Boolean = false): ModGuestResult {
+        val command = ModGuestCommand(listOf("git", "-c", "core.quotepath=off", "--no-pager") + argv, GIT_TIMEOUT_MS, MAX_COMMAND_OUTPUT, exclusive)
+        val result = (effects ?: error("The app screen is closed")).guestRun(context, command)
+        check(!result.timedOut) { "git ${argv.first()} took longer than ${GIT_TIMEOUT_MS / 1000} s" }
+        check(result.exitCode == 0) { "git ${argv.first()} failed: ${result.output.lines().filter { it.isNotBlank() }.takeLast(3).joinToString(" ").take(500)}" }
+        return result
+    }
+
+    private fun shellQuote(text: String) = "'" + text.replace("'", "'\\''") + "'"
+
     private fun followUpLimit(mod: InstalledMod): Int = if (allowed(mod, ModCapability.AGENT_CHAIN)) MAX_CHAIN_FOLLOW_UPS else MAX_FOLLOW_UPS
 
     private fun keyOf(mod: InstalledMod): String = "${mod.manifest.version}:${mod.installedAt}:${options(mod)}"
@@ -1757,6 +1886,13 @@ class ModHost(
         const val MAX_TOOLS = 16
         const val MAX_TOOL_SCHEMA = 8 * 1024
         const val MAX_TOOL_TEXT = 48_000
+        private const val MAX_COMMAND = 8_000
+        private const val MAX_COMMAND_OUTPUT = 1024 * 1024
+        private const val DEFAULT_COMMAND_MS = 2 * 60_000L
+        private const val MAX_COMMAND_MS = 10 * 60_000L
+        private const val GIT_TIMEOUT_MS = 60_000L
+        private const val MAX_GIT_FILES = 1_000
+        private val GIT_BRANCH_NAME = Regex("^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
         const val MAX_FOLLOW_UPS = 3
         const val MAX_CHAIN_FOLLOW_UPS = 25
         private const val MAX_MOD_CALLS = 8

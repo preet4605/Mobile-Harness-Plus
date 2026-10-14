@@ -4,7 +4,22 @@
 
 Love chose "All ten phases" (04:05 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair. Native code in mods (plan row 24) is not built; mods running with the app closed (row 15) and sharing beyond .mhmod (row 16) stay deferred.
 
+### Phase 2: developer tools
+
+- The project run-lock P1 this phase waited on was already fixed in 2f7ff33 (TaskSupervisor), so `terminal.run` is built.
+- `git.read` (usable): `$.git.status()`, `$.git.diff({ path, staged })`, `$.git.log(n)`. `git.write` (developer): `$.git.commit({ message, all })`, `$.git.branch(name)`, `$.git.switch(name)`; never push, reset or force; branch names checked.
+- `terminal.run` (now usable, developer): `$.terminal.run(command, { cwd, timeoutMs })` in the project's guest folder; 2 min default, 10 min max, 1 MB output kept (killed past 16 MB); through the `terminal.command` gates, where confirm counts as a refusal.
+- `build.run` (developer): `$.build.run({ install })` drives the app's build after the `build.start` gates and resolves `{ status, message, issues }`.
+- `memory.read` (usable): `$.memory.list()`.
+- `$.fs.write` now checkpoints like an agent edit, so it shows in Changes and Undo restores it.
+- Guards: terminal commands and git changes run one at a time and refuse while a task, terminal command or build runs; a mod's slow calls are cancelled when it stops, which kills its guest commands.
+- Defaults taken: `terminal.run` is a developer permission; a gate's confirm refuses a mod's command; `git.commit` adds every change unless `all: false`; git reads may run beside a task.
+- VERIFIED: `ModHostTest` (git status/log/diff parsing, commit/branch/switch argv with no force or push, bad branch and cwd refused, gate rewrite and deny, exclusive command, build and memory, all developer calls refused once Developer mode is off; fs.write checkpoint), `ModRegistryTest`. Full `testOnlineDebugUnitTest` 1503 tests, 0 failures; node tests 17/17.
+- NOT RUN: on a phone (real guest git, a mod-started build).
+
 ### Phase 1: orchestration and Developer mode
+
+COMPLETE (pushed to harness-dev as fe40328, plus 348e726: a mod whose engine died while it loaded now restarts instead of being marked crashed, which made the memory-cap test flaky).
 
 - Developer mode (Mods > My mods, off by default, confirmed once): `ModCapability.developer` capabilities can be granted and used only while it is on; turning it off keeps their grants but makes them inert at once (`InstalledMod.canHold`). Saved in `_state.json` (`developerMode`), audited as `developer.on/off`.
 - `$.agent.ask` takes `model`, `effort` (applied through the same path as `/model` and `/effort`; they stay selected) and `chat` (`'new'` or a chat id of the project; the answer carries `chatId`). `$.agent.stop(taskId)` stops a task the mod started.

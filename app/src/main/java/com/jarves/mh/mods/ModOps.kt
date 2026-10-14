@@ -61,6 +61,15 @@ enum class ModOp(
     AGENT_STOP("agent.stop", ModCapability.AGENT_ASK),
     MODS_TOOLS("mods.tools", ModCapability.MODS_CALL),
     MODS_CALL("mods.call", ModCapability.MODS_CALL, slow = true),
+    GIT_STATUS("git.status", ModCapability.GIT_READ, needsProject = true, slow = true),
+    GIT_DIFF("git.diff", ModCapability.GIT_READ, needsProject = true, slow = true),
+    GIT_LOG("git.log", ModCapability.GIT_READ, needsProject = true, slow = true),
+    GIT_COMMIT("git.commit", ModCapability.GIT_WRITE, needsProject = true, slow = true),
+    GIT_BRANCH("git.branch", ModCapability.GIT_WRITE, needsProject = true, slow = true),
+    GIT_SWITCH("git.switch", ModCapability.GIT_WRITE, needsProject = true, slow = true),
+    TERMINAL_RUN("terminal.run", ModCapability.TERMINAL_RUN, needsProject = true, slow = true),
+    BUILD_RUN("build.run", ModCapability.BUILD_RUN, needsProject = true, slow = true),
+    MEMORY_LIST("memory.list", ModCapability.MEMORY_READ, needsProject = true),
     ;
 
     companion object {
@@ -99,6 +108,15 @@ data class ModTool(
             ("mod_" + modId.substringAfterLast('.').lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(20) + "_" + name).take(64)
     }
 }
+
+/**
+ * A command a mod runs in the project's Linux guest, in the project folder. [exclusive] commands
+ * (`terminal.run`, git changes) wait for no task, terminal command or build to be running, and run one at a time.
+ */
+data class ModGuestCommand(val argv: List<String>, val timeoutMs: Long, val maxBytes: Int, val exclusive: Boolean = false)
+
+/** How a [ModGuestCommand] ended: its exit code (-1 on timeout) and the tail of its output. */
+data class ModGuestResult(val exitCode: Int, val output: String, val timedOut: Boolean = false, val truncated: Boolean = false)
 
 /** What a mod tool answered: the text the agent reads, and whether it is an error. */
 data class ModToolResult(val text: String, val isError: Boolean = false)
