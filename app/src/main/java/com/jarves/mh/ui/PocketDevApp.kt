@@ -96,6 +96,15 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
     }
     SideEffect { PocketMotion.reduced = glassConfig.reduceMotion }
     val projectsListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    // A mod's `$.storage.pick`: the system picker opens once per request; cancelling answers null.
+    val modPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri -> viewModel.completeModPick(uri) }
+    LaunchedEffect(state.modPickTypes) {
+        val types = state.modPickTypes ?: return@LaunchedEffect
+        viewModel.modPickShown()
+        runCatching { modPicker.launch(types.toTypedArray()) }.onFailure { viewModel.completeModPick(null) }
+    }
     val banner = remember { BannerState() }
     LaunchedEffect(state.toastMessage) {
         state.toastMessage?.let { message ->

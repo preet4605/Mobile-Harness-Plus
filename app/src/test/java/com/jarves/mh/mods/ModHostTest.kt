@@ -96,6 +96,31 @@ class ModHostTest {
         }
         override fun projectMemory(context: ModEventContext): JSONArray =
             JSONArray().put(JSONObject().put("key", "language").put("value", "Kotlin"))
+        val device = CopyOnWriteArrayList<String>()
+        var openProjectId: String = "p1"
+        override fun projects(): JSONArray = JSONArray(listOf("p1" to "Demo", "p2" to "Other").map { (id, name) ->
+            JSONObject().put("id", id).put("name", name).put("open", id == openProjectId)
+        })
+        override suspend fun openProject(id: String) {
+            check(id == "p1" || id == "p2") { "No project $id." }
+            device += "open $id"
+        }
+        override suspend fun createProject(name: String): String { device += "create $name"; return "p3" }
+        override fun chats(context: ModEventContext): JSONArray? =
+            JSONArray().put(JSONObject().put("id", "c1").put("title", "First").put("open", true)).put(JSONObject().put("id", "c2").put("title", "Second").put("open", false))
+        override suspend fun openChat(context: ModEventContext, id: String) { device += "chat $id" }
+        override suspend fun createChat(context: ModEventContext): String { device += "new chat"; return "c3" }
+        override suspend fun readChat(context: ModEventContext, id: String, limit: Int): JSONArray? =
+            if (id == "c2") JSONArray().put(JSONObject().put("from", "user").put("text", "older question")) else null
+        var clip: String? = "copied"
+        override suspend fun readClipboard(): String? = clip
+        override suspend fun writeClipboard(mod: InstalledMod, text: String) { clip = text }
+        override suspend fun share(mod: InstalledMod, context: ModEventContext?, text: String?, path: String?) { device += "share ${text ?: path}" }
+        override suspend fun openIntent(mod: InstalledMod, uri: String) { device += "intent $uri" }
+        override suspend fun pickFile(mod: InstalledMod, types: List<String>, maxBytes: Int): JSONObject? {
+            device += "pick ${types.joinToString()}"
+            return JSONObject().put("name", "notes.txt").put("mimeType", "text/plain").put("size", 5).put("text", "hello")
+        }
         val settings = java.util.concurrent.ConcurrentHashMap<String, Any>(mapOf("harness" to "claude", "model" to "sonnet", "effort" to "default",
             "theme" to "dark", "antigravityBalancing" to "round_robin", "antigravityFailover" to true, "codexAccountBalancing" to false))
         override fun appSettings(): JSONObject = JSONObject(settings as Map<*, *>)
@@ -1203,5 +1228,75 @@ class ModHostTest {
         assertEquals("ok", accent(""))
         assertEquals(null, registry.snapshot.value.accent)
         assertTrue(registry.readAudit("dev.test.sample").any { it.op == "ui.theme" && it.detail == "cleared" })
+    }
+
+    @Test
+    fun `projects, chats and device bridges need their permissions and never delete`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            const answer = async (f) => { try { return { text: JSON.stringify(await f()) } } catch (e) { return { text: 'ERR ' + e.message } } }
+            export function register(on) {
+              on('command.run', { name: 'go' }, ($, e) => answer(async () => {
+                switch (e.args) {
+                  case 'projects': return (await $.projects.list()).map((p) => p.name + (p.open ? '*' : ''))
+                  case 'open': return $.projects.open('p2')
+                  case 'create': return $.projects.create({ name: 'From a mod' })
+                  case 'delete': return $.projects.delete('p1')
+                  case 'chats': return (await $.chats.list()).map((c) => c.title)
+                  case 'chat': return $.chats.open('c2')
+                  case 'newchat': return $.chats.create()
+                  case 'read': return $.chats.read('c2', 5)
+                  case 'readmissing': return $.chats.read('nope')
+                  case 'clip': await $.clipboard.write('from mod'); return $.clipboard.read()
+                  case 'share': return [await $.intent.share({ text: 'hi' }), await $.intent.share({ path: '../etc/passwd' }).catch((e) => 'refused')]
+                  case 'link': return [await $.intent.open('mailto:me@example.com'), await $.intent.open('file:///sdcard/x').catch((e) => 'refused')]
+                  case 'pick': return $.storage.pick({ types: ['text/*', 'bad type'] })
+                }
+              }))
+            }
+        """.trimIndent(), permissions = listOf("projects", "chat.read", "clipboard", "device.share", "storage.pick")) {
+            put("contributes", JSONObject().put("slashCommands", JSONArray().put(JSONObject().put("name", "go").put("description", "Go"))))
+        }
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod") { host.info()?.state == ModRunState.RUNNING }
+        suspend fun go(what: String) = when (val outcome = host.runCommand("dev.test.sample", "go", what)) { is ModCodeCommandOutcome.Reply -> outcome.text; else -> "ERR $outcome" }
+        assertEquals("[\"Demo*\",\"Other\"]", go("projects"))
+        assertEquals("true", go("open"))
+        go("create").let { assertTrue(it, "\"id\":\"p3\"" in it && "\"name\":\"From a mod\"" in it) }
+        assertTrue(go("delete"), go("delete").startsWith("ERR"))
+        assertEquals("[\"First\",\"Second\"]", go("chats"))
+        assertEquals("true", go("chat"))
+        assertEquals("{\"id\":\"c3\"}", go("newchat"))
+        assertEquals("[{\"from\":\"user\",\"text\":\"older question\"}]", go("read"))
+        assertTrue(go("readmissing"), "No chat nope" in go("readmissing"))
+        assertEquals("\"from mod\"", go("clip"))
+        assertEquals("[true,\"refused\"]", go("share"))
+        assertEquals("[true,\"refused\"]", go("link"))
+        go("pick").let { assertTrue(it, "\"text\":\"hello\"" in it) }
+        assertEquals(listOf("open p2", "create From a mod", "chat c2", "new chat", "share hi", "intent mailto:me@example.com", "pick text/*"), effects.device.toList())
+        assertTrue(registry.readAudit("dev.test.sample").any { it.op == "projects.create" })
+
+        // In the background the clipboard can't be read (Android's rule), and nothing opens over other apps.
+        // (A running task keeps mods loaded in the background.)
+        host.updateContext(context, taskIsRunning = true)
+        host.setForeground(false)
+        Thread.sleep(200)
+        go("clip").let { assertTrue(it, "only while they are on screen" in it) }
+        host.setForeground(true)
+        host.updateContext(context, taskIsRunning = false)
+
+        // Without the permissions, nothing.
+        listOf(ModCapability.PROJECTS, ModCapability.CLIPBOARD, ModCapability.STORAGE_PICK).forEach { registry.setGranted("dev.test.sample", it, false) }
+        Thread.sleep(200)
+        listOf("projects", "clip", "pick").forEach { what -> go(what).let { assertTrue(it, it.startsWith("ERR")) } }
+    }
+
+    @Test
+    fun `links open only for safe schemes`() {
+        listOf("https://example.com", "mailto:a@b.c", "tel:+123", "geo:0,0?q=x", "sms:+1").forEach { assertEquals(it, ModIntents.check(it)) }
+        listOf("file:///sdcard/a", "content://x/y", "intent://x#Intent;end", "javascript:alert(1)", "market://details?id=x", "x").forEach {
+            assertTrue(it, runCatching { ModIntents.check(it) }.isFailure)
+        }
     }
 }

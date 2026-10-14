@@ -94,6 +94,44 @@ interface ModHostEffects : ModHookEffects {
      */
     suspend fun checkpointedWrite(context: ModEventContext, path: String, write: () -> Int): Int
 
+    /** The user's projects: `{ id, name, open }`. */
+    fun projects(): JSONArray
+
+    /** Opens project [id] as the user would; throws while a task, build or terminal command runs. */
+    suspend fun openProject(id: String)
+
+    /** Creates and opens a project named [name]; answers its id. */
+    suspend fun createProject(name: String): String
+
+    /** The open project's chats `{ id, title, open }`, or null when [context]'s project isn't open. */
+    fun chats(context: ModEventContext): JSONArray?
+
+    /** Switches to chat [id] of the open project; throws while a task runs. */
+    suspend fun openChat(context: ModEventContext, id: String)
+
+    /** Starts a new chat in the open project and switches to it; answers its id. */
+    suspend fun createChat(context: ModEventContext): String
+
+    /** The newest [limit] messages of chat [id] of the open project, as `{ from, text }`; null when there's no such chat. */
+    suspend fun readChat(context: ModEventContext, id: String, limit: Int): JSONArray?
+
+    /** The clipboard's text, or null when it holds none. */
+    suspend fun readClipboard(): String?
+
+    suspend fun writeClipboard(mod: InstalledMod, text: String)
+
+    /** The system share sheet with [text], or a file at [path] in [context]'s project. */
+    suspend fun share(mod: InstalledMod, context: ModEventContext?, text: String?, path: String?)
+
+    /** Hands [uri] to another app through the system chooser. */
+    suspend fun openIntent(mod: InstalledMod, uri: String)
+
+    /**
+     * Shows the system file picker for [types] (MIME patterns) and answers `{ name, mimeType, size,
+     * text }` or `{ ..., base64 }` for the file the user picks, at most [maxBytes]; null when they cancel.
+     */
+    suspend fun pickFile(mod: InstalledMod, types: List<String>, maxBytes: Int): JSONObject?
+
     /** The [ModAppSettings.KEYS] values as the app has them now. */
     fun appSettings(): JSONObject
 
@@ -1615,6 +1653,75 @@ class ModHost(
                 registry.setThemeAccent(mod.id, accent)
                 null
             }
+            ModOp.PROJECTS_LIST -> (effects ?: error("The app screen is closed")).projects()
+            ModOp.PROJECTS_OPEN -> {
+                val id = text(args).trim()
+                require(id.isNotEmpty()) { "\$.projects.open(id) takes an id from \$.projects.list()" }
+                (effects ?: error("The app screen is closed")).openProject(id)
+                registry.recordCall(mod.id, "projects.open", ModCapability.PROJECTS, "allowed", id)
+                true
+            }
+            ModOp.PROJECTS_CREATE -> {
+                val name = (args.optJSONObject(0)?.optString("name") ?: text(args)).trim()
+                require(name.length in 1..60 && name.none { it.isISOControl() }) { "\$.projects.create({ name }) needs a name of 1 to 60 characters" }
+                val id = (effects ?: error("The app screen is closed")).createProject(name)
+                registry.recordCall(mod.id, "projects.create", ModCapability.PROJECTS, "allowed", name)
+                JSONObject().put("id", id).put("name", name)
+            }
+            ModOp.CHATS_LIST -> (effects ?: error("The app screen is closed")).chats(scoped!!) ?: error("That project is not open")
+            ModOp.CHATS_OPEN -> {
+                val id = text(args).trim()
+                require(id.isNotEmpty()) { "\$.chats.open(id) takes an id from \$.chats.list()" }
+                (effects ?: error("The app screen is closed")).openChat(scoped!!, id)
+                true
+            }
+            ModOp.CHATS_CREATE -> JSONObject().put("id", (effects ?: error("The app screen is closed")).createChat(scoped!!))
+            ModOp.CHATS_READ -> {
+                val id = text(args).trim()
+                require(id.isNotEmpty()) { "\$.chats.read(id, limit) takes an id from \$.chats.list()" }
+                val limit = args.optInt(1, 50).coerceIn(1, 200)
+                val lines = (effects ?: error("The app screen is closed")).readChat(scoped!!, id, limit) ?: error("No chat $id in this project")
+                JSONArray((0 until lines.length()).map { i ->
+                    lines.getJSONObject(i).let { line -> line.put("text", line.optString("text").take(MAX_TEXT)) }
+                })
+            }
+            ModOp.CLIPBOARD_READ -> {
+                require(foreground) { "Android lets apps read the clipboard only while they are on screen" }
+                (effects ?: error("The app screen is closed")).readClipboard()?.take(MAX_CLIPBOARD)
+            }
+            ModOp.CLIPBOARD_WRITE -> {
+                val text = text(args)
+                require(text.isNotEmpty() && text.length <= MAX_CLIPBOARD) { "\$.clipboard.write(text) takes 1 to ${MAX_CLIPBOARD / 1024} KB of text" }
+                (effects ?: error("The app screen is closed")).writeClipboard(mod, text)
+                true
+            }
+            ModOp.INTENT_SHARE -> {
+                val options = args.optJSONObject(0) ?: JSONObject().put("text", text(args))
+                val text = options.optString("text").takeIf { options.has("text") && it.isNotEmpty() }
+                val path = options.optString("path").trim().takeIf { options.has("path") && it.isNotEmpty() }
+                require((text == null) != (path == null)) { "\$.intent.share({ text }) or \$.intent.share({ path }), one of them" }
+                require(text == null || text.length <= MAX_CLIPBOARD) { "\$.intent.share: text is at most ${MAX_CLIPBOARD / 1024} KB" }
+                require(path == null || (context?.projectId != null && ModManifestParser.isSafeRelativePath(path.trimStart('/')))) {
+                    "\$.intent.share({ path }) shares a file of the open project, by its path in the project"
+                }
+                require(foreground) { "Share only while the app is on screen" }
+                if (!throttle("share:${mod.id}", 3_000)) false
+                else { (effects ?: error("The app screen is closed")).share(mod, context, text, path?.trimStart('/')); true }
+            }
+            ModOp.INTENT_OPEN -> {
+                val uri = ModIntents.check(text(args))
+                require(foreground) { "Open links only while the app is on screen" }
+                if (!throttle("intent:${mod.id}", 3_000)) false
+                else { (effects ?: error("The app screen is closed")).openIntent(mod, uri); true }
+            }
+            ModOp.STORAGE_PICK -> {
+                require(foreground) { "Ask for a file only while the app is on screen" }
+                val types = args.optJSONObject(0)?.optJSONArray("types")?.let { a -> (0 until minOf(a.length(), 8)).map { a.optString(it) } }
+                    ?.filter { Regex("^[a-z*]+/[a-z0-9.+*-]+$").matches(it) }?.ifEmpty { null } ?: listOf("*/*")
+                val picked = (effects ?: error("The app screen is closed")).pickFile(mod, types, MAX_PICK_BYTES)
+                registry.recordCall(mod.id, "storage.pick", ModCapability.STORAGE_PICK, if (picked == null) "cancelled" else "allowed", picked?.optString("name"))
+                picked
+            }
             ModOp.SETTINGS_GET -> {
                 val all = (effects ?: error("The app screen is closed")).appSettings()
                 if (args.isNull(0)) all else text(args).also(ModAppSettings::requireKey).let { all.opt(it) ?: JSONObject.NULL }
@@ -2027,6 +2134,10 @@ class ModHost(
     companion object {
         private const val TAG = "ModHost"
         const val MAX_LOGIC_MODS = 8
+        /** Clipboard and shared text, at most. */
+        const val MAX_CLIPBOARD = 64 * 1024
+        /** A picked file `$.storage.pick` reads, at most. */
+        const val MAX_PICK_BYTES = 1024 * 1024
         private const val MB = 1024 * 1024
         const val MAX_STRIKES = 5
         const val MAX_ENGINE_DEATHS = 3

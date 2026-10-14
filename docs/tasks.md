@@ -4,7 +4,20 @@
 
 Love chose "All ten phases" (04:05 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair. Native code in mods (plan row 24) is not built; mods running with the app closed (row 15) and sharing beyond .mhmod (row 16) stay deferred.
 
+### Phase 9: projects, chats and device bridges (plan rows 19 and 22)
+
+- `projects` (review): `$.projects.list()`, `open(id)`, `create({ name })` through MainViewModel's own `openProject`/`createProject`; opening or creating is refused while a task, build or terminal command runs, and both are audited. There is no delete op for projects or chats.
+- `chat.read` now also covers `$.chats.list()`, `open(id)`, `create()` and `read(id, limit)` (up to 200 messages of any chat in the open project).
+- `clipboard` (review): `$.clipboard.read()`/`write(text)`, 64 KB; reading only while the app is in the foreground (Android's own rule).
+- `device.share` (usable): `$.intent.share({ text } | { path })` (a file of the open project through the app's own `shareWorkspaceFile`) and `$.intent.open(uri)` for `ModIntents.SCHEMES` (https, http, mailto, tel, sms, geo) only, both through the system chooser, foreground only, once every 3 s per mod.
+- `storage.pick` (review): `$.storage.pick({ types })` opens the system document picker (`AppUiState.modPickTypes`, one at a time, 3-minute timeout) and returns up to 1 MB as text or base64, or `null` when cancelled; audited.
+- Defaults taken: `$.intent.share` instead of the plan's `$.share`; link schemes allowlisted; picker capped at 1 MB; device bridges foreground only.
+- VERIFIED (full suite 1520 tests, 0 failures; node 17/17; app compiles): `ModHostTest` (permissions needed, no delete op, refused share path, background clipboard refused, picker type filter, audit), `ModIntents` scheme allowlist.
+- NOT RUN: on a phone (share sheet, chooser, picker and clipboard; compiled only).
+
 ### Phase 8: menus, theming and a mod's own tab
+
+COMPLETE (pushed to harness-dev as 6bb3b8b).
 
 - `contributes.menuItems` (8): `id`, `title`, `place` (`chat`: the composer's + menu; `file`: a file's menu in Files, with its path as arguments; `project`: the project title's view menu) and `command`, which must be one of the mod's `slashCommands`. A tap runs the command as if typed (`MainViewModel.runModMenuItem`): a code command answers in the chat; a template command goes to the agent, refused with a note while a task runs. The items reach the menus through `LocalModMenus`, so WorkspaceScreen's signature is unchanged.
 - `ui.theme` (usable): `$.ui.theme({ accent })` sets the whole app's accent to one of nine design-token colors that keep white text readable (`ModTheme.ACCENTS`), or `null` back to the app's own. Kept in `_state.json`; `ModsSnapshot.accent` shows it only while that mod is active and allowed, and another mod can't clear it. `PocketTheme(accent)` puts it in `colorScheme.primary` and `PocketColors.current.accent` (a subtree with its own light or dark scheme keeps plain roles).

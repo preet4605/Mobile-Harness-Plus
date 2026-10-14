@@ -298,6 +298,8 @@ data class AppUiState(
     val modAccent: String? = null,
     /** Active mods' items for the chat, file and project menus. */
     val modMenuItems: List<com.jarves.mh.mods.ModMenuEntry> = emptyList(),
+    /** A mod asked the user to pick a file of these MIME types (`$.storage.pick`); the screen opens the picker once. */
+    val modPickTypes: List<String>? = null,
     val apiPingStatus: ApiPingStatus = ApiPingStatus.IDLE,
     val apiPingMessage: String? = null,
     val projects: List<Project> = emptyList(),
@@ -673,6 +675,144 @@ class MainViewModel(
             return written
         }
 
+        override fun projects(): JSONArray {
+            val current = _state.value
+            return JSONArray(current.projects.map { project ->
+                JSONObject().put("id", project.id).put("name", project.name).put("open", project.id == current.activeProject?.id)
+            })
+        }
+
+        override suspend fun openProject(id: String): Unit = withContext(Dispatchers.Main.immediate) {
+            val current = _state.value
+            val project = current.projects.firstOrNull { it.id == id } ?: error("No project $id.")
+            check(!current.isRunning && !current.androidBuildRunning && !current.projectTerminalRunning) {
+                "Wait for the running task, build or terminal command to finish before opening another project."
+            }
+            openProject(project)
+        }
+
+        override suspend fun createProject(name: String): String = withContext(Dispatchers.Main.immediate) {
+            val before = _state.value.projects.map { it.id }.toSet()
+            check(!_state.value.isRunning && !_state.value.androidBuildRunning && !_state.value.projectTerminalRunning) {
+                "Wait for the running task, build or terminal command to finish before creating a project."
+            }
+            this@MainViewModel.createProject(name)
+            _state.value.projects.firstOrNull { it.id !in before }?.id ?: error("The project wasn't created.")
+        }
+
+        override fun chats(context: ModEventContext): JSONArray? {
+            val current = _state.value
+            if (current.activeProject?.id != context.projectId) return null
+            return JSONArray(current.projectChats.map { chat ->
+                JSONObject().put("id", chat.id).put("title", chat.title).put("open", chat.id == current.activeChatId)
+            })
+        }
+
+        override suspend fun openChat(context: ModEventContext, id: String): Unit = withContext(Dispatchers.Main.immediate) {
+            val current = _state.value
+            check(current.activeProject?.id == context.projectId) { "That project is not open." }
+            check(current.projectChats.any { it.id == id }) { "No chat $id in this project." }
+            if (current.activeChatId == id) return@withContext
+            check(!current.isRunning) { "Wait for the task to finish before switching chats." }
+            check(!current.chatLoading) { "Chat history has not loaded yet." }
+            switchChat(id)
+        }
+
+        override suspend fun createChat(context: ModEventContext): String = withContext(Dispatchers.Main.immediate) {
+            val current = _state.value
+            check(current.activeProject?.id == context.projectId) { "That project is not open." }
+            check(!current.isRunning) { "Wait for the task to finish before starting a chat." }
+            check(!current.chatLoading && current.projectChats.isNotEmpty()) { "Chat history has not loaded yet." }
+            this@MainViewModel.createChat()
+            _state.value.activeChatId?.takeIf { it != current.activeChatId } ?: error("The chat wasn't created.")
+        }
+
+        override suspend fun readChat(context: ModEventContext, id: String, limit: Int): JSONArray? {
+            val current = _state.value
+            val project = current.activeProject?.takeIf { it.id == context.projectId } ?: return null
+            if (current.projectChats.none { it.id == id }) return null
+            val messages = if (id == current.activeChatId) current.messages
+                else withContext(Dispatchers.IO) { preferences.loadMessageWindow(project.id, id, limit).messages }
+            return JSONArray(messages.filter { it.text.isNotBlank() }.takeLast(limit).map { message ->
+                JSONObject().put("from", when {
+                    message.fromUser -> "user"
+                    message.origin != null -> "mod"
+                    else -> "agent"
+                }).put("text", message.text)
+            })
+        }
+
+        override suspend fun readClipboard(): String? = withContext(Dispatchers.Main.immediate) {
+            val clipboard = getApplication<Application>().getSystemService(android.content.ClipboardManager::class.java)
+            clipboard?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(getApplication())?.toString()
+        }
+
+        override suspend fun writeClipboard(mod: InstalledMod, text: String): Unit = withContext(Dispatchers.Main.immediate) {
+            val clipboard = getApplication<Application>().getSystemService(android.content.ClipboardManager::class.java) ?: error("No clipboard.")
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText(mod.manifest.name, text))
+        }
+
+        override suspend fun share(mod: InstalledMod, context: ModEventContext?, text: String?, path: String?): Unit = withContext(Dispatchers.Main.immediate) {
+            if (path != null) {
+                check(context != null && _state.value.activeProject?.id == context.projectId) { "That project is not open." }
+                shareWorkspaceFile(path)
+                return@withContext
+            }
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            getApplication<Application>().startActivity(Intent.createChooser(send, "Share from ${mod.manifest.name}").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+
+        override suspend fun openIntent(mod: InstalledMod, uri: String): Unit = withContext(Dispatchers.Main.immediate) {
+            val view = Intent(Intent.ACTION_VIEW, Uri.parse(uri))
+            getApplication<Application>().startActivity(Intent.createChooser(view, "Open with").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+
+        override suspend fun pickFile(mod: InstalledMod, types: List<String>, maxBytes: Int): JSONObject? {
+            val picked = withContext(Dispatchers.Main.immediate) {
+                check(modPick == null) { "Another file request is open." }
+                kotlinx.coroutines.CompletableDeferred<Uri?>().also { pick ->
+                    modPick = pick
+                    _state.update { it.copy(modPickTypes = types, toastMessage = "${mod.manifest.name} asks you to pick a file.") }
+                }
+            }
+            val uri = try {
+                kotlinx.coroutines.withTimeoutOrNull(MOD_PICK_TIMEOUT_MS) { picked.await() }
+            } finally {
+                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main.immediate) {
+                    if (modPick === picked) modPick = null
+                    _state.update { if (it.modPickTypes != null) it.copy(modPickTypes = null) else it }
+                }
+            } ?: return null
+            return withContext(Dispatchers.IO) {
+                val resolver = getApplication<Application>().contentResolver
+                val (name, size) = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) to (if (cursor.isNull(1)) -1L else cursor.getLong(1)) else null
+                } ?: ("file" to -1L)
+                check(size <= maxBytes) { "$name is ${size / 1024} KB; mods can read files up to ${maxBytes / 1024} KB." }
+                // At most maxBytes + 1, so a file bigger than its reported size is still refused.
+                val bytes = resolver.openInputStream(uri)?.use { input ->
+                    val out = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(16 * 1024)
+                    while (out.size() <= maxBytes) {
+                        val read = input.read(buffer, 0, minOf(buffer.size, maxBytes + 1 - out.size()))
+                        if (read < 0) break
+                        out.write(buffer, 0, read)
+                    }
+                    out.toByteArray()
+                } ?: error("Couldn't read $name.")
+                check(bytes.size <= maxBytes) { "$name is bigger than ${maxBytes / 1024} KB; mods can't read it." }
+                val mimeType = resolver.getType(uri) ?: "application/octet-stream"
+                val decoder = Charsets.UTF_8.newDecoder()
+                val text = runCatching { decoder.decode(java.nio.ByteBuffer.wrap(bytes)).toString() }.getOrNull()
+                JSONObject().put("name", name).put("mimeType", mimeType).put("size", bytes.size).apply {
+                    if (text != null) put("text", text) else put("base64", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP))
+                }
+            }
+        }
+
         override fun appSettings(): JSONObject = JSONObject(modAppSettingValues(_state.value))
 
         override suspend fun setAppSetting(key: String, value: Any): Unit = withContext(Dispatchers.Main.immediate) {
@@ -731,6 +871,20 @@ class MainViewModel(
             return true
         }
     }
+    /** The file pick a mod is waiting on (`$.storage.pick`). Main thread. */
+    private var modPick: kotlinx.coroutines.CompletableDeferred<Uri?>? = null
+
+    /** The picker for a mod's file request opened; it opens once. */
+    fun modPickShown() {
+        _state.update { it.copy(modPickTypes = null) }
+    }
+
+    /** The user picked [uri] for a mod's file request, or cancelled (null). */
+    fun completeModPick(uri: Uri?) {
+        modPick?.complete(uri)
+        modPick = null
+    }
+
     /** Follow-ups mods queued from `run.end` or `prompt.send` since the user last sent a message. Main thread. */
     private var modFollowUpsInChain = 0
     /** The user pressed Stop: mods start no task or follow-up until the user sends a message. Main thread. */
@@ -8228,6 +8382,8 @@ class MainViewModel(
         private const val MAX_PROJECT_TERMINAL_OUTPUT = 200_000
         private const val MAX_ATTACHMENTS_PER_MESSAGE = 5
         private const val MAX_PROCESS_OUTPUT_BYTES = 512 * 1024
+        /** How long a mod's file request waits for the user to pick. */
+        private const val MOD_PICK_TIMEOUT_MS = 3 * 60_000L
         /** How much of a build's log the mods' `build.end` event carries. */
         private const val MOD_BUILD_LOG_BYTES = 16 * 1024
         private const val ANDROID_BUILD_STOP_GRACE_SECONDS = 3L

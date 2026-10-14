@@ -72,6 +72,18 @@ enum class ModOp(
     BUILD_RUN("build.run", ModCapability.BUILD_RUN, needsProject = true, slow = true),
     MEMORY_LIST("memory.list", ModCapability.MEMORY_READ, needsProject = true),
     UI_THEME("ui.theme", ModCapability.UI_THEME),
+    PROJECTS_LIST("projects.list", ModCapability.PROJECTS),
+    PROJECTS_OPEN("projects.open", ModCapability.PROJECTS, slow = true),
+    PROJECTS_CREATE("projects.create", ModCapability.PROJECTS, slow = true),
+    CHATS_LIST("chats.list", ModCapability.PROJECTS, needsProject = true),
+    CHATS_OPEN("chats.open", ModCapability.PROJECTS, needsProject = true, slow = true),
+    CHATS_CREATE("chats.create", ModCapability.PROJECTS, needsProject = true, slow = true),
+    CHATS_READ("chats.read", ModCapability.CHAT_READ, needsProject = true, slow = true),
+    CLIPBOARD_READ("clipboard.read", ModCapability.CLIPBOARD),
+    CLIPBOARD_WRITE("clipboard.write", ModCapability.CLIPBOARD),
+    INTENT_SHARE("intent.share", ModCapability.DEVICE_SHARE),
+    INTENT_OPEN("intent.open", ModCapability.DEVICE_SHARE),
+    STORAGE_PICK("storage.pick", ModCapability.STORAGE_PICK, slow = true),
     SETTINGS_GET("settings.get", ModCapability.SETTINGS_READ),
     SETTINGS_SET("settings.set", ModCapability.SETTINGS_WRITE, slow = true),
     ;
@@ -222,6 +234,20 @@ object ModAppSettings {
             "antigravityBalancing" -> oneOf(BALANCING)
             else -> value as? Boolean ?: throw IllegalArgumentException("\$.settings.set: $key must be true or false")
         }
+    }
+}
+
+/** Links `$.intent.open` may hand to other apps; the user picks the app in the system chooser. */
+object ModIntents {
+    val SCHEMES = setOf("https", "http", "mailto", "tel", "sms", "geo")
+
+    fun check(uri: String): String {
+        val text = uri.trim()
+        val scheme = text.substringBefore(':', "").lowercase()
+        require(text.length in 4..2_000 && scheme in SCHEMES && text.none { it.isISOControl() }) {
+            "\$.intent.open(uri) opens ${SCHEMES.joinToString { "$it:" }} links only"
+        }
+        return text
     }
 }
 
