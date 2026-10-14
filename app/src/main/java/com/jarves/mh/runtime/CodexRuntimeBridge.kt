@@ -285,8 +285,11 @@ class CodexRuntimeBridge(
                 CodexSkillSelection.config(nativeSkills, skills, skillSettings.scopeMode)
                 }
                 val imagePaths = CodexLaunchBuilder.imagePaths(prompt, guestWorkspacePath)
+                // Mods' guest tools and MCP servers (mod plan row 11): only mods allowed guest.tools.
+                val modServers = com.jarves.mh.mods.ModGuestTools.prepare(installed.rootfs, com.jarves.mh.mods.ModRegistry.getInstance(context).snapshot.value)
                 val command = CodexLaunchBuilder.appServerCommand(route, reasoningEffort,
-                    inspectionTools = installer.ensureInspectionTools(installed.rootfs), skillConfig = skillConfig)
+                    inspectionTools = installer.ensureInspectionTools(installed.rootfs), skillConfig = skillConfig,
+                    extraOverrides = com.jarves.mh.mods.ModGuestTools.codexOverrides(modServers, CodexLaunchBuilder::tomlString))
                 val environment = CodexLaunchBuilder.environment(route, secret)
                 Log.d(TAG, "Route: ${route::class.simpleName}, Model: ${route.model.ifBlank { "default" }}")
                 if (account != null) check(accounts.requireUsable(account.id).scope == account.scope) {

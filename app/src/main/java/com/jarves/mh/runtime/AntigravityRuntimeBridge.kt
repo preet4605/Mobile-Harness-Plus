@@ -598,6 +598,8 @@ class AntigravityRuntimeBridge(
                     }
                     startForegroundRuntime(projectSlug, taskId)
                     val installed = installer.installedRuntime()
+                    // Mods' guest tools (mod plan row 11); Antigravity reaches them as commands.
+                    com.jarves.mh.mods.ModGuestTools.prepare(installed.rootfs, com.jarves.mh.mods.ModRegistry.getInstance(context).snapshot.value)
                     val workspace = checkpoints.ensureWorkspace(projectId)
                     checkpoints.createCheckpoint(projectId, workspace)
                     val before = checkpoints.snapshot(workspace)

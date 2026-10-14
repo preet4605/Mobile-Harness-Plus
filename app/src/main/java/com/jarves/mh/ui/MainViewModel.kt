@@ -146,6 +146,7 @@ import com.jarves.mh.mods.ModCommandResult
 import com.jarves.mh.mods.ModContributionSet
 import com.jarves.mh.mods.ModEvent
 import com.jarves.mh.mods.ModEventContext
+import com.jarves.mh.mods.ModGuestTools
 import com.jarves.mh.mods.ModHost
 import com.jarves.mh.mods.ModHostEffects
 import com.jarves.mh.mods.ModHookRunner
@@ -2911,10 +2912,17 @@ class MainViewModel(
                 delay(MOD_STABLE_AFTER_MS)
                 runCatching { registry.markStable() }
             }
+            var guestPrograms: Set<String>? = null
             registry.snapshot.collect { snapshot ->
                 modContributions = runCatching {
                     ModContributionSet.build(snapshot) { skillManager.parseSkillFile(it, SkillSource.MOD) }
                 }.getOrElse { ModContributionSet() }
+                // A mod turned off, or Developer mode off, stops its guest programs at once (mod plan row 11).
+                val allowed = ModGuestTools.allowed(snapshot).map { it.id }.toSet()
+                if (guestPrograms != null && !allowed.containsAll(guestPrograms.orEmpty())) {
+                    runCatching { ModGuestTools.stop(allowed) { pid -> android.os.Process.sendSignal(pid, 9) } }
+                }
+                guestPrograms = allowed
             }
         }
     }
@@ -7027,17 +7035,27 @@ class MainViewModel(
      * command, listed here (spec v2 P8).
      */
     private fun modToolsBlock(agent: AgentKind): String {
-        if (agent == AgentKind.CLAUDE_CODE || agent == AgentKind.CODEX) return ""
-        val tools = modHost?.snapshot?.value?.tools.orEmpty()
-        if (tools.isEmpty()) return ""
+        val tools = if (agent == AgentKind.CLAUDE_CODE || agent == AgentKind.CODEX) emptyList() else modHost?.snapshot?.value?.tools.orEmpty()
+        val programs = modRegistry?.snapshot?.value?.let { ModGuestTools.tools(ModGuestTools.allowed(it)) }.orEmpty()
+        if (tools.isEmpty() && programs.isEmpty()) return ""
         return buildString {
-            appendLine("<mod-tools>")
-            appendLine("Installed mods give you these tools. Call one with: harness-tools mod <name> '<json input>'. Run harness-tools mod to list the current ones; mods can add tools while you work.")
-            tools.take(32).forEach { tool ->
-                appendLine("- ${tool.exposed}: ${tool.description.take(300)} Input schema: ${tool.inputSchema.take(600)}")
+            if (tools.isNotEmpty()) {
+                appendLine("<mod-tools>")
+                appendLine("Installed mods give you these tools. Call one with: harness-tools mod <name> '<json input>'. Run harness-tools mod to list the current ones; mods can add tools while you work.")
+                tools.take(32).forEach { tool ->
+                    appendLine("- ${tool.exposed}: ${tool.description.take(300)} Input schema: ${tool.inputSchema.take(600)}")
+                }
+                appendLine("</mod-tools>")
             }
-            append("</mod-tools>")
-        }
+            if (programs.isNotEmpty()) {
+                appendLine("<mod-commands>")
+                appendLine("Installed mods give you these commands in the terminal. Run them by their full path:")
+                programs.take(32).forEach { tool ->
+                    appendLine("- ${ModGuestTools.GUEST_ROOT}/bin/${tool.command}: ${tool.description.take(300)} (from the ${tool.modName} mod)")
+                }
+                appendLine("</mod-commands>")
+            }
+        }.trimEnd()
     }
 
     /**

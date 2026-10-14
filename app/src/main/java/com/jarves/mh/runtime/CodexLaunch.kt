@@ -169,7 +169,14 @@ internal object CodexLaunchBuilder {
         }
 
     /** Native controls share exec's launch-local provider, skill and MCP configuration. */
-    fun appServerCommand(route: CodexRoute, reasoningEffort: String?, inspectionTools: Boolean, skillConfig: String?): List<String> = buildList {
+    fun appServerCommand(
+        route: CodexRoute,
+        reasoningEffort: String?,
+        inspectionTools: Boolean,
+        skillConfig: String?,
+        /** More `-c` overrides, such as mods' MCP servers. */
+        extraOverrides: List<String> = emptyList(),
+    ): List<String> = buildList {
         add(CODEX_GUEST_PATH)
         add("app-server")
         configOverrides(route).forEach { add("-c"); add(it) }
@@ -181,6 +188,7 @@ internal object CodexLaunchBuilder {
             add("-c")
             add("mcp_servers.pocket_native_inspection={command=\"/usr/local/bin/node\",args=[\"/opt/pocket/harness/harness-tools.cjs\",\"--mcp\"],env_vars=[\"POCKET_INSPECTION_TOKEN\",\"POCKET_WORKSPACE\",\"PATH\"],startup_timeout_sec=10,tool_timeout_sec=40,required=false}")
         }
+        extraOverrides.forEach { add("-c"); add(it) }
     }
 
     /** Attached images the Codex CLI can take with `-i`, in attachment order. Other files stay as prompt text. */

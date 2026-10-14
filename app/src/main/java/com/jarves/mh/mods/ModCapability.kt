@@ -51,6 +51,7 @@ enum class ModCapability(
     MODS_CALL("mods.call", RiskLevel.REVIEW, "Use tools other mods give", usable = true),
     GIT_WRITE("git.write", RiskLevel.HIGH, "Commit and switch git branches in your projects", usable = true, developer = true),
     BUILD_RUN("build.run", RiskLevel.HIGH, "Build and install the project's Android app", usable = true, developer = true),
+    GUEST_TOOLS("guest.tools", RiskLevel.HIGH, "Run the mod's own programs and MCP servers in the Linux guest", usable = true, developer = true),
     TOOLS_APPROVE("tools.approve", RiskLevel.HIGH, "Approve the agents' requests to run tools inside your projects", usable = true, developer = true),
     ;
 

@@ -325,10 +325,7 @@ class ClaudeRuntimeBridge(
                 effort = effort,
                 resumeSessionId = resumeId,
                 maxTurns = prefs.claudeMaxTurns,
-                mcpConfig = RuntimeInstaller.CLAUDE_MOD_TOOLS_CONFIG.takeIf {
-                    com.jarves.mh.mods.ModHost.current.value?.let { host -> host.toolsPossible || host.snapshot.value.tools.isNotEmpty() } == true &&
-                        File(installed.rootfs, it.removePrefix("/")).isFile
-                },
+                mcpConfig = claudeMcpConfig(installed.rootfs),
             )
             Log.d("ClaudeBridge", "Launching command: $command")
             val process = installer.process(
@@ -662,6 +659,25 @@ class ClaudeRuntimeBridge(
                 }
             }
         } finally { observer.stopWatching(); changes.close() }
+    }
+
+    /**
+     * Claude's `--mcp-config`: the app's mods server while a running mod may give tools, plus the
+     * MCP servers of mods allowed guest.tools (written per task next to their files). Null for none.
+     */
+    private fun claudeMcpConfig(rootfs: File): String? {
+        val base = File(rootfs, RuntimeInstaller.CLAUDE_MOD_TOOLS_CONFIG.removePrefix("/"))
+        val modsServer = com.jarves.mh.mods.ModHost.current.value
+            ?.let { host -> host.toolsPossible || host.snapshot.value.tools.isNotEmpty() } == true && base.isFile
+        val servers = com.jarves.mh.mods.ModGuestTools.prepare(rootfs, com.jarves.mh.mods.ModRegistry.getInstance(context).snapshot.value)
+        if (servers.isEmpty()) return RuntimeInstaller.CLAUDE_MOD_TOOLS_CONFIG.takeIf { modsServer }
+        return runCatching {
+            val config = com.jarves.mh.mods.ModGuestTools.claudeConfig(
+                if (modsServer) JSONObject(base.readText()) else JSONObject().put("mcpServers", JSONObject()), servers)
+            val path = "${com.jarves.mh.mods.ModGuestTools.GUEST_ROOT}/claude.mcp.json"
+            File(rootfs, path.removePrefix("/")).writeText(config.toString())
+            path
+        }.getOrElse { RuntimeInstaller.CLAUDE_MOD_TOOLS_CONFIG.takeIf { modsServer } }
     }
 
     private fun writeApprovalResponse(file: File, approved: Boolean): Boolean = runCatching {

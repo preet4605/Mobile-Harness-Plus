@@ -167,11 +167,37 @@ class ModManifestParserTest {
             put("contributes", JSONObject().put("panels", JSONArray().put(JSONObject().put("id", "p").put("title", "P").put("entry", "p.html"))))
         }, "newer version")
         assertRejected(ModTestKit.manifest {
-            put("contributes", JSONObject().put("guestTools", JSONArray().put(JSONObject())))
-        }, "not supported yet")
-        assertRejected(ModTestKit.manifest {
             put("dashboard", JSONObject().put("pane", "main"))
         }, "needs a hooks module")
+    }
+
+    @Test
+    fun `guest tools and MCP servers need guest-tools and stay inside the mod`() {
+        fun program(name: String, command: JSONArray, env: JSONObject? = null) = JSONObject().put("name", name)
+            .put("description", "Lints the project").put("command", command).apply { env?.let { put("env", it) } }
+        val good = ModTestKit.manifest(mapOf("tools/lint.js" to "")) {
+            put("permissions", JSONArray().put(permission("guest.tools")))
+            put("contributes", JSONObject()
+                .put("guestTools", JSONArray().put(program("lint", JSONArray().put("node").put("./tools/lint.js"), JSONObject().put("LINT_LEVEL", "strict"))))
+                .put("mcpServers", JSONArray().put(program("docs", JSONArray().put("python3").put("-m").put("docs_server")))))
+        }
+        val manifest = ModManifestParser.parse(good)
+        assertEquals(listOf("node", "./tools/lint.js"), manifest.guestTools.single().command)
+        assertEquals(mapOf("LINT_LEVEL" to "strict"), manifest.guestTools.single().env)
+        assertEquals("docs", manifest.mcpServers.single().name)
+
+        assertRejected(ModTestKit.manifest {
+            put("contributes", JSONObject().put("guestTools", JSONArray().put(program("lint", JSONArray().put("node")))))
+        }, "must ask for guest.tools")
+        fun withTool(tool: JSONObject) = ModTestKit.manifest {
+            put("permissions", JSONArray().put(permission("guest.tools")))
+            put("contributes", JSONObject().put("guestTools", JSONArray().put(tool)))
+        }
+        assertRejected(withTool(program("Lint", JSONArray().put("node"))), "lowercase letters")
+        assertRejected(withTool(program("lint", JSONArray())), "list of 1 to 32 strings")
+        assertRejected(withTool(program("lint", JSONArray().put("/usr/bin/node"))), "not an absolute path")
+        assertRejected(withTool(program("lint", JSONArray().put("node").put("./../escape.js"))), "must be a file inside the mod")
+        assertRejected(withTool(program("lint", JSONArray().put("node"), JSONObject().put("LD_PRELOAD", "x"))), "not a name a mod may set")
     }
 
     @Test

@@ -26,6 +26,10 @@ data class ModManifest(
     val types: String? = null,
     val dashboard: ModDashboard? = null,
     val integrity: Map<String, String> = emptyMap(),
+    /** Programs the agents run in the Linux guest (mod plan row 11; `guest.tools`, Developer mode). */
+    val guestTools: List<ModGuestProgram> = emptyList(),
+    /** MCP servers Claude and Codex start in the Linux guest (`guest.tools`, Developer mode). */
+    val mcpServers: List<ModGuestProgram> = emptyList(),
 ) {
     val requested: Set<ModCapability> get() = permissions.map { it.capability }.toSet()
 
@@ -33,8 +37,20 @@ data class ModManifest(
 
     /** Files the manifest itself names; each must exist in the package. */
     val referencedFiles: List<String>
-        get() = rules.map { it.file } + skills.map { "${it.dir}/SKILL.md" } + listOfNotNull(hooksModule, types)
+        get() = rules.map { it.file } + skills.map { "${it.dir}/SKILL.md" } + listOfNotNull(hooksModule, types) +
+            (guestTools + mcpServers).flatMap { it.command }.filter { it.startsWith("./") }.map { it.removePrefix("./") }.distinct()
 }
+
+/**
+ * A program a mod ships for the Linux guest: a guest tool (a command the agents run) or an MCP
+ * server. [command] is the argv; elements starting with `./` are files in the mod's package.
+ */
+data class ModGuestProgram(
+    val name: String,
+    val description: String,
+    val command: List<String>,
+    val env: Map<String, String> = emptyMap(),
+)
 
 data class ModPermission(
     val capability: ModCapability,
@@ -150,6 +166,10 @@ object ModManifestParser {
     private val VERSION = Regex("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
     private val COMMAND_NAME = Regex("^[a-z][a-z0-9-]{1,30}$")
     private val ITEM_ID = Regex("^[a-z0-9-]{1,40}$")
+    private val GUEST_PROGRAM_NAME = Regex("^[a-z][a-z0-9_]{1,31}$")
+    private val ENV_NAME = Regex("^[A-Z_][A-Z0-9_]{0,63}$")
+    /** Names the app sets for every guest program, or that would change how the guest runs it. */
+    private val RESERVED_ENV = setOf("PATH", "HOME", "MOD_DIR", "LD_PRELOAD", "LD_LIBRARY_PATH", "NODE_OPTIONS", "POCKET_INSPECTION_TOKEN", "POCKET_WORKSPACE")
     private val PANE_ID = Regex("^[a-z0-9-]{1,30}$")
     private val SETTING_KEY = Regex("^[a-z][a-z0-9_]{0,39}$")
     /** A host name, or `*.` and one for all of its subdomains. */
@@ -230,15 +250,15 @@ object ModManifestParser {
         var rules = emptyList<ModTextFile>()
         var skills = emptyList<ModSkillDir>()
         var hooks = emptyList<ModDeclarativeHook>()
+        var guestTools = emptyList<ModGuestProgram>()
+        var mcpServers = emptyList<ModGuestProgram>()
         if (contributes != null) {
             if (contributes !is JSONObject) {
                 p.add("\"contributes\" must be an object.")
             } else {
                 contributes.keys().asSequence().filter { it !in CONTRIBUTES_KEYS }.forEach { p.add("Unknown field \"contributes.$it\".") }
-                listOf("guestTools", "mcpServers").forEach { key ->
-                    val value = contributes.opt(key)
-                    if (value != null && !(value is JSONArray && value.length() == 0)) p.add("\"contributes.$key\" is not supported yet.")
-                }
+                guestTools = array(contributes, "guestTools", p, 8).mapIndexedNotNull { i, o -> parseGuestProgram(o, "contributes.guestTools[$i]", p) }
+                mcpServers = array(contributes, "mcpServers", p, 4).mapIndexedNotNull { i, o -> parseGuestProgram(o, "contributes.mcpServers[$i]", p) }
                 val panels = contributes.opt("panels")
                 if (panels != null && !(panels is JSONArray && panels.length() == 0)) {
                     p.add("Web panels (\"contributes.panels\") need a newer version of the app.")
@@ -273,6 +293,7 @@ object ModManifestParser {
         checkUnique(rules.map { it.id }, "rule id", p)
         checkUnique(skills.map { it.id }, "skill id", p)
         checkUnique(hooks.map { it.id }, "hook id", p)
+        checkUnique(guestTools.map { it.name } + mcpServers.map { it.name }, "guest tool or MCP server name", p)
 
         val builtIn = SlashCommandEngine.ALL_SLASH_COMMANDS.map { it.name.lowercase(Locale.ROOT) }.toSet()
         commands.filter { it.name in builtIn }.forEach { p.add("Command /${it.name} would replace a built-in command.") }
@@ -314,6 +335,9 @@ object ModManifestParser {
             }
         }
         if (dashboard != null && hooksModule == null) p.add("\"dashboard\" needs a hooks module to draw it.")
+        if ((guestTools.isNotEmpty() || mcpServers.isNotEmpty()) && ModCapability.GUEST_TOOLS !in requested) {
+            p.add("Guest tools and MCP servers run in the Linux guest, so the mod must ask for guest.tools.")
+        }
 
         if (id == null || name == null || version == null || apiVersion == null) return null
         return ModManifest(
@@ -335,7 +359,36 @@ object ModManifestParser {
             types = types,
             dashboard = dashboard,
             integrity = integrity,
+            guestTools = guestTools,
+            mcpServers = mcpServers,
         )
+    }
+
+    private fun parseGuestProgram(o: JSONObject, at: String, p: Problems): ModGuestProgram? {
+        unknownKeys(o, setOf("name", "description", "command", "env"), at, p)
+        val name = string(o, "name", p, required = true, label = "$at.name") ?: return null
+        if (!GUEST_PROGRAM_NAME.matches(name)) p.add("$at.name must be 2 to 32 lowercase letters, digits or underscores, starting with a letter.")
+        val description = string(o, "description", p, required = true, max = 300, label = "$at.description") ?: return null
+        val argv = (o.opt("command") as? JSONArray)?.let { a -> (0 until a.length()).map { a.opt(it) } }
+        if (argv == null || argv.isEmpty() || argv.size > 32 || argv.any { it !is String || it.isEmpty() || it.length > 1000 || '\u0000' in it }) {
+            p.add("$at.command must be a list of 1 to 32 strings, such as [\"node\", \"./server.js\"].")
+            return null
+        }
+        val command = argv.map { it as String }
+        command.filter { it.startsWith("./") }.forEach { arg ->
+            if (!isSafeRelativePath(arg.removePrefix("./"))) p.add("$at.command: $arg must be a file inside the mod.")
+        }
+        if (command.first().startsWith("/")) p.add("$at.command must start with a program name or a ./ file in the mod, not an absolute path.")
+        val env = when (val value = o.opt("env")) {
+            null -> emptyMap()
+            !is JSONObject -> { p.add("$at.env must be an object of strings."); emptyMap() }
+            else -> value.keys().asSequence().toList().also { keys ->
+                if (keys.size > 16) p.add("$at.env has more than 16 entries.")
+                keys.filter { !ENV_NAME.matches(it) || it in RESERVED_ENV }.forEach { p.add("$at.env: $it is not a name a mod may set.") }
+            }.associateWith { key -> value.opt(key) as? String ?: "".also { p.add("$at.env.$key must be a string.") } }
+                .also { env -> if (env.values.any { it.length > 1000 }) p.add("$at.env values must be at most 1,000 characters.") }
+        }
+        return ModGuestProgram(name, description, command, env)
     }
 
     private fun parsePermissions(value: Any?, p: Problems): List<ModPermission> {

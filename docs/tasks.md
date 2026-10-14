@@ -4,7 +4,19 @@
 
 Love chose "All ten phases" (04:05 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair. Native code in mods (plan row 24) is not built; mods running with the app closed (row 15) and sharing beyond .mhmod (row 16) stay deferred.
 
+### Phase 4: guest tools and MCP servers from mods
+
+- `contributes.guestTools` (8) and `contributes.mcpServers` (4) parse now (they were refused) and need `guest.tools` (developer). Each is `name`, `description`, `command` argv (`./` items are files in the mod and must exist; no absolute program path) and `env` (16; PATH, HOME, MOD_DIR, LD_*, NODE_OPTIONS and the bridge variables refused).
+- Before each task (all four harnesses) `ModGuestTools.prepare` copies allowed mods to `/opt/pocket/mods/pkg/<id>` (again only when version or install time changed), writes launchers `/opt/pocket/mods/bin/mod_<id>_<name>`, and removes files and launchers of mods no longer allowed. Every program runs as `/bin/sh` with `MOD_DIR`, `ulimit -t` (600 CPU s per tool run, 3,600 per server) and `ulimit -d` 1 GB (counts heap mappings; checked that node still starts under it).
+- MCP servers: Claude gets a per-task `--mcp-config` (`/opt/pocket/mods/claude.mcp.json`, the app's mods server plus mod servers); Codex gets `-c mcp_servers.<name>=...` with `required=false`. DeepSeek and Antigravity get the guest tools as commands listed in `<mod-commands>`; no MCP servers for them.
+- Kill on disable: when a mod stops being allowed (off, removed, grant revoked, Developer mode off), the app kills every process whose environment names that mod's folder (`/proc/<pid>/environ`), and the next task start removes its files. Servers end with their harness, since they are its stdio children.
+- Defaults taken: launchers live outside PATH and are called by full path; data limit instead of address-space limit (`ulimit -v` breaks node); no MCP servers for DeepSeek and Antigravity.
+- VERIFIED (full suite 1511 tests, 0 failures; node 17/17): `ModGuestToolsTest` (allowed only with the grant and Developer mode; sync, executable launcher actually run with sh and args, stale removal, server scripts, Claude and Codex config; stop with a fake /proc), `ModManifestParserTest` (parse and refusals).
+- NOT RUN: on a phone (proot honoring the limits, killing guest pids from the app, Claude/Codex starting mod servers).
+
 ### Phase 3: gates for every harness, and approvals
+
+COMPLETE (pushed to harness-dev as 693ecef).
 
 - DeepSeek Harness: the plan said "a gate in its own tool loop", but its tool loop is the `@deepseek-ai/dsh` package, not our code. dsh ships `@deepseek-ai/dsh-hooks-claude-code` (read in its 0.2.0-rc.2 package), which runs Claude-style PreToolUse command hooks and honors deny only. While a running mod gates tool calls, the app mounts it through the cordis patch (`- insert:` row `mh-mod-gate`) with `/root/.dsh/mh-mod-hooks.json` running `harness-tools gate --harness deepseek` for every tool; it is mounted only when that package is installed, so an older dsh still starts. A mod's rewrite becomes a deny that tells the agent the input it wants.
 - Codex: "Mods gate Codex" in Mods (Developer mode, a switch per project, off by default). Where it is on and a mod gates tool calls, Codex starts with `approvalPolicy: untrusted` instead of `never`, and the runner answers `item/commandExecution/requestApproval` and `item/fileChange/requestApproval` (and the v1 names) from the gate: deny or rewrite declines, anything else (including a gate that fails or takes 9 s) accepts. Everywhere else Codex runs exactly as before.
