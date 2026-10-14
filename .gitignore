@@ -83,3 +83,6 @@ dist/update-test/
 !/docs/design.md
 !/docs/tasks.md
 !/docs/memory.md
+
+# Left behind by runtime task unit tests
+app/checkpoints/
