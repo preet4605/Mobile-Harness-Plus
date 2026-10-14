@@ -1780,7 +1780,9 @@ class RuntimeInstaller(private val context: Context) {
                 put("LANG", "C.UTF-8")
                 put("TERM", "xterm-256color")
                 put("LD_LIBRARY_PATH", context.applicationInfo.nativeLibraryDir)
-                put("PROOT_NO_SECCOMP", "1")
+                // Seccomp lets PRoot skip ptrace for syscalls it does not rewrite, which cuts guest
+                // CPU (and heat) a lot. It is on in the dev app only until it is phone-tested.
+                if (!PROOT_SECCOMP_ENABLED) put("PROOT_NO_SECCOMP", "1")
                 put("PROOT_TMP_DIR", prootTemp.absolutePath)
                 put("PROOT_LOADER", File(context.applicationInfo.nativeLibraryDir, "libprootloader.so").absolutePath)
                 // Also protects any glibc helper Claude starts later.
@@ -2166,6 +2168,9 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
     private fun File.readTextOrNull(): String? = runCatching { readText().trim() }.getOrNull()
 
     companion object {
+        /** PRoot seccomp acceleration: dev (debug) builds only until it is tested on phones. */
+        internal val PROOT_SECCOMP_ENABLED: Boolean = BuildConfig.DEBUG
+
         /** Guest path of Claude's MCP config for mod tools, written with the harness tools. */
         const val CLAUDE_MOD_TOOLS_CONFIG = "/opt/pocket/harness/mods.mcp.json"
         const val AGY_GUEST_PATH = "/root/.local/bin/agy"
