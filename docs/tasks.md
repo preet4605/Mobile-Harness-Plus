@@ -4,7 +4,19 @@
 
 Love chose "All ten phases" (04:05 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair. Native code in mods (plan row 24) is not built; mods running with the app closed (row 15) and sharing beyond .mhmod (row 16) stay deferred.
 
+### Phase 5: web panels
+
+- `ui.webpane` is usable now: `contributes.panels` (4; `id`, `title` up to 40, `entry` a `.html` file in the mod) parses (it was refused) and needs that permission. The mod's page lists its panels under Controls; tapping one opens it in a large sheet, one live panel at a time.
+- The panel ([ModWebPanel.kt](../app/src/main/java/com/jarves/mh/ui/ModWebPanel.kt)) is a framework WebView on the mod's own origin `https://<id>.mod.invalid/`: every request is answered from the installed package (regular files inside it, 5 MB each, no links) with a CSP (`default-src 'self'`, no inline script, `connect-src 'none'`, no frames or forms), anything else gets 403 and other origins are never navigated. No file or content access, no pop-ups, permissions or file chooser, Safe Browsing on.
+- Messages: after load the app posts `mh-port` with a `WebMessagePort` (framework API, no androidx.webkit). Page to mod is the `panel.message` event (`panel`, `data`), 64 KB and 20 a second at most; mod to page is `$.ui.post(panel, data)` (unknown panel refused; dropped when the panel isn't open).
+- Crash safety: `onRenderProcessGone` closes the port, drops that WebView and shows "This panel stopped" with Reload; the app keeps running. Closing the sheet, turning the mod off or revoking the grant destroys the WebView.
+- Defaults taken: framework WebMessagePort instead of androidx.webkit (no new dependency); panels open only from the mod's page; inline scripts blocked (scripts go under `assets/`).
+- VERIFIED (full suite 1513 tests, 0 failures; node 17/17): `ModManifestParserTest` (panels need the permission, html entry inside the mod, unique ids, 4 at most), `ModHostTest` (`panel.message` reaches the mod, `$.ui.post` reaches the panel flow, unknown panel refused, nothing reaches a mod without the grant), `ModRegistryTest` updated now that every capability is usable.
+- NOT RUN: on a phone (WebView loading from the intercepted origin, the message port, renderer crash recovery).
+
 ### Phase 4: guest tools and MCP servers from mods
+
+COMPLETE (pushed to harness-dev as 4f31821).
 
 - `contributes.guestTools` (8) and `contributes.mcpServers` (4) parse now (they were refused) and need `guest.tools` (developer). Each is `name`, `description`, `command` argv (`./` items are files in the mod and must exist; no absolute program path) and `env` (16; PATH, HOME, MOD_DIR, LD_*, NODE_OPTIONS and the bridge variables refused).
 - Before each task (all four harnesses) `ModGuestTools.prepare` copies allowed mods to `/opt/pocket/mods/pkg/<id>` (again only when version or install time changed), writes launchers `/opt/pocket/mods/bin/mod_<id>_<name>`, and removes files and launchers of mods no longer allowed. Every program runs as `/bin/sh` with `MOD_DIR`, `ulimit -t` (600 CPU s per tool run, 3,600 per server) and `ulimit -d` 1 GB (counts heap mappings; checked that node still starts under it).

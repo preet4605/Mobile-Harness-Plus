@@ -13,10 +13,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -395,6 +399,20 @@ class ModHost(
 
     /** True when a running mod hooks [event]; lets callers skip building its payload. */
     fun listens(event: String): Boolean = event in listening
+
+    private val _panelMessages = MutableSharedFlow<ModPanelMessage>(extraBufferCapacity = 32, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    /** What mods sent their web panels with `$.ui.post`; the open panel posts its own to the page. */
+    val panelMessages: SharedFlow<ModPanelMessage> = _panelMessages.asSharedFlow()
+
+    /** A message the open web panel of [modId] sent: the mod's `panel.message` hooks get it. */
+    fun panelMessage(modId: String, panelId: String, text: String) {
+        if (text.length > MAX_PANEL_MESSAGE) return
+        scope.launch {
+            val loaded = running[modId]?.takeIf { it.ready && "panel.message" in it.events } ?: return@launch
+            if (!allowed(currentMod(loaded), ModCapability.UI_WEBPANE)) return@launch
+            dispatch(loaded, "panel.message", JSONObject().put("panel", panelId).put("data", text), limits.eventBudgetMs)
+        }
+    }
 
     /**
      * Sends an observe event (spec v2 §4.2) to every running mod that hooks it. [private] names
@@ -1298,6 +1316,15 @@ class ModHost(
                 publish()
                 removed
             }
+            ModOp.UI_POST -> {
+                val panel = args.optString(0)
+                require(mod.manifest.webPanels.any { it.id == panel }) { "\$.ui.post(panel, data): this mod has no web panel \"$panel\"" }
+                val text = if (args.isNull(1)) "null" else args.opt(1).let { if (it is String) it else ModJson.literal(it) }
+                require(text.length <= MAX_PANEL_MESSAGE) { "\$.ui.post: data must be at most 64 KB" }
+                // Dropped when no panel of the mod is open: panels ask for what they need when they start.
+                _panelMessages.tryEmit(ModPanelMessage(mod.id, panel, text))
+                null
+            }
             ModOp.UI_REDRAW -> {
                 val id = args.optString(0).takeIf { !args.isNull(0) && it.isNotBlank() }
                 slots.filter { (key, slot) -> key.first == mod.id && slot.holders.isNotEmpty() && (id == null || key.second == paneSurface(id)) }
@@ -1953,6 +1980,7 @@ class ModHost(
         const val MAX_TOOLS = 16
         const val MAX_TOOL_SCHEMA = 8 * 1024
         const val MAX_TOOL_TEXT = 48_000
+        const val MAX_PANEL_MESSAGE = 64 * 1024
         private const val MAX_COMMAND = 8_000
         private const val MAX_COMMAND_OUTPUT = 1024 * 1024
         private const val DEFAULT_COMMAND_MS = 2 * 60_000L

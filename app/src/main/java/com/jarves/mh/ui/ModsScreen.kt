@@ -66,6 +66,7 @@ import com.jarves.mh.mods.ModSetting
 import com.jarves.mh.mods.ModSettingType
 import com.jarves.mh.mods.ModStatus
 import com.jarves.mh.mods.ModTrust
+import com.jarves.mh.mods.ModWebPanel
 import com.jarves.mh.mods.ModsSnapshot
 import com.jarves.mh.ui.kit.*
 import com.jarves.mh.ui.theme.PocketColors
@@ -480,6 +481,8 @@ private fun ModPage(
     }
     var preview by remember { mutableStateOf<Pair<String, String>?>(null) }
     var editing by remember { mutableStateOf<ModSetting?>(null) }
+    // One live web panel at a time (mod plan row 12): opening another replaces this one.
+    var panelId by rememberSaveable(mod.id) { mutableStateOf<String?>(null) }
     var confirmHigh by remember { mutableStateOf<ModCapability?>(null) }
     var confirmRemove by remember { mutableStateOf(false) }
     var audit by remember(mod.id) { mutableStateOf<List<ModAuditEntry>>(emptyList()) }
@@ -521,7 +524,7 @@ private fun ModPage(
             }
             when (tab) {
                 ModPageTab.DASHBOARD -> dashboardTab(mod, shownRuntime, surfaces, pane?.id, onSelectPane = { paneId = it }, viewModel)
-                ModPageTab.CONTROLS -> controlsTab(mod, shownRuntime, viewModel, onPreview = showText, onEdit = { editing = it })
+                ModPageTab.CONTROLS -> controlsTab(mod, shownRuntime, viewModel, onPreview = showText, onEdit = { editing = it }, onOpenPanel = { panelId = it.id })
                 ModPageTab.PERMISSIONS -> permissionsTab(mod, viewModel, onConfirmHigh = { confirmHigh = it })
                 ModPageTab.ACTIVITY -> activityTab(mod, audit, log, viewModel)
                 ModPageTab.ABOUT -> aboutTab(
@@ -554,6 +557,26 @@ private fun ModPage(
             }
         }
     }
+
+    mod.manifest.webPanels.firstOrNull { it.id == panelId }
+        ?.takeIf { mod.enabled && ModCapability.UI_WEBPANE in mod.granted }
+        ?.let { panel ->
+            val fromMod = remember(mod.id, panel.id) { viewModel.panelMessages(mod.id, panel.id) }
+            GlassSheet(
+                onDismiss = { panelId = null },
+                title = panel.title,
+                detents = listOf(SheetDetent.Large),
+                trailing = { SheetTextButton("Done", { panelId = null }, emphasized = true) },
+            ) {
+                ModWebPanelView(
+                    mod = mod,
+                    panel = panel,
+                    fromMod = fromMod,
+                    toMod = { viewModel.panelMessage(mod.id, panel.id, it) },
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+            }
+        }
 
     editing?.let { setting ->
         val secret = setting.type == ModSettingType.SECRET
@@ -703,11 +726,26 @@ private fun LazyListScope.controlsTab(
     viewModel: ModsViewModel,
     onPreview: (String, String) -> Unit,
     onEdit: (ModSetting) -> Unit,
+    onOpenPanel: (ModWebPanel) -> Unit,
 ) {
     val manifest = mod.manifest
     item(key = "switch") {
         ListSection {
             ToggleRow(title = "On", checked = mod.enabled, onCheckedChange = { viewModel.setEnabled(mod.id, it) })
+        }
+    }
+    if (manifest.webPanels.isNotEmpty()) {
+        item(key = "panels") {
+            val allowed = mod.enabled && ModCapability.UI_WEBPANE in mod.granted
+            ListSection(
+                header = "Panels",
+                footer = if (allowed) "Web pages from the mod's own files. They can't reach the internet or your files." else
+                    "Turn the mod on and allow “${ModCapability.UI_WEBPANE.summary}” to open its panels.",
+            ) {
+                manifest.webPanels.forEach { panel ->
+                    ListRow(title = panel.title, subtitle = panel.entry, onClick = if (allowed) ({ onOpenPanel(panel) }) else null)
+                }
+            }
         }
     }
     if (manifest.settings.isNotEmpty()) {
@@ -893,7 +931,8 @@ private fun LazyListScope.permissionsTab(mod: InstalledMod, viewModel: ModsViewM
         ListSection(
             header = "Permissions",
             footer = if (mod.manifest.permissions.isEmpty()) "This mod asks for no permissions." else
-                "Mods never approve agent tool requests. Turning a permission off stops the actions that need it.",
+                "Only mods you allow to approve tools, with Developer mode on, can approve agent tool requests. " +
+                    "Turning a permission off stops the actions that need it.",
         ) {
             mod.manifest.permissions.forEach { permission ->
                 val capability = permission.capability

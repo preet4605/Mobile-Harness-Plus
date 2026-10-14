@@ -38,7 +38,7 @@ enum class ModCapability(
     UI_STATUS("ui.status", RiskLevel.SAFE, "Show a status line", usable = true),
     UI_BAND("ui.band", RiskLevel.SAFE, "Show a row above the message box", usable = true),
     UI_PANE("ui.pane", RiskLevel.SAFE, "Show its own panels and dashboard", usable = true),
-    UI_WEBPANE("ui.webpane", RiskLevel.REVIEW, "Show web panels"),
+    UI_WEBPANE("ui.webpane", RiskLevel.REVIEW, "Show web panels from its own files", usable = true),
     PROMPT_COMPOSE("prompt.compose", RiskLevel.REVIEW, "Add instructions for the agent", usable = true),
     FILES_GATE("files.gate", RiskLevel.REVIEW, "Block or ask before file renames, deletes and saves in Files", usable = true),
     CHANGES_READ("changes.read", RiskLevel.SAFE, "See the agent's pending file changes", usable = true),

@@ -30,6 +30,8 @@ data class ModManifest(
     val guestTools: List<ModGuestProgram> = emptyList(),
     /** MCP servers Claude and Codex start in the Linux guest (`guest.tools`, Developer mode). */
     val mcpServers: List<ModGuestProgram> = emptyList(),
+    /** Web panels: HTML pages from the package, shown one at a time (mod plan row 12; `ui.webpane`). */
+    val webPanels: List<ModWebPanel> = emptyList(),
 ) {
     val requested: Set<ModCapability> get() = permissions.map { it.capability }.toSet()
 
@@ -38,8 +40,12 @@ data class ModManifest(
     /** Files the manifest itself names; each must exist in the package. */
     val referencedFiles: List<String>
         get() = rules.map { it.file } + skills.map { "${it.dir}/SKILL.md" } + listOfNotNull(hooksModule, types) +
-            (guestTools + mcpServers).flatMap { it.command }.filter { it.startsWith("./") }.map { it.removePrefix("./") }.distinct()
+            (guestTools + mcpServers).flatMap { it.command }.filter { it.startsWith("./") }.map { it.removePrefix("./") }.distinct() +
+            webPanels.map { it.entry }
 }
+
+/** A web panel: [entry] is an `.html` file in the package, served from the mod's own origin. */
+data class ModWebPanel(val id: String, val title: String, val entry: String)
 
 /**
  * A program a mod ships for the Linux guest: a guest tool (a command the agents run) or an MCP
@@ -252,6 +258,7 @@ object ModManifestParser {
         var hooks = emptyList<ModDeclarativeHook>()
         var guestTools = emptyList<ModGuestProgram>()
         var mcpServers = emptyList<ModGuestProgram>()
+        var webPanels = emptyList<ModWebPanel>()
         if (contributes != null) {
             if (contributes !is JSONObject) {
                 p.add("\"contributes\" must be an object.")
@@ -259,10 +266,7 @@ object ModManifestParser {
                 contributes.keys().asSequence().filter { it !in CONTRIBUTES_KEYS }.forEach { p.add("Unknown field \"contributes.$it\".") }
                 guestTools = array(contributes, "guestTools", p, 8).mapIndexedNotNull { i, o -> parseGuestProgram(o, "contributes.guestTools[$i]", p) }
                 mcpServers = array(contributes, "mcpServers", p, 4).mapIndexedNotNull { i, o -> parseGuestProgram(o, "contributes.mcpServers[$i]", p) }
-                val panels = contributes.opt("panels")
-                if (panels != null && !(panels is JSONArray && panels.length() == 0)) {
-                    p.add("Web panels (\"contributes.panels\") need a newer version of the app.")
-                }
+                webPanels = array(contributes, "panels", p, 4).mapIndexedNotNull { i, o -> parseWebPanel(o, i, p) }
                 commands = array(contributes, "slashCommands", p, 32).mapIndexedNotNull { i, o -> parseCommand(o, i, p) }
                 templates = array(contributes, "promptTemplates", p, 32).mapIndexedNotNull { i, o -> parseTemplate(o, i, p) }
                 settings = array(contributes, "settings", p, 32).mapIndexedNotNull { i, o -> parseSetting(o, i, p) }
@@ -294,6 +298,7 @@ object ModManifestParser {
         checkUnique(skills.map { it.id }, "skill id", p)
         checkUnique(hooks.map { it.id }, "hook id", p)
         checkUnique(guestTools.map { it.name } + mcpServers.map { it.name }, "guest tool or MCP server name", p)
+        checkUnique(webPanels.map { it.id }, "web panel id", p)
 
         val builtIn = SlashCommandEngine.ALL_SLASH_COMMANDS.map { it.name.lowercase(Locale.ROOT) }.toSet()
         commands.filter { it.name in builtIn }.forEach { p.add("Command /${it.name} would replace a built-in command.") }
@@ -335,6 +340,9 @@ object ModManifestParser {
             }
         }
         if (dashboard != null && hooksModule == null) p.add("\"dashboard\" needs a hooks module to draw it.")
+        if (webPanels.isNotEmpty() && ModCapability.UI_WEBPANE !in requested) {
+            p.add("Web panels need the ui.webpane permission.")
+        }
         if ((guestTools.isNotEmpty() || mcpServers.isNotEmpty()) && ModCapability.GUEST_TOOLS !in requested) {
             p.add("Guest tools and MCP servers run in the Linux guest, so the mod must ask for guest.tools.")
         }
@@ -361,7 +369,19 @@ object ModManifestParser {
             integrity = integrity,
             guestTools = guestTools,
             mcpServers = mcpServers,
+            webPanels = webPanels,
         )
+    }
+
+    private fun parseWebPanel(o: JSONObject, i: Int, p: Problems): ModWebPanel? {
+        val at = "contributes.panels[$i]"
+        unknownKeys(o, setOf("id", "title", "entry"), at, p)
+        val id = string(o, "id", p, required = true, label = "$at.id") ?: return null
+        if (!ITEM_ID.matches(id)) p.add("$at.id must be lowercase letters, digits or dashes.")
+        val title = string(o, "title", p, required = true, min = 1, max = 40, label = "$at.title") ?: return null
+        val entry = string(o, "entry", p, required = true, label = "$at.entry") ?: return null
+        if (!isSafeRelativePath(entry) || !entry.endsWith(".html")) p.add("$at.entry must be a relative .html file in the mod.")
+        return ModWebPanel(id, title, entry)
     }
 
     private fun parseGuestProgram(o: JSONObject, at: String, p: Problems): ModGuestProgram? {

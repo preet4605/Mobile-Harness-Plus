@@ -97,14 +97,14 @@ function validate(dir) {
  * `emit(event, e)` runs its hooks and resolves to what they answered, `gate(event, e)` runs a gate,
  * `render(surface, e)` draws, `press(surface, key, value)` taps. Host calls are answered by `mocks`
  * (`{ 'agent.ask': (args) => ({ status: 'completed', text: 'ok' }) }`), an in-memory store, and
- * records: `toasts`, `statuses`, `logs`, `calls`, `commands`, `tools`.
+ * records: `toasts`, `statuses`, `logs`, `calls`, `commands`, `tools`, `posts` (`$.ui.post` to web panels).
  */
 async function loadMod(dir = process.cwd(), {options = {}, mocks = {}, store = {}} = {}) {
   const manifest = readManifest(dir);
   const file = hooksFile(dir, manifest);
   if (!file) throw Error('This mod has no hooks module to test.');
   const pending = new Map();
-  const record = {toasts: [], statuses: [], logs: [], calls: [], commands: [], tools: [], store: {...store}};
+  const record = {toasts: [], statuses: [], logs: [], calls: [], commands: [], tools: [], posts: [], store: {...store}};
   let context;
   let nextD = 1;
   const port = {postMessage: text => setImmediate(() => onMessage(JSON.parse(text)))};
@@ -124,6 +124,7 @@ async function loadMod(dir = process.cwd(), {options = {}, mocks = {}, store = {
       case 'ui.toast': record.toasts.push(String(args[0])); return true;
       case 'ui.status': case 'ui.summary': record.statuses.push(args[0]); return null;
       case 'ui.redraw': case 'ui.open': case 'ui.close': return true;
+      case 'ui.post': record.posts.push({panel: args[0], data: args[1]}); return null;
       case 'command.register': record.commands.push(args[0] && args[0].name); return true;
       case 'tool.register': record.tools.push(args[0] && args[0].name); return `mod_${manifest.id.split('.').pop().replace(/[^a-z0-9]+/g, '_')}_${args[0] && args[0].name}`;
       case 'project.info': return {id: 'p1', name: 'Test project', harness: 'claude'};

@@ -78,7 +78,10 @@ object ModAuthoringGuide {
         appendLine("  progress bars and images: on the mod's page, in a project's Mods tab, and as a row above the message box.")
         appendLine("  See \"Drawing\" below.")
         appendLine()
-        appendLine("Not supported yet, so never add them: `types`, `contributes.panels` (web panels).")
+        appendLine("- **Web panels**: HTML pages from the mod's own files, opened from its page; they talk to the mod code")
+        appendLine("  through messages only. See \"Web panels\" below.")
+        appendLine()
+        appendLine("Not supported yet, so never add it: `types`.")
         appendLine()
         appendLine("## Files")
         appendLine()
@@ -87,7 +90,7 @@ object ModAuthoringGuide {
         appendLine("- `mod.json` (required): the manifest described below.")
         appendLine("- The rule files, skill folders and hooks module `mod.json` names, for example `rules/style.md`,")
         appendLine("  `skills/review-pr/SKILL.md` and `hooks/register.js`.")
-        appendLine("- `README.md` and anything under `assets/` (optional).")
+        appendLine("- `README.md` and anything under `assets/` (optional). A web panel's scripts, styles and images go under `assets/`.")
         appendLine()
         appendLine("Do not write `integrity`: the app fills it in when the user installs the draft. No links,")
         appendLine("at most ${ModPackage.MAX_FILES} files and 20 MB, `mod.json` at most 64 KB, each `SKILL.md` at most 64 KB.")
@@ -135,6 +138,8 @@ object ModAuthoringGuide {
         appendLine("  `${ModGuestTools.GUEST_ROOT}/bin/mod_<last part of the id>_<name>`, listed to every harness, run in the agent's folder")
         appendLine("  with the agent's arguments, ${ModGuestTools.TOOL_CPU_SECONDS} s of CPU and 1 GB of data memory. An MCP server is started by")
         appendLine("  Claude and Codex for their task (${ModGuestTools.SERVER_CPU_SECONDS} s of CPU, 1 GB). Turning the mod or Developer mode off kills them.")
+        appendLine("- `panels` (up to 4), which need `ui.webpane`: `id` (lowercase letters, digits, dashes), `title`")
+        appendLine("  (up to 40 characters) and `entry`, a `.html` file in the mod. See \"Web panels\".")
         appendLine()
         appendLine("Command names, template ids and skill ids share the `/` menu, so each must be different.")
         appendLine("Built-in commands: ${com.jarves.mh.runtime.SlashCommandEngine.ALL_SLASH_COMMANDS.joinToString(", ") { "`/${it.name}`" }}.")
@@ -263,6 +268,7 @@ object ModAuthoringGuide {
         | `command.run` | The user ran one of the mod's commands | `name`, `args` |
         | `plan.update` | The open chat's task plan changed | `taskId`, `plan` (`title`, `status`, `current`, `steps`; only with `project.info`) |
         | `run.log` | The running task's live output, batched once a second, only while one of the mod's surfaces is showing | `lines` (`kind`: `reply`, `tool` or `log`; `text`; `time`), `dropped`. Needs `events.subscribe` |
+        | `panel.message` | The open web panel sent a message | `panel`, `data` (the text it sent). Needs `ui.webpane` |
         | `ui.render` | The app needs a surface drawn (see "Drawing") | `component`, `requestId`, `title`, `surface` |
         | `prompt.submit` | Gate: the user sends a message (see "Gates") | `text`, `harness`, `attachments` (a count). Needs `prompt.transform` |
         | `prompt.compose` | Gate: a message is about to go to the agent | `prompt`, `harness`, `sections`. Needs `prompt.compose` |
@@ -309,6 +315,7 @@ object ModAuthoringGuide {
         | `${'$'}.build.run({ install })` | `build.run` | Builds the project's Android app (and installs it) through the app's own build, after the `build.start` gates; resolves `{ status, message, issues }` when it ends |
         | `${'$'}.memory.list()` | `memory.read` | The project's memory: `{ key, value, source, updatedAt }` |
         | `${'$'}.ui.open({ id, title })`, `${'$'}.ui.close(id)` | `ui.pane` | Adds a panel (8 at most; `id` is lowercase letters, digits, dashes) or removes one; `open` returns `{ isPlaced }`, whether it is on screen now |
+        | `${'$'}.ui.post(panel, data)` | `ui.webpane` | Sends the mod's web panel `panel` a message (text, or JSON for anything else; at most 64 KB). Dropped when that panel isn't open |
         | `${'$'}.ui.redraw(id?)` | none | Draws the mod's shown surfaces again (or just pane `id`) |
         | `${'$'}.ui.resolve(e)` | none | The element names, so `const { Column, Text } = ${'$'}.ui.resolve(e)` works as in other mod systems |
 
@@ -461,6 +468,34 @@ object ModAuthoringGuide {
 
         Colors: `primary`, `secondary`, `tertiary`, `accent`, `red`, `orange`, `yellow`, `green`, `blue`,
         `purple`, `pink`, `gray`. Every element also takes `key` (keeps list rows steady) and `grow`.
+
+        ### Web panels
+
+        When the app's elements aren't enough (a chart library, a canvas, an editor), a web panel shows an
+        HTML page of the mod. The user opens it from the mod's page (Controls), one panel at a time.
+
+        - The page loads from `https://<mod id>.mod.invalid/<entry>` and can load only the mod's own files
+          (put scripts, styles and images under `assets/`, and load them with relative paths). It has no
+          internet, no device files, no pop-ups, no camera or location, and no file picker. Inline
+          `<script>` is blocked: use `<script src="assets/panel.js">`.
+        - After the page loads, the app sends it one message whose data is `mh-port` with a port in
+          `ports[0]`. Talk to the mod code through that port only:
+
+        ```js
+        window.addEventListener('message', (event) => {
+          if (event.data !== 'mh-port') return
+          const port = event.ports[0]
+          port.onmessage = (m) => render(JSON.parse(m.data))
+          port.postMessage('ready')
+        })
+        ```
+
+        - In the mod code, `on('panel.message', (${'$'}, e) => ...)` gets what the page sent (`e.panel`,
+          `e.data`, always text), and `${'$'}.ui.post(panelId, data)` sends the page text or JSON. Messages
+          are at most 64 KB; a page may send 20 a second, more are dropped. Ask for what the page needs
+          when it starts (as `ready` above): messages sent while no panel is open are dropped.
+        - If the page's renderer crashes or runs out of memory, the panel says it stopped and offers a
+          reload. The app and other mods keep running.
     """
 
     private const val EXAMPLE = """

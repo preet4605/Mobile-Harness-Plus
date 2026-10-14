@@ -75,11 +75,11 @@ class ModRegistryTest {
     @Test
     fun `import installs, turns on and keeps only grants it may hold`() {
         val registry = registry()
-        val staged = stageZip(registry, ModTestKit.modZip(toastManifest(extraPermissions = listOf("ui.webpane", "git.write")), files))
-        assertTrue(staged.warnings.any { "ui.webpane" in it })
+        val staged = stageZip(registry, ModTestKit.modZip(toastManifest(extraPermissions = listOf("git.write")), files))
+        assertTrue(staged.warnings.isEmpty())
 
-        // Not usable yet, not asked for, and a developer permission with Developer mode off.
-        val mod = registry.install(staged, setOf(ModCapability.UI_TOAST, ModCapability.UI_WEBPANE, ModCapability.NOTIFY, ModCapability.GIT_WRITE), ModTrust.IMPORTED, "sample.mhmod")
+        // Not asked for, and a developer permission with Developer mode off.
+        val mod = registry.install(staged, setOf(ModCapability.UI_TOAST, ModCapability.NOTIFY, ModCapability.GIT_WRITE), ModTrust.IMPORTED, "sample.mhmod")
 
         assertEquals(setOf(ModCapability.UI_TOAST), mod.granted)
         assertTrue(mod.enabled)

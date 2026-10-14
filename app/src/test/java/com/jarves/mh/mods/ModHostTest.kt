@@ -2,7 +2,11 @@ package com.jarves.mh.mods
 
 import com.jarves.mh.model.AgentKind
 import com.jarves.mh.model.brain.ExecutionPlan
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
@@ -119,9 +123,10 @@ class ModHostTest {
         name: String = "Sample",
         permissions: List<String> = listOf("storage", "ui.status", "ui.toast", "chat.read"),
         granted: Set<ModCapability> = permissions.mapNotNull(ModCapability::fromId).toSet(),
+        files: Map<String, String> = emptyMap(),
         extra: JSONObject.() -> Unit = {},
     ): InstalledMod {
-        val files = mapOf("hooks/register.js" to code)
+        val files = files + ("hooks/register.js" to code)
         val manifest = ModTestKit.manifest(files) {
             put("id", id)
             put("name", name)
@@ -1024,5 +1029,38 @@ class ModHostTest {
         assertFalse(ModApproval.inside(emptyList(), "cat /workspace/demo/../x", roots))
         assertFalse(ModApproval.inside(emptyList(), "curl https://example.com/x", roots))
         assertFalse(ModApproval.inside(emptyList(), "ls", emptyList()))
+    }
+
+    @Test
+    fun `a mod and its web panel talk only through the panel's messages`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('panel.message', async ($, e) => {
+                const other = await $.ui.post('nope', 1).then(() => 'sent', () => 'refused')
+                await $.ui.status(e.panel + ':' + e.data + ':' + other)
+                await $.ui.post(e.panel, { echo: e.data })
+              })
+            }
+        """.trimIndent(), permissions = listOf("ui.status", "ui.webpane"), files = mapOf("web/board.html" to "<p>hi</p>")) {
+            put("contributes", JSONObject().put("panels", JSONArray().put(JSONObject().put("id", "board").put("title", "Board").put("entry", "web/board.html"))))
+        }
+        val host = host(registry)
+        val posted = async(Dispatchers.Default) { withTimeout(8_000) { host.panelMessages.first() } }
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod to start") { host.info()?.state == ModRunState.RUNNING }
+        Thread.sleep(100)
+        host.panelMessage("dev.test.sample", "board", "ping")
+        // A panel the mod doesn't have is refused.
+        waitFor("the panel message") { host.info()?.status == "board:ping:refused" }
+        assertEquals(ModPanelMessage("dev.test.sample", "board", "{\"echo\":\"ping\"}"), posted.await())
+
+        // Without the permission the page's messages never reach the mod.
+        registry.setGranted("dev.test.sample", ModCapability.UI_WEBPANE, false)
+        waitFor("the grant to go") { ModCapability.UI_WEBPANE !in registry.snapshot.value.mods.single().granted }
+        Thread.sleep(200)
+        host.panelMessage("dev.test.sample", "board", "again")
+        Thread.sleep(300)
+        assertFalse(host.info()?.status.orEmpty().startsWith("board:again"))
     }
 }

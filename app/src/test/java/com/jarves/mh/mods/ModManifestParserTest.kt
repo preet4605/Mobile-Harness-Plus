@@ -162,13 +162,27 @@ class ModManifestParserTest {
     }
 
     @Test
-    fun `features from later versions are refused clearly`() {
-        assertRejected(ModTestKit.manifest {
-            put("contributes", JSONObject().put("panels", JSONArray().put(JSONObject().put("id", "p").put("title", "P").put("entry", "p.html"))))
-        }, "newer version")
+    fun `a dashboard needs a hooks module`() {
         assertRejected(ModTestKit.manifest {
             put("dashboard", JSONObject().put("pane", "main"))
         }, "needs a hooks module")
+    }
+
+    @Test
+    fun `web panels need ui-webpane and an html file of the mod`() {
+        fun panel(id: String, entry: String) = JSONObject().put("id", id).put("title", "Board").put("entry", entry)
+        fun withPanels(vararg panels: JSONObject, permission: Boolean = true) = ModTestKit.manifest(mapOf("web/board.html" to "<p>hi</p>")) {
+            if (permission) put("permissions", JSONArray().put(permission("ui.webpane")))
+            put("contributes", JSONObject().put("panels", JSONArray(panels.toList())))
+        }
+        val manifest = ModManifestParser.parse(withPanels(panel("board", "web/board.html")))
+        assertEquals(listOf(ModWebPanel("board", "Board", "web/board.html")), manifest.webPanels)
+        assertTrue("web/board.html" in manifest.referencedFiles)
+        assertRejected(withPanels(panel("board", "web/board.html"), permission = false), "ui.webpane permission")
+        assertRejected(withPanels(panel("board", "../board.html")), "relative .html file")
+        assertRejected(withPanels(panel("board", "web/board.js")), "relative .html file")
+        assertRejected(withPanels(panel("board", "web/board.html"), panel("board", "web/board.html")), "web panel id")
+        assertRejected(withPanels(*Array(5) { panel("p$it", "web/board.html") }), "panels")
     }
 
     @Test

@@ -27,12 +27,17 @@ import com.jarves.mh.mods.StagedMod
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -113,6 +118,17 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     /** A tap or an edit inside a mod's pane. */
     fun press(modId: String, surface: String, handler: String, value: Any?) {
         hostRef?.press(modId, surface, handler, value)
+    }
+
+    /** What the mod's code sends one of its web panels with `$.ui.post`. */
+    fun panelMessages(modId: String, panelId: String): Flow<String> = flow {
+        val live = host.await() ?: return@flow
+        emitAll(live.panelMessages.filter { it.modId == modId && it.panelId == panelId }.map { it.text })
+    }
+
+    /** A web panel's page sent its mod a message. */
+    fun panelMessage(modId: String, panelId: String, text: String) {
+        hostRef?.panelMessage(modId, panelId, text)
     }
 
     /** A dashboard action: runs the mod's command and shows what it answered. */
