@@ -941,6 +941,10 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             return task
         }
 
+        // The foreground service and its wake lock are shared by every running task. A task
+        // that ends while another one still runs (a refused second launch, another project)
+        // only posts its result; the last task to end stops the service.
+        val anotherTaskRunning = activeJobs.any { (id, job) -> id != targetTaskId && job.isActive }
         val finalizedRecord = when (status) {
             TaskExecutionStatus.COMPLETED, TaskExecutionStatus.UNVERIFIED -> {
                 if (task.status != TaskExecutionStatus.COMPLETING) {
@@ -953,7 +957,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                         context = appContext,
                         title = if (status == TaskExecutionStatus.UNVERIFIED) "Task finished — unverified" else "Task completed",
                         detail = if (status == TaskExecutionStatus.UNVERIFIED) "No deterministic check was available for ${task.projectSlug}." else "Mobile Harness finished working in ${task.projectSlug}.",
-                        failed = false
+                        failed = false,
+                        stopService = !anotherTaskRunning,
                     )
                 }
                 completed
@@ -972,7 +977,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                         context = appContext,
                         title = if (recoveryRequired) "Task needs attention" else "Task failed",
                         detail = failureDetail,
-                        failed = true
+                        failed = true,
+                        stopService = !anotherTaskRunning,
                     )
                 }
                 failed
@@ -983,7 +989,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
                     it.copy(lastError = cancelDetail)
                 }
                 healthMonitor.onTaskCompleted(targetTaskId, pid ?: cancelled.pid)
-                if (appContext != null) {
+                if (appContext != null && !anotherTaskRunning) {
                     RuntimeExecutionService.cancel(appContext)
                 }
                 val cancelFeedback = ExecutionFeedback(
@@ -1091,7 +1097,8 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
             return supervisorScope.launch { /* no-op job */ }
         }
 
-        val job = supervisorScope.launch {
+        // Registered before it starts, so a launch that fails at once cannot leave a stale entry.
+        val job = supervisorScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             startupReconciliation?.join()
             var executionOwnedElsewhere = false
             try {
@@ -2219,6 +2226,7 @@ class TaskSupervisor private constructor(private val appContext: Context?) {
         }
 
         activeJobs[taskId] = job
+        job.start()
         return job
     }
 

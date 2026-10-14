@@ -37,7 +37,8 @@ class RuntimeExecutionService : Service() {
     private var notificationTitle: String = "Mobile Harness is working"
     private var canStop: Boolean = true
     private var currentTaskId: String? = null
-    private var acquiredWakeLockTaskId: String? = null
+    // Every task id this service took a wake-lock hold for; all are released when it stops.
+    private val acquiredWakeLockTaskIds = linkedSetOf<String>()
 
     override fun onCreate() {
         super.onCreate()
@@ -53,9 +54,9 @@ class RuntimeExecutionService : Service() {
         when (intent?.action ?: ACTION_START) {
             ACTION_STOP -> {
                 RuntimeTaskController.requestStop()
+                val taskId = currentTaskId ?: acquiredWakeLockTaskIds.lastOrNull()
                 serviceScope.launch {
                     val taskSupervisor = TaskSupervisor.getInstance(applicationContext)
-                    val taskId = currentTaskId ?: acquiredWakeLockTaskId
                     if (taskId != null) {
                         taskSupervisor.requestStop(taskId)
                     } else {
@@ -93,7 +94,7 @@ class RuntimeExecutionService : Service() {
             }
             else -> {
                 val taskId = currentTaskId ?: "fgs-service-task"
-                acquiredWakeLockTaskId = taskId
+                acquiredWakeLockTaskIds += taskId
                 TaskSupervisor.getInstance(applicationContext).wakeLockManager.acquire(taskId)
                 startSpecialUseForeground(
                     RUNNING_NOTIFICATION_ID,
@@ -106,10 +107,8 @@ class RuntimeExecutionService : Service() {
 
     private fun releaseWakeLockSafely() {
         val supervisor = TaskSupervisor.getInstance(applicationContext)
-        acquiredWakeLockTaskId?.let {
-            supervisor.wakeLockManager.release(it)
-            acquiredWakeLockTaskId = null
-        }
+        acquiredWakeLockTaskIds.forEach { supervisor.wakeLockManager.release(it) }
+        acquiredWakeLockTaskIds.clear()
         currentTaskId?.let {
             supervisor.wakeLockManager.release(it)
         }
@@ -234,7 +233,18 @@ class RuntimeExecutionService : Service() {
             }
         }
 
-        fun finish(context: Context, title: String, detail: String, failed: Boolean, projectName: String? = null) {
+        /**
+         * Posts the result notification and, unless [stopService] is false because another task
+         * still runs, stops the service in order (see [stopInOrder]).
+         */
+        fun finish(
+            context: Context,
+            title: String,
+            detail: String,
+            failed: Boolean,
+            projectName: String? = null,
+            stopService: Boolean = true,
+        ) {
             runCatching {
                 ensureNotificationChannels(context)
                 val manager = context.getSystemService(NotificationManager::class.java)
@@ -257,13 +267,25 @@ class RuntimeExecutionService : Service() {
                     .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                     .build()
                 manager?.notify(RESULT_NOTIFICATION_ID, notification)
-                context.stopService(Intent(context, RuntimeExecutionService::class.java))
+                if (stopService) stopInOrder(context)
             }
         }
 
         fun cancel(context: Context) {
+            runCatching { stopInOrder(context) }
+        }
+
+        /**
+         * A plain stopService right after startForegroundService can stop the service before it
+         * reached the foreground, which Android answers by crashing the app. A stop intent is
+         * queued behind any pending start, so the service is foreground first. If the system
+         * refuses the intent (app in the background with no running service), stopService is safe.
+         */
+        private fun stopInOrder(context: Context) {
             runCatching {
-                context.stopService(Intent(context, RuntimeExecutionService::class.java))
+                context.startService(Intent(context, RuntimeExecutionService::class.java).setAction(ACTION_CANCELLED))
+            }.onFailure {
+                runCatching { context.stopService(Intent(context, RuntimeExecutionService::class.java)) }
             }
         }
 
