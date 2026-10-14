@@ -258,6 +258,7 @@ import com.jarves.mh.ui.theme.PocketTransitions
 import com.jarves.mh.ui.theme.PocketType
 import com.jarves.mh.ui.theme.emphasized
 import com.jarves.mh.ui.theme.glass.BackdropSourceScope
+import com.jarves.mh.ui.theme.glass.CONTENT_RECAPTURE_INTERVAL_MS
 import com.jarves.mh.ui.theme.glass.GlassRoles
 import com.jarves.mh.ui.theme.glass.LiquidGlassLayers
 import com.jarves.mh.ui.theme.glass.LiquidGlassMaterial
@@ -273,6 +274,7 @@ import com.jarves.mh.ui.theme.sharedTitle
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 
 /** The project's four views, switched from the tab bar at the bottom or the menu on the title. */
@@ -754,7 +756,7 @@ internal fun WorkspaceScreen(
 
     var selectedTab by rememberSaveable { mutableStateOf(initialTab) }
     val modPanes = rememberModPanesAvailable()
-    val tabs = WorkspaceTab.entries.filter { it != WorkspaceTab.MODS || modPanes }
+    val tabs = remember(modPanes) { WorkspaceTab.entries.filter { it != WorkspaceTab.MODS || modPanes } }
     if (selectedTab !in tabs) selectedTab = WorkspaceTab.CHAT
     var showChats by rememberSaveable { mutableStateOf(false) }
     var showViews by rememberSaveable { mutableStateOf(false) }
@@ -2319,10 +2321,16 @@ private fun ChatTab(
     val colors = PocketColors.current
     // Programmatic scrolls (Latest, auto-follow) dispatch no nested scroll, so recapture the shared
     // backdrop whenever the scroll position moves; the source throttles the actual captures.
+    // Auto-follow moves the list on every streamed update; outside an animated scroll those
+    // moves recapture at the content rate instead of re-blurring every glass surface each chunk.
     LaunchedEffect(listState, backdrop) {
         if (backdrop == null) return@LaunchedEffect
         snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
-            .collect { backdrop.requestCapture() }
+            .conflate()
+            .collect {
+                backdrop.requestCapture()
+                if (!listState.isScrollInProgress) delay(CONTENT_RECAPTURE_INTERVAL_MS)
+            }
     }
     // Older messages stay on disk until the reader nears the top. Rows are keyed, so the list keeps the row on screen
     // in place as older ones arrive above it. Restarting on each new row asks again if the reader is still near the top.

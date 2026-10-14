@@ -179,8 +179,10 @@ internal fun glassLightDirection(size: Size, press: Offset, pressAmount: Float):
 /**
  * Glass parameters for one shape. [wash] carries the wash colour and its base alpha.
  */
+// A data class so an equal look rebuilt on recomposition keeps the draw lambdas that capture
+// it, instead of re-recording and re-blurring the glass on every state update.
 @Stable
-internal class GlassLook(
+internal data class GlassLook(
     val wash: Color,
     val blurDp: Float,
     val isDark: Boolean,

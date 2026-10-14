@@ -44,7 +44,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
@@ -99,14 +99,15 @@ fun ProgressRing(
             infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Restart),
             label = "ringAngle",
         )
-        Canvas(modifier.size(size).then(semantics)) {
+        // The spin is a layer property, so each frame only rotates this ring's own layer; reading
+        // the angle while drawing would redraw its parent (and any glass beside it) every frame.
+        // The track is a full circle, so turning it with the arc looks the same.
+        Canvas(modifier.size(size).then(semantics).graphicsLayer { rotationZ = angle }) {
             val stroke = strokeWidth.toPx()
             val inset = stroke / 2f
             val arcSize = Size(this.size.width - stroke, this.size.height - stroke)
             drawArc(trackColor, 0f, 360f, false, Offset(inset, inset), arcSize, style = Stroke(stroke))
-            rotate(angle) {
-                drawArc(color, -90f, 100f, false, Offset(inset, inset), arcSize, style = Stroke(stroke, cap = StrokeCap.Round))
-            }
+            drawArc(color, -90f, 100f, false, Offset(inset, inset), arcSize, style = Stroke(stroke, cap = StrokeCap.Round))
         }
     }
 }
