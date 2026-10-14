@@ -245,6 +245,23 @@ class SkillManagerTest {
     }
 
     @Test
+    fun bundledPersonasAreOffUntilSwitchedOn() {
+        val manager = SkillManager(tempFolder.newFolder("rules_bundled_root"))
+        val bundled = manager.discoverRules(null, null).filter { it.source == RuleSource.BUNDLED }
+        assertEquals(5, bundled.size)
+        assertTrue(bundled.all { SkillManager.isBundledRuleId(it.id) })
+        assertFalse(SkillManager.isBundledRuleId("global:coding-persona"))
+        val persona = bundled.first().id
+        for (mode in listOf(CustomizationScopeMode.GLOBAL_ONLY, CustomizationScopeMode.INHERIT_AND_MERGE)) {
+            assertTrue(manager.resolveActiveRules(emptyList(), bundled, ProjectCustomizationConfig("p1", mode)).isEmpty())
+            val switchedOn = ProjectCustomizationConfig("p1", mode, enabledRuleIds = setOf(persona))
+            assertEquals(listOf(persona), manager.resolveActiveRules(emptyList(), bundled, switchedOn).map { it.id })
+            val alsoDisabled = switchedOn.copy(disabledRuleIds = setOf(persona))
+            assertTrue(manager.resolveActiveRules(emptyList(), bundled, alsoDisabled).isEmpty())
+        }
+    }
+
+    @Test
     fun buildRulesBlock_wrapsInUserRulesEnvelope() {
         val root = tempFolder.newFolder("rules_xml_root")
         val manager = SkillManager(root)

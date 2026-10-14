@@ -18,6 +18,8 @@ class SkillManager(
     companion object {
         /** Codex's default `project_doc_max_bytes`; a longer AGENTS.md is truncated there, so it is still injected. */
         const val CODEX_PROJECT_DOC_MAX_BYTES = 32L * 1024
+
+        fun isBundledRuleId(ruleId: String): Boolean = ruleId.startsWith("${RuleSource.BUNDLED.name.lowercase()}:")
     }
 
     constructor(context: Context) : this(context.filesDir)
@@ -373,23 +375,26 @@ class SkillManager(
 
     /**
      * Resolves the active rules for a project based on the configured CustomizationScopeMode.
+     * Bundled personas are opt-in: outside CUSTOM mode they count only once switched on.
      */
     fun resolveActiveRules(
         projectRules: List<RuleInfo>,
         globalRules: List<RuleInfo>,
         config: ProjectCustomizationConfig,
     ): List<RuleInfo> {
+        fun isOn(rule: RuleInfo) = rule.id !in config.disabledRuleIds &&
+            (rule.source != RuleSource.BUNDLED || rule.id in config.enabledRuleIds)
         return when (config.scopeMode) {
             CustomizationScopeMode.PROJECT_ONLY -> {
-                projectRules.filter { it.id !in config.disabledRuleIds }
+                projectRules.filter(::isOn)
             }
             CustomizationScopeMode.GLOBAL_ONLY -> {
-                globalRules.filter { it.id !in config.disabledRuleIds }
+                globalRules.filter(::isOn)
             }
             CustomizationScopeMode.INHERIT_AND_MERGE -> {
                 val projectNames = projectRules.map { it.name.lowercase() }.toSet()
                 val inheritedGlobals = globalRules.filter { it.name.lowercase() !in projectNames }
-                (projectRules + inheritedGlobals).filter { it.id !in config.disabledRuleIds }
+                (projectRules + inheritedGlobals).filter(::isOn)
             }
             CustomizationScopeMode.CUSTOM -> {
                 (projectRules + globalRules).filter { it.id in config.enabledRuleIds }

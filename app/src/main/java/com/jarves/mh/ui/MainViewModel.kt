@@ -6183,6 +6183,17 @@ class MainViewModel(
             val enabled = currentConfig.enabledRuleIds.toMutableSet()
             if (enabled.contains(ruleId)) enabled.remove(ruleId) else enabled.add(ruleId)
             currentConfig.copy(enabledRuleIds = enabled)
+        } else if (SkillManager.isBundledRuleId(ruleId)) {
+            // Bundled personas are opt-in, so their switch lives in enabledRuleIds.
+            val on = ruleId in currentConfig.enabledRuleIds && ruleId !in currentConfig.disabledRuleIds
+            if (on) {
+                currentConfig.copy(enabledRuleIds = currentConfig.enabledRuleIds - ruleId)
+            } else {
+                currentConfig.copy(
+                    enabledRuleIds = currentConfig.enabledRuleIds + ruleId,
+                    disabledRuleIds = currentConfig.disabledRuleIds - ruleId,
+                )
+            }
         } else {
             val disabled = currentConfig.disabledRuleIds.toMutableSet()
             if (disabled.contains(ruleId)) disabled.remove(ruleId) else disabled.add(ruleId)
