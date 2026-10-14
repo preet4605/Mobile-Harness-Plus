@@ -143,6 +143,10 @@ object ModAuthoringGuide {
         appendLine("  `slashCommands`. A tap runs that command as if typed; in a file's menu its arguments are the file's path.")
         appendLine("- `panels` (up to 4), which need `ui.webpane`: `id` (lowercase letters, digits, dashes), `title`")
         appendLine("  (up to 40 characters) and `entry`, a `.html` file in the mod. See \"Web panels\".")
+        appendLine("- `schedules` (up to 3), which need `schedules` (Developer mode) and a hooks module: `id`, `everyMinutes`")
+        appendLine("  (15 to 1440) and an optional `description`. Android wakes the app about that often while the battery isn't")
+        appendLine("  low, even with the app closed, and fires `schedule.run`; it may run later than asked. Each run has 60 s.")
+        appendLine("  With the app's screen closed there is no open project, so calls that need the screen or a project fail.")
         appendLine()
         appendLine("Command names, template ids and skill ids share the `/` menu, so each must be different.")
         appendLine("Built-in commands: ${com.jarves.mh.runtime.SlashCommandEngine.ALL_SLASH_COMMANDS.joinToString(", ") { "`/${it.name}`" }}.")
@@ -276,6 +280,7 @@ object ModAuthoringGuide {
         | `command.run` | The user ran one of the mod's commands | `name`, `args` |
         | `plan.update` | The open chat's task plan changed | `taskId`, `plan` (`title`, `status`, `current`, `steps`; only with `project.info`) |
         | `run.log` | The running task's live output, batched once a second, only while one of the mod's surfaces is showing | `lines` (`kind`: `reply`, `tool` or `log`; `text`; `time`), `dropped`. Needs `events.subscribe` |
+        | `schedule.run` | One of the mod's `schedules` is due (needs `schedules`, Developer mode); 60 s for the hooks | `schedule` (its id), `everyMinutes` |
         | `panel.message` | The open web panel sent a message | `panel`, `data` (the text it sent). Needs `ui.webpane` |
         | `ui.render` | The app needs a surface drawn (see "Drawing") | `component`, `requestId`, `title`, `surface` |
         | `prompt.submit` | Gate: the user sends a message (see "Gates") | `text`, `harness`, `attachments` (a count). Needs `prompt.transform` |
@@ -326,12 +331,15 @@ object ModAuthoringGuide {
         | `${'$'}.settings.set(key, value)` | `settings.write` | Changes one of those through the app's own setter (refused with the app's reason, such as switching harness while a task runs); resolves `{ key, value, before, changed }`. `harness` is `claude`, `deepseek`, `antigravity` or `codex`; `theme` `system`, `light` or `dark`; `antigravityBalancing` `least_recently_used`, `round_robin` or `primary_only`; the last two are true or false. The user can undo each change from the mod's page |
         | `${'$'}.projects.list()` | `projects` | The user's projects: `{ id, name, open }` |
         | `${'$'}.projects.open(id)`, `${'$'}.projects.create({ name })` | `projects` | Opens a project, or makes one (name 1 to 60 characters) and resolves `{ id, name }`. Refused while a task, build or terminal command runs. Mods can never delete a project |
-        | `${'$'}.chats.list()`, `${'$'}.chats.open(id)`, `${'$'}.chats.create()` | `chat.read` | The open project's chats (`{ id, title, open }`); opens one, or starts a new one and resolves `{ id }`. Mods can never delete a chat |
+        | `${'$'}.chats.list()`, `${'$'}.chats.open(id)`, `${'$'}.chats.create()` | `projects` | The open project's chats (`{ id, title, open }`); opens one, or starts a new one and resolves `{ id }`. Mods can never delete a chat |
         | `${'$'}.chats.read(id, limit)` | `chat.read` | Up to `limit` (50 by default, 200 at most) of a chat's newest messages: `{ from, text }` |
         | `${'$'}.clipboard.read()`, `${'$'}.clipboard.write(text)` | `clipboard` | The clipboard's text (64 KB). Android lets apps read it only while they are on screen |
         | `${'$'}.intent.share({ text })` or `${'$'}.intent.share({ path })` | `device.share` | Opens Android's share sheet with text (64 KB) or a file of the open project. Only while the app is on screen; once every 3 seconds (`false` when too soon) |
         | `${'$'}.intent.open(uri)` | `device.share` | Opens an `https`, `http`, `mailto`, `tel`, `sms` or `geo` link through Android's app chooser; other kinds are refused. Same rules as share |
         | `${'$'}.storage.pick({ types })` | `storage.pick` | Asks the user to choose a file through Android's picker (`types` like `text/*`); resolves `{ name, mimeType, size, text }` (or `base64` for binary files), at most 1 MB, or `null` when the user cancels. Only while the app is on screen |
+        | `${'$'}.runtime.install(packages, { manager, timeoutMs })` | `runtime` | Installs packages in the Linux guest for every project: `manager` is `apt` (the default), `pip` or `npm`; up to 16 plain package names (versions allowed, options never). Refused with less than 1 GB free, or while a task, terminal command or build runs; passes the `terminal.command` gates. 10 minutes at most; resolves `{ exitCode, output, timedOut, truncated }` |
+        | `${'$'}.runtime.serve(command, port, { name, cwd })` | `runtime` | Keeps a bash command running in the project folder with `PORT` set; resolves `{ name, port, url }` (`http://127.0.0.1:<port>`). At most 2 per mod, one per port (1024 to 65535), each with 3,600 s of CPU, 1 GB of data memory and 8 MB of output. Shown on the mod's page, where the user can stop it; it stops when the mod or Developer mode is turned off, or the app closes |
+        | `${'$'}.runtime.servers()`, `${'$'}.runtime.stop(name)` | `runtime` | The mod's servers (`{ name, port, running, exitCode, startedAt, output }`, the last 4 KB of output); stops one, `true` when it was running |
         | `${'$'}.ui.open({ id, title })`, `${'$'}.ui.close(id)` | `ui.pane` | Adds a panel (8 at most; `id` is lowercase letters, digits, dashes) or removes one; `open` returns `{ isPlaced }`, whether it is on screen now |
         | `${'$'}.ui.post(panel, data)` | `ui.webpane` | Sends the mod's web panel `panel` a message (text, or JSON for anything else; at most 64 KB). Dropped when that panel isn't open |
         | `${'$'}.ui.theme({ accent })` | `ui.theme` | Gives the whole app an accent color: `blue`, `indigo`, `purple`, `pink`, `red`, `orange`, `green`, `teal` or `brown`; `null` gives the app its own back. It lasts while the mod is on and allowed; the newest mod to set one wins |

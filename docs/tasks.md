@@ -4,10 +4,22 @@
 
 Love chose "All ten phases" (04:05 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair. Native code in mods (plan row 24) is not built; mods running with the app closed (row 15) and sharing beyond .mhmod (row 16) stay deferred.
 
+### Phase 10: guest runtime and schedules (plan rows 20 and 21)
+
+- `runtime` (developer, high): `$.runtime.install(packages, { manager })` builds an apt, pip or npm install from plain package names only (`ModRuntime.installScript`; nothing can reach the package manager as an option), refuses below 1 GB free (`ModRuntime.MIN_FREE_BYTES`, `filesDir.usableSpace`), passes the `terminal.command` gates and runs as an exclusive guest command (refused while a task, terminal command or build runs; 10 minutes at most).
+- `$.runtime.serve(command, port, { name, cwd })`, `servers()`, `stop(name)`: [ModGuestServers](../app/src/main/java/com/jarves/mh/mods/ModGuestServers.kt) keeps at most 2 per mod, one per free port (1024 to 65535). Each runs under `MOD_SERVE=<mod>/<name>` with `ulimit -t 3600` and the 1 GB data limit; a watcher notices exits and stops a server past 8 MB of output. Stopping destroys the proot process and kills every process marked with its name. Servers stop when the mod loses `runtime` or Developer mode goes off (MainViewModel's snapshot collector), when the app's screen closes (`onCleared`), or from the Stop row on the mod's Controls tab, which lists them.
+- `schedules` (developer): `contributes.schedules` (3 at most, `everyMinutes` 15 to 1440, hooks module required) become periodic JobScheduler jobs ([ModSchedules](../app/src/main/java/com/jarves/mh/mods/ModSchedules.kt), job ids `0x4D480000` + 16 bits, battery not low, not kept across reboots; opening the app sets them again). `ModScheduleService` calls `ModHost.runSchedule`, which holds the engine up for the run even with the app closed, fires `schedule.run` with a 60 s budget and wall limit, and then lets the engine stop. A finished run marks the start stable, so wake-ups never count toward mod safe mode. Jobs are synced only when the wanted set changes.
+- Docs fix for Phase 9: `$.chats.list/open/create` need `projects` (the guide said `chat.read`).
+- Defaults taken: JobScheduler instead of WorkManager (no new dependency); a single `runtime` permission for installs and servers; installs reach every project in the guest, as apt, pip and `npm -g` do; servers live only while the app's screen does (row 15 stays deferred); no persisted jobs (no boot permission added).
+- VERIFIED (full suite 1529 tests, 0 failures; node 17/17; app compiles): `ModHostTest` (Developer mode needed, install scripts, unsafe names refused, 1 GB check, serve/list/stop, audit; a schedule starts the engine in the background, runs only while allowed, engine stops after), `ModGuestServersTest` (2 per mod, ports, kill by marker, stop on mod off, exit noticed, output flood), `ModManifestParserTest` (schedules).
+- NOT RUN: on a phone (real apt/pip/npm installs, servers in proot, JobScheduler wake-ups; compiled only).
+
 ### Phase 9: projects, chats and device bridges (plan rows 19 and 22)
 
+COMPLETE (pushed to harness-dev as ba2b0b9).
+
 - `projects` (review): `$.projects.list()`, `open(id)`, `create({ name })` through MainViewModel's own `openProject`/`createProject`; opening or creating is refused while a task, build or terminal command runs, and both are audited. There is no delete op for projects or chats.
-- `chat.read` now also covers `$.chats.list()`, `open(id)`, `create()` and `read(id, limit)` (up to 200 messages of any chat in the open project).
+- `projects` also covers `$.chats.list()`, `open(id)` and `create()` in the open project; `chat.read` covers `$.chats.read(id, limit)` (up to 200 messages of any chat in the open project).
 - `clipboard` (review): `$.clipboard.read()`/`write(text)`, 64 KB; reading only while the app is in the foreground (Android's own rule).
 - `device.share` (usable): `$.intent.share({ text } | { path })` (a file of the open project through the app's own `shareWorkspaceFile`) and `$.intent.open(uri)` for `ModIntents.SCHEMES` (https, http, mailto, tel, sms, geo) only, both through the system chooser, foreground only, once every 3 s per mod.
 - `storage.pick` (review): `$.storage.pick({ types })` opens the system document picker (`AppUiState.modPickTypes`, one at a time, 3-minute timeout) and returns up to 1 MB as text or base64, or `null` when cancelled; audited.

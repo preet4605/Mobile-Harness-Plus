@@ -61,6 +61,8 @@ enum class ModCapability(
     SETTINGS_READ("settings.read", RiskLevel.REVIEW, "Read app settings: harness, model, effort, theme and agent options", usable = true),
     SETTINGS_WRITE("settings.write", RiskLevel.HIGH, "Change app settings (you can undo each change)", usable = true, developer = true),
     ENGINE_MEMORY("engine.memory", RiskLevel.REVIEW, "Use up to 32 MB of memory for its code (2 mods at most)", usable = true, developer = true),
+    RUNTIME("runtime", RiskLevel.HIGH, "Install packages and run servers in the Linux guest", usable = true, developer = true),
+    SCHEDULES("schedules", RiskLevel.REVIEW, "Wake the app to run its code, at most every 15 minutes", usable = true, developer = true),
     ;
 
     companion object {

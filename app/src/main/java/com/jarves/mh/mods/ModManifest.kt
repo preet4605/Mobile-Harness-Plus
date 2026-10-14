@@ -34,6 +34,8 @@ data class ModManifest(
     val webPanels: List<ModWebPanel> = emptyList(),
     /** Items in the chat, file and project menus that run one of its commands (mod plan row 18). */
     val menuItems: List<ModMenuItem> = emptyList(),
+    /** Times the app wakes to fire `schedule.run` (mod plan row 21; `schedules`, Developer mode). */
+    val schedules: List<ModSchedule> = emptyList(),
 ) {
     val requested: Set<ModCapability> get() = permissions.map { it.capability }.toSet()
 
@@ -60,6 +62,9 @@ data class ModMenuItem(val id: String, val title: String, val place: ModMenuPlac
 
 /** A menu item of an active mod, as the project's menus list it. */
 data class ModMenuEntry(val modId: String, val modName: String, val item: ModMenuItem)
+
+/** A periodic wake-up: `schedule.run` fires about every [everyMinutes] minutes (at least 15). */
+data class ModSchedule(val id: String, val everyMinutes: Int, val description: String = "")
 
 /** A web panel: [entry] is an `.html` file in the package, served from the mod's own origin. */
 data class ModWebPanel(val id: String, val title: String, val entry: String)
@@ -205,7 +210,7 @@ object ModManifestParser {
         "permissions", "contributes", "integrity", "hooks", "types", "dashboard",
     )
     private val CONTRIBUTES_KEYS = setOf(
-        "panels", "menuItems", "slashCommands", "promptTemplates", "settings", "rules", "skills", "hooks", "guestTools", "mcpServers",
+        "panels", "menuItems", "schedules", "slashCommands", "promptTemplates", "settings", "rules", "skills", "hooks", "guestTools", "mcpServers",
     )
     private val HARNESS_IDS = mapOf(
         "claude" to AgentKind.CLAUDE_CODE,
@@ -277,6 +282,7 @@ object ModManifestParser {
         var mcpServers = emptyList<ModGuestProgram>()
         var webPanels = emptyList<ModWebPanel>()
         var menuItems = emptyList<ModMenuItem>()
+        var schedules = emptyList<ModSchedule>()
         if (contributes != null) {
             if (contributes !is JSONObject) {
                 p.add("\"contributes\" must be an object.")
@@ -286,6 +292,7 @@ object ModManifestParser {
                 mcpServers = array(contributes, "mcpServers", p, 4).mapIndexedNotNull { i, o -> parseGuestProgram(o, "contributes.mcpServers[$i]", p) }
                 webPanels = array(contributes, "panels", p, 4).mapIndexedNotNull { i, o -> parseWebPanel(o, i, p) }
                 menuItems = array(contributes, "menuItems", p, 8).mapIndexedNotNull { i, o -> parseMenuItem(o, i, p) }
+                schedules = array(contributes, "schedules", p, 3).mapIndexedNotNull { i, o -> parseSchedule(o, i, p) }
                 commands = array(contributes, "slashCommands", p, 32).mapIndexedNotNull { i, o -> parseCommand(o, i, p) }
                 templates = array(contributes, "promptTemplates", p, 32).mapIndexedNotNull { i, o -> parseTemplate(o, i, p) }
                 settings = array(contributes, "settings", p, 32).mapIndexedNotNull { i, o -> parseSetting(o, i, p) }
@@ -319,6 +326,7 @@ object ModManifestParser {
         checkUnique(guestTools.map { it.name } + mcpServers.map { it.name }, "guest tool or MCP server name", p)
         checkUnique(webPanels.map { it.id }, "web panel id", p)
         checkUnique(menuItems.map { it.id }, "menu item id", p)
+        checkUnique(schedules.map { it.id }, "schedule id", p)
         menuItems.filter { item -> commands.none { it.name == item.command } }.forEach {
             p.add("Menu item ${it.id} runs /${it.command}, which isn't one of the mod's slashCommands.")
         }
@@ -366,6 +374,8 @@ object ModManifestParser {
         if (webPanels.isNotEmpty() && ModCapability.UI_WEBPANE !in requested) {
             p.add("Web panels need the ui.webpane permission.")
         }
+        if (schedules.isNotEmpty() && ModCapability.SCHEDULES !in requested) p.add("Schedules need the schedules permission.")
+        if (schedules.isNotEmpty() && hooksModule == null) p.add("Schedules need a hooks module to answer schedule.run.")
         if ((guestTools.isNotEmpty() || mcpServers.isNotEmpty()) && ModCapability.GUEST_TOOLS !in requested) {
             p.add("Guest tools and MCP servers run in the Linux guest, so the mod must ask for guest.tools.")
         }
@@ -394,7 +404,19 @@ object ModManifestParser {
             mcpServers = mcpServers,
             webPanels = webPanels,
             menuItems = menuItems,
+            schedules = schedules,
         )
+    }
+
+    private fun parseSchedule(o: JSONObject, i: Int, p: Problems): ModSchedule? {
+        val at = "contributes.schedules[$i]"
+        unknownKeys(o, setOf("id", "everyMinutes", "description"), at, p)
+        val id = string(o, "id", p, required = true, label = "$at.id") ?: return null
+        if (!ITEM_ID.matches(id)) p.add("$at.id must be lowercase letters, digits or dashes.")
+        val minutes = int(o, "everyMinutes", p, required = true, label = "$at.everyMinutes") ?: return null
+        if (minutes !in 15..1440) p.add("$at.everyMinutes must be 15 to 1440: Android wakes apps at most every 15 minutes.")
+        val description = string(o, "description", p, max = 200, label = "$at.description").orEmpty()
+        return ModSchedule(id, minutes, description)
     }
 
     private fun parseMenuItem(o: JSONObject, i: Int, p: Problems): ModMenuItem? {

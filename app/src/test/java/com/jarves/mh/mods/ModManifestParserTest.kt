@@ -250,4 +250,21 @@ class ModManifestParserTest {
         assertRejected(withItems(item("x", "chat"), item("x", "file")), "menu item id")
         assertRejected(withItems(*Array(9) { item("i$it", "chat") }), "menuItems")
     }
+
+    @Test
+    fun `schedules wake a hooks module at most every 15 minutes, three at most`() {
+        fun withSchedules(vararg schedules: JSONObject, permission: Boolean = true, hooks: Boolean = true) = ModTestKit.manifest {
+            if (hooks) put("hooks", JSONObject().put("module", "hooks/register.js"))
+            if (permission) put("permissions", JSONArray().put(permission("schedules")))
+            put("contributes", JSONObject().put("schedules", JSONArray(schedules.toList())))
+        }
+        fun schedule(id: String, minutes: Int) = JSONObject().put("id", id).put("everyMinutes", minutes)
+        val manifest = ModManifestParser.parse(withSchedules(schedule("sync", 15), schedule("daily", 1440).put("description", "Once a day")))
+        assertEquals(listOf(ModSchedule("sync", 15), ModSchedule("daily", 1440, "Once a day")), manifest.schedules)
+        assertRejected(withSchedules(schedule("fast", 5)), "15 to 1440")
+        assertRejected(withSchedules(schedule("x", 15), schedule("x", 30)), "schedule id")
+        assertRejected(withSchedules(*Array(4) { schedule("s$it", 15) }), "schedules")
+        assertRejected(withSchedules(schedule("x", 15), permission = false), "schedules permission")
+        assertRejected(withSchedules(schedule("x", 15), hooks = false), "hooks module")
+    }
 }

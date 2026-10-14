@@ -86,6 +86,10 @@ enum class ModOp(
     STORAGE_PICK("storage.pick", ModCapability.STORAGE_PICK, slow = true),
     SETTINGS_GET("settings.get", ModCapability.SETTINGS_READ),
     SETTINGS_SET("settings.set", ModCapability.SETTINGS_WRITE, slow = true),
+    RUNTIME_INSTALL("runtime.install", ModCapability.RUNTIME, needsProject = true, slow = true),
+    RUNTIME_SERVE("runtime.serve", ModCapability.RUNTIME, needsProject = true, slow = true),
+    RUNTIME_STOP("runtime.stop", ModCapability.RUNTIME),
+    RUNTIME_SERVERS("runtime.servers", ModCapability.RUNTIME),
     ;
 
     companion object {
@@ -248,6 +252,36 @@ object ModIntents {
             "\$.intent.open(uri) opens ${SCHEMES.joinToString { "$it:" }} links only"
         }
         return text
+    }
+}
+
+/**
+ * Guest runtime control (mod plan row 20, `runtime`, Developer mode): package installs through
+ * apt, pip or npm, and the checks on them. Package names are checked so nothing reaches the
+ * package manager as an option.
+ */
+object ModRuntime {
+    /** Installs are refused when less than this is free where the guest lives. */
+    const val MIN_FREE_BYTES = 1024L * 1024 * 1024
+    const val MAX_PACKAGES = 16
+    val MANAGERS = listOf("apt", "pip", "npm")
+    private val PACKAGE = mapOf(
+        "apt" to Regex("^[a-z0-9][a-z0-9.+-]{0,99}(=[A-Za-z0-9.+:~-]{1,60})?$"),
+        "pip" to Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(\\[[A-Za-z0-9,._-]{1,60}\\])?((==|>=|<=|~=|!=|>|<)[A-Za-z0-9.*+!-]{1,40})?$"),
+        "npm" to Regex("^(@[a-z0-9][a-z0-9._-]{0,60}/)?[a-z0-9][a-z0-9._-]{0,99}(@[A-Za-z0-9.^~*<>=+-]{1,40})?$"),
+    )
+
+    /** The bash script that installs [packages] with [manager]; throws when one is not a plain package name. */
+    fun installScript(manager: String, packages: List<String>): String {
+        val names = PACKAGE[manager] ?: throw IllegalArgumentException("\$.runtime.install: manager is ${MANAGERS.joinToString()}")
+        require(packages.size in 1..MAX_PACKAGES) { "\$.runtime.install takes 1 to $MAX_PACKAGES packages" }
+        packages.firstOrNull { !names.matches(it) }?.let { throw IllegalArgumentException("\$.runtime.install: \"${it.take(60)}\" isn't a valid $manager package name") }
+        val list = packages.joinToString(" ") { "'$it'" }
+        return when (manager) {
+            "apt" -> "export DEBIAN_FRONTEND=noninteractive\napt-get install -y --no-install-recommends $list || { apt-get update && apt-get install -y --no-install-recommends $list; }"
+            "pip" -> "python3 -m pip install --no-input --disable-pip-version-check $list"
+            else -> "npm install -g --no-fund --no-audit $list"
+        }
     }
 }
 

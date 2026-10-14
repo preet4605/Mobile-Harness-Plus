@@ -60,6 +60,7 @@ import com.jarves.mh.mods.ModPlace
 import com.jarves.mh.mods.ModSurfaces
 import com.jarves.mh.mods.ModRunState
 import com.jarves.mh.mods.ModRuntimeInfo
+import com.jarves.mh.mods.ModServer
 import com.jarves.mh.mods.ModHookAction
 import com.jarves.mh.mods.ModManifest
 import com.jarves.mh.mods.ModSetting
@@ -495,6 +496,8 @@ private fun ModPage(
     var log by remember(mod.id) { mutableStateOf<List<ModLogEntry>>(emptyList()) }
     LaunchedEffect(mod.id, tab, logVersion) { if (tab == ModPageTab.ACTIVITY && mod.manifest.hooksModule != null) log = viewModel.modLog(mod.id) }
     val shownRuntime = runtime?.takeIf { snapshot.status(mod) == ModStatus.ON }
+    val allServers by viewModel.servers.collectAsStateWithLifecycle()
+    val servers = allServers.filter { it.modId == mod.id }
     val showText = { title: String, path: String -> preview = title to path }
 
     LargeTitleScaffold(
@@ -525,7 +528,7 @@ private fun ModPage(
             }
             when (tab) {
                 ModPageTab.DASHBOARD -> dashboardTab(mod, shownRuntime, surfaces, pane?.id, onSelectPane = { paneId = it }, viewModel)
-                ModPageTab.CONTROLS -> controlsTab(mod, shownRuntime, viewModel, onPreview = showText, onEdit = { editing = it }, onOpenPanel = { panelId = it.id })
+                ModPageTab.CONTROLS -> controlsTab(mod, shownRuntime, servers, viewModel, onPreview = showText, onEdit = { editing = it }, onOpenPanel = { panelId = it.id })
                 ModPageTab.PERMISSIONS -> permissionsTab(mod, viewModel, onConfirmHigh = { confirmHigh = it })
                 ModPageTab.ACTIVITY -> activityTab(mod, audit, log, snapshot.settingChanges.filter { it.modId == mod.id }, viewModel)
                 ModPageTab.ABOUT -> aboutTab(
@@ -724,6 +727,7 @@ private fun LazyListScope.dashboardTab(
 private fun LazyListScope.controlsTab(
     mod: InstalledMod,
     runtime: ModRuntimeInfo?,
+    servers: List<ModServer>,
     viewModel: ModsViewModel,
     onPreview: (String, String) -> Unit,
     onEdit: (ModSetting) -> Unit,
@@ -745,6 +749,41 @@ private fun LazyListScope.controlsTab(
             ) {
                 manifest.webPanels.forEach { panel ->
                     ListRow(title = panel.title, subtitle = panel.entry, onClick = if (allowed) ({ onOpenPanel(panel) }) else null)
+                }
+            }
+        }
+    }
+    if (servers.isNotEmpty()) {
+        item(key = "servers") {
+            ListSection(
+                header = "Servers",
+                footer = "Programs the mod keeps running in the Linux guest. They stop when you turn the mod off or close the app.",
+            ) {
+                servers.forEach { server ->
+                    ListRow(
+                        title = server.name,
+                        subtitle = "Port ${server.port} · " + when {
+                            server.running -> "running since ${formatTime(server.startedAt)}"
+                            server.note != null -> server.note
+                            else -> "ended (exit ${server.exitCode ?: "?"})"
+                        },
+                        value = if (server.running) "Stop" else null,
+                        onClick = if (server.running) ({ viewModel.stopServer(mod.id, server.name) }) else null,
+                    )
+                }
+            }
+        }
+    }
+    if (manifest.schedules.isNotEmpty()) {
+        item(key = "schedules") {
+            val allowed = mod.enabled && ModCapability.SCHEDULES in mod.granted && mod.canHold(ModCapability.SCHEDULES)
+            ListSection(
+                header = "Schedules",
+                footer = if (allowed) "Android wakes the app for these while the battery isn't low; it may run them later than asked." else
+                    "These run only while the mod is on, Developer mode is on and you allow “${ModCapability.SCHEDULES.summary}”.",
+            ) {
+                manifest.schedules.forEach { schedule ->
+                    ListRow(title = schedule.id, subtitle = schedule.description.ifBlank { null }, value = "Every ${schedule.everyMinutes} min")
                 }
             }
         }

@@ -134,6 +134,13 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** The guest servers mods started with `$.runtime.serve`. */
+    val servers: StateFlow<List<com.jarves.mh.mods.ModServer>> = com.jarves.mh.mods.ModGuestServers.shared.servers
+
+    fun stopServer(modId: String, name: String) {
+        viewModelScope.launch(Dispatchers.IO) { com.jarves.mh.mods.ModGuestServers.shared.stop(modId, name, note = "You stopped it") }
+    }
+
     /** A web panel's page sent its mod a message. */
     fun panelMessage(modId: String, panelId: String, text: String) {
         hostRef?.panelMessage(modId, panelId, text)

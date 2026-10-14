@@ -121,6 +121,15 @@ class ModHostTest {
             device += "pick ${types.joinToString()}"
             return JSONObject().put("name", "notes.txt").put("mimeType", "text/plain").put("size", 5).put("text", "hello")
         }
+        var freeBytes = 4L * 1024 * 1024 * 1024
+        override fun guestFreeBytes(): Long = freeBytes
+        val served = CopyOnWriteArrayList<String>()
+        override suspend fun startServer(mod: InstalledMod, context: ModEventContext, name: String, port: Int, command: String): JSONObject {
+            served += "$name:$port $command"
+            return JSONObject().put("name", name).put("port", port).put("url", "http://127.0.0.1:$port")
+        }
+        override fun stopServer(modId: String, name: String): Boolean = served.removeIf { it.startsWith("$name:") }
+        override fun servers(modId: String): JSONArray = JSONArray(served.map { JSONObject().put("name", it.substringBefore(':')).put("running", true) })
         val settings = java.util.concurrent.ConcurrentHashMap<String, Any>(mapOf("harness" to "claude", "model" to "sonnet", "effort" to "default",
             "theme" to "dark", "antigravityBalancing" to "round_robin", "antigravityFailover" to true, "codexAccountBalancing" to false))
         override fun appSettings(): JSONObject = JSONObject(settings as Map<*, *>)
@@ -1290,6 +1299,113 @@ class ModHostTest {
         listOf(ModCapability.PROJECTS, ModCapability.CLIPBOARD, ModCapability.STORAGE_PICK).forEach { registry.setGranted("dev.test.sample", it, false) }
         Thread.sleep(200)
         listOf("projects", "clip", "pick").forEach { what -> go(what).let { assertTrue(it, it.startsWith("ERR")) } }
+    }
+
+    @Test
+    fun `guest runtime installs and serves only in Developer mode, with a storage check`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            const answer = async (f) => { try { return { text: JSON.stringify(await f()) } } catch (e) { return { text: 'ERR ' + e.message } } }
+            export function register(on) {
+              on('command.run', { name: 'go' }, ($, e) => answer(async () => {
+                switch (e.args) {
+                  case 'apt': return (await $.runtime.install(['ripgrep', 'jq'])).exitCode
+                  case 'pip': return (await $.runtime.install('requests==2.31.0', { manager: 'pip' })).exitCode
+                  case 'bad': return $.runtime.install(['--allow-unauthenticated'])
+                  case 'evil': return $.runtime.install(['jq; rm -rf /'])
+                  case 'serve': return (await $.runtime.serve('python3 -m http.server ${'$'}PORT', 8080, { name: 'web', cwd: 'site' })).url
+                  case 'list': return (await $.runtime.servers()).map((s) => s.name)
+                  case 'stop': return $.runtime.stop('web')
+                }
+              }))
+            }
+        """.trimIndent(), permissions = listOf("runtime")) {
+            put("contributes", JSONObject().put("slashCommands", JSONArray().put(JSONObject().put("name", "go").put("description", "Go"))))
+        }
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod") { host.info()?.state == ModRunState.RUNNING }
+        suspend fun go(what: String) = when (val outcome = host.runCommand("dev.test.sample", "go", what)) { is ModCodeCommandOutcome.Reply -> outcome.text; else -> "ERR $outcome" }
+
+        // A developer permission: nothing until Developer mode is on and it is granted.
+        go("apt").let { assertTrue(it, it.startsWith("ERR") && "runtime" in it) }
+        registry.setDeveloperMode(true)
+        registry.setGranted("dev.test.sample", ModCapability.RUNTIME, true)
+        waitFor("the grant") { registry.snapshot.value.mods.single().let { ModCapability.RUNTIME in it.granted } }
+        Thread.sleep(200)
+
+        assertEquals("0", go("apt"))
+        val apt = effects.commands.last()
+        assertEquals(listOf("/usr/bin/bash", "-lc"), apt.argv.take(2))
+        assertTrue(apt.argv[2], "apt-get install -y --no-install-recommends 'ripgrep' 'jq'" in apt.argv[2])
+        assertTrue(apt.exclusive)
+        assertEquals("0", go("pip"))
+        assertTrue("python3 -m pip install" in effects.commands.last().argv[2])
+        go("bad").let { assertTrue(it, it.startsWith("ERR") && "isn't a valid apt package name" in it) }
+        go("evil").let { assertTrue(it, it.startsWith("ERR")) }
+        effects.freeBytes = 512L * 1024 * 1024
+        go("apt").let { assertTrue(it, "1 GB free" in it) }
+        effects.freeBytes = 4L * 1024 * 1024 * 1024
+
+        assertEquals("\"http://127.0.0.1:8080\"", go("serve"))
+        assertEquals("web:8080 cd -- 'site' || exit 1\npython3 -m http.server ${'$'}PORT", effects.served.single())
+        assertEquals("[\"web\"]", go("list"))
+        assertEquals("true", go("stop"))
+        assertEquals("false", go("stop"))
+        assertTrue(registry.readAudit("dev.test.sample").map { it.op }.containsAll(listOf("runtime.install", "runtime.serve")))
+
+        registry.setDeveloperMode(false)
+        Thread.sleep(200)
+        go("list").let { assertTrue(it, it.startsWith("ERR")) }
+    }
+
+    @Test
+    fun `a schedule wakes the engine with the app closed and runs only while allowed`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('schedule.run', async ($, e) => { await $.store.set('ran', e.schedule + '/' + e.everyMinutes) })
+            }
+        """.trimIndent(), permissions = listOf("schedules", "storage")) {
+            put("contributes", JSONObject().put("schedules", JSONArray().put(JSONObject().put("id", "hourly").put("everyMinutes", 60))))
+        }
+        val host = host(registry)
+        // No project, no screen, in the background: the engine is off.
+        host.setForeground(false)
+        Thread.sleep(200)
+        assertTrue(engines.isEmpty())
+        assertFalse(host.runSchedule("dev.test.sample", "hourly"))
+
+        registry.setDeveloperMode(true)
+        registry.setGranted("dev.test.sample", ModCapability.SCHEDULES, true)
+        waitFor("the grant") { registry.snapshot.value.mods.single().let { ModCapability.SCHEDULES in it.granted } }
+        Thread.sleep(200)
+        assertEquals(listOf(ModSchedules.Wanted("dev.test.sample", "hourly", 60)), ModSchedules.wanted(registry.snapshot.value))
+        assertFalse(host.runSchedule("dev.test.sample", "nope"))
+        assertTrue(host.runSchedule("dev.test.sample", "hourly"))
+        assertEquals("hourly/60", ModStore(registry.dataDir("dev.test.sample")).get("ran"))
+        assertTrue(registry.readAudit("dev.test.sample").any { it.op == "schedule.run" && it.detail == "hourly" })
+        // Nothing keeps it running afterwards.
+        waitFor("the engine to stop") { host.snapshot.value.engine == ModEngineState.OFF }
+
+        registry.setDeveloperMode(false)
+        Thread.sleep(200)
+        assertTrue(ModSchedules.wanted(registry.snapshot.value).isEmpty())
+        assertFalse(host.runSchedule("dev.test.sample", "hourly"))
+    }
+
+    @Test
+    fun `runtime installs take plain package names only`() {
+        assertTrue("'ripgrep' 'python3.10' 'libc6=2.31-0ubuntu9'" in ModRuntime.installScript("apt", listOf("ripgrep", "python3.10", "libc6=2.31-0ubuntu9")))
+        assertTrue("'requests[socks]>=2.0' 'Flask'" in ModRuntime.installScript("pip", listOf("requests[socks]>=2.0", "Flask")))
+        assertTrue("'@angular/cli@17.1.0' 'typescript'" in ModRuntime.installScript("npm", listOf("@angular/cli@17.1.0", "typescript")))
+        listOf("-y", "--force", "a b", "a;b", "a'b", "\$(id)", "a|b", "../x", "", "a\nb").forEach { name ->
+            listOf("apt", "pip", "npm").forEach { manager ->
+                assertTrue("$manager $name", runCatching { ModRuntime.installScript(manager, listOf(name)) }.isFailure)
+            }
+        }
+        assertTrue(runCatching { ModRuntime.installScript("brew", listOf("jq")) }.isFailure)
+        assertTrue(runCatching { ModRuntime.installScript("apt", List(17) { "p$it" }) }.isFailure)
     }
 
     @Test

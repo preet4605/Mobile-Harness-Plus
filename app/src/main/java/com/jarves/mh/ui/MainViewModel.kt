@@ -813,6 +813,45 @@ class MainViewModel(
             }
         }
 
+        override fun guestFreeBytes(): Long = getApplication<Application>().filesDir.usableSpace
+
+        override suspend fun startServer(
+            mod: InstalledMod,
+            context: com.jarves.mh.mods.ModEventContext,
+            name: String,
+            port: Int,
+            command: String,
+        ): JSONObject {
+            val project = withContext(Dispatchers.Main.immediate) {
+                _state.value.activeProject?.takeIf { it.id == context.projectId } ?: error("That project is not open")
+            }
+            val servers = com.jarves.mh.mods.ModGuestServers.shared
+            return withContext(Dispatchers.IO) {
+                servers.check(mod.id, name, port)
+                check(installer.isInstalled()) { "The Linux environment is not ready yet." }
+                val installed = installer.installedRuntime()
+                val log = File(getApplication<Application>().cacheDir, "mod-serve-${mod.id}-$name.log").apply { delete() }
+                val process = installer.process(
+                    installed.proot, installed.rootfs, projectWorkspaceRoot(project), emptyMap(),
+                    listOf("/bin/sh", "-c", servers.script(mod.id, name, port, command)), projectGuestRoot(project), outputFile = log,
+                )
+                runCatching { process.outputStream.close() }
+                servers.started(mod.id, name, port, command, process, log)
+                JSONObject().put("name", name).put("port", port).put("url", "http://127.0.0.1:$port")
+            }
+        }
+
+        override fun stopServer(modId: String, name: String): Boolean = com.jarves.mh.mods.ModGuestServers.shared.stop(modId, name)
+
+        override fun servers(modId: String): JSONArray {
+            val servers = com.jarves.mh.mods.ModGuestServers.shared
+            return JSONArray(servers.list(modId).map { server ->
+                JSONObject().put("name", server.name).put("port", server.port).put("running", server.running)
+                    .put("exitCode", server.exitCode ?: JSONObject.NULL).put("startedAt", server.startedAt)
+                    .put("output", servers.output(modId, server.name))
+            })
+        }
+
         override fun appSettings(): JSONObject = JSONObject(modAppSettingValues(_state.value))
 
         override suspend fun setAppSetting(key: String, value: Any): Unit = withContext(Dispatchers.Main.immediate) {
@@ -3123,6 +3162,7 @@ class MainViewModel(
                 runCatching { registry.markStable() }
             }
             var guestPrograms: Set<String>? = null
+            var scheduledJobs: List<com.jarves.mh.mods.ModSchedules.Wanted>? = null
             registry.snapshot.collect { snapshot ->
                 modContributions = runCatching {
                     ModContributionSet.build(snapshot) { skillManager.parseSkillFile(it, SkillSource.MOD) }
@@ -3136,6 +3176,14 @@ class MainViewModel(
                     runCatching { ModGuestTools.stop(allowed) { pid -> android.os.Process.sendSignal(pid, 9) } }
                 }
                 guestPrograms = allowed
+                // The same for guest servers (row 20); schedules follow the mods allowed them (row 21).
+                val serving = snapshot.active.filter { com.jarves.mh.mods.ModCapability.RUNTIME in it.granted && it.canHold(com.jarves.mh.mods.ModCapability.RUNTIME) }
+                runCatching { com.jarves.mh.mods.ModGuestServers.shared.stopMods(serving.map { it.id }.toSet()) }
+                val schedules = com.jarves.mh.mods.ModSchedules.wanted(snapshot)
+                if (schedules != scheduledJobs) {
+                    scheduledJobs = schedules
+                    com.jarves.mh.mods.ModSchedules.sync(getApplication(), snapshot)
+                }
             }
         }
     }
@@ -8300,6 +8348,8 @@ class MainViewModel(
         }
         modAsks.values.forEach { it.done.completeExceptionally(IllegalStateException("The app closed the chat before the task ended.")) }
         modAsks.clear()
+        // Mod servers live only while the app's screen does (mod plan rows 15 and 20).
+        runCatching { com.jarves.mh.mods.ModGuestServers.shared.stopAll() }
         flushPendingTranscriptWrite()
         super.onCleared()
     }

@@ -132,6 +132,21 @@ interface ModHostEffects : ModHookEffects {
      */
     suspend fun pickFile(mod: InstalledMod, types: List<String>, maxBytes: Int): JSONObject?
 
+    /** Bytes free where the Linux guest lives. */
+    fun guestFreeBytes(): Long
+
+    /**
+     * Starts [command] as server [name] of [mod] in [context]'s project folder in the guest, kept
+     * running on [port] (`$.runtime.serve`); throws why not (see [ModGuestServers.check]). Answers `{ name, port, url }`.
+     */
+    suspend fun startServer(mod: InstalledMod, context: ModEventContext, name: String, port: Int, command: String): JSONObject
+
+    /** Stops server [name] of [modId]; true when it was running. */
+    fun stopServer(modId: String, name: String): Boolean
+
+    /** [modId]'s servers: `{ name, port, running, exitCode, startedAt, output }`. */
+    fun servers(modId: String): JSONArray
+
     /** The [ModAppSettings.KEYS] values as the app has them now. */
     fun appSettings(): JSONObject
 
@@ -261,6 +276,8 @@ data class ModHostLimits(
     val bigHeapBytes: Long = 32L * 1024 * 1024,
     /** At most this many mods run with [bigHeapBytes]; the rest keep [heapBytes]. */
     val maxBigHeapMods: Int = 2,
+    /** Own time and wall time for one `schedule.run` (mod plan row 21). */
+    val scheduleBudgetMs: Long = 60_000,
 )
 
 /**
@@ -349,6 +366,8 @@ class ModHost(
     private var taskRunning = false
     private var foreground = true
     private val screens = HashSet<String>()
+    /** Schedules running now (`<mod id>/<schedule id>`); the engine runs for them even with the app closed. */
+    private val scheduled = HashSet<String>()
     private var nextDispatch = 1L
     private val coalesced = HashMap<String, JSONObject>()
     private var started = false
@@ -446,6 +465,43 @@ class ModHost(
         foreground = isForeground
         if (engine != null) emitNow(if (isForeground) "app.foreground" else "app.background", JSONObject())
         reconcile()
+    }
+
+    /**
+     * Fires `schedule.run` for schedule [scheduleId] of [modId] (mod plan row 21): starts the engine
+     * when it isn't running (even with the app's screen closed), waits for the mod, and gives the
+     * hooks [ModHostLimits.scheduleBudgetMs]. False when the mod isn't allowed `schedules` now, or
+     * couldn't run. Never throws.
+     */
+    suspend fun runSchedule(modId: String, scheduleId: String): Boolean = withContext(hostContext) {
+        val mod = mods.active.firstOrNull { it.id == modId } ?: return@withContext false
+        val schedule = mod.manifest.schedules.firstOrNull { it.id == scheduleId } ?: return@withContext false
+        if (!allowed(mod, ModCapability.SCHEDULES)) {
+            registry.recordDenied(mod.id, "schedule.run", ModCapability.SCHEDULES, "permission is off")
+            return@withContext false
+        }
+        val key = "$modId/$scheduleId"
+        if (!scheduled.add(key)) return@withContext false
+        try {
+            reconcile()
+            val loaded = withTimeoutOrNull(limits.loadTimeoutMs * 2) {
+                var ready = running[modId]?.takeIf { it.ready }
+                while (ready == null) {
+                    delay(100)
+                    ready = running[modId]?.takeIf { it.ready }
+                }
+                ready
+            } ?: return@withContext false
+            registry.recordCall(mod.id, "schedule.run", ModCapability.SCHEDULES, "allowed", scheduleId)
+            val result = CompletableDeferred<JSONObject?>()
+            dispatch(loaded, "schedule.run", JSONObject().put("schedule", schedule.id).put("everyMinutes", schedule.everyMinutes),
+                limits.scheduleBudgetMs, result = result)
+            withTimeoutOrNull(limits.scheduleBudgetMs) { result.await() }
+            true
+        } finally {
+            scheduled -= key
+            reconcile()
+        }
     }
 
     /** True when a running mod hooks [event]; lets callers skip building its payload. */
@@ -865,7 +921,8 @@ class ModHost(
 
     private fun wanted(): Boolean =
         HOLD_TEST !in screens && engineState != ModEngineState.PAUSED && engineState != ModEngineState.UNAVAILABLE &&
-            logicMods().isNotEmpty() && (taskRunning || (foreground && (context?.projectId != null || screens.isNotEmpty())))
+            logicMods().isNotEmpty() &&
+            (taskRunning || scheduled.isNotEmpty() || (foreground && (context?.projectId != null || screens.isNotEmpty())))
 
     private fun reconcile() {
         if (!wanted()) {
@@ -1722,6 +1779,51 @@ class ModHost(
                 registry.recordCall(mod.id, "storage.pick", ModCapability.STORAGE_PICK, if (picked == null) "cancelled" else "allowed", picked?.optString("name"))
                 picked
             }
+            ModOp.RUNTIME_INSTALL -> {
+                val packages = args.opt(0).let { value ->
+                    if (value is JSONArray) (0 until value.length()).map { value.optString(it).trim() } else listOf(text(args).trim())
+                }
+                val spec = args.optJSONObject(1) ?: JSONObject()
+                val manager = spec.optString("manager", "apt")
+                val script = ModRuntime.installScript(manager, packages)
+                val app = effects ?: error("The app screen is closed")
+                val free = app.guestFreeBytes()
+                require(free >= ModRuntime.MIN_FREE_BYTES) {
+                    "Installs need 1 GB free; there is ${free / (1024 * 1024)} MB. Free some space first"
+                }
+                val timeout = spec.optLong("timeoutMs", MAX_COMMAND_MS).coerceIn(1_000, MAX_COMMAND_MS)
+                val gated = runGate("terminal.command", JSONObject().put("command", script), ModCapability.TERMINAL_GATE,
+                    setOf("deny", "confirm"), limits.gateBudgetMs, compose = false)
+                if (gated.verdict != null) error("${gated.modName} stopped the install: ${gated.reason}")
+                addLog(mod.id, "info", "Installing with $manager: ${packages.joinToString(" ").take(120)}")
+                registry.recordCall(mod.id, "runtime.install", ModCapability.RUNTIME, "allowed", "$manager ${packages.joinToString(" ")}".take(200))
+                val result = app.guestRun(scoped!!, ModGuestCommand(listOf("/usr/bin/bash", "-lc", script), timeout, MAX_COMMAND_OUTPUT, exclusive = true))
+                JSONObject().put("exitCode", result.exitCode).put("output", result.output)
+                    .put("timedOut", result.timedOut).put("truncated", result.truncated)
+            }
+            ModOp.RUNTIME_SERVE -> {
+                val command = text(args).trim()
+                require(command.isNotEmpty() && command.length <= MAX_COMMAND) { "\$.runtime.serve(command, port) needs a command of up to $MAX_COMMAND characters" }
+                val port = args.optInt(1, -1)
+                val spec = args.optJSONObject(2) ?: JSONObject()
+                val name = spec.optString("name").trim().ifEmpty { port.toString() }
+                val cwd = spec.optString("cwd").trim().trim('/')
+                require(cwd.isEmpty() || ModManifestParser.isSafeRelativePath(cwd)) { "\$.runtime.serve: cwd must be a folder inside the project" }
+                val gated = runGate("terminal.command", JSONObject().put("command", command), ModCapability.TERMINAL_GATE,
+                    setOf("deny", "confirm"), limits.gateBudgetMs, compose = false)
+                if (gated.verdict != null) error("${gated.modName} stopped the server: ${gated.reason}")
+                val script = (if (cwd.isEmpty()) "" else "cd -- ${shellQuote(cwd)} || exit 1\n") + gated.input.optString("command", command)
+                val started = (effects ?: error("The app screen is closed")).startServer(mod, scoped!!, name, port, script)
+                addLog(mod.id, "info", "Serving $name on port $port: ${firstLine(command).take(100)}")
+                registry.recordCall(mod.id, "runtime.serve", ModCapability.RUNTIME, "allowed", "$name:$port ${firstLine(command)}".take(200))
+                started
+            }
+            ModOp.RUNTIME_STOP -> {
+                val name = text(args).trim()
+                require(name.isNotEmpty()) { "\$.runtime.stop(name) takes a name from \$.runtime.servers()" }
+                (effects ?: error("The app screen is closed")).stopServer(mod.id, name)
+            }
+            ModOp.RUNTIME_SERVERS -> (effects ?: error("The app screen is closed")).servers(mod.id)
             ModOp.SETTINGS_GET -> {
                 val all = (effects ?: error("The app screen is closed")).appSettings()
                 if (args.isNull(0)) all else text(args).also(ModAppSettings::requireKey).let { all.opt(it) ?: JSONObject.NULL }
