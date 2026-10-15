@@ -1500,4 +1500,47 @@ class ModHostTest {
         assertTrue(problem, problem!!.contains("doesn't answer messages"))
         assertEquals(listOf("hello"), host.dashboardChats.value["dev.test.sample"].orEmpty().map { it.text })
     }
+
+    @Test
+    fun `agent ask takes a mod role, and console replies reach role message hooks`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('command.run', { name: 'go' }, async ($, e) => {
+                try { return { text: (await $.agent.ask({ role: e.args, prompt: 'hi' })).status } } catch (err) { return { text: 'ERR ' + err.message } }
+              })
+              on('role.message', async ($, e) => { await $.ui.status([e.role, e.harness, e.status, e.prompt, e.text].join('|')) })
+            }
+        """.trimIndent(), permissions = listOf("agent.ask", "ui.status")) {
+            put("contributes", JSONObject()
+                .put("slashCommands", JSONArray().put(JSONObject().put("name", "go").put("description", "Go")))
+                .put("roles", JSONArray().put(JSONObject().put("id", "coder").put("title", "Coder").put("harness", "codex"))))
+        }
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod to start") { host.info()?.state == ModRunState.RUNNING }
+        assertEquals(ModCodeCommandOutcome.Reply("completed"), host.runCommand("dev.test.sample", "go", "coder"))
+        assertEquals("coder", effects.askOptions.last().role)
+        val refused = host.runCommand("dev.test.sample", "go", "boss")
+        assertTrue("$refused", "$refused".contains("role boss isn't one of the mod's contributes.roles"))
+
+        host.roleMessage("dev.test.sample", "coder", "codex", "Build it", "completed", "Built")
+        waitFor("the role message") { host.info()?.status == "coder|codex|completed|Build it|Built" }
+    }
+
+    @Test
+    fun `role messages hide the reply from mods that can't read chats or ask agents`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('session.start', async ($) => { await $.ui.status('up') })
+              on('role.message', async ($, e) => { await $.ui.status(e.role + ':' + (e.text === undefined ? 'hidden' : e.text)) })
+            }
+        """.trimIndent(), permissions = listOf("ui.status"))
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod to start") { host.info()?.status == "up" }
+        host.roleMessage("dev.test.sample", "coder", "codex", "Build it", "completed", "Built")
+        waitFor("the role message") { host.info()?.status == "coder:hidden" }
+    }
 }

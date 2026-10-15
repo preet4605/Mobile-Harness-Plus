@@ -159,7 +159,13 @@ interface ModHostEffects : ModHookEffects {
 }
 
 /** What `$.agent.ask` may pick besides the harness: model and effort ids, and [chat] ("new" or a chat id). */
-data class ModAskOptions(val model: String? = null, val effort: String? = null, val chat: String? = null)
+data class ModAskOptions(
+    val model: String? = null,
+    val effort: String? = null,
+    val chat: String? = null,
+    /** One of the mod's `contributes.roles`: its harness, model, effort and chat, unless given here. */
+    val role: String? = null,
+)
 
 enum class ModEngineState(val label: String) {
     OFF("Off"),
@@ -599,6 +605,21 @@ class ModHost(
             value.optString("text").isNotBlank() -> ModCodeCommandOutcome.Reply(value.optString("text").take(MAX_TEXT))
             else -> ModCodeCommandOutcome.Nothing
         }
+    }
+
+    /** The user's role picks and role chats for mods' consoles (mod dashboards phase 3). */
+    val roles = ModRoles(dataDir)
+
+    /**
+     * The user's console send to [role] ended: the mod's `role.message` hooks hear about it, with the
+     * reply's text when the mod may read chats (`chat.read`) or ask agents (`agent.ask`).
+     */
+    suspend fun roleMessage(modId: String, role: String, harness: String?, prompt: String, status: String, text: String?): Unit = withContext(hostContext) {
+        val loaded = running[modId]?.takeIf { it.ready && "role.message" in it.events } ?: return@withContext
+        val reads = allowed(loaded.mod, ModCapability.CHAT_READ) || allowed(loaded.mod, ModCapability.AGENT_ASK)
+        val payload = JSONObject().put("role", role).put("harness", harness ?: JSONObject.NULL).put("status", status)
+        if (reads) payload.put("prompt", prompt.take(MAX_PROMPT)).put("text", text.orEmpty())
+        dispatch(loaded, "role.message", payload, limits.eventBudgetMs)
     }
 
     private val _dashboardChats = MutableStateFlow<Map<String, List<ModChatLine>>>(emptyMap())
@@ -1715,9 +1736,12 @@ class ModHost(
                 fun option(key: String, max: Int): String? = spec.optString(key).trim().takeIf { !spec.isNull(key) && it.isNotEmpty() }?.also {
                     require(it.length <= max && it.none(Char::isISOControl)) { "\$.agent.ask: $key is not valid" }
                 }
-                val options = ModAskOptions(model = option("model", 120), effort = option("effort", 40), chat = option("chat", 80))
+                val role = option("role", 40)?.also { id ->
+                    require(mod.manifest.roles.any { it.id == id }) { "\$.agent.ask: role $id isn't one of the mod's contributes.roles" }
+                }
+                val options = ModAskOptions(model = option("model", 120), effort = option("effort", 40), chat = option("chat", 80), role = role)
                 addLog(mod.id, "info", "Asked ${harnessId ?: "the current harness"} to work on: ${firstLine(prompt).take(120)}")
-                registry.recordCall(mod.id, "\$.agent.ask", ModCapability.AGENT_ASK, "allowed", listOfNotNull(harnessId, options.model, options.chat).joinToString(" ").ifEmpty { null })
+                registry.recordCall(mod.id, "\$.agent.ask", ModCapability.AGENT_ASK, "allowed", listOfNotNull(harnessId, role, options.model, options.chat).joinToString(" ").ifEmpty { null })
                 (effects ?: error("The app screen is closed")).askAgent(mod, harness, prompt, scoped!!, timeout, options)
             }
             ModOp.AGENT_STOP -> {

@@ -93,10 +93,10 @@ function validate(dir) {
   return problems;
 }
 
-const CONTRIBUTES = ['panels', 'menuItems', 'schedules', 'slashCommands', 'promptTemplates', 'settings', 'rules', 'skills', 'hooks', 'guestTools', 'mcpServers'];
+const CONTRIBUTES = ['panels', 'menuItems', 'schedules', 'roles', 'slashCommands', 'promptTemplates', 'settings', 'rules', 'skills', 'hooks', 'guestTools', 'mcpServers'];
 const ITEM_ID = /^[a-z0-9][a-z0-9-]*$/;
 
-/** The `contributes` rules the app checks for menus, panels, schedules and guest programs. */
+/** The `contributes` rules the app checks for menus, panels, schedules, roles and guest programs. */
 function contributesProblems(dir, manifest, requested, hasModule) {
   const c = manifest.contributes;
   if (c === undefined) return [];
@@ -141,6 +141,15 @@ function contributesProblems(dir, manifest, requested, hasModule) {
   unique(schedules, 'schedule');
   if (schedules.length && !requested.has('schedules')) problems.push('Schedules need the schedules permission.');
   if (schedules.length && !hasModule) problems.push('Schedules need a hooks module to answer schedule.run.');
+  const roles = list('roles', 6);
+  roles.forEach((role, i) => {
+    const at = `contributes.roles[${i}]`;
+    Object.keys(role).filter(key => !['id', 'title', 'harness', 'model', 'effort'].includes(key)).forEach(key => problems.push(`Unknown field "${at}.${key}".`));
+    if (typeof role.id !== 'string' || !ITEM_ID.test(role.id)) problems.push(`${at}.id must be lowercase letters, digits or dashes.`);
+    if (typeof role.title !== 'string' || !role.title || role.title.length > 40) problems.push(`${at}.title must be 1 to 40 characters.`);
+    if (!['claude', 'deepseek', 'antigravity', 'codex'].includes(role.harness)) problems.push(`${at}.harness must be claude, deepseek, antigravity or codex.`);
+  });
+  unique(roles, 'role');
   if ((list('guestTools', 8).length || list('mcpServers', 4).length) && !requested.has('guest.tools')) {
     problems.push('Guest tools and MCP servers run in the Linux guest, so the mod must ask for guest.tools.');
   }

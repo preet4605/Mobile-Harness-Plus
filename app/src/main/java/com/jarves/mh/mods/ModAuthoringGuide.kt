@@ -128,6 +128,11 @@ object ModAuthoringGuide {
         appendLine("- `rules`: `id` and `file` (a `.md` path). Rules start off; the user turns each one on.")
         appendLine("- `skills`: `id` (the slash name; not a built-in command) and `dir`, a folder holding `SKILL.md`")
         appendLine("  with `name` and `description` front matter. Skills start off too.")
+        appendLine("- `roles` (up to 6, no permission needed): `id`, `title`, `harness` (`claude`, `deepseek`, `antigravity`,")
+        appendLine("  `codex`), optional `model` and `effort`. The mod's Dashboard then shows an agent console: a card per role")
+        appendLine("  where the user changes its harness, model and effort, sends it a message, stops it, hands its last reply")
+        appendLine("  to another role and opens its chat, plus the chain of steps and the queue. Each role works in its own chat")
+        appendLine("  of the project, made on its first message. See \"Agent tasks\".")
         appendLine("- `hooks`: `id`, `on` (an event below), `action`, and an optional `filter` with `status`")
         appendLine("  (for events that have one) and `harness`.")
         appendLine("- `guestTools` (up to 8) and `mcpServers` (up to 4), which need `guest.tools` (Developer mode): `name`")
@@ -278,6 +283,7 @@ object ModAuthoringGuide {
         | `file.saved` | The user saved a file in Files | `path` (in the project) |
         | `app.foreground`, `app.background` | The app is shown or hidden | |
         | `command.run` | The user ran one of the mod's commands | `name`, `args` |
+        | `role.message` | A message the user sent to one of the mod's roles from its console finished | `role`, `harness`, `status`; with `chat.read` or `agent.ask` also `prompt` and `text` (the reply) |
         | `dashboard.message` | The user wrote in the mod's Dashboard chat; the chat box shows only when the mod listens for this. Answer `{ text }` (or a string), kept in that chat | `text` |
         | `plan.update` | The open chat's task plan changed | `taskId`, `plan` (`title`, `status`, `current`, `steps`; only with `project.info`) |
         | `run.log` | The running task's live output, batched once a second, only while one of the mod's surfaces is showing | `lines` (`kind`: `reply`, `tool` or `log`; `text`; `time`), `dropped`. Needs `events.subscribe` |
@@ -320,7 +326,7 @@ object ModAuthoringGuide {
         | `${'$'}.tool.register({ name, description, inputSchema })` | `tools.provide` | Gives the agents a tool; resolves to the name they see (see "Tools for the agents") |
         | `${'$'}.tool.unregister(name)` | `tools.provide` | Takes the tool away |
         | `${'$'}.agent.list()` | `agent.ask` | The harnesses: `{ id, name, installed, current }` |
-        | `${'$'}.agent.ask({ harness, prompt, model, effort, chat, timeoutMs })` | `agent.ask` | Runs a task in the open chat (or another chat of the project) on a harness and resolves when it ends (see "Agent tasks") |
+        | `${'$'}.agent.ask({ harness, prompt, model, effort, chat, role, timeoutMs })` | `agent.ask` | Runs a task in the open chat (or another chat of the project) on a harness and resolves when it ends (see "Agent tasks") |
         | `${'$'}.agent.stop(taskId)` | `agent.ask` | Stops a task the mod's `agent.ask` started; `true` when it was running |
         | `${'$'}.mods.tools()`, `${'$'}.mods.call(name, input)` | `mods.call` | Other mods' tools (see "Tools for the agents") |
         | `${'$'}.git.status()`, `${'$'}.git.diff({ path, staged })`, `${'$'}.git.log(n)` | `git.read` | The open project's repository: `{ branch, tracking, clean, files: [{ path, index, worktree }] }`, `{ text, truncated }`, and up to 100 `{ hash, author, time, subject }` |
@@ -442,6 +448,14 @@ object ModAuthoringGuide {
         - `model` and `effort` pick the harness's model and effort level first (the ids `/model` and
           `/effort` take); like the harness, they stay selected. `chat: 'new'` starts a new chat in the
           project, and a chat id opens that chat; the answer's `chatId` says where it ran.
+        - `role: 'coder'` runs the task as one of the mod's `contributes.roles`: on that role's harness,
+          model and effort (as the user set them on the console, unless the call names them) and in the
+          role's own chat (made on first use, named after the mod and role). The step shows on the
+          console's chain, where the user can stop it, pause the chain after it (your next
+          `${'$'}.agent.ask` then waits for Resume) or retry it.
+        - Messages the user sends from the console queue one at a time with your own calls, since a
+          project runs one task at a time. When one ends, `role.message` hooks hear about it, so code can
+          pass a reply on, for example from the planner to the coder.
         - `${'$'}.agent.stop(taskId)` stops a task the mod started. When the user presses Stop, mods start
           no task or follow-up until the user sends a message, so a runaway chain always stops.
         - `run.end` follow-ups and `${'$'}.prompt.send` share a limit of 3 after each message from the user;

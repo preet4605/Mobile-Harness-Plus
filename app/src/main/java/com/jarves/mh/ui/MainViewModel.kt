@@ -3157,6 +3157,7 @@ class MainViewModel(
                 .getOrNull()?.let { host ->
                     host.effects = modEffects
                     modHost = host
+                    com.jarves.mh.mods.ModAgentSteps.shared.wake = { viewModelScope.launch { drainConsole() } }
                     com.jarves.mh.mods.ModAgentSteps.shared.stopper = { step ->
                         val taskId = step.taskId
                         if (taskId != null && taskId in modAsks && activeUiTaskId == taskId && _state.value.isRunning) {
@@ -3980,14 +3981,15 @@ class MainViewModel(
         }
     }
 
-    fun openProject(project: Project) {
+    /** [show]: false opens it behind the current screen, as a mod's console does. */
+    fun openProject(project: Project, show: Boolean = true) {
         val openStartedAt = OpenPerf.nowMs()
         val current = _state.value
         if (current.activeProject?.id == project.id) {
             dismissReadOnlyLoad()
             _state.update {
                 it.copy(
-                    workspaceVisible = true,
+                    workspaceVisible = show || it.workspaceVisible,
                     readOnlyProject = null,
                     readOnlyProjectChats = emptyList(),
                     readOnlyChatId = null,
@@ -4036,7 +4038,7 @@ class MainViewModel(
         _state.update {
             it.copy(
                 activeProject = project,
-                workspaceVisible = true,
+                workspaceVisible = show || it.workspaceVisible,
                 openedFilePath = null,
                 openedFileContent = null,
                 fileContentLoading = false,
@@ -7188,15 +7190,30 @@ class MainViewModel(
         context: ModEventContext,
         timeoutMs: Long,
         options: com.jarves.mh.mods.ModAskOptions = com.jarves.mh.mods.ModAskOptions(),
-        role: String? = null,
         fromUser: Boolean = false,
+        /** The console's queued step this runs, already shown on the dashboard. */
+        stepId: Long? = null,
     ): JSONObject {
-        // Every agent step a mod (or its dashboard) starts shows on the mod's dashboard.
+        // Every agent step a mod (or its console) starts shows on the mod's dashboard.
         val steps = com.jarves.mh.mods.ModAgentSteps.shared
-        val step = steps.add(mod.id, role, harness?.let(com.jarves.mh.mods.ModManifestParser::harnessId), prompt, fromUser)
+        // A role brings its harness, model, effort and own chat, unless the call names them.
+        val role = options.role?.let { id -> mod.manifest.roles.firstOrNull { it.id == id } }
+            ?.let { modHost?.roles?.effective(mod.id, it) ?: it }
+        val kind = harness ?: role?.let { com.jarves.mh.mods.ModManifestParser.harnessFromId(it.harness) }
+        val asked = if (role == null) options else {
+            val current = _state.value
+            val saved = context.projectId?.let { modHost?.roles?.chat(mod.id, it, role.id) }
+                ?.takeIf { id -> current.activeProject?.id == context.projectId && current.projectChats.any { it.id == id } }
+            options.copy(model = options.model ?: role.model, effort = options.effort ?: role.effort, chat = options.chat ?: saved ?: "new")
+        }
+        val step = stepId ?: steps.add(mod.id, role?.id, kind?.let(com.jarves.mh.mods.ModManifestParser::harnessId), prompt, fromUser, context.projectId)
         val answer = try {
-            runModAskCore(mod, harness, prompt, context, timeoutMs, options) { kind, taskId, chatId ->
-                steps.running(step, com.jarves.mh.mods.ModManifestParser.harnessId(kind), taskId, chatId)
+            // Pause after this step: the mod's next ask waits for Resume.
+            if (!fromUser) steps.awaitResumed(mod.id)
+            runModAskCore(mod, kind, prompt, context, timeoutMs, asked, fromUser, role?.let { "${mod.manifest.name} · ${it.title}" }) { started, taskId, chatId ->
+                steps.running(step, com.jarves.mh.mods.ModManifestParser.harnessId(started), taskId, chatId)
+                val projectId = context.projectId
+                if (role != null && projectId != null && chatId != null) modHost?.roles?.setChat(mod.id, projectId, role.id, chatId)
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             steps.ended(step, com.jarves.mh.mods.ModAgentSteps.State.STOPPED)
@@ -7208,6 +7225,12 @@ class MainViewModel(
         val status = answer.optString("status")
         steps.ended(step, com.jarves.mh.mods.ModAgentSteps.stateOf(status), reply = answer.optString("text"),
             error = answer.optString("error").takeIf { status != "completed" && it.isNotBlank() && it != "null" })
+        if (fromUser && role != null) {
+            val host = modHost
+            viewModelScope.launch {
+                runCatching { host?.roleMessage(mod.id, role.id, answer.optString("harness").ifBlank { null }, prompt, status, answer.optString("text")) }
+            }
+        }
         return answer
     }
 
@@ -7218,6 +7241,10 @@ class MainViewModel(
         context: ModEventContext,
         timeoutMs: Long,
         options: com.jarves.mh.mods.ModAskOptions,
+        /** The user sent it from a mod's console: it counts as their own message. */
+        fromUser: Boolean,
+        /** The title of a chat this makes (`chat: "new"`). */
+        chatTitle: String?,
         onStarted: (AgentKind, String, String?) -> Unit,
     ): JSONObject = withContext(Dispatchers.Main.immediate) {
         var taskId: String? = null
@@ -7225,7 +7252,15 @@ class MainViewModel(
         val answer = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
             modAskLock.lock()
             try {
-                check(!modChainHalted) { "You stopped the agent, so mods start nothing until your next message." }
+                fun checkChain() {
+                    if (fromUser) {
+                        modChainHalted = false
+                        modFollowUpsInChain = 0
+                    } else {
+                        check(!modChainHalted) { "You stopped the agent, so mods start nothing until your next message." }
+                    }
+                }
+                checkChain()
                 fun sameChat(s: AppUiState) = s.activeProject?.id == context.projectId && s.activeChatId == chatId
                 // Another chat of the project: wait until the open one is free, then open or make it.
                 if (options.chat != null && options.chat != chatId) {
@@ -7235,6 +7270,7 @@ class MainViewModel(
                         val before = free.activeChatId
                         createChat()
                         check(_state.value.activeChatId != before) { "Couldn't start a new chat." }
+                        chatTitle?.let(::nameActiveChat)
                     } else {
                         check(free.projectChats.any { it.id == options.chat }) { "No chat ${options.chat} in this project." }
                         switchChat(options.chat)
@@ -7245,7 +7281,7 @@ class MainViewModel(
                 }
                 val ready = _state.first { !sameChat(it) || modAskCanStart(it) }
                 check(sameChat(ready)) { "The mod's chat is no longer open." }
-                check(!modChainHalted) { "You stopped the agent, so mods start nothing until your next message." }
+                checkChain()
                 val kind = harness ?: ready.agentKind
                 if (kind != ready.agentKind) {
                     check(kind in ready.installedAgentVersions) { "${kind.title} is not installed. Install it from Settings first." }
@@ -7260,9 +7296,11 @@ class MainViewModel(
                     check(change !is EffortChange.Refused) { (change as EffortChange.Refused).reason }
                 }
                 val where = context.copy(chatId = chatId)
-                postModMessage(ChatMessage(fromUser = false, text = "${mod.manifest.name} asked ${kind.title} to work on the next message.", origin = "mod:${mod.id}"), where)
+                if (!fromUser) {
+                    postModMessage(ChatMessage(fromUser = false, text = "${mod.manifest.name} asked ${kind.title} to work on the next message.", origin = "mod:${mod.id}"), where)
+                }
                 val toastBefore = _state.value.toastMessage
-                sendPrompt(prompt, emptyList(), fromQueue = true, fromMod = true)
+                sendPrompt(prompt, emptyList(), fromQueue = true, fromMod = !fromUser)
                 // prompt.compose hooks finish the send a moment later.
                 modPromptJob?.takeIf { it.isActive }?.join()
                 val started = activeUiTaskId?.takeIf { _state.value.isRunning }
@@ -7282,6 +7320,80 @@ class MainViewModel(
             .put("taskId", taskId ?: JSONObject.NULL)
             .put("chatId", chatId ?: JSONObject.NULL)
             .also { taskId?.let(modAsks::remove) }
+    }
+
+    /** Opens [chatId] of [projectId] on screen, as a mod console's role chats open. */
+    fun openProjectChat(projectId: String, chatId: String) {
+        val project = _state.value.projects.firstOrNull { it.id == projectId } ?: return
+        openProject(project)
+        viewModelScope.launch {
+            val ready = kotlinx.coroutines.withTimeoutOrNull(CONSOLE_OPEN_MS) {
+                _state.first { it.activeProject?.id == projectId && !it.chatLoading && it.projectChats.isNotEmpty() }
+            } ?: return@launch
+            if (ready.activeChatId == chatId) return@launch
+            if (ready.isRunning) {
+                _state.update { it.copy(toastMessage = "A task is running in another chat; this chat opens when it ends.") }
+                return@launch
+            }
+            switchChat(chatId)
+        }
+    }
+
+    /** Names the open chat [title], as a role's chat is named after its mod and role. */
+    private fun nameActiveChat(title: String) {
+        val project = _state.value.activeProject ?: return
+        val chatId = _state.value.activeChatId ?: return
+        _state.update { current -> current.copy(projectChats = current.projectChats.map { if (it.id == chatId) it.copy(title = title.take(60)) else it }) }
+        preferences.saveProjectChats(project.id, _state.value.projectChats)
+    }
+
+    private var consoleDrain: Job? = null
+
+    /** Runs the user's queued console sends one at a time, in their queue order (mod dashboards phase 3). */
+    private fun drainConsole() {
+        if (consoleDrain?.isActive == true) return
+        consoleDrain = viewModelScope.launch {
+            while (true) {
+                val step = com.jarves.mh.mods.ModAgentSteps.shared.takeNext() ?: break
+                try {
+                    runConsoleStep(step)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    com.jarves.mh.mods.ModAgentSteps.shared.ended(step.id, com.jarves.mh.mods.ModAgentSteps.State.STOPPED)
+                    throw e
+                }
+            }
+        }
+    }
+
+    private suspend fun runConsoleStep(step: com.jarves.mh.mods.ModAgentSteps.Step) {
+        val steps = com.jarves.mh.mods.ModAgentSteps.shared
+        fun fail(why: String) = steps.ended(step.id, com.jarves.mh.mods.ModAgentSteps.State.FAILED, error = why)
+        val mod = modRegistry?.snapshot?.value?.active?.firstOrNull { it.id == step.modId } ?: return fail("The mod is off.")
+        val project = _state.value.projects.firstOrNull { it.id == step.projectId } ?: return fail("That project no longer exists.")
+        // One task at a time: wait for whatever runs now, then open the project without leaving the Mods screen.
+        val free = kotlinx.coroutines.withTimeoutOrNull(CONSOLE_WAIT_MS) {
+            _state.first { !it.isRunning && !it.isStopping && !it.projectTerminalRunning && !it.androidBuildRunning }
+        } ?: return fail("Another task kept running, so this one didn't start.")
+        if (free.activeProject?.id != project.id) {
+            val open = free.activeProject
+            if (open != null && free.workspaceVisible) return fail("${open.name} is open. Go back to your projects so the console can open ${project.name}.")
+            openProject(project, show = false)
+            kotlinx.coroutines.withTimeoutOrNull(CONSOLE_OPEN_MS) {
+                _state.first { it.activeProject?.id == project.id && !it.chatLoading && it.projectChats.isNotEmpty() }
+            } ?: return fail("${project.name} didn't open.")
+        }
+        val current = _state.value
+        val context = ModEventContext(project.id, project.name, { projectWorkspaceRoot(project) }, current.activeChatId, current.agentKind)
+        try {
+            runModAsk(
+                mod, step.harness?.let(com.jarves.mh.mods.ModManifestParser::harnessFromId), step.prompt, context, CONSOLE_ASK_MS,
+                com.jarves.mh.mods.ModAskOptions(model = step.model, effort = step.effort, role = step.role), fromUser = true, stepId = step.id,
+            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // runModAsk already marked the step failed with the reason.
+        }
     }
 
     /**
@@ -8472,6 +8584,7 @@ class MainViewModel(
         modAsks.values.forEach { it.done.completeExceptionally(IllegalStateException("The app closed the chat before the task ended.")) }
         modAsks.clear()
         com.jarves.mh.mods.ModAgentSteps.shared.stopper = null
+        com.jarves.mh.mods.ModAgentSteps.shared.wake = null
         // Mod servers live only while the app's screen does (mod plan rows 15 and 20).
         runCatching { com.jarves.mh.mods.ModGuestServers.shared.stopAll() }
         flushPendingTranscriptWrite()
@@ -8574,6 +8687,10 @@ class MainViewModel(
         private const val MOD_STABLE_AFTER_MS = 60_000L
         private const val MAX_PENDING_MOD_POSTS = 5
         private const val MAX_MOD_ASK_REPLY = 50_000
+        /** How long a queued console send waits for the task before it, and for its own task. */
+        private const val CONSOLE_WAIT_MS = 2 * 60 * 60 * 1000L
+        private const val CONSOLE_ASK_MS = 2 * 60 * 60 * 1000L
+        private const val CONSOLE_OPEN_MS = 30_000L
         private const val MAX_MOD_PROMPT = 100_000
         private const val MAX_MOD_COMMAND_LOG = 16L * 1024 * 1024
         private const val MOD_CHECK_NOTICE_MS = 700L

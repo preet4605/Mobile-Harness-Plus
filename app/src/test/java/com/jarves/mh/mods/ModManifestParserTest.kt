@@ -267,4 +267,18 @@ class ModManifestParserTest {
         assertRejected(withSchedules(schedule("x", 15), permission = false), "schedules permission")
         assertRejected(withSchedules(schedule("x", 15), hooks = false), "hooks module")
     }
+
+    @Test
+    fun `roles name a harness, six at most, and need no permission`() {
+        fun withRoles(vararg roles: JSONObject) = ModTestKit.manifest {
+            put("contributes", JSONObject().put("roles", JSONArray(roles.toList())))
+        }
+        fun role(id: String, harness: String = "codex") = JSONObject().put("id", id).put("title", id.replaceFirstChar { it.uppercase() }).put("harness", harness)
+        val manifest = ModManifestParser.parse(withRoles(role("coder").put("model", "gpt-5-codex").put("effort", "high"), role("reviewer", "claude")))
+        assertEquals(listOf(ModRole("coder", "Coder", "codex", "gpt-5-codex", "high"), ModRole("reviewer", "Reviewer", "claude")), manifest.roles)
+        assertRejected(withRoles(role("coder", "gpt")), "harness must be")
+        assertRejected(withRoles(role("x"), role("x")), "role id")
+        assertRejected(withRoles(*Array(7) { role("r$it") }), "roles")
+        assertRejected(withRoles(role("x").put("prompt", "hi")), "Unknown field")
+    }
 }

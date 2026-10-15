@@ -95,6 +95,10 @@ fun ModsScreen(
     currentAgent: AgentKind = AgentKind.CLAUDE_CODE,
     onBuildMod: (name: String, idea: String, agent: AgentKind) -> Unit = { _, _, _ -> },
     onOpenProject: (Project) -> Unit = {},
+    /** The open project, which mods' consoles use first. */
+    activeProjectId: String? = null,
+    /** Opens a chat of a project, as a console's role chats open. */
+    onOpenChat: (projectId: String, chatId: String) -> Unit = { _, _ -> },
     viewModel: ModsViewModel = viewModel(),
 ) {
     val snapshot by viewModel.snapshot.collectAsStateWithLifecycle()
@@ -136,7 +140,8 @@ fun ModsScreen(
                 projects = projects,
                 viewModel = viewModel,
             )
-            else -> ModPage(shown, snapshot, host.mods[shown.id], surfaces[shown.id], bottomBarPadding, onBack = { openId = null }, viewModel)
+            else -> ModPage(shown, snapshot, host.mods[shown.id], surfaces[shown.id], bottomBarPadding, onBack = { openId = null }, viewModel,
+                projects = projects, activeProjectId = activeProjectId, onOpenChat = onOpenChat)
         }
     }
 
@@ -466,6 +471,9 @@ private fun ModPage(
     bottomBarPadding: Dp,
     onBack: () -> Unit,
     viewModel: ModsViewModel,
+    projects: List<Project> = emptyList(),
+    activeProjectId: String? = null,
+    onOpenChat: (String, String) -> Unit = { _, _ -> },
 ) {
     val listState = rememberLazyListState()
     val collapse by rememberTitleCollapse(listState)
@@ -509,6 +517,19 @@ private fun ModPage(
     }
     val chats by viewModel.chats.collectAsStateWithLifecycle()
     LaunchedEffect(mod.id) { viewModel.loadChat(mod.id) }
+    // Phase 3: the console works in the open project, or the one picked here.
+    val roleChoices by viewModel.roleChoices.collectAsStateWithLifecycle()
+    val pausedMods by viewModel.paused.collectAsStateWithLifecycle()
+    var consoleProject by rememberSaveable(mod.id) { mutableStateOf<String?>(null) }
+    LaunchedEffect(mod.id) { if (mod.manifest.roles.isNotEmpty()) viewModel.loadRoles(mod.id) }
+    val console = if (mod.manifest.roles.isEmpty()) null else ModConsoleState(
+        choices = roleChoices[mod.id].orEmpty(),
+        paused = mod.id in pausedMods,
+        projects = projects,
+        projectId = (consoleProject ?: activeProjectId)?.takeIf { id -> projects.any { it.id == id } } ?: projects.firstOrNull()?.id,
+        onSelectProject = { consoleProject = it },
+        onOpenChat = onOpenChat,
+    )
     var argsFor by remember { mutableStateOf<com.jarves.mh.mods.ModCodeCommand?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
     val shownRuntime = runtime?.takeIf { snapshot.status(mod) == ModStatus.ON }
@@ -558,6 +579,7 @@ private fun ModPage(
                     onRunWithArgs = { argsFor = it },
                     onShowActivity = { tab = ModPageTab.ACTIVITY },
                     onClearData = { confirmClear = true },
+                    console = console,
                 )
                 ModPageTab.CONTROLS -> controlsTab(mod, shownRuntime, servers, viewModel, onPreview = showText, onEdit = { editing = it }, onOpenPanel = { panelId = it.id })
                 ModPageTab.PERMISSIONS -> permissionsTab(mod, viewModel, onConfirmHigh = { confirmHigh = it })

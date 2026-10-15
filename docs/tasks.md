@@ -31,7 +31,23 @@ Audit: project files `audits/perf-heat-crash-audit-2026-10-14.md` (static readin
 
 Love chose "All four phases" (03:42 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair.
 
+### Phase 3: agent console for mods with roles
+
+- New `contributes.roles` (up to 6: `id`, `title`, `harness`, optional `model` and `effort`; no permission) parsed by ModManifestParser and checked by `mh-mod validate`.
+- The Dashboard of such a mod shows an **Agents** console ([ModConsole](../app/src/main/java/com/jarves/mh/ui/ModConsole.kt)): a project picker (the open project first), then a card per role with its harness, model and effort (changeable; saved in the mod's `roles.json` by [ModRoles](../app/src/main/java/com/jarves/mh/mods/ModRoles.kt)), idle/running/waiting state with Stop, the last reply (folded), a Send box, "Hand off the last reply" to another role, and "Open the role's chat".
+- **Chain:** the newest 15 steps of the mod, user sends and the mod's own `$.agent.ask` alike, with role, prompt, status and duration. Stop chain (pauses the mod, cancels its queue, stops its running step), Pause after this step / Resume, and per step Stop, Move earlier/later, Cancel, Retry and Open its chat.
+- **Queue:** sends are QUEUED steps in `ModAgentSteps`; MainViewModel's `drainConsole` runs them one at a time in queue order through `runModAsk(fromUser = true)`. A send waits for any running task, then opens its project behind the Mods screen if needed (`openProject(show = false)`); it fails with a reason when another project is on screen. The user's send clears a previous Stop's halt, posts no "mod asked" note and goes through prompt hooks like a typed message.
+- Each role works in its own chat per project, made on first send, named "Mod · Role", and reused while it exists.
+- `$.agent.ask({ role })` uses a role's harness, model, effort and chat; an unknown role is refused. While a mod is paused its next `$.agent.ask` waits for Resume.
+- New `role.message` event when a console send ends (`role`, `harness`, `status`; `prompt` and `text` only with `chat.read` or `agent.ask`).
+- `ModAgentSteps` keeps unfinished steps when trimming to 100, and prompts up to 20,000 characters so handoffs carry whole replies.
+- **Defaults taken:** effort choices are Default, low, medium and high; a harness change drops the role's declared model and effort; the console's project defaults to the open project, then the first in the list.
+- **VERIFIED:** full suite 1610 tests, 0 failures; node 18/18; the app compiles. New tests: ModAgentStepsTest (queue order, move, cancel, pause, retry, stop chain, trimming), ModRolesTest (picks, persistence, role chats), ModManifestParserTest (roles), ModHostTest (`agent.ask` role, `role.message` with and without reply access), node kit test (roles validation).
+- **NOT RUN:** on a phone. The queue's project switching and role chat creation run only in MainViewModel and have no unit test.
+
 ### Phase 2: chat with the mod
+
+COMPLETE (pushed to harness-dev as 6683a80).
 
 - The Dashboard shows a chat (the newest 30 lines, with Clear) and a message box when the mod's hooks listen for the new `dashboard.message` event. `ModHost.dashboardMessage` adds the user's line, dispatches `{ text }` and keeps the mod's answer (`{ text }` or a string). The thread is kept in the mod's data folder (`dashboard-chat.json`, newest 200 lines, 8,000 characters each, written through a temporary file).
 - New op `$.dashboard.post(text)` (no permission) adds a mod line, for example when a long job ends.

@@ -562,7 +562,9 @@ private fun RootScreenHost(
                     agents = AgentKind.entries.filter { it == state.agentKind || it in state.installedAgentVersions },
                     currentAgent = state.agentKind,
                     onBuildMod = viewModel::createModDraft,
-                    onOpenProject = viewModel::openProject,
+                    onOpenProject = { viewModel.openProject(it) },
+                    activeProjectId = state.activeProject?.id,
+                    onOpenChat = viewModel::openProjectChat,
                 )
                 RootScreen.SETTINGS -> Box(
                     modifier = Modifier.fillMaxSize(),

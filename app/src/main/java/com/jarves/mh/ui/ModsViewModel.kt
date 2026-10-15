@@ -109,6 +109,7 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { host.await()?.logVersion?.collect { _logVersion.value = it } }
         viewModelScope.launch { host.await()?.surfaces?.collect { _surfaces.value = it } }
         viewModelScope.launch { host.await()?.dashboardChats?.collect { _chats.value = it } }
+        viewModelScope.launch { host.await()?.roles?.choices?.collect { _roleChoices.value = it } }
     }
 
     /** A mod page shows [surface]; the host draws it only while shown. */
@@ -150,6 +151,54 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
             if (!com.jarves.mh.mods.ModAgentSteps.shared.stop(id)) _messages.emit("That task isn't running in the open chat, so it can't be stopped from here.")
         }
     }
+
+    // Phase 3: the agent console of mods with `contributes.roles`.
+    private val consoleSteps = com.jarves.mh.mods.ModAgentSteps.shared
+    /** Mods whose chains are paused. */
+    val paused: StateFlow<Set<String>> = consoleSteps.paused
+    private val _roleChoices = MutableStateFlow<Map<String, Map<String, com.jarves.mh.mods.ModRoles.Choice>>>(emptyMap())
+    /** The user's harness, model and effort picks for each mod's roles. */
+    val roleChoices: StateFlow<Map<String, Map<String, com.jarves.mh.mods.ModRoles.Choice>>> = _roleChoices.asStateFlow()
+
+    fun loadRoles(modId: String) {
+        viewModelScope.launch(Dispatchers.IO) { host.await()?.roles?.choice(modId, "") }
+    }
+
+    fun setRoleChoice(modId: String, roleId: String, choice: com.jarves.mh.mods.ModRoles.Choice) {
+        viewModelScope.launch(Dispatchers.IO) { host.await()?.roles?.setChoice(modId, roleId, choice) }
+    }
+
+    /** The chat [roleId] works in, in [projectId], once it has one. */
+    fun roleChat(modId: String, projectId: String, roleId: String): String? = hostRef?.roles?.chat(modId, projectId, roleId)
+
+    /** Queues [text] for [role] in [projectId]; it runs when the tasks before it are done. */
+    fun sendToRole(mod: InstalledMod, role: com.jarves.mh.mods.ModRole, text: String, projectId: String) {
+        val prompt = text.trim().take(com.jarves.mh.mods.ModAgentSteps.MAX_PROMPT)
+        if (prompt.isEmpty()) return
+        consoleSteps.enqueue(mod.id, role.id, role.harness, prompt, projectId, role.model, role.effort)
+    }
+
+    /** Sends [from]'s last reply to [to], as the user's send. */
+    fun handoff(mod: InstalledMod, from: com.jarves.mh.mods.ModRole, to: com.jarves.mh.mods.ModRole, projectId: String) {
+        val reply = consoleSteps.of(mod.id).lastOrNull { it.role == from.id && it.state == com.jarves.mh.mods.ModAgentSteps.State.COMPLETED && !it.reply.isNullOrBlank() }?.reply
+        if (reply == null) {
+            viewModelScope.launch { _messages.emit("${from.title} has no finished reply to hand off yet.") }
+            return
+        }
+        sendToRole(mod, to, "Here is the latest reply from the ${from.title}:\n\n$reply", projectId)
+    }
+
+    fun cancelStep(id: Long) { consoleSteps.cancel(id) }
+
+    fun moveStep(id: Long, earlier: Boolean) { consoleSteps.move(id, earlier) }
+
+    fun retryStep(id: Long, projectId: String) { consoleSteps.retry(id, projectId) }
+
+    fun pauseChain(modId: String) = consoleSteps.pause(modId)
+
+    fun resumeChain(modId: String) = consoleSteps.resume(modId)
+
+    fun stopChain(modId: String) = consoleSteps.stopChain(modId)
 
     private val _chats = MutableStateFlow<Map<String, List<com.jarves.mh.mods.ModChatLine>>>(emptyMap())
     /** Each mod's dashboard chat. */

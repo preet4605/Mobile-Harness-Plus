@@ -50,6 +50,16 @@ internal data class ModDashboardData(
     val chat: List<ModChatLine> = emptyList(),
 )
 
+/** What the agent console needs from the mod page (phase 3). */
+internal data class ModConsoleState(
+    val choices: Map<String, com.jarves.mh.mods.ModRoles.Choice>,
+    val paused: Boolean,
+    val projects: List<com.jarves.mh.model.Project>,
+    val projectId: String?,
+    val onSelectProject: (String) -> Unit,
+    val onOpenChat: (projectId: String, chatId: String) -> Unit,
+)
+
 /**
  * Every mod's home (mod dashboards plan, phase 1): drawn by the app from what the mod declares, so
  * a mod needs no code for it. Its state and switch, what it is doing now (agent tasks, servers,
@@ -71,6 +81,7 @@ internal fun LazyListScope.modDashboard(
     onRunWithArgs: (ModCodeCommand) -> Unit,
     onShowActivity: () -> Unit,
     onClearData: () -> Unit,
+    console: ModConsoleState? = null,
 ) {
     val manifest = mod.manifest
     val hasCode = manifest.hooksModule != null
@@ -98,8 +109,14 @@ internal fun LazyListScope.modDashboard(
         }
     }
 
-    val active = steps.filter { !it.state.done }
-    val recent = steps.filter { it.state.done }.takeLast(3).asReversed()
+    // Phase 3: a mod with roles gets the agent console; its steps then show under Chain, not Now.
+    val hasConsole = console != null && manifest.roles.isNotEmpty()
+    if (hasConsole && console != null) {
+        modConsole(mod, manifest.roles, console.choices, steps, console.paused, console.projects, console.projectId,
+            console.onSelectProject, viewModel, console.onOpenChat)
+    }
+    val active = if (hasConsole) emptyList() else steps.filter { !it.state.done }
+    val recent = if (hasConsole) emptyList() else steps.filter { it.state.done }.takeLast(3).asReversed()
     item(key = "dash-now") {
         val now = System.currentTimeMillis()
         val lastRuns = data.audit.filter { it.op == "schedule.run" }.groupBy { it.detail }.mapValues { (_, entries) -> entries.maxOf { it.time } }
@@ -109,7 +126,7 @@ internal fun LazyListScope.modDashboard(
                 ListRow(
                     title = stepTitle(step),
                     subtitle = step.prompt.lineSequence().firstOrNull()?.take(160),
-                    value = if (step.state == ModAgentSteps.State.RUNNING) "Stop · ${duration(now - step.startedAt)}" else step.state.label,
+                    value = if (step.state == ModAgentSteps.State.RUNNING) "Stop · ${consoleDuration(now - step.startedAt)}" else step.state.label,
                     onClick = if (step.state == ModAgentSteps.State.RUNNING) ({ viewModel.stopStep(step.id) }) else null,
                 )
             }
@@ -267,11 +284,6 @@ internal fun LazyListScope.modDashboard(
 private fun stepTitle(step: ModAgentSteps.Step): String =
     listOfNotNull(step.role, step.harness?.replaceFirstChar { it.uppercase() }).joinToString(" · ").ifEmpty { "Agent task" } +
         if (step.fromUser) " (you)" else ""
-
-private fun duration(ms: Long): String {
-    val seconds = (ms / 1000).coerceAtLeast(0)
-    return if (seconds < 60) "${seconds}s" else if (seconds < 3600) "${seconds / 60}m ${seconds % 60}s" else "${seconds / 3600}h ${seconds % 3600 / 60}m"
-}
 
 private fun clock(millis: Long): String =
     runCatching { java.time.format.DateTimeFormatter.ofPattern("HH:mm").format(java.time.Instant.ofEpochMilli(millis).atZone(java.time.ZoneId.systemDefault())) }.getOrDefault("")

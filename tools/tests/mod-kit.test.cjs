@@ -41,11 +41,13 @@ test('validate checks contributes like the app: menus, panels, schedules, guest 
     panels: [{id: 'board', title: 'Board', entry: 'web/missing.html'}],
     schedules: [{id: 'often', everyMinutes: 5}],
     guestTools: [{name: 'fmt', command: ['./fmt']}],
+    roles: [{id: 'coder', title: 'Coder', harness: 'gpt'}, {id: 'coder', title: 'Again', harness: 'codex'}],
     widgets: [],
   }});
   const problems = kit.validate(dir);
   for (const fragment of ['Unknown field "contributes.widgets"', 'place must be chat, file or project', "runs /deploy, which isn't one",
-    'entry must be a .html file', 'need the ui.webpane permission', 'everyMinutes must be 15 to 1440', 'need the schedules permission', 'must ask for guest.tools']) {
+    'entry must be a .html file', 'need the ui.webpane permission', 'everyMinutes must be 15 to 1440', 'need the schedules permission', 'must ask for guest.tools',
+    'roles[0].harness must be claude', 'Two roles are called coder']) {
     assert.ok(problems.some(p => p.includes(fragment)), `${fragment} in ${JSON.stringify(problems)}`);
   }
   assert.ok(!problems.some(p => p.includes('Menu item lint')));
@@ -53,7 +55,8 @@ test('validate checks contributes like the app: menus, panels, schedules, guest 
   fs.writeFileSync(path.join(dir, 'web', 'board.html'), '<p>hi</p>');
   writeMod(dir, 'export function register(on) {}', {
     permissions: [{capability: 'ui.webpane', reason: 'r'}, {capability: 'schedules', reason: 'r'}],
-    contributes: {panels: [{id: 'board', title: 'Board', entry: 'web/board.html'}], schedules: [{id: 'hourly', everyMinutes: 60}]},
+    contributes: {panels: [{id: 'board', title: 'Board', entry: 'web/board.html'}], schedules: [{id: 'hourly', everyMinutes: 60}],
+      roles: [{id: 'coder', title: 'Coder', harness: 'codex', model: 'gpt-5-codex', effort: 'high'}]},
   });
   assert.deepEqual(kit.validate(dir), []);
 });

@@ -36,6 +36,8 @@ data class ModManifest(
     val menuItems: List<ModMenuItem> = emptyList(),
     /** Times the app wakes to fire `schedule.run` (mod plan row 21; `schedules`, Developer mode). */
     val schedules: List<ModSchedule> = emptyList(),
+    /** Agent roles its Dashboard console shows, each on its own harness and chat (mod dashboards phase 3). */
+    val roles: List<ModRole> = emptyList(),
 ) {
     val requested: Set<ModCapability> get() = permissions.map { it.capability }.toSet()
 
@@ -65,6 +67,9 @@ data class ModMenuEntry(val modId: String, val modName: String, val item: ModMen
 
 /** A periodic wake-up: `schedule.run` fires about every [everyMinutes] minutes (at least 15). */
 data class ModSchedule(val id: String, val everyMinutes: Int, val description: String = "")
+
+/** An agent role: the console sends its prompts to [harness] (with [model] and [effort] when set) in the role's own chat. */
+data class ModRole(val id: String, val title: String, val harness: String, val model: String? = null, val effort: String? = null)
 
 /** A web panel: [entry] is an `.html` file in the package, served from the mod's own origin. */
 data class ModWebPanel(val id: String, val title: String, val entry: String)
@@ -194,6 +199,9 @@ object ModManifestParser {
     private val VERSION = Regex("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
     private val COMMAND_NAME = Regex("^[a-z][a-z0-9-]{1,30}$")
     private val ITEM_ID = Regex("^[a-z0-9-]{1,40}$")
+
+    /** At most this many `contributes.roles`. */
+    const val MAX_ROLES = 6
     private val GUEST_PROGRAM_NAME = Regex("^[a-z][a-z0-9_]{1,31}$")
     private val ENV_NAME = Regex("^[A-Z_][A-Z0-9_]{0,63}$")
     /** Names the app sets for every guest program, or that would change how the guest runs it. */
@@ -210,7 +218,7 @@ object ModManifestParser {
         "permissions", "contributes", "integrity", "hooks", "types", "dashboard",
     )
     private val CONTRIBUTES_KEYS = setOf(
-        "panels", "menuItems", "schedules", "slashCommands", "promptTemplates", "settings", "rules", "skills", "hooks", "guestTools", "mcpServers",
+        "panels", "menuItems", "schedules", "roles", "slashCommands", "promptTemplates", "settings", "rules", "skills", "hooks", "guestTools", "mcpServers",
     )
     private val HARNESS_IDS = mapOf(
         "claude" to AgentKind.CLAUDE_CODE,
@@ -283,6 +291,7 @@ object ModManifestParser {
         var webPanels = emptyList<ModWebPanel>()
         var menuItems = emptyList<ModMenuItem>()
         var schedules = emptyList<ModSchedule>()
+        var roles = emptyList<ModRole>()
         if (contributes != null) {
             if (contributes !is JSONObject) {
                 p.add("\"contributes\" must be an object.")
@@ -293,6 +302,7 @@ object ModManifestParser {
                 webPanels = array(contributes, "panels", p, 4).mapIndexedNotNull { i, o -> parseWebPanel(o, i, p) }
                 menuItems = array(contributes, "menuItems", p, 8).mapIndexedNotNull { i, o -> parseMenuItem(o, i, p) }
                 schedules = array(contributes, "schedules", p, 3).mapIndexedNotNull { i, o -> parseSchedule(o, i, p) }
+                roles = array(contributes, "roles", p, MAX_ROLES).mapIndexedNotNull { i, o -> parseRole(o, i, p) }
                 commands = array(contributes, "slashCommands", p, 32).mapIndexedNotNull { i, o -> parseCommand(o, i, p) }
                 templates = array(contributes, "promptTemplates", p, 32).mapIndexedNotNull { i, o -> parseTemplate(o, i, p) }
                 settings = array(contributes, "settings", p, 32).mapIndexedNotNull { i, o -> parseSetting(o, i, p) }
@@ -327,6 +337,7 @@ object ModManifestParser {
         checkUnique(webPanels.map { it.id }, "web panel id", p)
         checkUnique(menuItems.map { it.id }, "menu item id", p)
         checkUnique(schedules.map { it.id }, "schedule id", p)
+        checkUnique(roles.map { it.id }, "role id", p)
         menuItems.filter { item -> commands.none { it.name == item.command } }.forEach {
             p.add("Menu item ${it.id} runs /${it.command}, which isn't one of the mod's slashCommands.")
         }
@@ -405,7 +416,21 @@ object ModManifestParser {
             webPanels = webPanels,
             menuItems = menuItems,
             schedules = schedules,
+            roles = roles,
         )
+    }
+
+    private fun parseRole(o: JSONObject, i: Int, p: Problems): ModRole? {
+        val at = "contributes.roles[$i]"
+        unknownKeys(o, setOf("id", "title", "harness", "model", "effort"), at, p)
+        val id = string(o, "id", p, required = true, label = "$at.id") ?: return null
+        if (!ITEM_ID.matches(id)) p.add("$at.id must be lowercase letters, digits or dashes.")
+        val title = string(o, "title", p, required = true, min = 1, max = 40, label = "$at.title") ?: return null
+        val harness = string(o, "harness", p, required = true, label = "$at.harness") ?: return null
+        if (harnessFromId(harness) == null) p.add("$at.harness must be claude, deepseek, antigravity or codex.")
+        val model = string(o, "model", p, max = 120, label = "$at.model")?.takeIf { it.isNotBlank() }
+        val effort = string(o, "effort", p, max = 40, label = "$at.effort")?.takeIf { it.isNotBlank() }
+        return ModRole(id, title, harness, model, effort)
     }
 
     private fun parseSchedule(o: JSONObject, i: Int, p: Problems): ModSchedule? {
