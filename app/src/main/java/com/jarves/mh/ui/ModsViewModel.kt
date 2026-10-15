@@ -141,15 +141,36 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) { com.jarves.mh.mods.ModGuestServers.shared.stop(modId, name, note = "You stopped it") }
     }
 
+    /** Agent tasks mods started, or the user sent from a dashboard. */
+    val steps: StateFlow<List<com.jarves.mh.mods.ModAgentSteps.Step>> = com.jarves.mh.mods.ModAgentSteps.shared.steps
+
+    fun stopStep(id: Long) {
+        viewModelScope.launch {
+            if (!com.jarves.mh.mods.ModAgentSteps.shared.stop(id)) _messages.emit("That task isn't running in the open chat, so it can't be stopped from here.")
+        }
+    }
+
+    /** What the mod saved with `$.store`. */
+    suspend fun storedData(id: String): org.json.JSONObject = host.await()?.storedData(id) ?: org.json.JSONObject()
+
+    fun clearStoredData(id: String, then: () -> Unit) {
+        viewModelScope.launch {
+            host.await()?.clearStoredData(id)
+            then()
+        }
+    }
+
+    suspend fun modelTokensUsed(id: String): Long = host.await()?.modelTokensUsed(id) ?: 0L
+
     /** A web panel's page sent its mod a message. */
     fun panelMessage(modId: String, panelId: String, text: String) {
         hostRef?.panelMessage(modId, panelId, text)
     }
 
     /** A dashboard action: runs the mod's command and shows what it answered. */
-    fun runAction(modId: String, name: String) {
+    fun runAction(modId: String, name: String, args: String = "") {
         viewModelScope.launch {
-            val outcome = host.await()?.runCommand(modId, name, "") ?: return@launch
+            val outcome = host.await()?.runCommand(modId, name, args) ?: return@launch
             val text = when (outcome) {
                 is ModCodeCommandOutcome.Reply -> outcome.text
                 is ModCodeCommandOutcome.Failed -> outcome.message

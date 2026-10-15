@@ -506,6 +506,22 @@ class ModHost(
         }
     }
 
+    /** What [modId] saved with `$.store`, for its dashboard: up to [maxKeys] keys, newest-sorted by name. */
+    suspend fun storedData(modId: String, maxKeys: Int = 50): JSONObject = withContext(hostContext) {
+        val store = running[modId]?.store ?: ModStore(dataDir(modId))
+        JSONObject().apply { runCatching { store.keys().take(maxKeys).forEach { put(it, store.get(it)) } } }
+    }
+
+    /** Deletes everything [modId] saved with `$.store` (the user asked, on its dashboard). */
+    suspend fun clearStoredData(modId: String): Unit = withContext(hostContext) {
+        val store = running[modId]?.store ?: ModStore(dataDir(modId))
+        runCatching { store.keys().forEach(store::delete) }
+        registry.recordCall(modId, "store.clear", ModCapability.STORAGE, "by you", null)
+    }
+
+    /** Model tokens [modId] used today through `$.model.complete`. */
+    suspend fun modelTokensUsed(modId: String): Long = withContext(hostContext) { modelTokensToday(modId) }
+
     /** True when a running mod hooks [event]; lets callers skip building its payload. */
     fun listens(event: String): Boolean = event in listening
 

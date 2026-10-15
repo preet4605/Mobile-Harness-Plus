@@ -27,6 +27,26 @@ Audit: project files `audits/perf-heat-crash-audit-2026-10-14.md` (static readin
 - NOT RUN: phone tests (heat, frame timing, seccomp under PRoot, foreground-service race); offline suite.
 - Not done (lower impact): incremental Markdown parsing while streaming, checkpoint copy/hash dedupe, guest process priority, unbounded `activity`/`backgroundTasks` lists, mod schedule/watchdog timers.
 
+## Mod dashboards (design/mod-platform/mod-dashboards-plan.md) — 2026-10-15
+
+Love chose "All four phases" (03:42 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair.
+
+### Phase 1: an automatic dashboard for every mod
+
+- The mod page's Dashboard tab is now always there and opens first ([ModDashboard](../app/src/main/java/com/jarves/mh/ui/ModDashboard.kt)). It is drawn by the app from what the mod declares:
+  - its state, the on switch, Restart, and a Developer-mode badge;
+  - **Now:** its status line, its agent tasks (running ones can be stopped), its servers (with Stop) and its schedules (with the last run, from the audit);
+  - the mod's own panes, as before;
+  - its settings and rules, edited in place;
+  - its code commands as buttons, opening an argument box when the command has an `argumentHint`;
+  - the newest 20 lines of its log and audit together;
+  - its saved `$.store` data, with Clear, and today's model tokens.
+- [ModAgentSteps](../app/src/main/java/com/jarves/mh/mods/ModAgentSteps.kt) records every agent task a mod starts. `MainViewModel.runModAsk` wraps `runModAskCore` and reports waiting, running and done; its `stopper` stops only a mod task that is running in the open chat.
+- `ModHost.storedData`, `clearStoredData` (audited `store.clear`) and `modelTokensUsed` serve the dashboard.
+- **Default taken:** schedules show their last run, not their next one, because JobScheduler doesn't expose the next run.
+- **VERIFIED:** full suite 1600 tests with 0 failures, node 18/18, and the app compiles. `ModAgentStepsTest` covers state changes, stop only while running, and the cap of 100.
+- **NOT RUN:** on a phone.
+
 ## Developer-level mod control (design/mod-platform/developer-mods-plan.md) — 2026-10-14
 
 Love chose "All ten phases" (04:05 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair. Native code in mods (plan row 24) is not built; mods running with the app closed (row 15) and sharing beyond .mhmod (row 16) stay deferred.

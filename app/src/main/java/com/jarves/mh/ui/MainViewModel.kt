@@ -3157,6 +3157,13 @@ class MainViewModel(
                 .getOrNull()?.let { host ->
                     host.effects = modEffects
                     modHost = host
+                    com.jarves.mh.mods.ModAgentSteps.shared.stopper = { step ->
+                        val taskId = step.taskId
+                        if (taskId != null && taskId in modAsks && activeUiTaskId == taskId && _state.value.isRunning) {
+                            stopActiveTask()
+                            true
+                        } else false
+                    }
                     runCatching {
                         com.jarves.mh.runtime.task.TaskSupervisor.getInstance(application).canonicalTaskRepository.addSavedListener(modPlanListener)
                     }
@@ -7181,6 +7188,37 @@ class MainViewModel(
         context: ModEventContext,
         timeoutMs: Long,
         options: com.jarves.mh.mods.ModAskOptions = com.jarves.mh.mods.ModAskOptions(),
+        role: String? = null,
+        fromUser: Boolean = false,
+    ): JSONObject {
+        // Every agent step a mod (or its dashboard) starts shows on the mod's dashboard.
+        val steps = com.jarves.mh.mods.ModAgentSteps.shared
+        val step = steps.add(mod.id, role, harness?.let(com.jarves.mh.mods.ModManifestParser::harnessId), prompt, fromUser)
+        val answer = try {
+            runModAskCore(mod, harness, prompt, context, timeoutMs, options) { kind, taskId, chatId ->
+                steps.running(step, com.jarves.mh.mods.ModManifestParser.harnessId(kind), taskId, chatId)
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            steps.ended(step, com.jarves.mh.mods.ModAgentSteps.State.STOPPED)
+            throw e
+        } catch (e: Exception) {
+            steps.ended(step, com.jarves.mh.mods.ModAgentSteps.State.FAILED, error = e.message)
+            throw e
+        }
+        val status = answer.optString("status")
+        steps.ended(step, com.jarves.mh.mods.ModAgentSteps.stateOf(status), reply = answer.optString("text"),
+            error = answer.optString("error").takeIf { status != "completed" && it.isNotBlank() && it != "null" })
+        return answer
+    }
+
+    private suspend fun runModAskCore(
+        mod: InstalledMod,
+        harness: AgentKind?,
+        prompt: String,
+        context: ModEventContext,
+        timeoutMs: Long,
+        options: com.jarves.mh.mods.ModAskOptions,
+        onStarted: (AgentKind, String, String?) -> Unit,
     ): JSONObject = withContext(Dispatchers.Main.immediate) {
         var taskId: String? = null
         var chatId = context.chatId
@@ -7230,6 +7268,7 @@ class MainViewModel(
                 val started = activeUiTaskId?.takeIf { _state.value.isRunning }
                     ?: error(_state.value.toastMessage?.takeIf { it != toastBefore } ?: "${kind.title} didn't start a task for it.")
                 taskId = started
+                onStarted(kind, started, chatId)
                 val ask = ModAsk(kotlinx.coroutines.CompletableDeferred(), context.projectId.orEmpty(), chatId)
                 modAsks[started] = ask
                 ask.done.await().put("harness", com.jarves.mh.mods.ModManifestParser.harnessId(kind)).put("chatId", chatId ?: JSONObject.NULL)
@@ -8432,6 +8471,7 @@ class MainViewModel(
         }
         modAsks.values.forEach { it.done.completeExceptionally(IllegalStateException("The app closed the chat before the task ended.")) }
         modAsks.clear()
+        com.jarves.mh.mods.ModAgentSteps.shared.stopper = null
         // Mod servers live only while the app's screen does (mod plan rows 15 and 20).
         runCatching { com.jarves.mh.mods.ModGuestServers.shared.stopAll() }
         flushPendingTranscriptWrite()

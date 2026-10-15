@@ -113,7 +113,7 @@ object ModAuthoringGuide {
         appendLine("| `permissions` | One entry per capability the mod uses: `capability`, a short `reason`, and for `files.write` a `scope.paths` list of globs. |")
         appendLine("| `contributes` | The parts below. |")
         appendLine("| `hooks` | Optional: `{ \"module\": \"hooks/register.js\" }`, the mod code file (`.js` or `.mjs`, at most 512 KB). |")
-        appendLine("| `dashboard` | Optional, needs `hooks`: `{ \"pane\": \"main\", \"actions\": [\"refresh\"] }`. The pane id the mod's page shows first, and up to 8 of the mod's commands shown as buttons under it. |")
+        appendLine("| `dashboard` | Optional, needs `hooks`: `{ \"pane\": \"main\", \"actions\": [\"refresh\"] }`. The pane the mod's Dashboard shows first, and up to 8 of its commands listed first among its actions. |")
         appendLine()
         appendLine("### contributes")
         appendLine()
@@ -463,6 +463,10 @@ object ModAuthoringGuide {
         }
         ```
 
+        - Every mod has a Dashboard page the app draws by itself: its state and on switch, what it is
+          doing now (agent tasks it started, with Stop; its servers; its schedules), its settings and
+          rules, its commands as buttons, recent activity and saved data. Don't redraw those; draw what
+          only your mod knows. Your panes show on the Dashboard after the "Now" section.
         - Surfaces: a pane (`component: 'Pane'`, `requestId` = its id; needs `ui.pane`) on the mod's
           Dashboard page and, when the user switches it on, in a project's Mods tab; the row above the
           message box (`component: 'AbovePrompt'`; needs `ui.band`, and the user switches it on). Set

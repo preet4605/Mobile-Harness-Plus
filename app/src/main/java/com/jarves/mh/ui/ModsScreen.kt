@@ -469,10 +469,9 @@ private fun ModPage(
 ) {
     val listState = rememberLazyListState()
     val collapse by rememberTitleCollapse(listState)
-    val hasDashboard = mod.manifest.hooksModule != null && (mod.manifest.dashboard != null || !surfaces?.panes.isNullOrEmpty())
-    val tabs = ModPageTab.entries.filter { it != ModPageTab.DASHBOARD || hasDashboard }
-    var tab by rememberSaveable(mod.id) { mutableStateOf(if (mod.manifest.dashboard != null) ModPageTab.DASHBOARD else ModPageTab.CONTROLS) }
-    if (tab !in tabs) tab = ModPageTab.CONTROLS
+    // Every mod has a dashboard (mod dashboards plan, phase 1); it is the page's first tab.
+    val tabs = ModPageTab.entries
+    var tab by rememberSaveable(mod.id) { mutableStateOf(ModPageTab.DASHBOARD) }
     val panes = surfaces?.panes.orEmpty()
     var paneId by rememberSaveable(mod.id) { mutableStateOf<String?>(null) }
     val pane = panes.firstOrNull { it.id == paneId } ?: panes.firstOrNull()
@@ -491,10 +490,25 @@ private fun ModPage(
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
         if (uri != null) viewModel.export(mod.id, uri)
     }
-    LaunchedEffect(mod, tab) { if (tab == ModPageTab.ACTIVITY) audit = viewModel.audit(mod.id) }
+    LaunchedEffect(mod, tab) { if (tab == ModPageTab.ACTIVITY || tab == ModPageTab.DASHBOARD) audit = viewModel.audit(mod.id) }
     val logVersion by viewModel.logVersion.collectAsStateWithLifecycle()
     var log by remember(mod.id) { mutableStateOf<List<ModLogEntry>>(emptyList()) }
-    LaunchedEffect(mod.id, tab, logVersion) { if (tab == ModPageTab.ACTIVITY && mod.manifest.hooksModule != null) log = viewModel.modLog(mod.id) }
+    LaunchedEffect(mod.id, tab, logVersion) {
+        if ((tab == ModPageTab.ACTIVITY || tab == ModPageTab.DASHBOARD) && mod.manifest.hooksModule != null) log = viewModel.modLog(mod.id)
+    }
+    val allSteps by viewModel.steps.collectAsStateWithLifecycle()
+    val steps = allSteps.filter { it.modId == mod.id }
+    var stored by remember(mod.id) { mutableStateOf<org.json.JSONObject?>(null) }
+    var modelTokens by remember(mod.id) { mutableStateOf<Long?>(null) }
+    var dataVersion by remember(mod.id) { mutableStateOf(0) }
+    LaunchedEffect(mod.id, tab, logVersion, dataVersion) {
+        if (tab == ModPageTab.DASHBOARD) {
+            stored = viewModel.storedData(mod.id)
+            if (ModCapability.MODEL_COMPLETE in mod.manifest.requested) modelTokens = viewModel.modelTokensUsed(mod.id)
+        }
+    }
+    var argsFor by remember { mutableStateOf<com.jarves.mh.mods.ModCodeCommand?>(null) }
+    var confirmClear by remember { mutableStateOf(false) }
     val shownRuntime = runtime?.takeIf { snapshot.status(mod) == ModStatus.ON }
     val allServers by viewModel.servers.collectAsStateWithLifecycle()
     val servers = allServers.filter { it.modId == mod.id }
@@ -527,7 +541,22 @@ private fun ModPage(
                 }
             }
             when (tab) {
-                ModPageTab.DASHBOARD -> dashboardTab(mod, shownRuntime, surfaces, pane?.id, onSelectPane = { paneId = it }, viewModel)
+                ModPageTab.DASHBOARD -> modDashboard(
+                    mod = mod,
+                    status = snapshot.status(mod),
+                    runtime = shownRuntime,
+                    surfaces = surfaces,
+                    paneId = pane?.id,
+                    onSelectPane = { paneId = it },
+                    steps = steps,
+                    servers = servers,
+                    data = ModDashboardData(audit, log, stored, modelTokens),
+                    viewModel = viewModel,
+                    onEdit = { editing = it },
+                    onRunWithArgs = { argsFor = it },
+                    onShowActivity = { tab = ModPageTab.ACTIVITY },
+                    onClearData = { confirmClear = true },
+                )
                 ModPageTab.CONTROLS -> controlsTab(mod, shownRuntime, servers, viewModel, onPreview = showText, onEdit = { editing = it }, onOpenPanel = { panelId = it.id })
                 ModPageTab.PERMISSIONS -> permissionsTab(mod, viewModel, onConfirmHigh = { confirmHigh = it })
                 ModPageTab.ACTIVITY -> activityTab(mod, audit, log, snapshot.settingChanges.filter { it.modId == mod.id }, viewModel)
@@ -636,6 +665,41 @@ private fun ModPage(
         )
     }
 
+    argsFor?.let { command ->
+        var args by remember(command.name) { mutableStateOf("") }
+        GlassSheet(
+            onDismiss = { argsFor = null },
+            title = "/${command.name}",
+            detents = listOf(SheetDetent.Fit),
+            leading = { SheetTextButton("Cancel", { argsFor = null }) },
+            trailing = {
+                SheetTextButton("Run", {
+                    viewModel.runAction(mod.id, command.name, args.trim())
+                    argsFor = null
+                }, emphasized = true)
+            },
+        ) {
+            Column(Modifier.padding(horizontal = ListInset).padding(top = PocketSpacing.sm, bottom = PocketSpacing.xxl)) {
+                PocketTextField(value = args, onValueChange = { args = it }, placeholder = command.argumentHint.orEmpty(), helper = command.description.ifBlank { null })
+            }
+        }
+    }
+
+    if (confirmClear) {
+        PocketAlert(
+            onDismiss = { confirmClear = false },
+            title = "Clear ${mod.manifest.name}'s saved data?",
+            message = "Everything it saved is deleted. Its settings and secrets stay.",
+            actions = listOf(
+                AlertAction("Cancel", AlertRole.Cancel) { confirmClear = false },
+                AlertAction("Clear", AlertRole.Destructive) {
+                    confirmClear = false
+                    viewModel.clearStoredData(mod.id) { dataVersion++ }
+                },
+            ),
+        )
+    }
+
     if (confirmRemove) {
         PocketAlert(
             onDismiss = { confirmRemove = false },
@@ -655,72 +719,6 @@ private fun ModPage(
                 },
             ),
         )
-    }
-}
-
-private fun LazyListScope.dashboardTab(
-    mod: InstalledMod,
-    runtime: ModRuntimeInfo?,
-    surfaces: ModSurfaces?,
-    paneId: String?,
-    onSelectPane: (String) -> Unit,
-    viewModel: ModsViewModel,
-) {
-    val panes = surfaces?.panes.orEmpty()
-    val pane = panes.firstOrNull { it.id == paneId }
-    if (panes.size > 1) {
-        item(key = "panes") {
-            Column(Modifier.padding(horizontal = ListInset)) {
-                if (panes.size <= 4) {
-                    SegmentedControl(panes.map { it.id }, pane?.id ?: panes.first().id, onSelectPane, label = { id -> panes.first { it.id == id }.title })
-                } else {
-                    androidx.compose.foundation.layout.Row(
-                        Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
-                    ) {
-                        panes.forEach { p ->
-                            PocketButton(p.title, { onSelectPane(p.id) }, style = if (p.id == pane?.id) PocketButtonStyle.Filled else PocketButtonStyle.Gray, size = PocketButtonSize.Small)
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if (runtime?.state != ModRunState.RUNNING || pane == null || surfaces == null) {
-        item(key = "dashboard-off") {
-            ListSection(footer = "The dashboard shows while the mod's code runs. Controls says why it isn't running.") {
-                ListRow(
-                    title = pane?.title ?: "Dashboard",
-                    subtitle = runtime?.message ?: if (mod.enabled) "Starting…" else "This mod is off.",
-                    value = runtime?.state?.label ?: "Off",
-                    subtitleMaxLines = 4,
-                )
-            }
-        }
-    } else {
-        modPaneItems(
-            keyPrefix = "pane-${pane.id}",
-            drawing = surfaces.drawings[pane.surface],
-            dir = surfaces.dir,
-            onEvent = { handler, value -> viewModel.press(mod.id, pane.surface, handler, value) },
-            itemModifier = Modifier.padding(horizontal = ListInset),
-        )
-    }
-    val actions = mod.manifest.dashboard?.actions.orEmpty()
-    if (actions.isNotEmpty() && runtime?.state == ModRunState.RUNNING) {
-        item(key = "actions") {
-            ListSection(header = "Actions") {
-                actions.forEach { name ->
-                    val command = runtime.commands.firstOrNull { it.name == name }
-                    ListRow(
-                        title = "/$name",
-                        subtitle = command?.description?.ifBlank { null },
-                        enabled = command != null,
-                        onClick = { viewModel.runAction(mod.id, name) },
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -791,7 +789,7 @@ private fun LazyListScope.controlsTab(
     if (manifest.settings.isNotEmpty()) {
         item(key = "settings") {
             ListSection(header = "Settings") {
-                manifest.settings.forEach { setting -> SettingRow(mod, setting, viewModel, onEdit) }
+                manifest.settings.forEach { setting -> ModSettingRow(mod, setting, viewModel, onEdit) }
             }
         }
     }
@@ -919,7 +917,7 @@ private fun LazyListScope.controlsTab(
 }
 
 @Composable
-private fun SettingRow(mod: InstalledMod, setting: ModSetting, viewModel: ModsViewModel, onEdit: (ModSetting) -> Unit) {
+internal fun ModSettingRow(mod: InstalledMod, setting: ModSetting, viewModel: ModsViewModel, onEdit: (ModSetting) -> Unit) {
     val value = mod.settingValue(setting.key)
     when (setting.type) {
         ModSettingType.BOOL -> ToggleRow(
