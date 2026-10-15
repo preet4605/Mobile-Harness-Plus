@@ -1,0 +1,14 @@
+# App startup and hot-path rules (Phase 9 of the performance plan), written by hand because a real
+# profile needs a connected phone. They ask ART to compile the app's own code ahead of time when
+# the APK is installed (release, devFast and benchmark builds; debug builds ignore profiles).
+# Opening a project, the chat and workspace screens, markdown and streaming state:
+HSPLcom/jarves/mh/ui/**;->**(**)**
+Lcom/jarves/mh/ui/**;
+# Harness bridges, output readers, checkpoints and the task supervisor:
+HSPLcom/jarves/mh/runtime/**;->**(**)**
+Lcom/jarves/mh/runtime/**;
+# Chat storage, preferences and models read while a project opens:
+HSPLcom/jarves/mh/data/**;->**(**)**
+Lcom/jarves/mh/data/**;
+HSPLcom/jarves/mh/model/**;->**(**)**
+Lcom/jarves/mh/model/**;

@@ -15,6 +15,24 @@ Captured logcat contains six crash events: three Mods-screen `NullPointerExcepti
 - **NOT RUN:** on-device reproduction/verification; `harness-tools doctor` reported ADB absent and device connection untested.
 - Local logs and review evidence, including the post-integration assemble log: `.review/crash-fix-2026-10-15/`.
 
+## Performance refactor (design/refactor/performance-refactor-plan-2026-10-15.md in project files) — 2026-10-15
+
+Love: "begin all phases without asking permission each time and push each fix 1 by 1". One commit per phase on harness-dev, full online suite before each push. Desktop numbers come from `PerfBenchmarkTest`; nothing was measured or tested on a phone.
+
+0. `devFast` build type (com.jarves.mh.dev, release-compiled, profileable, not debuggable); `BuildConfig.DEV_BUILD` replaces `BuildConfig.DEBUG` for dev-only behaviour; `PerfStats` Trace sections and one `MhPerf` log line per task; opt-in desktop benchmarks.
+1. Terminal UTF-8 split fixed (`Utf8ChunkDecoder`); Claude stream lines parsed once; `MemoryRanker` regex hoisted; table-based hex; more build-output folders ignored by checkpoints (not `vendor`).
+2. Checkpoints copy and hash in one read; hashes cached by path, size and modified time with git's racy-clean rule (`WorkspaceCheckpoints.hashCache`).
+3. Diffs trim the common prefix and suffix and use Myers LCS (`LineDiff`): 1 edit in 2000 lines 16 → 3-4 ms desktop.
+4. `shellState`/`liveState`: the root and screens no longer recompose per streamed token; the chat, auto-follow, terminal output and token counts read live state in their own scopes; terminal output renders in 64-line blocks.
+5. A streaming reply's markdown resumes parsing from its last stable line (`StreamingMarkdown`, `MarkdownParse.extend`), checked against a full parse by a random-prefix property test.
+6. The output pump signals readers after each write (`OutputSignal`); all harness loops, Codex app-server and both terminals wake on output, keep one file handle (`CaptureFileReader`) and back off to 1 s (Codex 250 ms) when idle. The capture file, output budget and stop paths are unchanged.
+7. A replaced checkpoint is moved aside and its unchanged files are moved, not copied, into the new one when both hashes are cached and match (`setAsideForReuse`, `reuse`); same on-disk format. Second prompt on 3000 files: 8997 of 9000 backups moved.
+8. The Terminal tab's command runner moved to `QuickTerminalController` (pure move, same ViewModel API).
+9. Hand-written ART profile rules for the app's ui, runtime, data and model packages (`app/src/main/baseline-prof.txt`); the devFast profile grew from 210,575 to 311,681 bytes uncompressed, so the rules matched. Release and devFast use them; debug builds ignore profiles.
+
+- Deviations from the plan: Phase 6 keeps the capture file as transport instead of a channel; Phase 7 reuses the replaced checkpoint instead of a content-addressed store (no format change or migration); Phase 8 moved one controller, not all eight; Phase 9 does not turn on R8 (not testable without a phone smoke test). Seccomp in the stable app is unchanged.
+- Not done: the remaining MainViewModel controllers, R8, a generated baseline profile, phone traces.
+
 ## Token usage across harnesses (audits/token-usage-audit-2026-10-14.md in project files) — 2026-10-14
 
 Love asked for every harness to use as few tokens as possible without losing capability. Measured with Claude Code 2.1.299 and Codex 0.161.0 against local mock model servers that log each request; not phone-tested. One commit per batch.
