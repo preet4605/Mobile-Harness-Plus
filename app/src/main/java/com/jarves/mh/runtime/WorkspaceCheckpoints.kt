@@ -4,6 +4,7 @@ import com.jarves.mh.model.ChangeItem
 import com.jarves.mh.model.DiffLine
 import com.jarves.mh.model.DiffLineType
 import com.jarves.mh.model.isAttachmentStoragePath
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -614,6 +615,20 @@ class WorkspaceCheckpoints(
 
     fun buildChangeDetails(projectId: String, workspace: File, paths: List<String>): List<ChangeItem> = PerfStats.time("mh.diff") {
         val backup = File(checkpointDir(projectId), "project")
+        var remainingInputBytes = MAX_DIFF_PREVIEW_INPUT_BYTES
+        var remainingOutputChars = MAX_DIFF_PREVIEW_CHARS
+        var remainingOutputLines = MAX_DIFF_PREVIEW_LINES_TOTAL
+        var remainingLcsCells = MAX_DIFF_LCS_CELLS_TOTAL
+
+        fun infoLine(text: String, useReservedLimitLine: Boolean = false): List<DiffLine> {
+            val line = DiffLine(DiffLineType.INFO, text)
+            val availableLines = remainingOutputLines - if (useReservedLimitLine) 0 else 1
+            if (availableLines <= 0 || line.text.length > remainingOutputChars) return emptyList()
+            remainingOutputLines--
+            remainingOutputChars -= line.text.length
+            return listOf(line)
+        }
+
         paths.map { path ->
             val beforeFile = regularChangeFile(backup, path)
             val afterFile = regularChangeFile(workspace, path)
@@ -629,36 +644,130 @@ class WorkspaceCheckpoints(
                     binary -> "Binary file changed (${formatFileSize(displaySize)})"
                     else -> "Diff omitted: file too large (${formatFileSize(displaySize)})"
                 }
+                val aggregateLimitReached = remainingOutputLines <= 1 || infoText.length > remainingOutputChars
                 ChangeItem(
                     path = path,
                     additions = if (afterFile != null) 1 else 0,
                     deletions = if (beforeFile != null) 1 else 0,
-                    diffLines = listOf(DiffLine(DiffLineType.INFO, infoText)),
+                    diffLines = if (aggregateLimitReached) {
+                        infoLine("Diff preview limit reached. Undo and Keep still work.", useReservedLimitLine = true)
+                    } else {
+                        infoLine(infoText)
+                    },
                     binary = binary,
                 )
             } else {
-                val beforeBytes = beforeFile?.readBytes() ?: ByteArray(0)
-                val afterBytes = afterFile?.readBytes() ?: ByteArray(0)
-                val binary = beforeBytes.any { it == 0.toByte() } || afterBytes.any { it == 0.toByte() }
-                if (binary) {
+                val totalBytes = beforeLength + afterLength
+                if (totalBytes > remainingInputBytes || totalBytes > remainingOutputChars.toLong()) {
                     ChangeItem(
                         path = path,
-                        additions = if (afterBytes.isNotEmpty()) 1 else 0,
-                        deletions = if (beforeBytes.isNotEmpty()) 1 else 0,
-                        diffLines = listOf(DiffLine(DiffLineType.INFO, "Binary file changed")),
-                        binary = true,
+                        additions = if (afterFile != null) 1 else 0,
+                        deletions = if (beforeFile != null) 1 else 0,
+                        diffLines = infoLine("Diff preview limit reached. Undo and Keep still work.", useReservedLimitLine = true),
                     )
                 } else {
-                    val (additions, deletions) = lineChanges(beforeBytes, afterBytes)
-                    ChangeItem(
-                        path = path,
-                        additions = additions,
-                        deletions = deletions,
-                        diffLines = buildDiffLines(beforeBytes, afterBytes),
-                        binary = false,
-                    )
+                    var readBudget = minOf(remainingInputBytes, remainingOutputChars.toLong())
+                    val beforeBytes = readDiffFile(beforeFile, readBudget)
+                    if (beforeBytes != null) readBudget -= beforeBytes.size
+                    val afterBytes = if (beforeBytes == null) null else readDiffFile(afterFile, readBudget)
+                    if (beforeBytes == null || afterBytes == null) {
+                        // A file changed while reading; stop scanning previews for this request.
+                        remainingInputBytes = 0
+                        ChangeItem(
+                            path = path,
+                            additions = if (afterFile != null) 1 else 0,
+                            deletions = if (beforeFile != null) 1 else 0,
+                            diffLines = infoLine("Diff omitted: file changed or could not be read safely.", useReservedLimitLine = true),
+                        )
+                    } else {
+                        val bytesRead = beforeBytes.size.toLong() + afterBytes.size
+                        remainingInputBytes -= bytesRead
+                        val binary = beforeBytes.any { it == 0.toByte() } || afterBytes.any { it == 0.toByte() }
+                        if (binary) {
+                            ChangeItem(
+                                path = path,
+                                additions = if (afterBytes.isNotEmpty()) 1 else 0,
+                                deletions = if (beforeBytes.isNotEmpty()) 1 else 0,
+                                diffLines = infoLine("Binary file changed"),
+                                binary = true,
+                            )
+                        } else {
+                            val beforeLineCount = textLineCount(beforeBytes)
+                            val afterLineCount = textLineCount(afterBytes)
+                            val cellCount = beforeLineCount.toLong() * afterLineCount
+                            val countChangesExactly = beforeLineCount <= MAX_DIFF_LINES &&
+                                afterLineCount <= MAX_DIFF_LINES && cellCount <= remainingLcsCells
+                            val approximateCounts = !countChangesExactly
+                            val (additions, deletions) = if (countChangesExactly) {
+                                remainingLcsCells -= cellCount
+                                lineChanges(beforeBytes, afterBytes, beforeLineCount, afterLineCount)
+                            } else {
+                                maxOf(0, afterLineCount - beforeLineCount) to maxOf(0, beforeLineCount - afterLineCount)
+                            }
+                            val remainingDataLines = (remainingOutputLines - 1).coerceAtLeast(0)
+                            val lineLimit = beforeLineCount > MAX_RENDERED_DIFF_LINES ||
+                                afterLineCount > MAX_RENDERED_DIFF_LINES ||
+                                beforeLineCount + afterLineCount > remainingDataLines
+                            val canRender = !lineLimit && cellCount <= remainingLcsCells
+                            val diffLines = if (canRender) {
+                                remainingLcsCells -= cellCount
+                                val preview = buildDiffLines(beforeBytes, afterBytes)
+                                val previewChars = preview.sumOf { it.text.length.toLong() }
+                                if (preview.size > remainingDataLines || previewChars > remainingOutputChars) {
+                                    infoLine(
+                                        "Diff preview limit reached. Undo and Keep still work.",
+                                        useReservedLimitLine = true,
+                                    )
+                                } else {
+                                    remainingOutputLines -= preview.size
+                                    remainingOutputChars -= previewChars.toInt()
+                                    preview
+                                }
+                            } else if (beforeLineCount > MAX_RENDERED_DIFF_LINES || afterLineCount > MAX_RENDERED_DIFF_LINES) {
+                                val countNote = if (approximateCounts) " Line counts are approximate." else ""
+                                infoLine(
+                                    "Diff is too large to display ($beforeLineCount → $afterLineCount lines).$countNote Undo and Keep still work.",
+                                    useReservedLimitLine = lineLimit,
+                                )
+                            } else {
+                                val countNote = if (approximateCounts) " Line counts are approximate." else ""
+                                infoLine(
+                                    "Diff preview limit reached.$countNote Undo and Keep still work.",
+                                    useReservedLimitLine = true,
+                                )
+                            }
+                            ChangeItem(
+                                path = path,
+                                additions = additions,
+                                deletions = deletions,
+                                diffLines = diffLines,
+                                binary = false,
+                            )
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    /** Reads a text-diff input only while it stays within the per-file cap, including file growth during the read. */
+    private fun readDiffFile(file: File?, maxBytes: Long): ByteArray? {
+        if (file == null) return ByteArray(0)
+        if (file.length() > MAX_DIFF_FILE_BYTES || file.length() > maxBytes) return null
+        return try {
+            file.inputStream().use { input ->
+                val output = ByteArrayOutputStream(minOf(file.length(), 64 * 1024L).toInt())
+                val buffer = ByteArray(8192)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    if (output.size().toLong() + count > MAX_DIFF_FILE_BYTES || output.size().toLong() + count > maxBytes) return null
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -691,19 +800,24 @@ class WorkspaceCheckpoints(
     }
 
     fun buildDiffLines(beforeBytes: ByteArray, afterBytes: ByteArray): List<DiffLine> {
+        if (beforeBytes.size > MAX_DIFF_FILE_BYTES || afterBytes.size > MAX_DIFF_FILE_BYTES) {
+            return listOf(DiffLine(DiffLineType.INFO, "Diff is too large to display (file exceeds 512 KB)."))
+        }
         if (beforeBytes.any { it == 0.toByte() } || afterBytes.any { it == 0.toByte() }) {
             return listOf(DiffLine(DiffLineType.INFO, "Binary file changed"))
         }
-        val before = textLines(beforeBytes)
-        val after = textLines(afterBytes)
-        if (before.size > MAX_RENDERED_DIFF_LINES || after.size > MAX_RENDERED_DIFF_LINES) {
+        val beforeLineCount = textLineCount(beforeBytes)
+        val afterLineCount = textLineCount(afterBytes)
+        if (beforeLineCount > MAX_RENDERED_DIFF_LINES || afterLineCount > MAX_RENDERED_DIFF_LINES) {
             return listOf(
                 DiffLine(
                     DiffLineType.INFO,
-                    "Diff is too large to display (${before.size} → ${after.size} lines). Undo and Keep still work.",
+                    "Diff is too large to display ($beforeLineCount → $afterLineCount lines). Undo and Keep still work.",
                 ),
             )
         }
+        val before = textLines(beforeBytes)
+        val after = textLines(afterBytes)
 
         // Most edits touch a small region: the unchanged top and bottom are context without a table.
         val prefix = LineDiff.commonPrefix(before, after)
@@ -776,17 +890,31 @@ class WorkspaceCheckpoints(
         return result
     }
 
-    private fun lineChanges(beforeBytes: ByteArray, afterBytes: ByteArray): Pair<Int, Int> {
+    private fun lineChanges(
+        beforeBytes: ByteArray,
+        afterBytes: ByteArray,
+        beforeLineCount: Int,
+        afterLineCount: Int,
+    ): Pair<Int, Int> {
         if (beforeBytes.any { it == 0.toByte() } || afterBytes.any { it == 0.toByte() }) {
             return (if (afterBytes.isNotEmpty()) 1 else 0) to (if (beforeBytes.isNotEmpty()) 1 else 0)
         }
+        if (beforeLineCount > MAX_DIFF_LINES || afterLineCount > MAX_DIFF_LINES) {
+            return maxOf(0, afterLineCount - beforeLineCount) to maxOf(0, beforeLineCount - afterLineCount)
+        }
         val before = textLines(beforeBytes)
         val after = textLines(afterBytes)
-        if (before.size > MAX_DIFF_LINES || after.size > MAX_DIFF_LINES) {
-            return maxOf(0, after.size - before.size) to maxOf(0, before.size - after.size)
-        }
         val common = LineDiff.longestCommonSubsequence(before, after)
         return (after.size - common) to (before.size - common)
+    }
+
+    /** Counts newline-delimited lines without decoding or allocating one String per line. */
+    private fun textLineCount(bytes: ByteArray): Int {
+        if (bytes.isEmpty()) return 0
+        var count = 1
+        bytes.forEach { if (it == '\n'.code.toByte()) count++ }
+        if (bytes.last() == '\n'.code.toByte()) count--
+        return count
     }
 
     private fun textLines(bytes: ByteArray): List<String> {
@@ -913,6 +1041,10 @@ class WorkspaceCheckpoints(
         private const val REUSE_DIRECTORY = "checkpoint-reuse"
         private const val MAX_DIFF_LINES = 2_000
         private const val MAX_RENDERED_DIFF_LINES = 600
+        private const val MAX_DIFF_PREVIEW_INPUT_BYTES = 2L * 1024 * 1024
+        private const val MAX_DIFF_PREVIEW_CHARS = 2 * 1024 * 1024
+        private const val MAX_DIFF_PREVIEW_LINES_TOTAL = 4_000
+        private const val MAX_DIFF_LCS_CELLS_TOTAL = 2_000_000L
         private const val DIFF_CONTEXT_LINES = 3
         const val MAX_DIFF_FILE_BYTES = 512 * 1024L // 512 KB
         const val MAX_HASH_FILE_BYTES = 10 * 1024 * 1024L // 10 MB

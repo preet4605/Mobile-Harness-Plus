@@ -1,5 +1,20 @@
 # Tasks and progress
 
+## Mods, workspace-scan and checkpoint-diff crash fixes — 2026-10-15
+
+Captured logcat contains six crash events: three Mods-screen `NullPointerException`s from eager collectors writing fields initialized later, two checkpoint-diff `OutOfMemoryError`s while reading/decoding large changes, and one startup `FileTreeWalk` assertion after the quick-project directory changed. Source review also found that pin-state write errors could escape the Mods coroutine; this was not a separate captured fatal log.
+
+- Mods state collectors now target fields initialized before `init`; pin failures use the existing banner and busy-state cleanup. Registry pin state is persisted before it is published, so a failed write can be retried without leaving memory ahead of disk.
+- Quick-project startup and close scans use a conservative helper: unreadable, missing, symbolic-link or changing roots are preserved; traversal errors and directory races cannot make a workspace look empty. `.claude*` directories are still traversed, while metadata files are excluded by basename, preserving the prior behavior.
+- Checkpoint previews now bound aggregate bytes, characters, output lines and LCS work as well as each file. Large or newline-dense inputs avoid full text/matrix allocation; when exact counts exceed the LCS budget, the info line labels counts approximate. Undo/Keep behavior remains covered.
+- **VERIFIED before upstream integration:** the four focused suites passed 92 tests with 0 failures/errors/skips. After the final `.claude*` traversal correction, `WorkspaceFilesTest` passed again: 28 tests, 0 failures/errors/skips. The pre-integration `lintOnlineDebug` and APK build receipts are preserved in `.review/crash-fix-2026-10-15/`.
+- **VERIFIED after integration with `origin/harness-dev` tip `dafe102`:** the four focused suites (`ModsViewModelTest`, `WorkspaceFilesTest`, `WorkspaceCheckpointsTest`, `ModRegistryTest`) passed 100 tests with 0 failures/errors/skips. The successful retry used an explicit Gradle 3 GiB heap, in-process Kotlin, two workers and `-PphoneTests`.
+- **FAILED:** post-integration `lintOnlineDebug` reports one `StateFlowValueCalledInComposition` error at `PocketDevApp.kt:661`, 150 warnings and 4 hints. `PocketDevApp.kt` is unchanged from `origin/harness-dev` at `dafe102`; the failure is in the integrated upstream code. Release `lintVital` passed.
+- **VERIFIED:** `assembleOnlineDebug assembleOnlineRelease` completed successfully. Both canonical root APKs pass `apksigner verify`, use the recorded Love signer (SHA-1 `0a4ca212ef6f776a7410130beb3810c81de06d26`; SHA-256 `93a815c394ca54603371ee36f7617994bab304d4e5df8b37fe5a88c081ad154e`), and report package IDs `com.jarves.mh.dev` and `com.jarves.mh` (versionCode 5).
+- Artifacts: [dev](../mobile-harness-dev.apk), 85,839,674 bytes, SHA-256 `775cd1bfba6c14fe646035084317c7f31bd118c6dc8ba5db28fd5cbb9e940437`; [stable](../mobile-harness-stable.apk), 59,247,328 bytes, SHA-256 `863539b6f6d53d82cfdfa28561c274cee21719156567230165b2556942e72ecd`.
+- **NOT RUN:** on-device reproduction/verification; `harness-tools doctor` reported ADB absent and device connection untested.
+- Local logs and review evidence, including the post-integration assemble log: `.review/crash-fix-2026-10-15/`.
+
 ## Token usage across harnesses (audits/token-usage-audit-2026-10-14.md in project files) — 2026-10-14
 
 Love asked for every harness to use as few tokens as possible without losing capability. Measured with Claude Code 2.1.299 and Codex 0.161.0 against local mock model servers that log each request; not phone-tested. One commit per batch.

@@ -376,8 +376,9 @@ class ModRegistry(
     /** Pins [id]'s dashboard to the tab bar, replacing the pinned one; null unpins. */
     fun setPinned(id: String?) = synchronized(lock) {
         if (state.pinned == id) return@synchronized
-        state = state.copy(pinned = id)
-        writeStateLocked()
+        val nextState = state.copy(pinned = id)
+        writeStateLocked(nextState)
+        state = nextState
         publishLocked()
     }
 
@@ -596,11 +597,11 @@ class ModRegistry(
         }
     }
 
-    private fun writeStateLocked() {
+    private fun writeStateLocked(nextState: PersistedState = state) {
         root.mkdirs()
         val temp = File(root, "_state.json.tmp")
         FileOutputStream(temp).use { out ->
-            out.write(state.toJson().toString(2).toByteArray())
+            out.write(nextState.toJson().toString(2).toByteArray())
             out.fd.sync()
         }
         Files.move(temp.toPath(), stateFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)

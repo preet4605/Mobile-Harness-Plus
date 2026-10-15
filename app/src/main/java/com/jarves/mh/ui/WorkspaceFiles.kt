@@ -27,6 +27,26 @@ internal const val PROTECTED_ENTRY_MESSAGE = "This item is protected or outside 
 /** Largest single file the Files tab uploads. */
 internal const val MAX_UPLOAD_BYTES = 100L * 1024L * 1024L
 
+internal fun workspaceMayHaveUserFiles(root: File): Boolean {
+    var traversalFailed = false
+    return try {
+        if (!root.isDirectory || Files.isSymbolicLink(root.toPath())) return true
+        val found = root.walkTopDown()
+            .onFail { _, _ -> traversalFailed = true }
+            .any { file ->
+                if (file == root) return@any false
+                if (Files.isSymbolicLink(file.toPath())) return@any true
+                file.isFile && !file.name.startsWith(".claude") && file.name != ".pocket-dev-stacks.json"
+            }
+        found || traversalFailed || !root.isDirectory || Files.isSymbolicLink(root.toPath())
+    } catch (_: Exception) {
+        true
+    } catch (_: AssertionError) {
+        // FileTreeWalk can assert if a directory vanishes between the precheck and traversal.
+        true
+    }
+}
+
 /** The project-relative path of [name] inside the folder at [parentPath] ("" for the root). */
 internal fun workspaceChildPath(parentPath: String, name: String): String =
     parentPath.trim('/').let { if (it.isEmpty()) name else "$it/$name" }

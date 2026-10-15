@@ -1343,10 +1343,8 @@ class MainViewModel(
         val cleanedProjects = loadedProjects.filter { project ->
             if (project.kind == ProjectKind.QUICK_PROJECT) {
                 val workspaceDir = File(application.filesDir, "workspaces/${project.id}")
-                // App start runs this on the main thread: stop at the first user file instead of counting them all.
-                val hasUserFiles = workspaceDir.isDirectory && workspaceDir.walkTopDown().any { file ->
-                    file.isFile && !file.name.startsWith(".claude") && file.name != ".pocket-dev-stacks.json"
-                }
+                // App start runs this on the main thread. An uncertain scan preserves the workspace.
+                val hasUserFiles = workspaceMayHaveUserFiles(workspaceDir)
                 // Removed only when every chat file on disk is an empty list; any unreadable or non-empty file keeps it.
                 val keep = hasUserFiles || !preferences.hasNoChatMessages(project.id)
                 if (!keep) {
@@ -4208,11 +4206,8 @@ class MainViewModel(
 
         if (active != null) {
             val workspaceDir = File(getApplication<Application>().filesDir, "workspaces/${active.id}")
-            // Only emptiness matters: stop at the first user file instead of counting the whole
-            // workspace (node_modules can hold tens of thousands of files) on the main thread.
-            val hasUserFiles = workspaceDir.isDirectory && workspaceDir.walkTopDown().any { file ->
-                file.isFile && !file.name.startsWith(".claude") && file.name != ".pocket-dev-stacks.json"
-            }
+            // Stop at the first user file; an unreadable or changing workspace is kept.
+            val hasUserFiles = workspaceMayHaveUserFiles(workspaceDir)
 
             if (!writeInFlight && preferences.hasNoChatMessages(active.id) && !hasUserFiles &&
                 !_state.value.isRunning && !_state.value.projectTerminalRunning

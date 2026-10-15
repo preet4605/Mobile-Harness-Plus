@@ -15,6 +15,57 @@ class WorkspaceFilesTest {
     @get:Rule
     val temp = TemporaryFolder()
 
+    @Test
+    fun emptyWorkspaceAndHarnessMetadataDoNotCountAsUserFiles() {
+        val root = temp.newFolder("empty-workspace")
+        assertFalse(workspaceMayHaveUserFiles(root))
+        File(root, ".claude-state").writeText("state")
+        File(root, ".pocket-dev-stacks.json").writeText("{}")
+        val claudeDirectory = File(root, ".claude-custom/nested").apply { mkdirs() }
+        assertFalse(workspaceMayHaveUserFiles(root))
+        File(claudeDirectory, "user.txt").writeText("keep")
+        assertTrue(workspaceMayHaveUserFiles(root))
+    }
+
+    @Test
+    fun unreadableWorkspaceIsPreserved() {
+        val root = temp.newFolder("unreadable-workspace")
+        val unreadable = object : File(root.path) {
+            override fun listFiles(): Array<File>? = null
+        }
+        assertTrue(workspaceMayHaveUserFiles(unreadable))
+    }
+
+    @Test
+    fun directoryDisappearingDuringScanIsPreserved() {
+        val root = temp.newFolder("disappearing-workspace")
+        val disappearing = object : File(root.path) {
+            override fun listFiles(): Array<File>? {
+                assertTrue(root.delete())
+                return emptyArray()
+            }
+        }
+        assertTrue(workspaceMayHaveUserFiles(disappearing))
+    }
+
+    @Test
+    fun traversalAssertionPreservesWorkspaceInsteadOfCrashing() {
+        val root = temp.newFolder("changed-workspace")
+        val changed = object : File(root.path) {
+            override fun listFiles(): Array<File>? = throw AssertionError("directory changed during traversal")
+        }
+        assertTrue(workspaceMayHaveUserFiles(changed))
+    }
+
+    @Test
+    fun workspaceLinksAndMissingRootsArePreserved() {
+        val root = temp.newFolder("linked-workspace")
+        val target = temp.newFolder("external-empty-directory")
+        Files.createSymbolicLink(File(root, ".claude-link").toPath(), target.toPath())
+        assertTrue(workspaceMayHaveUserFiles(root))
+        assertTrue(workspaceMayHaveUserFiles(File(temp.root, "missing-workspace")))
+    }
+
     // ---- Decoding for the viewer ----
 
     @Test

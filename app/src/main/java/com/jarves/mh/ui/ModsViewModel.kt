@@ -24,6 +24,7 @@ import com.jarves.mh.mods.ModSurfaces
 import com.jarves.mh.mods.ModTrust
 import com.jarves.mh.mods.ModsSnapshot
 import com.jarves.mh.mods.StagedMod
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -76,8 +77,13 @@ data class EngineTestState(
  * The Mods screen's state. All registry work runs on IO; a failure becomes a banner message,
  * never a crash.
  */
-class ModsViewModel(application: Application) : AndroidViewModel(application) {
-    private val registry = viewModelScope.async(Dispatchers.IO) { ModRegistry.getInstance(application) }
+class ModsViewModel internal constructor(
+    application: Application,
+    private val ioDispatcher: CoroutineDispatcher,
+) : AndroidViewModel(application) {
+    constructor(application: Application) : this(application, Dispatchers.IO)
+
+    private val registry = viewModelScope.async(ioDispatcher) { ModRegistry.getInstance(application) }
     private val _snapshot = MutableStateFlow(ModsSnapshot())
     val snapshot: StateFlow<ModsSnapshot> = _snapshot.asStateFlow()
     private val _review = MutableStateFlow<ModReview?>(null)
@@ -91,7 +97,7 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     private val _engineTest = MutableStateFlow(EngineTestState())
     val engineTest: StateFlow<EngineTestState> = _engineTest.asStateFlow()
     private var engineTestJob: Job? = null
-    private val host = viewModelScope.async(Dispatchers.IO) { runCatching { ModHost.getInstance(application) }.getOrNull() }
+    private val host = viewModelScope.async(ioDispatcher) { runCatching { ModHost.getInstance(application) }.getOrNull() }
     private val _hostSnapshot = MutableStateFlow(ModHostSnapshot())
     /** How mod code is running: the engine and each mod with a hooks module. */
     val hostSnapshot: StateFlow<ModHostSnapshot> = _hostSnapshot.asStateFlow()
@@ -102,6 +108,12 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     private val _surfaces = MutableStateFlow<Map<String, ModSurfaces>>(emptyMap())
     /** Each logic mod's panes and what they show now. */
     val surfaces: StateFlow<Map<String, ModSurfaces>> = _surfaces.asStateFlow()
+    private val _chats = MutableStateFlow<Map<String, List<com.jarves.mh.mods.ModChatLine>>>(emptyMap())
+    /** Each mod's dashboard chat. */
+    val chats: StateFlow<Map<String, List<com.jarves.mh.mods.ModChatLine>>> = _chats.asStateFlow()
+    private val _roleChoices = MutableStateFlow<Map<String, Map<String, com.jarves.mh.mods.ModRoles.Choice>>>(emptyMap())
+    /** The user's harness, model and effort picks for each mod's roles. */
+    val roleChoices: StateFlow<Map<String, Map<String, com.jarves.mh.mods.ModRoles.Choice>>> = _roleChoices.asStateFlow()
 
     init {
         viewModelScope.launch { registry.await().snapshot.collect { _snapshot.value = it } }
@@ -140,7 +152,7 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     val servers: StateFlow<List<com.jarves.mh.mods.ModServer>> = com.jarves.mh.mods.ModGuestServers.shared.servers
 
     fun stopServer(modId: String, name: String) {
-        viewModelScope.launch(Dispatchers.IO) { com.jarves.mh.mods.ModGuestServers.shared.stop(modId, name, note = "You stopped it") }
+        viewModelScope.launch(ioDispatcher) { com.jarves.mh.mods.ModGuestServers.shared.stop(modId, name, note = "You stopped it") }
     }
 
     /** Agent tasks mods started, or the user sent from a dashboard. */
@@ -156,16 +168,12 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     private val consoleSteps = com.jarves.mh.mods.ModAgentSteps.shared
     /** Mods whose chains are paused. */
     val paused: StateFlow<Set<String>> = consoleSteps.paused
-    private val _roleChoices = MutableStateFlow<Map<String, Map<String, com.jarves.mh.mods.ModRoles.Choice>>>(emptyMap())
-    /** The user's harness, model and effort picks for each mod's roles. */
-    val roleChoices: StateFlow<Map<String, Map<String, com.jarves.mh.mods.ModRoles.Choice>>> = _roleChoices.asStateFlow()
-
     fun loadRoles(modId: String) {
-        viewModelScope.launch(Dispatchers.IO) { host.await()?.roles?.choice(modId, "") }
+        viewModelScope.launch(ioDispatcher) { host.await()?.roles?.choice(modId, "") }
     }
 
     fun setRoleChoice(modId: String, roleId: String, choice: com.jarves.mh.mods.ModRoles.Choice) {
-        viewModelScope.launch(Dispatchers.IO) { host.await()?.roles?.setChoice(modId, roleId, choice) }
+        viewModelScope.launch(ioDispatcher) { host.await()?.roles?.setChoice(modId, roleId, choice) }
     }
 
     /** The chat [roleId] works in, in [projectId], once it has one. */
@@ -201,9 +209,7 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     fun stopChain(modId: String) = consoleSteps.stopChain(modId)
 
     /** Pins [id]'s dashboard to the tab bar (phase 4); null unpins. */
-    fun setPinned(id: String?) {
-        viewModelScope.launch(Dispatchers.IO) { registry.await()?.setPinned(id) }
-    }
+    fun setPinned(id: String?) = work("Could not pin that dashboard") { registry.await().setPinned(id) }
 
     // Phase 4: when the user last looked at each mod's page, for the overview's error counts.
     private val _lastSeen = MutableStateFlow<Map<String, Long>>(emptyMap())
@@ -213,10 +219,6 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Errors in [id]'s log since the user last opened its page (since this screen opened, at first). */
     fun errorsSince(id: String, since: Long): Int = hostRef?.log(id)?.count { it.level == "error" && it.time > since } ?: 0
-
-    private val _chats = MutableStateFlow<Map<String, List<com.jarves.mh.mods.ModChatLine>>>(emptyMap())
-    /** Each mod's dashboard chat. */
-    val chats: StateFlow<Map<String, List<com.jarves.mh.mods.ModChatLine>>> = _chats.asStateFlow()
 
     fun loadChat(id: String) {
         viewModelScope.launch { host.await()?.loadDashboardChat(id) }
@@ -305,7 +307,7 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Finds the Studio drafts among [projects], reading only each folder's mod.json. */
     fun refreshDrafts(projects: List<Project>) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(ioDispatcher) {
             val workspaces = File(getApplication<Application>().filesDir, "workspaces")
             _drafts.value = projects.mapNotNull { project -> runCatching { readDraft(workspaces, project) }.getOrNull() }
         }
@@ -463,7 +465,7 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     }.getOrNull()
 
     private fun work(failure: String, block: suspend () -> Unit) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(ioDispatcher) {
             _busy.value = true
             try {
                 block()

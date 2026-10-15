@@ -249,6 +249,109 @@ class WorkspaceCheckpointsTest {
     }
 
     @Test
+    fun `aggregate diff previews are bounded while every file remains undoable`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = checkpoints.ensureWorkspace("project")
+        val paths = (1..16).map { "file-$it.txt" }
+        paths.forEach { File(workspace, it).writeText("baseline\n") }
+        checkpoints.createCheckpoint("project", workspace)
+        val content = "x".repeat(256 * 1024)
+        paths.forEach { File(workspace, it).writeText(content) }
+        checkpoints.saveChangedPaths("project", paths)
+
+        val details = checkpoints.buildChangeDetails("project", workspace, paths)
+
+        assertEquals(paths, details.map { it.path })
+        assertTrue(details.sumOf { item -> item.diffLines.sumOf { it.text.length } } <= 2 * 1024 * 1024 + 4096)
+        assertTrue(details.last().diffLines.single().text.contains("preview limit"))
+        assertTrue(checkpoints.undoFileChange("project", paths.last()))
+        assertEquals("baseline\n", File(workspace, paths.last()).readText())
+        checkpoints.removeChangedPath("project", paths.first())
+        assertEquals(content, File(workspace, paths.first()).readText())
+    }
+
+    @Test
+    fun `aggregate short line previews also have a line budget`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        val paths = (1..20).map { "file-$it.txt" }
+        paths.forEach { File(workspace, it).writeText("x\n".repeat(600)) }
+
+        val details = checkpoints.buildChangeDetails("project", workspace, paths)
+
+        assertEquals(paths, details.map { it.path })
+        assertEquals(600, details.first().additions)
+        assertTrue(details.sumOf { item -> item.diffLines.count { it.type != DiffLineType.INFO } } <= 4000)
+        assertTrue(details.last().diffLines.single().text.contains("preview limit"))
+    }
+
+    @Test
+    fun `aggregate LCS budget labels equal length fallback counts approximate`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        val paths = (1..6).map { "replacement-$it.txt" }
+        val before = (1..500).joinToString(separator = "\n", postfix = "\n") { "before-$it" }
+        val after = (1..500).joinToString(separator = "\n", postfix = "\n") { "after-$it" }
+        paths.forEach { File(workspace, it).writeText(before) }
+        checkpoints.createCheckpoint("lcs-budget", workspace)
+        paths.forEach { File(workspace, it).writeText(after) }
+        checkpoints.saveChangedPaths("lcs-budget", paths)
+
+        val details = checkpoints.buildChangeDetails("lcs-budget", workspace, paths)
+
+        assertEquals(paths, details.map { it.path })
+        assertEquals(500, details.first().additions)
+        assertEquals(500, details.first().deletions)
+        val budgetFallback = details.last()
+        assertEquals("line-count fallback avoids unbounded LCS work", 0, budgetFallback.additions)
+        assertEquals(0, budgetFallback.deletions)
+        assertTrue(budgetFallback.diffLines.single().text.contains("Line counts are approximate."))
+        assertTrue(details.any { item -> item.diffLines.any { it.text.contains("preview limit") } })
+    }
+
+    @Test
+    fun `aggregate line cap retains a notice when the final file is binary`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        val textPaths = (1..7).map { "file-$it.txt" }
+        textPaths.take(6).forEach { File(workspace, it).writeText("x\n".repeat(600)) }
+        File(workspace, textPaths.last()).writeText("x\n".repeat(399))
+        val binaryPath = "image.png"
+        File(workspace, binaryPath).writeBytes(byteArrayOf(0, 1, 2, 3))
+
+        val details = checkpoints.buildChangeDetails("project", workspace, textPaths + binaryPath)
+
+        assertEquals(3_999, details.dropLast(1).sumOf { item -> item.diffLines.count { it.type != DiffLineType.INFO } })
+        assertEquals(binaryPath, details.last().path)
+        assertTrue(details.last().diffLines.single().text.contains("preview limit"))
+        assertTrue(details.last().binary)
+    }
+
+    @Test
+    fun `direct diff preview rejects oversized single line text`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val lines = checkpoints.buildDiffLines(byteArrayOf(), ByteArray(512 * 1024 + 1) { 'x'.code.toByte() })
+
+        assertEquals(1, lines.size)
+        assertEquals(DiffLineType.INFO, lines.single().type)
+        assertTrue(lines.single().text.contains("too large"))
+    }
+
+    @Test
+    fun `newline dense files preserve counts without rendering individual lines`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
+        val workspace = tempFolder.newFolder()
+        File(workspace, "lines.txt").writeText("\n".repeat(500_000))
+
+        val detail = checkpoints.buildChangeDetails("project", workspace, listOf("lines.txt")).single()
+
+        assertEquals(500_000, detail.additions)
+        assertEquals(0, detail.deletions)
+        assertEquals(DiffLineType.INFO, detail.diffLines.single().type)
+        assertTrue(detail.diffLines.single().text.contains("500000 lines"))
+    }
+
+    @Test
     fun `buildChangeDetails never reads through a final symlink outside workspace`() {
         val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder())
         val workspace = tempFolder.newFolder()
