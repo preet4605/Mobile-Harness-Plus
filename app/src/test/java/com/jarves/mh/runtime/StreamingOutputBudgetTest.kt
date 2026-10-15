@@ -19,7 +19,8 @@ class StreamingOutputBudgetTest {
             "runtime/AntigravityRuntimeBridge.kt" to 1,
             "runtime/CodexRuntimeBridge.kt" to 1,
             "runtime/task/GuestStepCommandRunner.kt" to 1,
-            "ui/MainViewModel.kt" to 3,
+            "ui/MainViewModel.kt" to 2,
+            "ui/QuickTerminalController.kt" to 1,
         )
         expectations.forEach { (path, count) ->
             val uses = Regex("maxOutputBytes = (com\\.jarves\\.mh\\.runtime\\.)?NativeSpawnProcess\\.STREAMING_OUTPUT_BYTES")

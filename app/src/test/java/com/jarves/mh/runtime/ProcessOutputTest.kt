@@ -129,7 +129,8 @@ class ProcessOutputTest {
             assertTrue("$name uses the output signal", code.contains("outputSignal"))
             assertFalse("$name no longer reopens the capture file per chunk", code.contains("RandomAccessFile("))
         }
-        val terminals = File("src/main/java/com/jarves/mh/ui/MainViewModel.kt").readText()
+        val terminals = listOf("MainViewModel.kt", "QuickTerminalController.kt")
+            .joinToString("\n") { File("src/main/java/com/jarves/mh/ui/$it").readText() }
         assertEquals("both terminals wait on the signal", 2, Regex("awaitTerminalOutput\\(").findAll(terminals).count())
     }
 

@@ -35,7 +35,8 @@ class TerminalOutputTailTest {
     }
 
     @Test fun terminalLoopsNoLongerResanitizeTheWholeBuffer() {
-        val source = File("src/main/java/com/jarves/mh/ui/MainViewModel.kt").readText()
+        val source = listOf("MainViewModel.kt", "QuickTerminalController.kt")
+            .joinToString("\n") { File("src/main/java/com/jarves/mh/ui/$it").readText() }
         assertFalse(source.contains("sanitizeTerminalOutput(streamed.toString())"))
         assertFalse(source.contains("sanitizeTerminalOutput(output.toString().substringBefore(marker))"))
         assertFalse("terminal loops must back off when idle", source.contains("Thread.sleep(50)"))

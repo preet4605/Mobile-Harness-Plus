@@ -997,6 +997,18 @@ class MainViewModel(
     private val codexRuntime = CodexRuntimeBridge(application) { profile -> vault.get(profile.secretId) }
     private val codexModelCatalog = CodexModelCatalog(application)
     private val installer = RuntimeInstaller(application)
+    // Before the init blocks: their coroutines may check whether the terminal is busy right away.
+    private val quickTerminal = QuickTerminalController(
+        scope = viewModelScope,
+        filesDir = application.filesDir,
+        installer = installer,
+        maxOutputChars = MAX_PROJECT_TERMINAL_OUTPUT,
+        maxHistory = MAX_PROJECT_TERMINAL_HISTORY,
+        prepareCommand = ::prepareInteractiveShellCommand,
+        shouldAutoConfirm = ::shouldAutoConfirmPackageCommand,
+        sendInput = ::sendProcessInput,
+        interrupt = ::interruptProcess,
+    )
     private val antigravityRuntime = AntigravityRuntimeBridge(
         application,
         accountManager = antigravityAccountManager,
@@ -1023,7 +1035,6 @@ class MainViewModel(
         if (BuildConfig.DEV_BUILD) preferences.debugUpdateManifestUrl else "",
     )
     @Volatile private var projectTerminalProcess: Process? = null
-    @Volatile private var terminalProcess: Process? = null
     @Volatile private var projectTerminalProjectId: String? = null
     @Volatile private var projectTerminalStopRequested: Boolean = false
     @Volatile private var setupCompletionHandled: Boolean = false
@@ -1370,113 +1381,18 @@ class MainViewModel(
         .distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.Eagerly, LiveUiState.of(_state.value))
 
-    // Starts empty: a hard-coded `uname -a` line here was fake output, not from the runtime.
-    private val _terminalLines = MutableStateFlow<List<TerminalOutputLine>>(emptyList())
-    val terminalLines: StateFlow<List<TerminalOutputLine>> = _terminalLines.asStateFlow()
+    val terminalLines: StateFlow<List<TerminalOutputLine>> get() = quickTerminal.terminalLines
+    val isTerminalRunning: StateFlow<Boolean> get() = quickTerminal.isTerminalRunning
+    val terminalLiveOutput: StateFlow<String> get() = quickTerminal.terminalLiveOutput
+    val terminalCurrentCommand: StateFlow<String?> get() = quickTerminal.terminalCurrentCommand
 
-    private val _isTerminalRunning = MutableStateFlow(false)
-    val isTerminalRunning: StateFlow<Boolean> = _isTerminalRunning.asStateFlow()
+    fun runTerminalCommand(cmd: String) = quickTerminal.runTerminalCommand(cmd)
 
-    private val _terminalLiveOutput = MutableStateFlow("")
-    val terminalLiveOutput: StateFlow<String> = _terminalLiveOutput.asStateFlow()
+    fun sendTerminalInput(text: String) = quickTerminal.sendTerminalInput(text)
 
-    private val _terminalCurrentCommand = MutableStateFlow<String?>(null)
-    val terminalCurrentCommand: StateFlow<String?> = _terminalCurrentCommand.asStateFlow()
+    fun interruptTerminalCommand() = quickTerminal.interruptTerminalCommand()
 
-    fun runTerminalCommand(cmd: String) {
-        val command = cmd.trim()
-        if (command.isBlank() || _isTerminalRunning.value) return
-        if (command == "clear") {
-            _terminalLines.value = emptyList()
-            return
-        }
-        _isTerminalRunning.value = true
-        _terminalCurrentCommand.value = command
-        _terminalLiveOutput.value = ""
-        viewModelScope.launch {
-            val (output, exitCode) = withContext(Dispatchers.IO) {
-                runCatching {
-                    if (!installer.isInstalled()) {
-                        return@runCatching "Linux environment is not ready yet." to 1
-                    }
-                    val runtime = installer.installedRuntime()
-                    val workspace = File(getApplication<Application>().filesDir, "workspaces/terminal").apply { mkdirs() }
-                    val preparedCommand = prepareInteractiveShellCommand(command)
-                    val proc = installer.process(
-                        proot = runtime.proot,
-                        rootfs = runtime.rootfs,
-                        workspace = workspace,
-                        environment = emptyMap(),
-                        guestCommand = listOf("/usr/bin/bash", "-c", preparedCommand),
-                        maxOutputBytes = com.jarves.mh.runtime.NativeSpawnProcess.STREAMING_OUTPUT_BYTES,
-                    )
-                    terminalProcess = proc
-                    val native = proc as? NativeSpawnProcess
-                    var offset = 0L
-                    val streamed = TerminalOutputTail(MAX_PROJECT_TERMINAL_OUTPUT)
-                    val decoder = com.jarves.mh.runtime.Utf8ChunkDecoder()
-                    var autoConfirmed = false
-                    var idleSleep = TERMINAL_IDLE_POLL_MIN_MS
-                    var lastPublishAt = 0L
-                    val reader = native?.let { com.jarves.mh.runtime.CaptureFileReader(it.outputFile) }
-                    val bytes = ByteArray(16 * 1024)
-                    try {
-                        while (proc.isAlive || (native?.outputFile?.length() ?: 0L) > offset) {
-                            val file = native?.outputFile
-                            val available = (file?.length() ?: 0L) - offset
-                            if (reader == null || available <= 0) {
-                                idleSleep = awaitTerminalOutput(native?.outputSignal, idleSleep)
-                                continue
-                            }
-                            idleSleep = TERMINAL_IDLE_POLL_MIN_MS
-                            val count = reader.read(offset, bytes, minOf(available, bytes.size.toLong()).toInt())
-                            if (count > 0) {
-                                offset += count
-                                streamed.append(decoder.decode(bytes, count))
-                                val now = SystemClock.elapsedRealtime()
-                                if (now - lastPublishAt >= TERMINAL_PUBLISH_INTERVAL_MS || available <= count) {
-                                    lastPublishAt = now
-                                    com.jarves.mh.runtime.PerfStats.count("terminal.publish")
-                                    _terminalLiveOutput.value = streamed.text().trimEnd()
-                                }
-                                if (!autoConfirmed && shouldAutoConfirmPackageCommand(command, streamed.recent(500))) {
-                                    proc.outputStream.write("y\n".toByteArray())
-                                    proc.outputStream.flush()
-                                    autoConfirmed = true
-                                }
-                            }
-                        }
-                    } finally {
-                        reader?.close()
-                    }
-                    val exit = proc.waitFor()
-                    runCatching { proc.outputStream.close() }
-                    streamed.append(decoder.finish())
-                    streamed.finish()
-                    val out = streamed.text().trim()
-                    val finalOut = if (out.isNotEmpty() || exit == 0) out else "Process exited with code $exit"
-                    finalOut to exit
-                }.getOrElse { "Error: ${it.message}" to 1 }
-            }
-            _terminalLines.update { (it + TerminalOutputLine(command = command, output = output, exitCode = exitCode)).takeLast(MAX_PROJECT_TERMINAL_HISTORY) }
-            _terminalLiveOutput.value = ""
-            _terminalCurrentCommand.value = null
-            _isTerminalRunning.value = false
-            terminalProcess = null
-        }
-    }
-
-    fun sendTerminalInput(text: String) {
-        sendProcessInput(terminalProcess, text)
-    }
-
-    fun interruptTerminalCommand() {
-        interruptProcess(terminalProcess)
-    }
-
-    fun clearTerminal() {
-        _terminalLines.value = emptyList()
-    }
+    fun clearTerminal() = quickTerminal.clearTerminal()
 
     private var diagnosticsJob: Job? = null
     private var lastDiagnosticsRefreshAtElapsedMillis = 0L
@@ -1556,13 +1472,13 @@ class MainViewModel(
     private fun runtimeWorkInProgress(): Boolean {
         val current = _state.value
         return current.isRunning || current.projectTerminalRunning || current.androidBuildRunning ||
-            _isTerminalRunning.value || current.devStackInstalling != null || current.devStackRemoving ||
+            quickTerminal.isTerminalRunning.value || current.devStackInstalling != null || current.devStackRemoving ||
             current.agentInstalling != null || current.agentUpdating != null ||
             current.backgroundTasks.any { it.status == BackgroundTaskStatus.RUNNING } ||
             RuntimeSetupController.snapshot.value.status == RuntimeSetupStatus.RUNNING ||
             com.jarves.mh.runtime.task.TaskSupervisor.getInstance(getApplication()).activeTasks.value.values
                 .any { it.status.isActive } ||
-            projectTerminalProcess?.isAlive == true || terminalProcess?.isAlive == true ||
+            projectTerminalProcess?.isAlive == true || quickTerminal.process?.isAlive == true ||
             githubAuthProcess?.isAlive == true
     }
 
@@ -1579,7 +1495,7 @@ class MainViewModel(
             val backgroundRunning = current.backgroundTasks.count { it.status == BackgroundTaskStatus.RUNNING }
             if (backgroundRunning > 0) add(if (backgroundRunning == 1) "Background command" else "$backgroundRunning background commands")
             if (current.projectTerminalRunning || projectTerminalProcess?.isAlive == true) add("Project terminal")
-            if (_isTerminalRunning.value || terminalProcess?.isAlive == true) add("Terminal")
+            if (quickTerminal.isTerminalRunning.value || quickTerminal.process?.isAlive == true) add("Terminal")
             if (current.androidBuildRunning) add("Android build")
             if (githubAuthProcess?.isAlive == true) add("GitHub sign-in")
             current.devStackInstalling?.let { add("Installing ${it.label}") }
@@ -1587,7 +1503,7 @@ class MainViewModel(
             current.agentUpdating?.let { add("Updating ${it.title}") }
             if (RuntimeSetupController.snapshot.value.status == RuntimeSetupStatus.RUNNING) add("Runtime setup")
         }
-        val quickLines = _terminalLines.value
+        val quickLines = quickTerminal.terminalLines.value
         val outputFiles = runtimeOutputFiles().filter(File::isFile)
         return AppDiagnostics(
             appPssBytes = memory.totalPss.toLong() * 1_024L,
@@ -1599,7 +1515,7 @@ class MainViewModel(
             terminalLineCount = current.projectTerminalLines.size + quickLines.size,
             terminalOutputBytes = utf8SizeInBytes(current.projectTerminalLiveOutput) +
                 current.projectTerminalLines.sumOf { utf8SizeInBytes(it.output) } +
-                utf8SizeInBytes(_terminalLiveOutput.value) +
+                utf8SizeInBytes(quickTerminal.terminalLiveOutput.value) +
                 quickLines.sumOf { utf8SizeInBytes(it.output) },
             runtimeCacheBytes = outputFiles.sumOf(File::length),
             runtimeCacheFiles = outputFiles.size,
