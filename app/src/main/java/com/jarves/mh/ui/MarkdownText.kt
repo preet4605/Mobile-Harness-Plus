@@ -84,7 +84,10 @@ fun MarkdownText(
     color: Color = Color.Unspecified,
     onRunCode: ((String) -> Unit)? = null,
 ) {
-    val blocks = remember(markdown) { MarkdownParseCache.blocksFor(markdown) }
+    // While a reply streams, its text grows; each update parses only from the last point where the
+    // earlier blocks can no longer change (see MarkdownParse.extend).
+    val streaming = remember { StreamingMarkdown() }
+    val blocks = remember(markdown) { streaming.blocksFor(markdown) }
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(PocketSpacing.sm)) {
         blocks.forEach { block ->
@@ -607,21 +610,23 @@ internal object MarkdownParseCache {
     internal const val MAX_ENTRIES = 128
     internal const val MAX_TOTAL_CHARS = 512 * 1024
 
-    private val cache = LinkedHashMap<String, List<MarkdownBlock>>(MAX_ENTRIES, 0.75f, true)
+    private val cache = LinkedHashMap<String, MarkdownParse>(MAX_ENTRIES, 0.75f, true)
     private var totalChars = 0
 
+    fun blocksFor(markdown: String): List<MarkdownBlock> = parseFor(markdown).blocks
+
     /** Parses outside the lock, so concurrent misses do not queue behind each other's parse. */
-    fun blocksFor(markdown: String): List<MarkdownBlock> {
+    fun parseFor(markdown: String): MarkdownParse {
         lookup(markdown)?.let { return it }
-        val parsed = com.jarves.mh.runtime.PerfStats.time("mh.markdown") { parseMarkdown(markdown) }
+        val parsed = com.jarves.mh.runtime.PerfStats.time("mh.markdown") { parseMarkdownResumable(markdown) }
         return if (markdown.length > MAX_TOTAL_CHARS) parsed else store(markdown, parsed)
     }
 
     @Synchronized
-    private fun lookup(markdown: String): List<MarkdownBlock>? = cache[markdown]
+    private fun lookup(markdown: String): MarkdownParse? = cache[markdown]
 
     @Synchronized
-    private fun store(markdown: String, parsed: List<MarkdownBlock>): List<MarkdownBlock> {
+    private fun store(markdown: String, parsed: MarkdownParse): MarkdownParse {
         // Another caller may have stored the same text while this one was parsing; keep its entry.
         cache[markdown]?.let { return it }
         cache[markdown] = parsed
@@ -639,8 +644,74 @@ internal object MarkdownParseCache {
     internal fun entryCount(): Int = cache.size
 }
 
-internal fun parseMarkdown(raw: String): List<MarkdownBlock> {
-    val lines = raw.lines()
+/**
+ * Parsed [blocks] of [text], plus the latest line start ([resumeOffset]) where the parser had no open
+ * code block or paragraph and its last block could not be extended by a later continuation line.
+ * The first [resumeBlockCount] blocks are then final for any text that starts with
+ * `text[0, resumeOffset)`, and parsing the rest of such a text on its own gives the remaining blocks.
+ */
+internal class MarkdownParse(
+    val text: String,
+    val blocks: List<MarkdownBlock>,
+    val resumeOffset: Int,
+    val resumeBlockCount: Int,
+) {
+    /** The parse of [newText], reusing the final blocks when [newText] starts like [text] up to [resumeOffset]. */
+    fun extend(newText: String): MarkdownParse {
+        if (resumeOffset == 0 || newText.length < resumeOffset || !newText.regionMatches(0, text, 0, resumeOffset)) {
+            return parseMarkdownResumable(newText)
+        }
+        val tail = parseMarkdownResumable(newText.substring(resumeOffset))
+        val tailResumes = tail.resumeOffset > 0
+        return MarkdownParse(
+            text = newText,
+            blocks = blocks.subList(0, resumeBlockCount) + tail.blocks,
+            resumeOffset = if (tailResumes) resumeOffset + tail.resumeOffset else resumeOffset,
+            resumeBlockCount = if (tailResumes) resumeBlockCount + tail.resumeBlockCount else resumeBlockCount,
+        )
+    }
+}
+
+/** One message's markdown as it streams: a grown text extends the previous parse instead of starting over. */
+internal class StreamingMarkdown {
+    private var last: MarkdownParse? = null
+
+    fun blocksFor(markdown: String): List<MarkdownBlock> {
+        val previous = last
+        val next = if (previous != null && markdown.length > previous.text.length && previous.resumeOffset > 0) {
+            // Not cached: every streamed prefix would push finished messages out of the cache.
+            com.jarves.mh.runtime.PerfStats.time("mh.markdown") { previous.extend(markdown) }
+        } else {
+            MarkdownParseCache.parseFor(markdown)
+        }
+        last = next
+        return next.blocks
+    }
+}
+
+internal fun parseMarkdown(raw: String): List<MarkdownBlock> = parseMarkdownResumable(raw).blocks
+
+internal fun parseMarkdownResumable(raw: String): MarkdownParse {
+    // Lines split exactly as String.lines() does (CRLF, LF or CR), with the offset each starts at.
+    val lines = ArrayList<String>()
+    val lineStarts = ArrayList<Int>()
+    var lineStart = 0
+    var cursor = 0
+    while (cursor < raw.length) {
+        val char = raw[cursor]
+        if (char == '\n' || char == '\r') {
+            lines += raw.substring(lineStart, cursor)
+            lineStarts += lineStart
+            cursor += if (char == '\r' && cursor + 1 < raw.length && raw[cursor + 1] == '\n') 2 else 1
+            lineStart = cursor
+        } else {
+            cursor++
+        }
+    }
+    lines += raw.substring(lineStart)
+    lineStarts += lineStart
+    var resumeOffset = 0
+    var resumeBlockCount = 0
     val blocks = mutableListOf<MarkdownBlock>()
     var inCodeBlock = false
     var codeLang = ""
@@ -657,7 +728,14 @@ internal fun parseMarkdown(raw: String): List<MarkdownBlock> {
         }
     }
 
-    for (line in lines) {
+    for ((lineIndex, line) in lines.withIndex()) {
+        if (!inCodeBlock && currentParagraphLines.isEmpty()) {
+            val last = blocks.lastOrNull()
+            if (last !is MarkdownBlock.BulletItem && last !is MarkdownBlock.NumberedItem && last !is MarkdownBlock.BlockQuote) {
+                resumeOffset = lineStarts[lineIndex]
+                resumeBlockCount = blocks.size
+            }
+        }
         val trimmed = line.trim()
         val leadingSpaces = line.takeWhile { it.isWhitespace() }.length
 
@@ -758,5 +836,5 @@ internal fun parseMarkdown(raw: String): List<MarkdownBlock> {
     }
     flushParagraph()
 
-    return blocks
+    return MarkdownParse(raw, blocks, resumeOffset, resumeBlockCount)
 }
