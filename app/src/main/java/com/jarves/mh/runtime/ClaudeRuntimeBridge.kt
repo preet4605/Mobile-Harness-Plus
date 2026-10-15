@@ -45,7 +45,13 @@ internal object ProviderRuntimeErrorDetector {
     fun detect(line: String): String? {
         val trimmed = line.trim()
         if (trimmed.isEmpty()) return null
-        val json = runCatching { JSONObject(trimmed) }.getOrNull()
+        return detect(trimmed, runCatching { JSONObject(trimmed) }.getOrNull())
+    }
+
+    /** [detect] for a line the caller already parsed; [json] is null when the line is not JSON. */
+    fun detect(line: String, json: JSONObject?): String? {
+        val trimmed = line.trim()
+        if (trimmed.isEmpty()) return null
         if (json != null) {
             val type = json.optString("type")
             return when (type) {
@@ -416,7 +422,9 @@ class ClaudeRuntimeBridge(
                             for (line in pendingOutput.feed(bytes, count)) {
                                 check(line != CodexLineAssembler.OVERSIZED) { "Runtime output line exceeded its safe limit" }
                                 if (line.isNotBlank()) {
-                                    ProviderRuntimeErrorDetector.detect(line)?.let { reason ->
+                                    // Parsed once for both the error check and the event.
+                                    val json = runCatching { JSONObject(line.trim()) }.getOrNull()
+                                    ProviderRuntimeErrorDetector.detect(line, json)?.let { reason ->
                                         process.destroyForcibly()
                                         throw ProviderSessionException(reason)
                                     }
@@ -428,7 +436,9 @@ class ClaudeRuntimeBridge(
                                             }
                                         }
                                     }
-                                    if (!consumeClaudeEvent(sessionId, line)) {
+                                    if (json != null) {
+                                        consumeClaudeJsonEvent(sessionId, json)
+                                    } else {
                                         lastDiagnostic = line.takeLast(500)
                                         runCatching {
                                             val supervisor = com.jarves.mh.runtime.task.TaskSupervisor.getInstance(context)

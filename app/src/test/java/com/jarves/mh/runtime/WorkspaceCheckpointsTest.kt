@@ -36,6 +36,30 @@ class WorkspaceCheckpointsTest {
     }
 
     @Test
+    fun `build output folders of other toolchains are never checkpointed`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder("checkpoints_toolchains"))
+        listOf(
+            "target/debug/app", "rust/target/release/lib.rlib", ".dart_tool/package_config.json",
+            "ios/Pods/Manifest.lock", ".kotlin/errors/log.txt", ".turbo/cache/x", ".parcel-cache/y",
+            ".pytest_cache/v/z", ".mypy_cache/3.11/a.json", "coverage/lcov.info", "ios/DerivedData/b",
+        ).forEach { assertTrue(it, checkpoints.isInternalRuntimePath(it)) }
+        assertFalse(checkpoints.isInternalRuntimePath("src/target.kt"))
+        assertFalse(checkpoints.isInternalRuntimePath("lib/coverage_report.dart"))
+
+        val workspace = checkpoints.ensureWorkspace("p")
+        File(workspace, "src/main.rs").apply { parentFile.mkdirs(); writeText("fn main() {}") }
+        File(workspace, "target/debug/app").apply { parentFile.mkdirs(); writeText("binary") }
+        File(workspace, "ios/Pods/Manifest.lock").apply { parentFile.mkdirs(); writeText("lock") }
+        assertEquals(setOf("src/main.rs"), checkpoints.snapshot(workspace).keys)
+    }
+
+    @Test
+    fun `hex matches the formatter it replaced`() {
+        val bytes = ByteArray(256) { it.toByte() }
+        assertEquals(bytes.joinToString("") { "%02x".format(it) }, WorkspaceCheckpoints.hex(bytes))
+    }
+
+    @Test
     fun `isInternalRuntimePath keeps chat attachment folders out of checkpoints only`() {
         val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder("checkpoints_attachments"))
         val chatId = "3f2b8c1e-7d4a-4b6e-9a1f-0c2d3e4f5a6b"

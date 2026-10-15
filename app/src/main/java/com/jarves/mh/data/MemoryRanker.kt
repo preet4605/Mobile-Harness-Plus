@@ -6,6 +6,8 @@ import java.time.Instant
 import java.util.Locale
 
 object MemoryRanker {
+    /** Compiled once: [score] runs for every memory entry of every prompt. */
+    private val QUERY_TOKEN_SEPARATORS = Regex("[\\s,._\\-?]+")
 
     data class ScoredMemory(
         val entry: MemoryEntry,
@@ -25,7 +27,7 @@ object MemoryRanker {
     ): ScoredMemory {
         val queryTokens = query
             ?.lowercase(Locale.ROOT)
-            ?.split(Regex("[\\s,._\\-?]+"))
+            ?.split(QUERY_TOKEN_SEPARATORS)
             ?.filter { it.isNotBlank() }
             ?: emptyList()
 
@@ -106,7 +108,7 @@ object MemoryRanker {
     ): ScoredBrainKnowledge {
         val queryTokens = query
             ?.lowercase(Locale.ROOT)
-            ?.split(Regex("[\\s,._\\-?]+"))
+            ?.split(QUERY_TOKEN_SEPARATORS)
             ?.filter { it.isNotBlank() }
             ?: emptyList()
 

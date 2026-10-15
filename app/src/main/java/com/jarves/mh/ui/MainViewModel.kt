@@ -1353,6 +1353,7 @@ class MainViewModel(
                     val native = proc as? NativeSpawnProcess
                     var offset = 0L
                     val streamed = TerminalOutputTail(MAX_PROJECT_TERMINAL_OUTPUT)
+                    val decoder = com.jarves.mh.runtime.Utf8ChunkDecoder()
                     var autoConfirmed = false
                     var idleSleep = TERMINAL_IDLE_POLL_MIN_MS
                     var lastPublishAt = 0L
@@ -1372,7 +1373,7 @@ class MainViewModel(
                         }
                         if (count > 0) {
                             offset += count
-                            streamed.append(bytes.decodeToString(0, count))
+                            streamed.append(decoder.decode(bytes, count))
                             val now = SystemClock.elapsedRealtime()
                             if (now - lastPublishAt >= TERMINAL_PUBLISH_INTERVAL_MS || available <= count) {
                                 lastPublishAt = now
@@ -1388,6 +1389,7 @@ class MainViewModel(
                     }
                     val exit = proc.waitFor()
                     runCatching { proc.outputStream.close() }
+                    streamed.append(decoder.finish())
                     streamed.finish()
                     val out = streamed.text().trim()
                     val finalOut = if (out.isNotEmpty() || exit == 0) out else "Process exited with code $exit"
@@ -1755,6 +1757,7 @@ class MainViewModel(
         var offset = 0L
         // The cwd marker is printed last, so it is always inside the kept tail.
         val output = TerminalOutputTail(MAX_PROJECT_TERMINAL_OUTPUT)
+        val decoder = com.jarves.mh.runtime.Utf8ChunkDecoder()
         var autoConfirmed = false
         var idleSleep = TERMINAL_IDLE_POLL_MIN_MS
         var lastPublishAt = 0L
@@ -1774,7 +1777,7 @@ class MainViewModel(
             }
             if (count > 0) {
                 offset += count
-                output.append(bytes.decodeToString(0, count))
+                output.append(decoder.decode(bytes, count))
                 val recent = output.recent(4096).substringBefore(marker)
                 if (!autoConfirmed && shouldAutoConfirmPackageCommand(command, recent)) {
                     process.outputStream.write("y\n".toByteArray())
@@ -1802,6 +1805,7 @@ class MainViewModel(
         }
         val exitCode = process.waitFor()
         runCatching { process.outputStream.close() }
+        output.append(decoder.finish())
         output.finish()
         val raw = output.text()
         val cwdAfter = raw.substringAfter(marker, "")

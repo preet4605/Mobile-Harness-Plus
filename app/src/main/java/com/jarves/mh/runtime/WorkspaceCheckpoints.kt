@@ -748,7 +748,8 @@ class WorkspaceCheckpoints(
         val normalized = path.replace('\\', '/').trimStart('/')
         if (normalized.isEmpty()) return false
         val segments = normalized.split('/')
-        return segments.any { it in IGNORED_DIRECTORY_NAMES } ||
+        // Case-insensitive, like the directory walks, so a path the walks skip is never listed as a change.
+        return segments.any { it.lowercase(Locale.ROOT) in IGNORED_DIRECTORY_NAMES } ||
             isAttachmentStoragePath(normalized) ||
             normalized == ".claude.json" ||
             normalized.endsWith(".apk.part")
@@ -767,7 +768,7 @@ class WorkspaceCheckpoints(
                 digest.update(buffer, 0, read)
             }
         }
-        return digest.digest().joinToString("") { "%02x".format(it) }
+        return hex(digest.digest())
     }
 
     companion object {
@@ -786,11 +787,29 @@ class WorkspaceCheckpoints(
         const val MAX_HASH_FILE_BYTES = 10 * 1024 * 1024L // 10 MB
         const val MAX_CHECKPOINT_COPY_BYTES = 25 * 1024 * 1024L // 25 MB
 
+        /** Never checkpointed, hashed or offered for undo: tool state and build output that tools regenerate. */
         val IGNORED_DIRECTORY_NAMES = setOf(
             ".git", ".claude", ".gradle", ".idea", ".next", ".cache",
             "node_modules", ".venv", "venv", "__pycache__", "build",
             "dist", ".gemini",
+            // Build output and caches of Rust/Maven, Flutter, CocoaPods, Kotlin, Turborepo,
+            // Parcel, pytest, mypy, coverage tools and Xcode.
+            "target", ".dart_tool", "pods", ".kotlin", ".turbo", ".parcel-cache",
+            ".pytest_cache", ".mypy_cache", "coverage", "deriveddata",
         )
+
+        private val HEX_DIGITS = "0123456789abcdef".toCharArray()
+
+        /** Lowercase hex, as `"%02x".format` per byte gave, without a formatter per byte. */
+        internal fun hex(bytes: ByteArray): String {
+            val chars = CharArray(bytes.size * 2)
+            bytes.forEachIndexed { index, byte ->
+                val value = byte.toInt() and 0xff
+                chars[index * 2] = HEX_DIGITS[value ushr 4]
+                chars[index * 2 + 1] = HEX_DIGITS[value and 0x0f]
+            }
+            return String(chars)
+        }
 
         val BINARY_EXTENSIONS = setOf(
             "apk", "aab", "jar", "aar", "so", "zip", "tar", "gz", "zst",
