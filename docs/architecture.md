@@ -112,4 +112,6 @@ Device frame timing uses the separate benchmark app after setup:
 
 Results and Perfetto traces appear under benchmark/build/outputs/connected_android_test_additional_output/. The existing target is P90 frame overrun at or below zero. These commands require working device access.
 
+Phone-only measurement uses the devFast build (`gradle assembleOnlineDevFast`): the dev app (com.jarves.mh.dev) built non-debuggable and profileable, so it runs at release speed and System Tracing (Developer options) shows its Trace sections (`mh.event`, `mh.chatSave`, `mh.checkpoint`, `mh.snapshot`, `mh.diff`, `mh.markdown`, `glass.capture`). At the end of each task the dev app logs one `MhPerf` line with counts and total milliseconds per section, plus `compose.root`/`compose.workspace`/`compose.chat` recomposition counts and `terminal.publish`. Desktop timings for the same paths: `gradle :app:testOnlineDebugUnitTest -Pbenchmarks --tests '*PerfBenchmarkTest*'`.
+
 For local updater testing, preserve the signer, increase the installed version code, serve an HTTPS manifest, use the debug Settings override, and restore the normal update channel afterward. scripts/serve-update-server.sh uses host-specific shell utilities; confirm those on the target host before running it.

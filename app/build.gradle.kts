@@ -131,6 +131,9 @@ android {
         manifestPlaceholders["appName"] = "Mobile Harness"
 
         buildConfigField("boolean", "IS_PLAY_BUILD", playBuild.toString())
+        // Dev-app behaviour (seccomp, update channel override, perf logs): the debug and devFast
+        // builds, never the stable app.
+        buildConfigField("boolean", "DEV_BUILD", "false")
         buildConfigField("String", "PRIVACY_POLICY_URL", buildConfigString(privacyPolicyUrl))
 
         buildConfigField(
@@ -171,6 +174,7 @@ android {
                 manifestPlaceholders["appName"] = "Mobile Harness"
             }
             signingConfig = signingConfigs.getByName("debug")
+            buildConfigField("boolean", "DEV_BUILD", "true")
             buildConfigField(
                 "String",
                 "TEST_OPENROUTER_API_KEY",
@@ -198,6 +202,19 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+        }
+        // The dev app (com.jarves.mh.dev, same data as the debug build) compiled like a release:
+        // not debuggable, so it runs at real speed and gets the libraries' startup profiles, and
+        // profileable (src/devFast/AndroidManifest.xml) so a system trace still shows its sections.
+        // Build with assembleOnlineDevFast.
+        create("devFast") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            manifestPlaceholders["appName"] = "Mobile Harness (Dev)"
+            buildConfigField("boolean", "DEV_BUILD", "true")
         }
     }
 
@@ -240,6 +257,12 @@ tasks.withType<Test>().configureEach {
         systemProperty("robolectric.pixelCopyRenderMode", "hardware")
         systemProperty("roborazzi.test.record", "true")
         systemProperty("roborazzi.output.dir", layout.buildDirectory.dir("outputs/roborazzi").get().asFile.absolutePath)
+    }
+    // Desktop timings (PerfBenchmarkTest) are opt-in too: -Pbenchmarks prints their PERF lines.
+    if (!project.hasProperty("benchmarks")) {
+        exclude("**/perf/*BenchmarkTest*")
+    } else {
+        testLogging.showStandardStreams = true
     }
 }
 

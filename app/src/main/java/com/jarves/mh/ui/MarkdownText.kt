@@ -613,7 +613,7 @@ internal object MarkdownParseCache {
     /** Parses outside the lock, so concurrent misses do not queue behind each other's parse. */
     fun blocksFor(markdown: String): List<MarkdownBlock> {
         lookup(markdown)?.let { return it }
-        val parsed = parseMarkdown(markdown)
+        val parsed = com.jarves.mh.runtime.PerfStats.time("mh.markdown") { parseMarkdown(markdown) }
         return if (markdown.length > MAX_TOTAL_CHARS) parsed else store(markdown, parsed)
     }
 

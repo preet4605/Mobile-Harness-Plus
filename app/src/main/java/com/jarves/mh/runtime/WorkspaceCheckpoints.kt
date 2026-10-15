@@ -88,13 +88,13 @@ class WorkspaceCheckpoints(
         taskId: String? = null,
         stepId: String? = null,
         attempt: Int? = null
-    ) {
+    ): Unit = PerfStats.time("mh.checkpoint") {
         validateCheckpointTag(checkpointTag)
         val checkpoint = checkpointDir(projectId, checkpointTag)
 
         // For the legacy default checkpoint, keep the original baseline until every pending file is accepted or undone.
         if (checkpointTag == DEFAULT_CHECKPOINT_TAG) {
-            if (checkpointExists(projectId, checkpointTag) && File(checkpoint, "changes.json").isFile) return
+            if (checkpointExists(projectId, checkpointTag) && File(checkpoint, "changes.json").isFile) return@time
         }
 
         checkpoint.deleteRecursively()
@@ -521,9 +521,9 @@ class WorkspaceCheckpoints(
         return match?.value?.toLongOrNull()
     }
 
-    fun buildChangeDetails(projectId: String, workspace: File, paths: List<String>): List<ChangeItem> {
+    fun buildChangeDetails(projectId: String, workspace: File, paths: List<String>): List<ChangeItem> = PerfStats.time("mh.diff") {
         val backup = File(checkpointDir(projectId), "project")
-        return paths.map { path ->
+        paths.map { path ->
             val beforeFile = regularChangeFile(backup, path)
             val afterFile = regularChangeFile(workspace, path)
             val beforeLength = beforeFile?.length() ?: 0L
@@ -717,10 +717,10 @@ class WorkspaceCheckpoints(
         return file
     }
 
-    fun snapshot(root: File): Map<String, String> {
-        if (!root.isDirectory) return emptyMap()
+    fun snapshot(root: File): Map<String, String> = PerfStats.time("mh.snapshot") {
+        if (!root.isDirectory) return@time emptyMap()
         val rootPath = root.canonicalFile.toPath()
-        return root.walkTopDown()
+        root.walkTopDown()
             .onEnter { directory ->
                 if (directory == root) return@onEnter true
                 val dirName = directory.name.lowercase(Locale.ROOT)

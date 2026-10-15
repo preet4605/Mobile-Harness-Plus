@@ -128,6 +128,7 @@ import androidx.compose.material.icons.rounded.RemoveCircle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -658,6 +659,7 @@ internal fun WorkspaceScreen(
     onClearAllMemory: () -> Unit = {},
     initialTab: WorkspaceTab = WorkspaceTab.CHAT,
 ) {
+    if (com.jarves.mh.runtime.PerfStats.enabled) SideEffect { com.jarves.mh.runtime.PerfStats.count("compose.workspace") }
     BackHandler(onBack = onBack)
     val banner = rememberBanner()
     // Selection mode and the chosen files survive process death while the save picker is open,
@@ -2288,6 +2290,7 @@ private fun ChatTab(
     composerDraft: String? = null,
     onComposerDraftConsumed: () -> Unit = {},
 ) {
+    if (com.jarves.mh.runtime.PerfStats.enabled) SideEffect { com.jarves.mh.runtime.PerfStats.count("compose.chat") }
     val view = LocalView.current
     // Keep the screen on while the selected agent is working in this chat. Released automatically
     // when the task finishes or the user leaves the chat tab.

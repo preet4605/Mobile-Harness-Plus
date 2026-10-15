@@ -975,7 +975,7 @@ class MainViewModel(
     private val providerApi = ProviderApiClient()
     private fun appUpdater(): AppUpdater = AppUpdater(
         getApplication(),
-        if (BuildConfig.DEBUG) preferences.debugUpdateManifestUrl else "",
+        if (BuildConfig.DEV_BUILD) preferences.debugUpdateManifestUrl else "",
     )
     @Volatile private var projectTerminalProcess: Process? = null
     @Volatile private var terminalProcess: Process? = null
@@ -1376,6 +1376,7 @@ class MainViewModel(
                             val now = SystemClock.elapsedRealtime()
                             if (now - lastPublishAt >= TERMINAL_PUBLISH_INTERVAL_MS || available <= count) {
                                 lastPublishAt = now
+                                com.jarves.mh.runtime.PerfStats.count("terminal.publish")
                                 _terminalLiveOutput.value = streamed.text().trimEnd()
                             }
                             if (!autoConfirmed && shouldAutoConfirmPackageCommand(command, streamed.recent(500))) {
@@ -1785,6 +1786,7 @@ class MainViewModel(
                 val newPreviewUrl = detectedPreviewUrl != null && detectedPreviewUrl != lastPreviewUrl
                 if (!newPreviewUrl && now - lastPublishAt < TERMINAL_PUBLISH_INTERVAL_MS && available > count) continue
                 lastPublishAt = now
+                com.jarves.mh.runtime.PerfStats.count("terminal.publish")
                 lastPreviewUrl = detectedPreviewUrl ?: lastPreviewUrl
                 val visible = output.text().substringBefore(marker)
                 _state.update { current ->
@@ -2586,24 +2588,24 @@ class MainViewModel(
         }
     }
 
-    /** Debug builds only: persist a manifest URL override and re-check immediately. */
+    /** Dev app only: persist a manifest URL override and re-check immediately. */
     fun setDebugUpdateManifestUrl(url: String) {
-        if (!BuildConfig.DEBUG) return
+        if (!BuildConfig.DEV_BUILD) return
         preferences.debugUpdateManifestUrl = url.trim()
         preferences.lastAppUpdateCheckMillis = 0L
         checkForAppUpdate(force = true)
     }
 
-    /** Debug builds only: clear the manifest URL override and re-check the default channel. */
+    /** Dev app only: clear the manifest URL override and re-check the default channel. */
     fun clearDebugUpdateManifestUrl() {
-        if (!BuildConfig.DEBUG) return
+        if (!BuildConfig.DEV_BUILD) return
         preferences.debugUpdateManifestUrl = ""
         preferences.lastAppUpdateCheckMillis = 0L
         checkForAppUpdate(force = true)
     }
 
-    /** Debug builds only: the currently-active manifest URL override (empty = default). */
-    fun debugUpdateManifestUrl(): String = if (BuildConfig.DEBUG) preferences.debugUpdateManifestUrl else ""
+    /** Dev app only: the currently-active manifest URL override (empty = default). */
+    fun debugUpdateManifestUrl(): String = if (BuildConfig.DEV_BUILD) preferences.debugUpdateManifestUrl else ""
 
     fun installAppUpdate() {
         val info = _state.value.appUpdate ?: return
@@ -8049,7 +8051,10 @@ class MainViewModel(
      */
     private fun onRuntimeEventSafely(event: RuntimeEvent, source: AgentKind) {
         try {
-            onRuntimeEvent(event, source)
+            com.jarves.mh.runtime.PerfStats.time("mh.event") { onRuntimeEvent(event, source) }
+            if (event is RuntimeEvent.SessionCompleted || event is RuntimeEvent.SessionFailed) {
+                com.jarves.mh.runtime.PerfStats.logSummary("${source.name} task ended")
+            }
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -8586,7 +8591,9 @@ class MainViewModel(
     private fun flushPendingTranscriptWrite() {
         val write = pendingTranscriptWrite.getAndSet(null) ?: return
         runCatching {
-            preferences.saveMessages(write.projectId, write.chatId, write.messages, write.startIndex)
+            com.jarves.mh.runtime.PerfStats.time("mh.chatSave") {
+                preferences.saveMessages(write.projectId, write.chatId, write.messages, write.startIndex)
+            }
         }
     }
 

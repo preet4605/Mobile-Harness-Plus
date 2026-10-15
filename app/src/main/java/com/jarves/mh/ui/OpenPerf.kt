@@ -7,8 +7,8 @@ import android.view.Choreographer
 import com.jarves.mh.BuildConfig
 
 /**
- * Debug-build timing for the project-open and glass paths. Logs go to the [TAG] logcat tag, and the
- * same spans are Trace sections for a system trace. Release builds write no logs. Trace calls are
+ * Dev-app timing for the project-open and glass paths. Logs go to the [TAG] logcat tag, and the
+ * same spans are Trace sections for a system trace. The stable app writes no logs. Trace calls are
  * wrapped because JVM unit tests run without the Android framework.
  */
 internal object OpenPerf {
@@ -17,12 +17,12 @@ internal object OpenPerf {
     fun nowMs(): Long = SystemClock.uptimeMillis()
 
     fun log(message: String) {
-        if (BuildConfig.DEBUG) runCatching { Log.d(TAG, message) }
+        if (BuildConfig.DEV_BUILD) runCatching { Log.d(TAG, message) }
     }
 
     /** Runs [block] before the next frame is drawn. Skipped where the framework is stubbed (JVM unit tests). */
     fun onNextFrame(block: () -> Unit) {
-        if (BuildConfig.DEBUG) runCatching { Choreographer.getInstance().postFrameCallback { block() } }
+        if (BuildConfig.DEV_BUILD) runCatching { Choreographer.getInstance().postFrameCallback { block() } }
     }
 
     /** Runs [block] inside a Trace section named [name]. Call only from one thread, with no suspension inside. */

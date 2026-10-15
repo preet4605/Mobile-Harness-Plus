@@ -2168,8 +2168,8 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
     private fun File.readTextOrNull(): String? = runCatching { readText().trim() }.getOrNull()
 
     companion object {
-        /** PRoot seccomp acceleration: dev (debug) builds only until it is tested on phones. */
-        internal val PROOT_SECCOMP_ENABLED: Boolean = BuildConfig.DEBUG
+        /** PRoot seccomp acceleration: the dev app (debug and devFast builds) only until it is tested on phones. */
+        internal val PROOT_SECCOMP_ENABLED: Boolean = BuildConfig.DEV_BUILD
 
         /** Guest path of Claude's MCP config for mod tools, written with the harness tools. */
         const val CLAUDE_MOD_TOOLS_CONFIG = "/opt/pocket/harness/mods.mcp.json"

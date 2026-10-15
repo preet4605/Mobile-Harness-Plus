@@ -74,6 +74,7 @@ private enum class RootScreen(val label: String, val icon: ImageVector, val sele
 @Composable
 fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    if (com.jarves.mh.runtime.PerfStats.enabled) SideEffect { com.jarves.mh.runtime.PerfStats.count("compose.root") }
     val context = LocalContext.current
     val preferences = remember(context) { AppPreferences(context) }
     var reduceTransparency by remember(preferences) { mutableStateOf(preferences.reduceTransparency) }

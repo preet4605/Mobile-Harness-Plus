@@ -244,7 +244,7 @@ fun SettingsScreen(
                 }
             }
 
-            if (BuildConfig.DEBUG) {
+            if (BuildConfig.DEV_BUILD) {
                 item(key = "updateChannel") {
                     DebugUpdateChannelSection(
                         initialUrl = initialDebugUpdateManifestUrl,
@@ -599,7 +599,7 @@ private fun SelectionCircle(selected: Boolean) {
     }
 }
 
-/** Debug builds only: point the update check at a temporary manifest. */
+/** Dev app only: point the update check at a temporary manifest. */
 @Composable
 private fun DebugUpdateChannelSection(
     initialUrl: String,
@@ -610,8 +610,8 @@ private fun DebugUpdateChannelSection(
     val isOverridden = initialUrl.isNotBlank()
     ListSection(
         header = "Update channel",
-        footer = if (isOverridden) "Debug builds only. Current: $initialUrl"
-        else "Debug builds only. Paste an HTTPS manifest URL (for example from a tunnel) that serves mobile-harness-update.json and a newer APK.",
+        footer = if (isOverridden) "Dev app only. Current: $initialUrl"
+        else "Dev app only. Paste an HTTPS manifest URL (for example from a tunnel) that serves mobile-harness-update.json and a newer APK.",
     ) {
         Column(Modifier.fillMaxWidth().padding(ListInset), verticalArrangement = Arrangement.spacedBy(PocketSpacing.md)) {
             PocketTextField(

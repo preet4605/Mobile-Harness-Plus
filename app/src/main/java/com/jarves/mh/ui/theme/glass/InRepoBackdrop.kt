@@ -455,6 +455,7 @@ internal class BackdropSourceNode(
         try {
             // Record the complete source subtree into the fresh capture layer
             val recordStart = OpenPerf.nowMs()
+            com.jarves.mh.runtime.PerfStats.count("glass.capture")
             OpenPerf.span("glass.capture") {
                 freshLayer.record(scaledSize) {
                     scale(scale, scale, pivot = Offset.Zero) {
