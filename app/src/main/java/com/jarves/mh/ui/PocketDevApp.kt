@@ -53,6 +53,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jarves.mh.model.AgentKind
@@ -73,7 +75,8 @@ private enum class RootScreen(val label: String, val icon: ImageVector, val sele
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
+    // Without the streaming fields: a streamed token does not re-run the app root (see LiveUiState).
+    val state by viewModel.shellState.collectAsStateWithLifecycle()
     if (com.jarves.mh.runtime.PerfStats.enabled) SideEffect { com.jarves.mh.runtime.PerfStats.count("compose.root") }
     val context = LocalContext.current
     val preferences = remember(context) { AppPreferences(context) }
@@ -302,6 +305,7 @@ private fun AppScreen(
             LocalModConsole provides ModConsoleLink(state.activeProject?.id, viewModel::openModConsole),
         ) { WorkspaceScreen(
             state = state,
+            live = viewModel.liveState.collectAsStateWithLifecycle(),
             onBack = viewModel::closeProject,
             onSend = viewModel::sendPrompt,
             onStop = viewModel::stopTask,
@@ -539,7 +543,8 @@ private fun RootScreenHost(
                     onInstallUpdate = viewModel::installAppUpdate,
                 )
                 RootScreen.AGENT -> AgentScreen(
-                    state = state,
+                    // Token counts are live fields; this reads them only while the Agent tab shows.
+                    state = state.copy(tokenMetrics = rememberLiveTokenMetrics(viewModel)),
                     bottomBarPadding = floatingNavClearance,
                     onSaveProvider = { profile, key ->
                         viewModel.updateProvider(profile, key)
@@ -647,4 +652,11 @@ private fun RootScreenHost(
             )
         }
     }
+}
+
+/** The session's token counts, observed on their own so other streamed fields do not re-run the caller. */
+@Composable
+private fun rememberLiveTokenMetrics(viewModel: MainViewModel): com.jarves.mh.model.SessionTokenMetrics {
+    val tokens = remember(viewModel) { viewModel.liveState.map { it.tokenMetrics }.distinctUntilChanged() }
+    return tokens.collectAsStateWithLifecycle(viewModel.liveState.value.tokenMetrics).value
 }

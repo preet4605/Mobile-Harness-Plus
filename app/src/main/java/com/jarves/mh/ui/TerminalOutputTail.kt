@@ -48,3 +48,28 @@ internal const val TERMINAL_PUBLISH_INTERVAL_MS = 100L
 /** Idle polling starts here and backs off to [TERMINAL_IDLE_POLL_MAX_MS] while nothing new arrives. */
 internal const val TERMINAL_IDLE_POLL_MIN_MS = 50L
 internal const val TERMINAL_IDLE_POLL_MAX_MS = 250L
+
+/** Lines per block in [terminalOutputBlocks]. */
+internal const val TERMINAL_BLOCK_LINES = 64
+
+/**
+ * [text] cut at every [linesPerBlock]th line break, counted from its start, without the break
+ * itself: stacked one under another the blocks read exactly like [text]. Appending to [text] leaves
+ * every block but the last unchanged.
+ */
+internal fun terminalOutputBlocks(text: String, linesPerBlock: Int = TERMINAL_BLOCK_LINES): List<String> {
+    val blocks = ArrayList<String>(text.length / (linesPerBlock * 40) + 1)
+    var start = 0
+    var lines = 0
+    for (index in text.indices) {
+        if (text[index] != '\n') continue
+        lines++
+        if (lines == linesPerBlock) {
+            blocks += text.substring(start, index)
+            start = index + 1
+            lines = 0
+        }
+    }
+    blocks += text.substring(start)
+    return blocks
+}

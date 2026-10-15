@@ -353,12 +353,19 @@ fun TerminalScreen(
                             }
 
                             if (liveOutput.isNotBlank()) {
-                                // Already sanitized by the ViewModel as it streams.
-                                Text(
-                                    liveOutput,
-                                    style = PocketType.codeSmall.copy(lineHeight = 18.sp),
-                                    color = outputTextColor,
-                                )
+                                // Already sanitized by the ViewModel as it streams. Shown in blocks of
+                                // lines: output appended to the end changes only the last block, so the
+                                // earlier ones keep their layout instead of laying out the whole log again.
+                                val blocks = remember(liveOutput) { terminalOutputBlocks(liveOutput) }
+                                Column {
+                                    blocks.forEach { block ->
+                                        Text(
+                                            block,
+                                            style = PocketType.codeSmall.copy(lineHeight = 18.sp),
+                                            color = outputTextColor,
+                                        )
+                                    }
+                                }
                             }
 
                         }

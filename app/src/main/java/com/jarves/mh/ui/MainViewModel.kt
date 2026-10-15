@@ -185,6 +185,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -491,6 +493,49 @@ data class AppUiState(
     val diagnostics: AppDiagnostics = AppDiagnostics(),
 )
 
+
+/**
+ * The parts of [AppUiState] that change many times a second while a task streams or a terminal
+ * runs. They are left out of [MainViewModel.shellState]; a screen reads them from
+ * [MainViewModel.liveState] in the smallest scope that shows them. [activeChatId] is repeated here
+ * so a scope always sees messages together with the chat they belong to.
+ */
+data class LiveUiState(
+    val activeChatId: String? = null,
+    val messages: List<ChatMessage> = emptyList(),
+    val liveProcess: List<ActivityItem> = emptyList(),
+    val liveThinking: Boolean = false,
+    val liveWorkStatus: WorkStatus = WorkStatus.WORKING,
+    val workSegmentStartedAtMillis: Long? = null,
+    val tokenMetrics: SessionTokenMetrics = SessionTokenMetrics(),
+    val projectTerminalLiveOutput: String = "",
+) {
+    companion object {
+        fun of(state: AppUiState) = LiveUiState(
+            activeChatId = state.activeChatId,
+            messages = state.messages,
+            liveProcess = state.liveProcess,
+            liveThinking = state.liveThinking,
+            liveWorkStatus = state.liveWorkStatus,
+            workSegmentStartedAtMillis = state.workSegmentStartedAtMillis,
+            tokenMetrics = state.tokenMetrics,
+            projectTerminalLiveOutput = state.projectTerminalLiveOutput,
+        )
+    }
+}
+
+private val SHELL_TOKEN_METRICS = SessionTokenMetrics()
+
+/** This state with every [LiveUiState] field (except the chat id) at a fixed value. */
+internal fun AppUiState.withoutLiveFields(): AppUiState = copy(
+    messages = emptyList(),
+    liveProcess = emptyList(),
+    liveThinking = false,
+    liveWorkStatus = WorkStatus.WORKING,
+    workSegmentStartedAtMillis = null,
+    tokenMetrics = SHELL_TOKEN_METRICS,
+    projectTerminalLiveOutput = "",
+)
 
 class MainViewModel(
     application: Application,
@@ -1308,6 +1353,22 @@ class MainViewModel(
     }
 
     val state: StateFlow<AppUiState> = _state.asStateFlow()
+
+    /**
+     * [state] without the fields that change while a task streams (see [LiveUiState]). The app's
+     * screens collect this, so a streamed reply or terminal output no longer re-runs the root and
+     * every screen; the few places that show live fields read [liveState] in their own scope.
+     * Both derive from the one [_state], so every update stays atomic.
+     */
+    val shellState: StateFlow<AppUiState> = _state
+        .map { it.withoutLiveFields() }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, _state.value.withoutLiveFields())
+
+    val liveState: StateFlow<LiveUiState> = _state
+        .map { LiveUiState.of(it) }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, LiveUiState.of(_state.value))
 
     // Starts empty: a hard-coded `uname -a` line here was fake output, not from the runtime.
     private val _terminalLines = MutableStateFlow<List<TerminalOutputLine>>(emptyList())

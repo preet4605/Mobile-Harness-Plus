@@ -144,6 +144,8 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.State
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -499,6 +501,62 @@ private fun rememberBarHeight(): Pair<Dp?, (IntSize) -> Unit> {
     }
 }
 
+/** Chat rows: messages, the live work block while one shows, and a pending approval. */
+private fun chatItemCount(live: LiveUiState, pendingApproval: ToolRequest?): Int =
+    live.messages.size +
+        (if (live.liveProcess.isNotEmpty() || live.liveThinking) 1 else 0) +
+        (if (pendingApproval != null) 1 else 0)
+
+/**
+ * Keeps the chat on its newest row while a task runs and the reader has not scrolled up, and opens a
+ * chat on its newest row. Its own scope, so a streamed token re-runs only this.
+ */
+@Composable
+private fun ChatAutoFollow(
+    live: State<LiveUiState>,
+    chatListState: LazyListState,
+    isRunning: Boolean,
+    pendingApproval: ToolRequest?,
+) {
+    val current = live.value
+    val chatItemCount = chatItemCount(current, pendingApproval)
+    var userScrolledUp by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(current.activeChatId, chatListState) {
+        userScrolledUp = false
+        if (chatItemCount > 0) chatListState.scrollToItem(chatItemCount - 1)
+    }
+
+    // When the user actively scrolls/touches the screen, detect if they scrolled up to read thinking/messages.
+    LaunchedEffect(chatListState, chatListState.isScrollInProgress) {
+        if (chatListState.isScrollInProgress) {
+            if (chatListState.canScrollForward) {
+                userScrolledUp = true
+            }
+        } else {
+            // If user scrolled back down to the very bottom, re-enable follow mode
+            if (!chatListState.canScrollForward) {
+                userScrolledUp = false
+            }
+        }
+    }
+
+    // Follow new tokens/updates only when user is at the bottom and has not scrolled up to read.
+    LaunchedEffect(
+        chatListState,
+        current.messages.size,
+        current.messages.lastOrNull()?.text?.length,
+        current.liveProcess.size,
+        current.liveProcess.lastOrNull()?.detail,
+        pendingApproval,
+    ) {
+        if (!isRunning || chatItemCount <= 0 || userScrolledUp || chatListState.isScrollInProgress) return@LaunchedEffect
+        if (!chatListState.canScrollForward) {
+            chatListState.scrollToItem(chatItemCount - 1)
+        }
+    }
+}
+
 @Composable
 internal fun ReadOnlyProjectScreen(
     state: AppUiState,
@@ -576,6 +634,12 @@ internal fun ReadOnlyProjectScreen(
 @Composable
 internal fun WorkspaceScreen(
     state: AppUiState,
+    /**
+     * The fields that change while a task streams. Read only inside the scopes that show them, so a
+     * streamed token does not re-run this whole screen. Callers without a ViewModel pass a full
+     * [state] and get them from it.
+     */
+    live: State<LiveUiState> = rememberUpdatedState(LiveUiState.of(state)),
     onBack: () -> Unit,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
@@ -714,47 +778,13 @@ internal fun WorkspaceScreen(
             if (saved && uri != null) onAddAttachments(listOf(uri))
         },
     )
-    val chatItemCount = state.messages.size +
-        (if (state.liveProcess.isNotEmpty() || state.liveThinking) 1 else 0) +
-        (if (state.pendingApproval != null) 1 else 0)
+    // Read without observing: the list's starting position matters only when the chat changes, and
+    // observing the streamed messages here would re-run this screen for every token.
+    val initialChatItemCount = Snapshot.withoutReadObservation { chatItemCount(live.value, state.pendingApproval) }
     // Keyed by project and chat, so a chat opens on its newest message rather than on the first one.
-    val chatListState = rememberChatListState(state.activeChatId, chatItemCount, state.activeProject?.id)
+    val chatListState = rememberChatListState(state.activeChatId, initialChatItemCount, state.activeProject?.id)
     val filesListState = rememberLazyListState()
-    var userScrolledUp by rememberSaveable { mutableStateOf(false) }
-
-    LaunchedEffect(state.activeChatId) {
-        userScrolledUp = false
-        if (chatItemCount > 0) chatListState.scrollToItem(chatItemCount - 1)
-    }
-
-    // When the user actively scrolls/touches the screen, detect if they scrolled up to read thinking/messages.
-    LaunchedEffect(chatListState, chatListState.isScrollInProgress) {
-        if (chatListState.isScrollInProgress) {
-            if (chatListState.canScrollForward) {
-                userScrolledUp = true
-            }
-        } else {
-            // If user scrolled back down to the very bottom, re-enable follow mode
-            if (!chatListState.canScrollForward) {
-                userScrolledUp = false
-            }
-        }
-    }
-
-    // Follow new tokens/updates only when user is at the bottom and has not scrolled up to read.
-    LaunchedEffect(
-        chatListState,
-        state.messages.size,
-        state.messages.lastOrNull()?.text?.length,
-        state.liveProcess.size,
-        state.liveProcess.lastOrNull()?.detail,
-        state.pendingApproval,
-    ) {
-        if (!state.isRunning || chatItemCount <= 0 || userScrolledUp || chatListState.isScrollInProgress) return@LaunchedEffect
-        if (!chatListState.canScrollForward) {
-            chatListState.scrollToItem(chatItemCount - 1)
-        }
-    }
+    ChatAutoFollow(live, chatListState, state.isRunning, state.pendingApproval)
 
     var selectedTab by rememberSaveable { mutableStateOf(initialTab) }
     val modPanes = rememberModPanesAvailable()
@@ -852,7 +882,7 @@ internal fun WorkspaceScreen(
             onSelectSubagentForLogs = onSelectSubagentForLogs,
             onSelectTaskForLogs = onSelectTaskForLogs,
             onOpenMemoryViewer = onOpenMemoryViewer,
-            tokenMetrics = state.tokenMetrics,
+            tokenMetrics = live.value.tokenMetrics,
         )
     }
     state.selectedSubagentForLogs?.let { selected ->
@@ -1004,17 +1034,17 @@ internal fun WorkspaceScreen(
                         BackdropSourceScope(active = isTransitionTarget) {
                             when (tab) {
                                 WorkspaceTab.CHAT -> ChatTab(
-                                    state.messages,
+                                    live.value.messages,
                                     state.pendingApproval,
-                                    state.liveProcess,
+                                    live.value.liveProcess,
                                     state.isRunning,
                                     onSend,
                                     onStop,
                                     onApproval,
                                     listState = chatListState,
-                                    taskStartedAtMillis = state.workSegmentStartedAtMillis ?: state.taskStartedAtMillis,
+                                    taskStartedAtMillis = live.value.workSegmentStartedAtMillis ?: state.taskStartedAtMillis,
                                     taskFinishedAtMillis = state.taskFinishedAtMillis,
-                                    thinkingActive = state.liveThinking,
+                                    thinkingActive = live.value.liveThinking,
                                     agentKind = state.agentKind,
                                     pendingAttachments = state.pendingAttachments,
                                     onAttach = {
@@ -1043,7 +1073,7 @@ internal fun WorkspaceScreen(
                                     onPromptChanged = onPromptChanged,
                                     onOpenInspector = onOpenInspector,
                                     onOpenMemoryViewer = onOpenMemoryViewer,
-                                    liveWorkStatus = if (state.isStopping) WorkStatus.STOPPING else state.liveWorkStatus,
+                                    liveWorkStatus = if (state.isStopping) WorkStatus.STOPPING else live.value.liveWorkStatus,
                                     onOpenSkills = onOpenSkills,
                                     subagentsCount = state.subagents.count { it.state == SubagentState.RUNNING },
                                     tasksCount = state.backgroundTasks.count { it.status == BackgroundTaskStatus.RUNNING },
@@ -1148,7 +1178,7 @@ internal fun WorkspaceScreen(
                                         themeMode = state.themeMode,
                                         title = "Project Terminal",
                                         subtitle = "${state.projectTerminalCwd} · Ubuntu PRoot",
-                                        liveOutput = state.projectTerminalLiveOutput,
+                                        liveOutput = live.value.projectTerminalLiveOutput,
                                         currentCommand = state.projectTerminalCommand,
                                         commandDraft = state.projectTerminalDraft,
                                         onCommandDraftConsumed = onTerminalDraftConsumed,
