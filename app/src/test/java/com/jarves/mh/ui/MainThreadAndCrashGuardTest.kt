@@ -28,7 +28,9 @@ class MainThreadAndCrashGuardTest {
         val vm = source("ui/MainViewModel.kt")
         assertFalse(vm.contains("}.count()\n            } else 0"))
         assertFalse(vm.contains("}.count()\n                } else 0"))
-        assertEquals(2, Regex("workspaceDir.walkTopDown\\(\\).any \\{").findAll(vm).count())
+        // Both checks share workspaceMayHaveUserFiles, which stops at the first user file.
+        assertEquals(2, Regex("workspaceMayHaveUserFiles\\(workspaceDir\\)").findAll(vm).count())
+        assertTrue(source("ui/WorkspaceFiles.kt").substringAfter("fun workspaceMayHaveUserFiles(").contains(".any { file ->"))
     }
 
     @Test fun endOfTaskMemoryWorkRunsOffMain() {

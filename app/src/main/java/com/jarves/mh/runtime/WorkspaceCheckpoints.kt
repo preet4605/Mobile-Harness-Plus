@@ -694,7 +694,13 @@ class WorkspaceCheckpoints(
                         } else {
                             val beforeLineCount = textLineCount(beforeBytes)
                             val afterLineCount = textLineCount(afterBytes)
-                            val cellCount = beforeLineCount.toLong() * afterLineCount
+                            // Counting (Myers) and rendering both work only on the lines between the
+                            // common top and bottom, so only that region is charged to the budget.
+                            val cellCount = if (beforeLineCount <= MAX_DIFF_LINES && afterLineCount <= MAX_DIFF_LINES) {
+                                changedRegionCells(beforeBytes, afterBytes)
+                            } else {
+                                beforeLineCount.toLong() * afterLineCount
+                            }
                             val countChangesExactly = beforeLineCount <= MAX_DIFF_LINES &&
                                 afterLineCount <= MAX_DIFF_LINES && cellCount <= remainingLcsCells
                             val approximateCounts = !countChangesExactly
@@ -906,6 +912,15 @@ class WorkspaceCheckpoints(
         val after = textLines(afterBytes)
         val common = LineDiff.longestCommonSubsequence(before, after)
         return (after.size - common) to (before.size - common)
+    }
+
+    /** Old lines times new lines left after trimming the common top and bottom: the edited region. */
+    private fun changedRegionCells(beforeBytes: ByteArray, afterBytes: ByteArray): Long {
+        val before = textLines(beforeBytes)
+        val after = textLines(afterBytes)
+        val prefix = LineDiff.commonPrefix(before, after)
+        val suffix = LineDiff.commonSuffix(before, after, prefix)
+        return (before.size - prefix - suffix).toLong() * (after.size - prefix - suffix)
     }
 
     /** Counts newline-delimited lines without decoding or allocating one String per line. */
