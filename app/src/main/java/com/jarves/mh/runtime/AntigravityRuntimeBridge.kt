@@ -19,7 +19,6 @@ import com.jarves.mh.model.SessionTokenMetrics
 import com.jarves.mh.model.SubagentInfo
 import com.jarves.mh.model.SubagentState
 import java.io.File
-import java.io.RandomAccessFile
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
@@ -417,6 +416,7 @@ class AntigravityRuntimeBridge(
                     emulateHardLinks = false,
                     outputFile = outputFile,
                 )
+                val outputReader = CaptureFileReader(outputFile)
                 try {
                     val request = JSONObject()
                         .put("event", "user")
@@ -443,17 +443,15 @@ class AntigravityRuntimeBridge(
                         return false
                     }
                     var done = false
+                    val signal = (process as? NativeSpawnProcess)?.outputSignal
+                    val bytes = ByteArray(16 * 1024)
                     while (!done && (process.isAlive || outputFile.length() > offset)) {
                         val available = outputFile.length() - offset
                         if (available <= 0) {
-                            delay(100)
+                            if (signal == null) delay(100) else signal.await(100)
                             continue
                         }
-                        val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
-                        val count = RandomAccessFile(outputFile, "r").use { file ->
-                            file.seek(offset)
-                            file.read(bytes)
-                        }
+                        val count = outputReader.read(offset, bytes, minOf(available, bytes.size.toLong()).toInt())
                         if (count <= 0) continue
                         offset += count
                         for (line in pending.feed(bytes, count)) {
@@ -468,6 +466,7 @@ class AntigravityRuntimeBridge(
                     check(done) { "Antigravity exited without answering" }
                     reply?.trim().takeUnless { it.isNullOrEmpty() } ?: "ok"
                 } finally {
+                    outputReader.close()
                     runCatching { process.destroy() }
                     runCatching {
                         if (process.isAlive) process.destroyForcibly()
@@ -613,6 +612,7 @@ class AntigravityRuntimeBridge(
                     val workspace = checkpoints.ensureWorkspace(projectId)
                     checkpoints.createCheckpoint(projectId, workspace)
                     val before = checkpoints.snapshot(workspace)
+                    var outputReader: CaptureFileReader? = null
                     try {
                     val command = antigravityCommand(model(), effort(), targetConvId)
                     val process = installer.process(
@@ -701,7 +701,9 @@ class AntigravityRuntimeBridge(
                         }
                     }
                     var lastOutputTime = System.currentTimeMillis()
-                    val idle = IdlePoll(50)
+                    val idle = IdlePoll(50, signal = native.outputSignal, signalMaxMs = 1_000)
+                    val reader = CaptureFileReader(native.outputFile).also { outputReader = it }
+                    val bytes = ByteArray(16 * 1024)
                     while (process.isAlive || native.outputFile.length() > offset) {
                         val available = native.outputFile.length() - offset
                         if (available <= 0) {
@@ -732,11 +734,7 @@ class AntigravityRuntimeBridge(
                         }
                         idle.reset()
                         lastOutputTime = System.currentTimeMillis()
-                        val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
-                        val count = RandomAccessFile(native.outputFile, "r").use { file ->
-                            file.seek(offset)
-                            file.read(bytes)
-                        }
+                        val count = reader.read(offset, bytes, minOf(available, bytes.size.toLong()).toInt())
                         if (count <= 0) continue
                         offset += count
                         for (line in pending.feed(bytes, count)) {
@@ -769,6 +767,7 @@ class AntigravityRuntimeBridge(
                         throw AntigravitySessionException(friendlyError(errDetail))
                     }
                     } finally {
+                        outputReader?.close()
                         activeProcess?.let { if (it.isAlive) it.destroyForcibly() }
                         val paths = checkpoints.changedFiles(workspace, before)
                         retryBlockedByChanges = paths.isNotEmpty() || attemptHadTools

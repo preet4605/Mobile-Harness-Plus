@@ -14,7 +14,6 @@ import com.jarves.mh.model.ProviderProfile
 import com.jarves.mh.model.RuntimeEvent
 import com.jarves.mh.model.ToolRequest
 import java.io.File
-import java.io.RandomAccessFile
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
@@ -406,36 +405,38 @@ class DshRuntimeBridge(
             }
         }
 
-        val idle = IdlePoll(50)
-        while (process.isAlive || nativeProcess.outputFile.length() > outputOffset) {
-            if (
-                process.isAlive &&
-                !forcedShutdown &&
-                shutdownSentAt > 0L &&
-                android.os.SystemClock.elapsedRealtime() - shutdownSentAt >= SDK_SHUTDOWN_TIMEOUT_MS
-            ) {
-                closeInput()
-                forcedShutdown = true
-                Log.w("DshBridge", "SDK acknowledged completion but did not exit; stopping its runtime wrapper")
-                process.destroyForcibly()
+        val idle = IdlePoll(50, signal = nativeProcess.outputSignal, signalMaxMs = 1_000)
+        val reader = CaptureFileReader(nativeProcess.outputFile)
+        val bytes = ByteArray(16 * 1024)
+        try {
+            while (process.isAlive || nativeProcess.outputFile.length() > outputOffset) {
+                if (
+                    process.isAlive &&
+                    !forcedShutdown &&
+                    shutdownSentAt > 0L &&
+                    android.os.SystemClock.elapsedRealtime() - shutdownSentAt >= SDK_SHUTDOWN_TIMEOUT_MS
+                ) {
+                    closeInput()
+                    forcedShutdown = true
+                    Log.w("DshBridge", "SDK acknowledged completion but did not exit; stopping its runtime wrapper")
+                    process.destroyForcibly()
+                }
+                val available = nativeProcess.outputFile.length() - outputOffset
+                if (available <= 0) {
+                    idle.await()
+                    continue
+                }
+                idle.reset()
+                val count = reader.read(outputOffset, bytes, minOf(available, bytes.size.toLong()).toInt())
+                if (count <= 0) continue
+                outputOffset += count
+                for (line in pendingOutput.feed(bytes, count)) {
+                    check(line != CodexLineAssembler.OVERSIZED) { "Runtime output line exceeded its safe limit" }
+                    handle(parser.parseLine(line))
+                }
             }
-            val available = nativeProcess.outputFile.length() - outputOffset
-            if (available <= 0) {
-                idle.await()
-                continue
-            }
-            idle.reset()
-            val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
-            val count = RandomAccessFile(nativeProcess.outputFile, "r").use { file ->
-                file.seek(outputOffset)
-                file.read(bytes)
-            }
-            if (count <= 0) continue
-            outputOffset += count
-            for (line in pendingOutput.feed(bytes, count)) {
-                check(line != CodexLineAssembler.OVERSIZED) { "Runtime output line exceeded its safe limit" }
-                handle(parser.parseLine(line))
-            }
+        } finally {
+            reader.close()
         }
         pendingOutput.flush()?.let {
             check(it != CodexLineAssembler.OVERSIZED) { "Runtime output line exceeded its safe limit" }

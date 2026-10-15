@@ -341,8 +341,9 @@ class CodexRuntimeBridge(
                 check(bound) { "Stopped before native Codex task admission." }
 
                 val mapper = CodexEventMapper(sessionId, guestWorkspacePath)
+                val io = NativeCodexProcessIo(nativeProcess)
                 val runner = CodexAppServerRunner(
-                    io = NativeCodexProcessIo(nativeProcess),
+                    io = io,
                     workspace = guestWorkspacePath,
                     prompt = contextPrompt,
                     model = route.model,
@@ -367,7 +368,7 @@ class CodexRuntimeBridge(
                         supervisor.healthMonitor.onWakeLockChanged(supervisor.wakeLockManager.isHeld, supervisor.wakeLockManager.activeTaskCount)
                     } },
                 )
-                val result = runner.run()
+                val result = try { runner.run() } finally { io.close() }
                 (process as? NativeSpawnProcess)?.checkCapture()
                 Log.d(TAG, "Codex exited with code ${result.exitCode}, completed=${result.completed}")
 

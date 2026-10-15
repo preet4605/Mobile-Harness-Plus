@@ -1,6 +1,5 @@
 package com.jarves.mh.runtime
 
-import java.io.RandomAccessFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,16 +24,19 @@ internal interface CodexProcessIo {
     fun destroy()
     fun destroyForcibly()
     fun waitFor(): Int
+    /** Wakes the read loops when new output is written; null means they only poll. */
+    val outputSignal: OutputSignal? get() = null
 }
 
-internal class NativeCodexProcessIo(private val process: NativeSpawnProcess) : CodexProcessIo {
+internal class NativeCodexProcessIo(private val process: NativeSpawnProcess) : CodexProcessIo, java.io.Closeable {
+    private val reader = CaptureFileReader(process.outputFile)
     override val isAlive: Boolean get() = process.isAlive
+    override val outputSignal: OutputSignal get() = process.outputSignal
     override fun outputLength(): Long = process.outputFile.length()
-    override fun readOutput(offset: Long, buffer: ByteArray, length: Int): Int =
-        RandomAccessFile(process.outputFile, "r").use { file ->
-            file.seek(offset)
-            file.read(buffer, 0, length)
-        }
+    override fun readOutput(offset: Long, buffer: ByteArray, length: Int): Int = reader.read(offset, buffer, length)
+
+    /** Closes the capture file handle; the process itself is stopped through [destroy]. */
+    override fun close() = reader.close()
 
     override fun writeInput(text: String) {
         val stream = process.outputStream
@@ -138,7 +140,7 @@ internal class CodexTurnRunner(
         var stopSignalAt = NONE
         var forceKilledAt = NONE
         var stuckReads = 0
-        val idle = IdlePoll(config.pollMs)
+        val idle = IdlePoll(config.pollMs, signal = io.outputSignal)
 
         fun terminate(t: Long) {
             if (terminateAt == NONE) {

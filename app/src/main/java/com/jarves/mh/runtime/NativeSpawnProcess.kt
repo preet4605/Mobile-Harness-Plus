@@ -16,6 +16,8 @@ internal class NativeSpawnProcess private constructor(
     private val captureFailed: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(),
     private val capturePipe: File? = null,
     private val onExit: () -> Unit = {},
+    /** Wakes output readers when the pump writes; see [OutputSignal]. */
+    internal val outputSignal: OutputSignal = OutputSignal(),
 ) : Process() {
     val processPid: Int get() = pid
     @Volatile private var result: Int? = null
@@ -134,12 +136,13 @@ internal class NativeSpawnProcess private constructor(
                 throw error
             }
             val failed = java.util.concurrent.atomic.AtomicBoolean()
+            val signal = OutputSignal()
             val input = ParcelFileDescriptor.AutoCloseOutputStream(ParcelFileDescriptor.adoptFd(spawned[1]))
             val pump = Thread({
                 try {
                     val source = if (pipe != null) FileInputStream(pipe) else
                         ParcelFileDescriptor.AutoCloseInputStream(ParcelFileDescriptor.adoptFd(spawned[2]))
-                    source.use { stream -> FileOutputStream(outputFile, false).use { destination ->
+                    source.use { stream -> SignalingOutputStream(FileOutputStream(outputFile, false), signal).use { destination ->
                         BoundedProcessCapture.copy(stream, destination, maxOutputBytes) {
                             failed.set(true)
                             NativeSpawn.kill(spawned[0], 9)
@@ -148,9 +151,12 @@ internal class NativeSpawnProcess private constructor(
                 } catch (_: Throwable) {
                     failed.set(true)
                     runCatching { NativeSpawn.kill(spawned[0], 9) }
-                } finally { pipe?.delete() }
+                } finally {
+                    pipe?.delete()
+                    signal.end()
+                }
             }, "pocket-runtime-output").apply { isDaemon = true; start() }
-            return NativeSpawnProcess(spawned[0], outputFile, input, pump, failed, pipe, onExit)
+            return NativeSpawnProcess(spawned[0], outputFile, input, pump, failed, pipe, onExit, signal)
         }
 
         fun isPidAlive(targetPid: Int): Boolean {

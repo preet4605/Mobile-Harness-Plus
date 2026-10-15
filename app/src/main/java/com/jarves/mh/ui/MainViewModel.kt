@@ -1418,35 +1418,36 @@ class MainViewModel(
                     var autoConfirmed = false
                     var idleSleep = TERMINAL_IDLE_POLL_MIN_MS
                     var lastPublishAt = 0L
-                    while (proc.isAlive || (native?.outputFile?.length() ?: 0L) > offset) {
-                        val file = native?.outputFile
-                        val available = (file?.length() ?: 0L) - offset
-                        if (file == null || available <= 0) {
-                            Thread.sleep(idleSleep)
-                            idleSleep = (idleSleep * 2).coerceAtMost(TERMINAL_IDLE_POLL_MAX_MS)
-                            continue
-                        }
-                        idleSleep = TERMINAL_IDLE_POLL_MIN_MS
-                        val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
-                        val count = RandomAccessFile(file, "r").use { input ->
-                            input.seek(offset)
-                            input.read(bytes)
-                        }
-                        if (count > 0) {
-                            offset += count
-                            streamed.append(decoder.decode(bytes, count))
-                            val now = SystemClock.elapsedRealtime()
-                            if (now - lastPublishAt >= TERMINAL_PUBLISH_INTERVAL_MS || available <= count) {
-                                lastPublishAt = now
-                                com.jarves.mh.runtime.PerfStats.count("terminal.publish")
-                                _terminalLiveOutput.value = streamed.text().trimEnd()
+                    val reader = native?.let { com.jarves.mh.runtime.CaptureFileReader(it.outputFile) }
+                    val bytes = ByteArray(16 * 1024)
+                    try {
+                        while (proc.isAlive || (native?.outputFile?.length() ?: 0L) > offset) {
+                            val file = native?.outputFile
+                            val available = (file?.length() ?: 0L) - offset
+                            if (reader == null || available <= 0) {
+                                idleSleep = awaitTerminalOutput(native?.outputSignal, idleSleep)
+                                continue
                             }
-                            if (!autoConfirmed && shouldAutoConfirmPackageCommand(command, streamed.recent(500))) {
-                                proc.outputStream.write("y\n".toByteArray())
-                                proc.outputStream.flush()
-                                autoConfirmed = true
+                            idleSleep = TERMINAL_IDLE_POLL_MIN_MS
+                            val count = reader.read(offset, bytes, minOf(available, bytes.size.toLong()).toInt())
+                            if (count > 0) {
+                                offset += count
+                                streamed.append(decoder.decode(bytes, count))
+                                val now = SystemClock.elapsedRealtime()
+                                if (now - lastPublishAt >= TERMINAL_PUBLISH_INTERVAL_MS || available <= count) {
+                                    lastPublishAt = now
+                                    com.jarves.mh.runtime.PerfStats.count("terminal.publish")
+                                    _terminalLiveOutput.value = streamed.text().trimEnd()
+                                }
+                                if (!autoConfirmed && shouldAutoConfirmPackageCommand(command, streamed.recent(500))) {
+                                    proc.outputStream.write("y\n".toByteArray())
+                                    proc.outputStream.flush()
+                                    autoConfirmed = true
+                                }
                             }
                         }
+                    } finally {
+                        reader?.close()
                     }
                     val exit = proc.waitFor()
                     runCatching { proc.outputStream.close() }
@@ -1823,46 +1824,47 @@ class MainViewModel(
         var idleSleep = TERMINAL_IDLE_POLL_MIN_MS
         var lastPublishAt = 0L
         var lastPreviewUrl: String? = null
-        while (process.isAlive || native.outputFile.length() > offset) {
-            val available = native.outputFile.length() - offset
-            if (available <= 0) {
-                Thread.sleep(idleSleep)
-                idleSleep = (idleSleep * 2).coerceAtMost(TERMINAL_IDLE_POLL_MAX_MS)
-                continue
-            }
-            idleSleep = TERMINAL_IDLE_POLL_MIN_MS
-            val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
-            val count = RandomAccessFile(native.outputFile, "r").use { file ->
-                file.seek(offset)
-                file.read(bytes)
-            }
-            if (count > 0) {
-                offset += count
-                output.append(decoder.decode(bytes, count))
-                val recent = output.recent(4096).substringBefore(marker)
-                if (!autoConfirmed && shouldAutoConfirmPackageCommand(command, recent)) {
-                    process.outputStream.write("y\n".toByteArray())
-                    process.outputStream.flush()
-                    autoConfirmed = true
+        val reader = com.jarves.mh.runtime.CaptureFileReader(native.outputFile)
+        val bytes = ByteArray(16 * 1024)
+        try {
+            while (process.isAlive || native.outputFile.length() > offset) {
+                val available = native.outputFile.length() - offset
+                if (available <= 0) {
+                    idleSleep = awaitTerminalOutput(native.outputSignal, idleSleep)
+                    continue
                 }
-                val detectedPreviewUrl = detectPreviewUrl(recent)
-                val now = SystemClock.elapsedRealtime()
-                val newPreviewUrl = detectedPreviewUrl != null && detectedPreviewUrl != lastPreviewUrl
-                if (!newPreviewUrl && now - lastPublishAt < TERMINAL_PUBLISH_INTERVAL_MS && available > count) continue
-                lastPublishAt = now
-                com.jarves.mh.runtime.PerfStats.count("terminal.publish")
-                lastPreviewUrl = detectedPreviewUrl ?: lastPreviewUrl
-                val visible = output.text().substringBefore(marker)
-                _state.update { current ->
-                    if (current.activeProject?.id == projectId) {
-                        current.copy(
-                            projectTerminalLiveOutput = visible,
-                            previewReady = current.previewReady || detectedPreviewUrl != null,
-                            previewUrl = detectedPreviewUrl ?: current.previewUrl,
-                        )
-                    } else current
+                idleSleep = TERMINAL_IDLE_POLL_MIN_MS
+                val count = reader.read(offset, bytes, minOf(available, bytes.size.toLong()).toInt())
+                if (count > 0) {
+                    offset += count
+                    output.append(decoder.decode(bytes, count))
+                    val recent = output.recent(4096).substringBefore(marker)
+                    if (!autoConfirmed && shouldAutoConfirmPackageCommand(command, recent)) {
+                        process.outputStream.write("y\n".toByteArray())
+                        process.outputStream.flush()
+                        autoConfirmed = true
+                    }
+                    val detectedPreviewUrl = detectPreviewUrl(recent)
+                    val now = SystemClock.elapsedRealtime()
+                    val newPreviewUrl = detectedPreviewUrl != null && detectedPreviewUrl != lastPreviewUrl
+                    if (!newPreviewUrl && now - lastPublishAt < TERMINAL_PUBLISH_INTERVAL_MS && available > count) continue
+                    lastPublishAt = now
+                    com.jarves.mh.runtime.PerfStats.count("terminal.publish")
+                    lastPreviewUrl = detectedPreviewUrl ?: lastPreviewUrl
+                    val visible = output.text().substringBefore(marker)
+                    _state.update { current ->
+                        if (current.activeProject?.id == projectId) {
+                            current.copy(
+                                projectTerminalLiveOutput = visible,
+                                previewReady = current.previewReady || detectedPreviewUrl != null,
+                                previewUrl = detectedPreviewUrl ?: current.previewUrl,
+                            )
+                        } else current
+                    }
                 }
             }
+        } finally {
+            reader.close()
         }
         val exitCode = process.waitFor()
         runCatching { process.outputStream.close() }

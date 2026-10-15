@@ -136,8 +136,11 @@ internal class CodexAppServerRunner(
                     }
                 }
                 // An active native goal owns continuation. Neither turn/completed nor idle proves it stopped.
+                val idle = IdlePoll(config.pollMs, signal = io.outputSignal)
                 while (true) {
+                    val readFrom = offset
                     pump()
+                    if (offset != readFrom) idle.reset()
                     check(failure == null) { failure.orEmpty() }
                     if (isStopRequested()) { stopNative(); error("Stopped by user") }
                     takeGoalControl()?.let { performGoalControl(it) }
@@ -154,7 +157,7 @@ internal class CodexAppServerRunner(
                     }
                     transientAt?.let { check(now() - it < config.transientStallMs) { "Network connection interrupted. Codex could not reach the provider." } }
                     check(io.isAlive) { "Codex app-server exited before completing its native operation." }
-                    delay(config.pollMs)
+                    idle.await()
                 }
             }
         } catch (cancelled: CancellationException) {
@@ -253,8 +256,14 @@ internal class CodexAppServerRunner(
             check(allowStop || !isStopRequested()) { "Stopped by user" }
             check(io.isAlive) { "Codex exited during $method." }
             check(now() < deadline) { "Codex did not acknowledge $method within its deadline." }
-            delay(config.pollMs)
+            waitForOutput(config.pollMs)
         }
+    }
+
+    /** Waits up to [timeoutMs], ending early when Codex writes output. */
+    private suspend fun waitForOutput(timeoutMs: Long) {
+        val signal = io.outputSignal
+        if (signal == null) delay(timeoutMs) else signal.await(timeoutMs)
     }
 
     private suspend fun pump(expectedReply: Int? = null) {

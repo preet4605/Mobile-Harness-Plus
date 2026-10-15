@@ -22,7 +22,6 @@ import com.jarves.mh.model.SubagentInfo
 import com.jarves.mh.model.SubagentState
 import com.jarves.mh.model.ToolRequest
 import java.io.File
-import java.io.RandomAccessFile
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -386,6 +385,7 @@ class ClaudeRuntimeBridge(
                 val promptWriter = launch(Dispatchers.IO) {
                     deliverPromptToStdin(process, contextPrompt)
                 }
+                var outputReader: CaptureFileReader? = null
                 try {
                     var lastDiagnostic = ""
                     val pendingOutput = CodexLineAssembler()
@@ -393,7 +393,9 @@ class ClaudeRuntimeBridge(
                         ?: error("Unsupported Android runtime process")
                     var outputOffset = 0L
                     var lastOutputTime = System.currentTimeMillis()
-                    val idle = IdlePoll(50)
+                    val idle = IdlePoll(50, signal = nativeProcess.outputSignal, signalMaxMs = 1_000)
+                    val reader = CaptureFileReader(nativeProcess.outputFile).also { outputReader = it }
+                    val bytes = ByteArray(16 * 1024)
                     var terminatedAfterResult = false
                     while (process.isAlive || nativeProcess.outputFile.length() > outputOffset) {
                         val available = nativeProcess.outputFile.length() - outputOffset
@@ -412,11 +414,7 @@ class ClaudeRuntimeBridge(
                         }
                         idle.reset()
                         lastOutputTime = System.currentTimeMillis()
-                        val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
-                        val count = RandomAccessFile(nativeProcess.outputFile, "r").use { file ->
-                            file.seek(outputOffset)
-                            file.read(bytes)
-                        }
+                        val count = reader.read(outputOffset, bytes, minOf(available, bytes.size.toLong()).toInt())
                         if (count > 0) {
                             outputOffset += count
                             for (line in pendingOutput.feed(bytes, count)) {
@@ -489,6 +487,7 @@ class ClaudeRuntimeBridge(
                         error(lastDiagnostic.ifBlank { "Claude Code stopped before reporting completion (exit code $exit)" })
                     }
                 } finally {
+                    outputReader?.close()
                     promptWriter.cancel()
                     permissionWatcher.cancelAndJoin()
                     pending.values.filter { it.request.sessionId == sessionId }.forEach { permission ->

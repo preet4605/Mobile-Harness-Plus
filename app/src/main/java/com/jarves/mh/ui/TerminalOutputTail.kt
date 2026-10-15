@@ -48,6 +48,22 @@ internal const val TERMINAL_PUBLISH_INTERVAL_MS = 100L
 /** Idle polling starts here and backs off to [TERMINAL_IDLE_POLL_MAX_MS] while nothing new arrives. */
 internal const val TERMINAL_IDLE_POLL_MIN_MS = 50L
 internal const val TERMINAL_IDLE_POLL_MAX_MS = 250L
+/** With the process's output signal a wait ends as soon as output arrives, so it can back off further. */
+internal const val TERMINAL_SIGNAL_IDLE_MAX_MS = 1_000L
+
+/**
+ * One idle wait of a terminal read loop, at most [idleMs]; returns the next wait. With [signal] the
+ * wait ends when the process writes output. Once its output stream has ended, or without a signal,
+ * it sleeps and backs off as before, up to [TERMINAL_IDLE_POLL_MAX_MS].
+ */
+internal fun awaitTerminalOutput(signal: com.jarves.mh.runtime.OutputSignal?, idleMs: Long): Long {
+    if (signal == null || signal.ended) {
+        Thread.sleep(idleMs.coerceAtMost(TERMINAL_IDLE_POLL_MAX_MS))
+        return (idleMs * 2).coerceAtMost(TERMINAL_IDLE_POLL_MAX_MS)
+    }
+    return if (signal.awaitBlocking(idleMs)) TERMINAL_IDLE_POLL_MIN_MS
+    else (idleMs * 2).coerceAtMost(TERMINAL_SIGNAL_IDLE_MAX_MS)
+}
 
 /** Lines per block in [terminalOutputBlocks]. */
 internal const val TERMINAL_BLOCK_LINES = 64
