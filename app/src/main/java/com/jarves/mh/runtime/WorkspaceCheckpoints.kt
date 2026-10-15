@@ -625,36 +625,50 @@ class WorkspaceCheckpoints(
             )
         }
 
-        val lcs = Array(before.size + 1) { IntArray(after.size + 1) }
-        for (oldIndex in before.lastIndex downTo 0) {
-            for (newIndex in after.lastIndex downTo 0) {
-                lcs[oldIndex][newIndex] = if (before[oldIndex] == after[newIndex]) {
-                    lcs[oldIndex + 1][newIndex + 1] + 1
+        // Most edits touch a small region: the unchanged top and bottom are context without a table.
+        val prefix = LineDiff.commonPrefix(before, after)
+        val suffix = LineDiff.commonSuffix(before, after, prefix)
+        val oldEnd = before.size - suffix
+        val newEnd = after.size - suffix
+        val middleOld = oldEnd - prefix
+        val middleNew = newEnd - prefix
+        val lcs = Array(middleOld + 1) { IntArray(middleNew + 1) }
+        for (oldOffset in middleOld - 1 downTo 0) {
+            for (newOffset in middleNew - 1 downTo 0) {
+                lcs[oldOffset][newOffset] = if (before[prefix + oldOffset] == after[prefix + newOffset]) {
+                    lcs[oldOffset + 1][newOffset + 1] + 1
                 } else {
-                    maxOf(lcs[oldIndex + 1][newIndex], lcs[oldIndex][newIndex + 1])
+                    maxOf(lcs[oldOffset + 1][newOffset], lcs[oldOffset][newOffset + 1])
                 }
             }
         }
 
-        val result = mutableListOf<DiffLine>()
-        var oldIndex = 0
-        var newIndex = 0
-        while (oldIndex < before.size || newIndex < after.size) {
+        val result = ArrayList<DiffLine>(maxOf(before.size, after.size) + 8)
+        for (index in 0 until prefix) {
+            result += DiffLine(DiffLineType.CONTEXT, before[index], index + 1, index + 1)
+        }
+        var oldIndex = prefix
+        var newIndex = prefix
+        while (oldIndex < oldEnd || newIndex < newEnd) {
             when {
-                oldIndex < before.size && newIndex < after.size && before[oldIndex] == after[newIndex] -> {
+                oldIndex < oldEnd && newIndex < newEnd && before[oldIndex] == after[newIndex] -> {
                     result += DiffLine(DiffLineType.CONTEXT, before[oldIndex], oldIndex + 1, newIndex + 1)
                     oldIndex++
                     newIndex++
                 }
-                newIndex < after.size && (oldIndex == before.size || lcs[oldIndex][newIndex + 1] >= lcs[oldIndex + 1][newIndex]) -> {
+                newIndex < newEnd && (oldIndex == oldEnd ||
+                    lcs[oldIndex - prefix][newIndex - prefix + 1] >= lcs[oldIndex - prefix + 1][newIndex - prefix]) -> {
                     result += DiffLine(DiffLineType.ADDITION, after[newIndex], null, newIndex + 1)
                     newIndex++
                 }
-                oldIndex < before.size -> {
+                oldIndex < oldEnd -> {
                     result += DiffLine(DiffLineType.DELETION, before[oldIndex], oldIndex + 1, null)
                     oldIndex++
                 }
             }
+        }
+        for (offset in 0 until suffix) {
+            result += DiffLine(DiffLineType.CONTEXT, before[oldEnd + offset], oldEnd + offset + 1, newEnd + offset + 1)
         }
         return collapseUnchangedLines(result)
     }
@@ -691,19 +705,7 @@ class WorkspaceCheckpoints(
         if (before.size > MAX_DIFF_LINES || after.size > MAX_DIFF_LINES) {
             return maxOf(0, after.size - before.size) to maxOf(0, before.size - after.size)
         }
-        var previous = IntArray(after.size + 1)
-        before.forEach { oldLine ->
-            val current = IntArray(after.size + 1)
-            after.forEachIndexed { index, newLine ->
-                current[index + 1] = if (oldLine == newLine) {
-                    previous[index] + 1
-                } else {
-                    maxOf(previous[index + 1], current[index])
-                }
-            }
-            previous = current
-        }
-        val common = previous[after.size]
+        val common = LineDiff.longestCommonSubsequence(before, after)
         return (after.size - common) to (before.size - common)
     }
 
