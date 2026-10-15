@@ -31,7 +31,19 @@ Audit: project files `audits/perf-heat-crash-audit-2026-10-14.md` (static readin
 
 Love chose "All four phases" (03:42 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair.
 
+### Phase 4: reaching dashboards quickly
+
+- **Pin to tab bar:** a switch on every mod's Dashboard (no permission). The pinned mod's whole page (all tabs, no Back) takes the tab bar's extra slot, before the older pane-only mod tab; saved as `pinned` in the registry state and dropped from view when the mod is removed.
+- **Overview:** the Installed list of the Mods tab starts with a card for each mod that is on: its run state, errors in its log since its page was last open (since the Mods screen opened, at first), and its unfinished agent tasks and running servers. A tap opens its dashboard.
+- **Chat banner:** above the message box, while a mod's steps are unfinished in the open project, a line names the mod and role ("Super Harness · Coder is working · 2 more queued · Open console"). A tap leaves the project as Back does and opens the mod's page (its pinned tab when pinned).
+- Steps now carry a `label` (mod name and role title) for the banner.
+- **Defaults taken:** the pinned page is the full mod page rather than only the Dashboard tab; error counts reset when the page is opened and when it is left; the "last looked" times are kept only while the app runs.
+- **VERIFIED:** full suite 1611 tests, 0 failures; node 18/18; the app compiles. New ModRegistryTest for saving the pin and hiding it once the mod is gone.
+- **NOT RUN:** on a phone. The tab, overview and banner are UI with no Compose test.
+
 ### Phase 3: agent console for mods with roles
+
+COMPLETE (pushed to harness-dev as 5b9bea6).
 
 - New `contributes.roles` (up to 6: `id`, `title`, `harness`, optional `model` and `effort`; no permission) parsed by ModManifestParser and checked by `mh-mod validate`.
 - The Dashboard of such a mod shows an **Agents** console ([ModConsole](../app/src/main/java/com/jarves/mh/ui/ModConsole.kt)): a project picker (the open project first), then a card per role with its harness, model and effort (changeable; saved in the mod's `roles.json` by [ModRoles](../app/src/main/java/com/jarves/mh/mods/ModRoles.kt)), idle/running/waiting state with Stop, the last reply (folded), a Send box, "Hand off the last reply" to another role, and "Open the role's chat".

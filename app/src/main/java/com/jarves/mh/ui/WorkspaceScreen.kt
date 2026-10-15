@@ -2514,6 +2514,7 @@ private fun ChatTab(
                 }
 
                 ModProjectStrip()
+                ModChainBanner()
 
                 if (slashCommandsVisible) {
                     SlashCommandMenu(

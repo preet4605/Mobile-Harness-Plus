@@ -175,7 +175,7 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     fun sendToRole(mod: InstalledMod, role: com.jarves.mh.mods.ModRole, text: String, projectId: String) {
         val prompt = text.trim().take(com.jarves.mh.mods.ModAgentSteps.MAX_PROMPT)
         if (prompt.isEmpty()) return
-        consoleSteps.enqueue(mod.id, role.id, role.harness, prompt, projectId, role.model, role.effort)
+        consoleSteps.enqueue(mod.id, role.id, role.harness, prompt, projectId, role.model, role.effort, "${mod.manifest.name} · ${role.title}")
     }
 
     /** Sends [from]'s last reply to [to], as the user's send. */
@@ -199,6 +199,20 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
     fun resumeChain(modId: String) = consoleSteps.resume(modId)
 
     fun stopChain(modId: String) = consoleSteps.stopChain(modId)
+
+    /** Pins [id]'s dashboard to the tab bar (phase 4); null unpins. */
+    fun setPinned(id: String?) {
+        viewModelScope.launch(Dispatchers.IO) { registry.await()?.setPinned(id) }
+    }
+
+    // Phase 4: when the user last looked at each mod's page, for the overview's error counts.
+    private val _lastSeen = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val lastSeen: StateFlow<Map<String, Long>> = _lastSeen.asStateFlow()
+
+    fun markSeen(id: String) = _lastSeen.update { it + (id to System.currentTimeMillis()) }
+
+    /** Errors in [id]'s log since the user last opened its page (since this screen opened, at first). */
+    fun errorsSince(id: String, since: Long): Int = hostRef?.log(id)?.count { it.level == "error" && it.time > since } ?: 0
 
     private val _chats = MutableStateFlow<Map<String, List<com.jarves.mh.mods.ModChatLine>>>(emptyMap())
     /** Each mod's dashboard chat. */

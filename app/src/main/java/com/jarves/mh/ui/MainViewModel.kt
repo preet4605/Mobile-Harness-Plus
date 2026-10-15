@@ -298,6 +298,10 @@ data class AppUiState(
     val modAccent: String? = null,
     /** Active mods' items for the chat, file and project menus. */
     val modMenuItems: List<com.jarves.mh.mods.ModMenuEntry> = emptyList(),
+    /** The mod whose dashboard is pinned to the tab bar (id to name), while it is installed. */
+    val pinnedMod: Pair<String, String>? = null,
+    /** A mod page to open on the Mods screen (or its pinned tab), as a chat's chain banner asks. */
+    val openModRequest: String? = null,
     /** A mod asked the user to pick a file of these MIME types (`$.storage.pick`); the screen opens the picker once. */
     val modPickTypes: List<String>? = null,
     val apiPingStatus: ApiPingStatus = ApiPingStatus.IDLE,
@@ -3207,7 +3211,11 @@ class MainViewModel(
                 }.getOrElse { ModContributionSet() }
                 val accent = snapshot.accent
                 val menuItems = snapshot.active.flatMap { mod -> mod.manifest.menuItems.map { com.jarves.mh.mods.ModMenuEntry(mod.id, mod.manifest.name, it) } }
-                _state.update { if (it.modAccent == accent && it.modMenuItems == menuItems) it else it.copy(modAccent = accent, modMenuItems = menuItems) }
+                val pinned = snapshot.pinnedMod?.let { it.id to it.manifest.name }
+                _state.update {
+                    if (it.modAccent == accent && it.modMenuItems == menuItems && it.pinnedMod == pinned) it
+                    else it.copy(modAccent = accent, modMenuItems = menuItems, pinnedMod = pinned)
+                }
                 // A mod turned off, or Developer mode off, stops its guest programs at once (mod plan row 11).
                 val allowed = ModGuestTools.allowed(snapshot).map { it.id }.toSet()
                 if (guestPrograms != null && !allowed.containsAll(guestPrograms.orEmpty())) {
@@ -7206,7 +7214,8 @@ class MainViewModel(
                 ?.takeIf { id -> current.activeProject?.id == context.projectId && current.projectChats.any { it.id == id } }
             options.copy(model = options.model ?: role.model, effort = options.effort ?: role.effort, chat = options.chat ?: saved ?: "new")
         }
-        val step = stepId ?: steps.add(mod.id, role?.id, kind?.let(com.jarves.mh.mods.ModManifestParser::harnessId), prompt, fromUser, context.projectId)
+        val step = stepId ?: steps.add(mod.id, role?.id, kind?.let(com.jarves.mh.mods.ModManifestParser::harnessId), prompt, fromUser, context.projectId,
+            label = mod.manifest.name + (role?.let { " · ${it.title}" } ?: ""))
         val answer = try {
             // Pause after this step: the mod's next ask waits for Resume.
             if (!fromUser) steps.awaitResumed(mod.id)
@@ -7320,6 +7329,16 @@ class MainViewModel(
             .put("taskId", taskId ?: JSONObject.NULL)
             .put("chatId", chatId ?: JSONObject.NULL)
             .also { taskId?.let(modAsks::remove) }
+    }
+
+    /** Leaves the project as Back does, for [modId]'s page, as a chat's chain banner does. */
+    fun openModConsole(modId: String) {
+        closeProject()
+        _state.update { it.copy(workspaceVisible = false, openModRequest = modId) }
+    }
+
+    fun consumeOpenModRequest() {
+        _state.update { if (it.openModRequest == null) it else it.copy(openModRequest = null) }
     }
 
     /** Opens [chatId] of [projectId] on screen, as a mod console's role chats open. */

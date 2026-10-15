@@ -101,7 +101,12 @@ data class ModsSnapshot(
     val settingChanges: List<ModSettingChange> = emptyList(),
     /** The mod that last set the app's accent with `$.ui.theme`, and the accent. */
     val themeAccent: Pair<String, String>? = null,
+    /** The mod whose dashboard the user pinned to the tab bar (mod dashboards phase 4). */
+    val pinned: String? = null,
 ) {
+    /** The pinned mod, while it is installed. */
+    val pinnedMod: InstalledMod? get() = pinned?.let { id -> mods.firstOrNull { it.id == id } }
+
     /** The accent the app shows: the setting mod's, while it is active and allowed `ui.theme`. */
     val accent: String?
         get() = themeAccent?.let { (id, accent) ->
@@ -368,6 +373,14 @@ class ModRegistry(
         publishLocked()
     }
 
+    /** Pins [id]'s dashboard to the tab bar, replacing the pinned one; null unpins. */
+    fun setPinned(id: String?) = synchronized(lock) {
+        if (state.pinned == id) return@synchronized
+        state = state.copy(pinned = id)
+        writeStateLocked()
+        publishLocked()
+    }
+
     /**
      * Lets mods' tool gates answer Codex's approval requests in [projectId]. Off by default: it
      * changes how Codex runs there (it asks before commands and edits instead of never asking).
@@ -547,6 +560,7 @@ class ModRegistry(
             codexGateProjects = state.codexGateProjects,
             settingChanges = state.settingChanges,
             themeAccent = state.themeAccent,
+            pinned = state.pinned,
         )
     }
 
@@ -712,6 +726,7 @@ private data class PersistedState(
     val codexGateProjects: Set<String> = emptySet(),
     val settingChanges: List<ModSettingChange> = emptyList(),
     val themeAccent: Pair<String, String>? = null,
+    val pinned: String? = null,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("schemaVersion", SCHEMA_VERSION)
@@ -720,6 +735,7 @@ private data class PersistedState(
         .put("codexGateProjects", JSONArray(codexGateProjects.sorted()))
         .put("settingChanges", JSONArray(settingChanges.map { it.toJson() }))
         .put("themeAccent", themeAccent?.let { (id, accent) -> JSONObject().put("modId", id).put("accent", accent) } ?: JSONObject.NULL)
+        .put("pinned", pinned ?: JSONObject.NULL)
         .put("unstableStarts", unstableStarts)
         .put("mods", JSONObject().apply { mods.forEach { (id, record) -> put(id, record.toJson()) } })
 
@@ -732,6 +748,7 @@ private data class PersistedState(
                 modsEnabled = o.optBoolean("modsEnabled", true),
                 unstableStarts = o.optInt("unstableStarts", 0),
                 developerMode = o.optBoolean("developerMode", false),
+                pinned = o.optString("pinned").takeIf { !o.isNull("pinned") && it.isNotBlank() },
                 codexGateProjects = o.optJSONArray("codexGateProjects").strings().toSet(),
                 themeAccent = o.optJSONObject("themeAccent")?.let { t ->
                     val id = t.optString("modId")

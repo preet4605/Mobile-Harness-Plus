@@ -39,6 +39,8 @@ class ModAgentSteps(private val clock: () -> Long = System::currentTimeMillis) {
         val projectId: String? = null,
         val model: String? = null,
         val effort: String? = null,
+        /** Who works on it, as banners name it: the mod's name, and its role's title when it has one. */
+        val label: String? = null,
     )
 
     private val _steps = MutableStateFlow<List<Step>>(emptyList())
@@ -54,18 +56,21 @@ class ModAgentSteps(private val clock: () -> Long = System::currentTimeMillis) {
     /** Tells the screen that runs agent tasks that a queued send may be ready ([takeNext]). */
     @Volatile var wake: (() -> Unit)? = null
 
-    fun add(modId: String, role: String?, harness: String?, prompt: String, fromUser: Boolean, projectId: String? = null): Long =
-        insert(Step(0, modId, role, harness, prompt.take(MAX_PROMPT), fromUser, startedAt = clock(), projectId = projectId))
+    fun add(modId: String, role: String?, harness: String?, prompt: String, fromUser: Boolean, projectId: String? = null, label: String? = null): Long =
+        insert(Step(0, modId, role, harness, prompt.take(MAX_PROMPT), fromUser, startedAt = clock(), projectId = projectId, label = label))
 
     /** Queues the user's send to [role] of [modId] in [projectId]; it runs after the sends before it. */
-    fun enqueue(modId: String, role: String?, harness: String?, prompt: String, projectId: String, model: String? = null, effort: String? = null): Long =
+    fun enqueue(
+        modId: String, role: String?, harness: String?, prompt: String, projectId: String,
+        model: String? = null, effort: String? = null, label: String? = null,
+    ): Long =
         insert(Step(0, modId, role, harness, prompt.take(MAX_PROMPT), fromUser = true, state = State.QUEUED, startedAt = clock(),
-            projectId = projectId, model = model, effort = effort)).also { wake?.invoke() }
+            projectId = projectId, model = model, effort = effort, label = label)).also { wake?.invoke() }
 
     /** Sends [id]'s prompt again, to the same role and harness, as the user's send in [projectId]. */
     fun retry(id: Long, projectId: String): Long? {
         val step = _steps.value.firstOrNull { it.id == id && it.state.done } ?: return null
-        return enqueue(step.modId, step.role, step.harness, step.prompt, projectId, step.model, step.effort)
+        return enqueue(step.modId, step.role, step.harness, step.prompt, projectId, step.model, step.effort, step.label)
     }
 
     /** The first queued send whose mod isn't paused, now waiting to run; null when there is none. */

@@ -1,17 +1,23 @@
 package com.jarves.mh.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import com.jarves.mh.model.Project
 import com.jarves.mh.mods.InstalledMod
 import com.jarves.mh.mods.ModAgentSteps
@@ -19,7 +25,9 @@ import com.jarves.mh.mods.ModRole
 import com.jarves.mh.mods.ModRoles
 import com.jarves.mh.ui.kit.*
 import com.jarves.mh.ui.theme.PocketColors
+import com.jarves.mh.ui.theme.PocketShape
 import com.jarves.mh.ui.theme.PocketSpacing
+import com.jarves.mh.ui.theme.PocketType
 
 private val HARNESSES = listOf("claude" to "Claude", "codex" to "Codex", "deepseek" to "DeepSeek", "antigravity" to "Antigravity")
 private val EFFORTS = listOf("low", "medium", "high")
@@ -247,4 +255,39 @@ private fun MenuRow(title: String, value: String, items: @Composable androidx.co
 internal fun consoleDuration(ms: Long): String {
     val seconds = (ms / 1000).coerceAtLeast(0)
     return if (seconds < 60) "${seconds}s" else if (seconds < 3600) "${seconds / 60}m ${seconds % 60}s" else "${seconds / 3600}h ${seconds % 3600 / 60}m"
+}
+
+/** The open project, and how to open a mod's page from inside it (phase 4 chain banner); provided by the app's root. */
+internal class ModConsoleLink(val projectId: String?, val open: (modId: String) -> Unit)
+
+internal val LocalModConsole = staticCompositionLocalOf { ModConsoleLink(null) {} }
+
+/**
+ * A strip above the message box while a mod's chain works in [projectId] (phase 4): which mod and
+ * role run, how many sends wait, and a tap opens the mod's console.
+ */
+@Composable
+internal fun ModChainBanner(modifier: Modifier = Modifier) {
+    val link = LocalModConsole.current
+    val projectId = link.projectId ?: return
+    val all by ModAgentSteps.shared.steps.collectAsState()
+    val active = all.filter { it.projectId == projectId && !it.state.done }
+    val running = active.firstOrNull { it.state == ModAgentSteps.State.RUNNING } ?: active.firstOrNull() ?: return
+    val colors = PocketColors.current
+    val waiting = active.count { it.id != running.id }
+    val who = running.label ?: "A mod"
+    val text = (if (running.state == ModAgentSteps.State.RUNNING) "$who is working" else "$who is waiting its turn") +
+        (if (waiting > 0) " · $waiting more queued" else "") + " · Open console"
+    Text(
+        text,
+        modifier
+            .fillMaxWidth()
+            .clip(PocketShape.capsule)
+            .background(colors.groupedSurface)
+            .clickable { link.open(running.modId) }
+            .padding(horizontal = PocketSpacing.md, vertical = PocketSpacing.xs),
+        style = PocketType.caption1,
+        color = colors.accent,
+        maxLines = 1,
+    )
 }

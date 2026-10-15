@@ -4,19 +4,24 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -39,6 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -54,24 +60,25 @@ import com.jarves.mh.mods.ModAuditEntry
 import com.jarves.mh.mods.ModCapability
 import com.jarves.mh.mods.ModEngineState
 import com.jarves.mh.mods.ModEvent
+import com.jarves.mh.mods.ModHookAction
 import com.jarves.mh.mods.ModHostSnapshot
 import com.jarves.mh.mods.ModLogEntry
+import com.jarves.mh.mods.ModManifest
 import com.jarves.mh.mods.ModPlace
-import com.jarves.mh.mods.ModSurfaces
 import com.jarves.mh.mods.ModRunState
 import com.jarves.mh.mods.ModRuntimeInfo
 import com.jarves.mh.mods.ModServer
-import com.jarves.mh.mods.ModHookAction
-import com.jarves.mh.mods.ModManifest
 import com.jarves.mh.mods.ModSetting
 import com.jarves.mh.mods.ModSettingChange
 import com.jarves.mh.mods.ModSettingType
 import com.jarves.mh.mods.ModStatus
+import com.jarves.mh.mods.ModSurfaces
 import com.jarves.mh.mods.ModTrust
 import com.jarves.mh.mods.ModWebPanel
 import com.jarves.mh.mods.ModsSnapshot
 import com.jarves.mh.ui.kit.*
 import com.jarves.mh.ui.theme.PocketColors
+import com.jarves.mh.ui.theme.PocketShape
 import com.jarves.mh.ui.theme.PocketSpacing
 import com.jarves.mh.ui.theme.PocketTransitions
 import com.jarves.mh.ui.theme.PocketType
@@ -99,6 +106,11 @@ fun ModsScreen(
     activeProjectId: String? = null,
     /** Opens a chat of a project, as a console's role chats open. */
     onOpenChat: (projectId: String, chatId: String) -> Unit = { _, _ -> },
+    /** Shows only this mod's page, without Back, as its pinned tab does (phase 4). */
+    pinnedModId: String? = null,
+    /** A mod page to open, as a chat's chain banner asks; [onOpenRequestHandled] runs once it is open. */
+    openRequest: String? = null,
+    onOpenRequestHandled: () -> Unit = {},
     viewModel: ModsViewModel = viewModel(),
 ) {
     val snapshot by viewModel.snapshot.collectAsStateWithLifecycle()
@@ -123,14 +135,21 @@ fun ModsScreen(
     }
     val import = { importLauncher.launch(arrayOf("*/*")) }
     var openId by rememberSaveable { mutableStateOf<String?>(null) }
-    val openMod = snapshot.mods.firstOrNull { it.id == openId }
-    BackHandler(enabled = openMod != null || openId == ENGINE_TEST_PAGE) { openId = null }
-    val page = if (openId == ENGINE_TEST_PAGE) ENGINE_TEST_PAGE else openMod?.id
+    LaunchedEffect(openRequest) {
+        if (openRequest != null) {
+            openId = openRequest
+            onOpenRequestHandled()
+        }
+    }
+    val openMod = snapshot.mods.firstOrNull { it.id == (pinnedModId ?: openId) }
+    BackHandler(enabled = pinnedModId == null && (openMod != null || openId == ENGINE_TEST_PAGE)) { openId = null }
+    val page = if (openId == ENGINE_TEST_PAGE && pinnedModId == null) ENGINE_TEST_PAGE else openMod?.id
 
     AnimatedContent(targetState = page, transitionSpec = { PocketTransitions.crossFade() }, label = "mods page") { shownId ->
         val shown = snapshot.mods.firstOrNull { it.id == shownId }
         when {
             shownId == ENGINE_TEST_PAGE -> ModEngineTestPage(bottomBarPadding, onBack = { openId = null }, viewModel)
+            shown == null && pinnedModId != null -> Box(Modifier.fillMaxSize())
             shown == null -> ModsList(
                 snapshot, host, drafts, busy, bottomBarPadding, import,
                 onOpen = { openId = it },
@@ -140,7 +159,8 @@ fun ModsScreen(
                 projects = projects,
                 viewModel = viewModel,
             )
-            else -> ModPage(shown, snapshot, host.mods[shown.id], surfaces[shown.id], bottomBarPadding, onBack = { openId = null }, viewModel,
+            else -> ModPage(shown, snapshot, host.mods[shown.id], surfaces[shown.id], bottomBarPadding,
+                onBack = if (pinnedModId != null) null else ({ openId = null }), viewModel,
                 projects = projects, activeProjectId = activeProjectId, onOpenChat = onOpenChat)
         }
     }
@@ -158,6 +178,65 @@ fun ModsScreen(
             },
             onDismiss = { building = false },
         )
+    }
+}
+
+/**
+ * Phase 4: a card for every mod that is on, at the top of the Mods tab: whether it runs, its errors
+ * since the user last opened it, and its active agent tasks and servers. A tap opens its dashboard.
+ */
+@Composable
+private fun ModsOverview(mods: List<InstalledMod>, host: ModHostSnapshot, viewModel: ModsViewModel, onOpen: (String) -> Unit) {
+    val colors = PocketColors.current
+    val steps by viewModel.steps.collectAsStateWithLifecycle()
+    val servers by viewModel.servers.collectAsStateWithLifecycle()
+    val seen by viewModel.lastSeen.collectAsStateWithLifecycle()
+    val logVersion by viewModel.logVersion.collectAsStateWithLifecycle()
+    val openedAt = remember { System.currentTimeMillis() }
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = ListInset),
+        horizontalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
+    ) {
+        mods.forEach { mod ->
+            val runtime = host.mods[mod.id]
+            val errors = remember(mod.id, logVersion, seen[mod.id]) { viewModel.errorsSince(mod.id, seen[mod.id] ?: openedAt) }
+            val tasks = steps.count { it.modId == mod.id && !it.state.done }
+            val serving = servers.count { it.modId == mod.id && it.running }
+            val state = when {
+                mod.manifest.hooksModule == null -> "On"
+                runtime == null -> "Waiting to run"
+                else -> runtime.state.label
+            }
+            Column(
+                Modifier
+                    .width(168.dp)
+                    .clip(PocketShape.lg)
+                    .background(colors.groupedSurface)
+                    .clickable { onOpen(mod.id) }
+                    .padding(PocketSpacing.md),
+                verticalArrangement = Arrangement.spacedBy(PocketSpacing.xs),
+            ) {
+                Text(mod.manifest.name, style = PocketType.headline, color = colors.label, maxLines = 1)
+                Text(
+                    state,
+                    style = PocketType.footnote,
+                    color = when (runtime?.state) { ModRunState.CRASHED, ModRunState.BLOCKED -> colors.red; else -> colors.secondaryLabel },
+                    maxLines = 1,
+                )
+                Text(
+                    if (errors == 0) "No new errors" else if (errors == 1) "1 new error" else "$errors new errors",
+                    style = PocketType.footnote,
+                    color = if (errors > 0) colors.red else colors.secondaryLabel,
+                    maxLines = 1,
+                )
+                Text(
+                    listOf(if (tasks == 1) "1 task" else "$tasks tasks", if (serving == 1) "1 server" else "$serving servers").joinToString(" · "),
+                    style = PocketType.footnote,
+                    color = colors.secondaryLabel,
+                    maxLines = 1,
+                )
+            }
+        }
     }
 }
 
@@ -215,6 +294,8 @@ private fun ModsList(
                 studioSection(drafts, busy, onBuild, onOpenDraft, onImport, viewModel)
                 return@LazyColumn
             }
+            val on = snapshot.mods.filter { snapshot.status(it) == ModStatus.ON }
+            if (on.isNotEmpty()) item(key = "overview") { ModsOverview(on, host, viewModel, onOpen) }
             if (snapshot.safeMode) {
                 item(key = "safe") {
                     ListSection(footer = "The app restarted several times in a row without settling, so mods are paused for this run.") {
@@ -469,7 +550,7 @@ private fun ModPage(
     runtime: ModRuntimeInfo?,
     surfaces: ModSurfaces?,
     bottomBarPadding: Dp,
-    onBack: () -> Unit,
+    onBack: (() -> Unit)?,
     viewModel: ModsViewModel,
     projects: List<Project> = emptyList(),
     activeProjectId: String? = null,
@@ -522,6 +603,11 @@ private fun ModPage(
     val pausedMods by viewModel.paused.collectAsStateWithLifecycle()
     var consoleProject by rememberSaveable(mod.id) { mutableStateOf<String?>(null) }
     LaunchedEffect(mod.id) { if (mod.manifest.roles.isNotEmpty()) viewModel.loadRoles(mod.id) }
+    // Phase 4: errors the overview counts are the ones since the user last had this page open.
+    DisposableEffect(mod.id) {
+        viewModel.markSeen(mod.id)
+        onDispose { viewModel.markSeen(mod.id) }
+    }
     val console = if (mod.manifest.roles.isEmpty()) null else ModConsoleState(
         choices = roleChoices[mod.id].orEmpty(),
         paused = mod.id in pausedMods,
@@ -540,7 +626,7 @@ private fun ModPage(
     LargeTitleScaffold(
         title = mod.manifest.name,
         collapse = { collapse },
-        leading = { GlassToolbarButton(Icons.AutoMirrored.Outlined.ArrowBack, "Back", onBack) },
+        leading = onBack?.let { back -> { GlassToolbarButton(Icons.AutoMirrored.Outlined.ArrowBack, "Back", back) } },
     ) { padding ->
         LazyColumn(
             state = listState,
@@ -580,6 +666,8 @@ private fun ModPage(
                     onShowActivity = { tab = ModPageTab.ACTIVITY },
                     onClearData = { confirmClear = true },
                     console = console,
+                    pinned = snapshot.pinned == mod.id,
+                    onPin = { viewModel.setPinned(if (it) mod.id else null) },
                 )
                 ModPageTab.CONTROLS -> controlsTab(mod, shownRuntime, servers, viewModel, onPreview = showText, onEdit = { editing = it }, onOpenPanel = { panelId = it.id })
                 ModPageTab.PERMISSIONS -> permissionsTab(mod, viewModel, onConfirmHigh = { confirmHigh = it })
@@ -733,12 +821,12 @@ private fun ModPage(
                 AlertAction("Cancel", AlertRole.Cancel) { confirmRemove = false },
                 AlertAction("Remove", AlertRole.Destructive) {
                     confirmRemove = false
-                    onBack()
+                    onBack?.invoke()
                     viewModel.remove(mod.id, deleteData = false)
                 },
                 AlertAction("Remove and delete its data", AlertRole.Destructive) {
                     confirmRemove = false
-                    onBack()
+                    onBack?.invoke()
                     viewModel.remove(mod.id, deleteData = true)
                 },
             ),

@@ -296,7 +296,10 @@ private fun AppScreen(
             onSwitchChat = viewModel::switchReadOnlyChat,
             onContinueHere = viewModel::activateReadOnlyProject,
         )
-        AppDestination.Workspace -> CompositionLocalProvider(LocalModMenus provides modMenus) { WorkspaceScreen(
+        AppDestination.Workspace -> CompositionLocalProvider(
+            LocalModMenus provides modMenus,
+            LocalModConsole provides ModConsoleLink(state.activeProject?.id, viewModel::openModConsole),
+        ) { WorkspaceScreen(
             state = state,
             onBack = viewModel::closeProject,
             onSend = viewModel::sendPrompt,
@@ -414,8 +417,24 @@ private fun RootScreenHost(
 
     // A mod's own page after the built-in tabs, when one is switched on (mod plan row 18).
     val modTab = rememberModTab()
+    // A pinned mod dashboard takes the slot first (mod dashboards phase 4).
+    val pinnedMod = state.pinnedMod
+    val modTabName = pinnedMod?.second ?: modTab?.name
     var onModTab by rememberSaveable { mutableStateOf(false) }
-    val showModTab = onModTab && modTab != null
+    val showModTab = onModTab && modTabName != null
+    // A chat's chain banner opens a mod's page: its pinned tab, or the Mods tab.
+    var modsOpenRequest by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(state.openModRequest) {
+        val id = state.openModRequest ?: return@LaunchedEffect
+        if (pinnedMod?.first == id) {
+            onModTab = true
+        } else {
+            onModTab = false
+            screen = RootScreen.MODS
+            modsOpenRequest = id
+        }
+        viewModel.consumeOpenModRequest()
+    }
     val minimize = rememberTabBarMinimizeState()
     LaunchedEffect(screen, showModTab) { minimize.expand() }
     Scaffold(
@@ -439,7 +458,7 @@ private fun RootScreenHost(
                 ) {
                     FloatingTabBar(
                         tabs = RootScreen.entries.map { TabItem(it.label, it.icon, it.selectedIcon) } +
-                            listOfNotNull(modTab?.let { TabItem(it.name.take(12), Icons.Outlined.Extension, Icons.Rounded.Extension) }),
+                            listOfNotNull(modTabName?.let { TabItem(it.take(12), Icons.Outlined.Extension, Icons.Rounded.Extension) }),
                         selectedIndex = if (showModTab) RootScreen.entries.size else screen.ordinal,
                         onSelect = {
                             val next = RootScreen.entries.getOrNull(it)
@@ -486,7 +505,17 @@ private fun RootScreenHost(
             ) { tab ->
             BackdropSourceScope(active = isTransitionTarget) {
             when (tab) {
-                null -> modTab?.let { ModTabPage(it.modId, bottomPadding = floatingNavClearance) }
+                null -> if (pinnedMod != null) {
+                    ModsScreen(
+                        bottomBarPadding = floatingNavClearance,
+                        projects = state.projects,
+                        activeProjectId = state.activeProject?.id,
+                        onOpenChat = viewModel::openProjectChat,
+                        pinnedModId = pinnedMod.first,
+                    )
+                } else {
+                    modTab?.let { ModTabPage(it.modId, bottomPadding = floatingNavClearance) }
+                }
                 RootScreen.PROJECTS -> ProjectsScreen(
                     state = state,
                     listState = projectsListState,
@@ -565,6 +594,8 @@ private fun RootScreenHost(
                     onOpenProject = { viewModel.openProject(it) },
                     activeProjectId = state.activeProject?.id,
                     onOpenChat = viewModel::openProjectChat,
+                    openRequest = modsOpenRequest,
+                    onOpenRequestHandled = { modsOpenRequest = null },
                 )
                 RootScreen.SETTINGS -> Box(
                     modifier = Modifier.fillMaxSize(),

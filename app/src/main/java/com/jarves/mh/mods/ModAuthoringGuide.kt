@@ -482,7 +482,10 @@ object ModAuthoringGuide {
         - Every mod has a Dashboard page the app draws by itself: its state and on switch, what it is
           doing now (agent tasks it started, with Stop; its servers; its schedules), its settings and
           rules, its commands as buttons, recent activity and saved data. Don't redraw those; draw what
-          only your mod knows. Your panes show on the Dashboard after the "Now" section.
+          only your mod knows. Your panes show on the Dashboard after the "Now" section. The user can pin
+          any mod's Dashboard to the tab bar (one at a time; a pinned Dashboard takes the slot before a
+          mod's own tab below), the Mods tab shows a status card for every mod that is on, and while
+          your agent steps run in a project a banner above its message box opens your console.
         - To let the user talk to your mod, hook `dashboard.message` and answer `{ text }`: the Dashboard
           then shows a chat box. `${'$'}.dashboard.post(text)` adds a line on its own, for example when a
           long job finishes.

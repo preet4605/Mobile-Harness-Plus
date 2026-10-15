@@ -312,4 +312,16 @@ class ModRegistryTest {
         assertFalse(mod.canHold(ModCapability.AGENT_CHAIN))
         assertTrue(mod.canHold(ModCapability.UI_TOAST))
     }
+
+    @Test
+    fun `a pinned dashboard is saved and shows only while its mod is installed`() {
+        val registry = registry()
+        val id = registry.install(stageZip(registry, ModTestKit.modZip(toastManifest(), files)), setOf(ModCapability.UI_TOAST), ModTrust.IMPORTED, "a.mhmod").id
+        registry.setPinned(id)
+        assertEquals(id, registry().snapshot.value.pinnedMod?.id)
+        registry.setPinned("other.mod")
+        assertNull(registry().snapshot.value.pinnedMod)
+        registry.setPinned(null)
+        assertNull(registry().snapshot.value.pinned)
+    }
 }

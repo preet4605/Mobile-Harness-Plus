@@ -82,6 +82,9 @@ internal fun LazyListScope.modDashboard(
     onShowActivity: () -> Unit,
     onClearData: () -> Unit,
     console: ModConsoleState? = null,
+    /** Whether this dashboard is pinned to the tab bar, and how to change it (phase 4). */
+    pinned: Boolean = false,
+    onPin: ((Boolean) -> Unit)? = null,
 ) {
     val manifest = mod.manifest
     val hasCode = manifest.hooksModule != null
@@ -98,6 +101,14 @@ internal fun LazyListScope.modDashboard(
                 value = if (hasCode && mod.enabled) "Restart" else null,
                 onClick = if (hasCode && mod.enabled) ({ viewModel.restartMod(mod.id) }) else null,
             )
+            if (onPin != null) {
+                ToggleRow(
+                    title = "Pin to tab bar",
+                    subtitle = "Its dashboard gets the tab bar's extra slot, one mod at a time.",
+                    checked = pinned,
+                    onCheckedChange = onPin,
+                )
+            }
             if (developer.isNotEmpty()) {
                 ListRow(
                     title = "Uses Developer mode",
