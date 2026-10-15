@@ -108,6 +108,7 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { host.await()?.also { hostRef = it }?.snapshot?.collect { _hostSnapshot.value = it } }
         viewModelScope.launch { host.await()?.logVersion?.collect { _logVersion.value = it } }
         viewModelScope.launch { host.await()?.surfaces?.collect { _surfaces.value = it } }
+        viewModelScope.launch { host.await()?.dashboardChats?.collect { _chats.value = it } }
     }
 
     /** A mod page shows [surface]; the host draws it only while shown. */
@@ -148,6 +149,25 @@ class ModsViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             if (!com.jarves.mh.mods.ModAgentSteps.shared.stop(id)) _messages.emit("That task isn't running in the open chat, so it can't be stopped from here.")
         }
+    }
+
+    private val _chats = MutableStateFlow<Map<String, List<com.jarves.mh.mods.ModChatLine>>>(emptyMap())
+    /** Each mod's dashboard chat. */
+    val chats: StateFlow<Map<String, List<com.jarves.mh.mods.ModChatLine>>> = _chats.asStateFlow()
+
+    fun loadChat(id: String) {
+        viewModelScope.launch { host.await()?.loadDashboardChat(id) }
+    }
+
+    fun sendChat(id: String, text: String) {
+        viewModelScope.launch {
+            val problem = host.await()?.dashboardMessage(id, text) ?: return@launch
+            _messages.emit(problem.take(300))
+        }
+    }
+
+    fun clearChat(id: String) {
+        viewModelScope.launch { host.await()?.clearDashboardChat(id) }
     }
 
     /** What the mod saved with `$.store`. */

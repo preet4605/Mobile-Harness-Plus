@@ -31,7 +31,18 @@ Audit: project files `audits/perf-heat-crash-audit-2026-10-14.md` (static readin
 
 Love chose "All four phases" (03:42 UTC): one commit per phase, pushed to harness-dev, then one signed APK pair.
 
+### Phase 2: chat with the mod
+
+- The Dashboard shows a chat (the newest 30 lines, with Clear) and a message box when the mod's hooks listen for the new `dashboard.message` event. `ModHost.dashboardMessage` adds the user's line, dispatches `{ text }` and keeps the mod's answer (`{ text }` or a string). The thread is kept in the mod's data folder (`dashboard-chat.json`, newest 200 lines, 8,000 characters each, written through a temporary file).
+- New op `$.dashboard.post(text)` (no permission) adds a mod line, for example when a long job ends.
+- `ModRuntimeInfo.events` lists the events a running mod listens for.
+- The authoring guide documents the event and the op; the `mh-mod` mock host records `dashboard` lines.
+- **VERIFIED:** ModHostTest 35/35, including two new tests: answers kept and read back by a new host, `$.dashboard.post`, Clear deleting the file, and the "doesn't answer messages" reply for a mod that doesn't listen. Node 18/18 with the dashboard event in the shim test. Full suite 1602 tests, 0 failures.
+- **NOT RUN:** on a phone.
+
 ### Phase 1: an automatic dashboard for every mod
+
+COMPLETE (pushed to harness-dev as 7bdea87).
 
 - The mod page's Dashboard tab is now always there and opens first ([ModDashboard](../app/src/main/java/com/jarves/mh/ui/ModDashboard.kt)). It is drawn by the app from what the mod declares:
   - its state, the on switch, Restart, and a Developer-mode badge;

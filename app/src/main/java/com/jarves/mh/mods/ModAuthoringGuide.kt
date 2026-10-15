@@ -278,6 +278,7 @@ object ModAuthoringGuide {
         | `file.saved` | The user saved a file in Files | `path` (in the project) |
         | `app.foreground`, `app.background` | The app is shown or hidden | |
         | `command.run` | The user ran one of the mod's commands | `name`, `args` |
+        | `dashboard.message` | The user wrote in the mod's Dashboard chat; the chat box shows only when the mod listens for this. Answer `{ text }` (or a string), kept in that chat | `text` |
         | `plan.update` | The open chat's task plan changed | `taskId`, `plan` (`title`, `status`, `current`, `steps`; only with `project.info`) |
         | `run.log` | The running task's live output, batched once a second, only while one of the mod's surfaces is showing | `lines` (`kind`: `reply`, `tool` or `log`; `text`; `time`), `dropped`. Needs `events.subscribe` |
         | `schedule.run` | One of the mod's `schedules` is due (needs `schedules`, Developer mode); 60 s for the hooks | `schedule` (its id), `everyMinutes` |
@@ -344,6 +345,7 @@ object ModAuthoringGuide {
         | `${'$'}.ui.post(panel, data)` | `ui.webpane` | Sends the mod's web panel `panel` a message (text, or JSON for anything else; at most 64 KB). Dropped when that panel isn't open |
         | `${'$'}.ui.theme({ accent })` | `ui.theme` | Gives the whole app an accent color: `blue`, `indigo`, `purple`, `pink`, `red`, `orange`, `green`, `teal` or `brown`; `null` gives the app its own back. It lasts while the mod is on and allowed; the newest mod to set one wins |
         | `${'$'}.ui.redraw(id?)` | none | Draws the mod's shown surfaces again (or just pane `id`) |
+        | `${'$'}.dashboard.post(text)` | none | Adds a line from the mod to its Dashboard chat (the newest 200 lines are kept, 8,000 characters each) |
         | `${'$'}.ui.resolve(e)` | none | The element names, so `const { Column, Text } = ${'$'}.ui.resolve(e)` works as in other mod systems |
 
         A `command.run` hook answers with `{ text }`, shown in the chat as the mod's reply (the agent
@@ -467,6 +469,9 @@ object ModAuthoringGuide {
           doing now (agent tasks it started, with Stop; its servers; its schedules), its settings and
           rules, its commands as buttons, recent activity and saved data. Don't redraw those; draw what
           only your mod knows. Your panes show on the Dashboard after the "Now" section.
+        - To let the user talk to your mod, hook `dashboard.message` and answer `{ text }`: the Dashboard
+          then shows a chat box. `${'$'}.dashboard.post(text)` adds a line on its own, for example when a
+          long job finishes.
         - Surfaces: a pane (`component: 'Pane'`, `requestId` = its id; needs `ui.pane`) on the mod's
           Dashboard page and, when the user switches it on, in a project's Mods tab; the row above the
           message box (`component: 'AbovePrompt'`; needs `ui.band`, and the user switches it on). Set

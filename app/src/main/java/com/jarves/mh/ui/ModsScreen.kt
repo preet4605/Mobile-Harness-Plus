@@ -507,6 +507,8 @@ private fun ModPage(
             if (ModCapability.MODEL_COMPLETE in mod.manifest.requested) modelTokens = viewModel.modelTokensUsed(mod.id)
         }
     }
+    val chats by viewModel.chats.collectAsStateWithLifecycle()
+    LaunchedEffect(mod.id) { viewModel.loadChat(mod.id) }
     var argsFor by remember { mutableStateOf<com.jarves.mh.mods.ModCodeCommand?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
     val shownRuntime = runtime?.takeIf { snapshot.status(mod) == ModStatus.ON }
@@ -550,7 +552,7 @@ private fun ModPage(
                     onSelectPane = { paneId = it },
                     steps = steps,
                     servers = servers,
-                    data = ModDashboardData(audit, log, stored, modelTokens),
+                    data = ModDashboardData(audit, log, stored, modelTokens, chats[mod.id].orEmpty()),
                     viewModel = viewModel,
                     onEdit = { editing = it },
                     onRunWithArgs = { argsFor = it },

@@ -32,6 +32,7 @@ enum class ModOp(
     UI_OPEN("ui.open", ModCapability.UI_PANE),
     UI_CLOSE("ui.close", ModCapability.UI_PANE),
     UI_REDRAW("ui.redraw", null),
+    DASHBOARD_POST("dashboard.post", null),
     UI_POST("ui.post", ModCapability.UI_WEBPANE),
     COMMAND_REGISTER("command.register", null),
     COMMAND_UNREGISTER("command.unregister", null),

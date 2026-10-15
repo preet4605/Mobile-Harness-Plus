@@ -65,12 +65,15 @@ test('a loaded mod answers events, gates, drawing and taps through the real shim
       on('session.start', async ($, e, next) => { await $.command.register({ name: 'hi', description: 'Hi' }); return next(e) })
       on('command.run', { name: 'hi' }, async ($, e) => ({ text: options.greeting + ' ' + e.args + ' ' + (await $.agent.ask({ prompt: 'x' })).text }))
       on('prompt.submit', ($, e, next) => next({ ...e, text: e.text.toUpperCase() }))
+      on('dashboard.message', async ($, e) => { await $.dashboard.post('working'); return { text: 'got ' + e.text } })
       on('ui.render', { component: 'Pane' }, ($) => h('Button', { onPress: async () => { update($, count, n => n + 1); await $.store.set('pressed', true) } }, 'Count ' + read($, count)))
     }`);
   const mod = await kit.loadMod(dir, {options: {greeting: 'Hello'}, mocks: {'agent.ask': () => ({text: 'done'})}});
   assert.deepEqual(mod.commands, ['hi']);
   assert.deepEqual(await mod.emit('command.run', {name: 'hi', args: 'Love'}), {text: 'Hello Love done'});
   assert.deepEqual(await mod.gate('prompt.submit', {text: 'hi'}), {__mhPass: true, e: {text: 'HI'}});
+  assert.deepEqual(await mod.emit('dashboard.message', {text: 'yo'}), {text: 'got yo'});
+  assert.deepEqual(mod.dashboard, ['working']);
   const tree = await mod.render('pane:main', {component: 'Pane'});
   assert.equal(tree.type, 'Button');
   await mod.press('pane:main', tree.props.onPress, null);

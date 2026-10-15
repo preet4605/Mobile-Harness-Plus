@@ -14,6 +14,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -1447,5 +1448,56 @@ class ModHostTest {
         listOf("file:///sdcard/a", "content://x/y", "intent://x#Intent;end", "javascript:alert(1)", "market://details?id=x", "x").forEach {
             assertTrue(it, runCatching { ModIntents.check(it) }.isFailure)
         }
+    }
+
+    @Test
+    fun `a mod answers its dashboard chat and posts to it`() = runBlocking {
+        val registry = registry()
+        install(registry, """
+            export function register(on) {
+              on('session.start', async ($) => { await $.ui.status('up') })
+              on('dashboard.message', async ($, e) => {
+                if (e.text === 'post') { await $.dashboard.post('posted'); return {} }
+                if (e.text === 'plain') return 'plain answer'
+                return { text: 'echo ' + e.text }
+              })
+            }
+        """.trimIndent(), permissions = listOf("ui.status"))
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod to start") { host.info()?.status == "up" }
+        assertTrue("dashboard.message" in host.info()!!.events)
+
+        assertNull(host.dashboardMessage("dev.test.sample", "  hi  "))
+        assertNull(host.dashboardMessage("dev.test.sample", "plain"))
+        assertNull(host.dashboardMessage("dev.test.sample", "post"))
+        assertNull(host.dashboardMessage("dev.test.sample", "   "))
+        val lines = host.dashboardChats.value["dev.test.sample"].orEmpty()
+        assertEquals(listOf(true to "hi", false to "echo hi", true to "plain", false to "plain answer", true to "post", false to "posted"),
+            lines.map { it.fromUser to it.text })
+
+        // The chat is kept in the mod's data folder: a new host reads it back.
+        val file = File(registry.dataDir("dev.test.sample"), "dashboard-chat.json")
+        assertEquals(6, JSONArray(file.readText()).length())
+        val other = host(registry)
+        other.loadDashboardChat("dev.test.sample")
+        assertEquals(lines.map { it.text }, other.dashboardChats.value["dev.test.sample"].orEmpty().map { it.text })
+
+        host.clearDashboardChat("dev.test.sample")
+        assertTrue(host.dashboardChats.value["dev.test.sample"].orEmpty().isEmpty())
+        assertFalse(file.exists())
+    }
+
+    @Test
+    fun `a mod that does not listen gets no dashboard chat answers`() = runBlocking {
+        val registry = registry()
+        install(registry, "export function register(on) { on('session.start', async (\$) => { await \$.ui.status('up') }) }",
+            permissions = listOf("ui.status"))
+        val host = host(registry)
+        host.updateContext(context, taskIsRunning = false)
+        waitFor("the mod to start") { host.info()?.status == "up" }
+        val problem = host.dashboardMessage("dev.test.sample", "hello")
+        assertTrue(problem, problem!!.contains("doesn't answer messages"))
+        assertEquals(listOf("hello"), host.dashboardChats.value["dev.test.sample"].orEmpty().map { it.text })
     }
 }

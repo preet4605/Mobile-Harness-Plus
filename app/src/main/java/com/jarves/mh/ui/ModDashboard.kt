@@ -1,15 +1,24 @@
 package com.jarves.mh.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Warning
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.jarves.mh.mods.InstalledMod
 import com.jarves.mh.mods.ModAgentSteps
 import com.jarves.mh.mods.ModAuditEntry
 import com.jarves.mh.mods.ModCapability
+import com.jarves.mh.mods.ModChatLine
 import com.jarves.mh.mods.ModCodeCommand
 import com.jarves.mh.mods.ModLogEntry
 import com.jarves.mh.mods.ModRunState
@@ -19,11 +28,16 @@ import com.jarves.mh.mods.ModSetting
 import com.jarves.mh.mods.ModStatus
 import com.jarves.mh.mods.ModSurfaces
 import com.jarves.mh.ui.kit.ListInset
+import com.jarves.mh.ui.kit.PocketButton
+import com.jarves.mh.ui.kit.PocketButtonSize
+import com.jarves.mh.ui.kit.PocketButtonStyle
+import com.jarves.mh.ui.kit.PocketTextField
 import com.jarves.mh.ui.kit.ListRow
 import com.jarves.mh.ui.kit.ListSection
 import com.jarves.mh.ui.kit.SegmentedControl
 import com.jarves.mh.ui.kit.ToggleRow
 import com.jarves.mh.ui.theme.PocketColors
+import com.jarves.mh.ui.theme.PocketSpacing
 import org.json.JSONObject
 
 /** What a mod's dashboard reads besides the mod itself; loaded by the mod page while the dashboard shows. */
@@ -32,6 +46,8 @@ internal data class ModDashboardData(
     val log: List<ModLogEntry> = emptyList(),
     val stored: JSONObject? = null,
     val modelTokens: Long? = null,
+    /** The mod's dashboard chat (phase 2). */
+    val chat: List<ModChatLine> = emptyList(),
 )
 
 /**
@@ -193,6 +209,43 @@ internal fun LazyListScope.modDashboard(
             }
             if (lines.isEmpty()) ListRow(title = "Nothing yet.")
             ListRow(title = "Show all activity", onClick = onShowActivity)
+        }
+    }
+
+    // Phase 2: a chat with the mod itself, when its code answers `dashboard.message` (or it posts here).
+    val answers = runtime?.events?.contains("dashboard.message") == true
+    if (answers || data.chat.isNotEmpty()) {
+        item(key = "dash-chat") {
+            val colors = PocketColors.current
+            var draft by remember(mod.id) { mutableStateOf("") }
+            ListSection(
+                header = "Chat with ${manifest.name}",
+                footer = if (answers) "Messages go to the mod, not to an agent." else "The mod isn't answering right now.",
+            ) {
+                data.chat.takeLast(30).forEach { line ->
+                    ListRow(
+                        title = if (line.fromUser) "You" else manifest.name,
+                        subtitle = line.text.take(2_000),
+                        subtitleMaxLines = 12,
+                        subtitleColor = if (line.fromUser) colors.secondaryLabel else null,
+                        value = clock(line.time),
+                    )
+                }
+                if (answers) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = ListInset, vertical = PocketSpacing.sm),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(PocketSpacing.sm),
+                    ) {
+                        PocketTextField(value = draft, onValueChange = { draft = it }, placeholder = "Message ${manifest.name}", modifier = Modifier.weight(1f))
+                        PocketButton("Send", {
+                            viewModel.sendChat(mod.id, draft)
+                            draft = ""
+                        }, style = PocketButtonStyle.Filled, size = PocketButtonSize.Small, enabled = draft.isNotBlank())
+                    }
+                }
+                if (data.chat.isNotEmpty()) ListRow(title = "Clear chat", destructive = true, onClick = { viewModel.clearChat(mod.id) })
+            }
         }
     }
 

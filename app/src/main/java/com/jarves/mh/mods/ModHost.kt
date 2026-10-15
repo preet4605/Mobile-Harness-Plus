@@ -187,7 +187,12 @@ data class ModRuntimeInfo(
     val strikes: Int = 0,
     val commands: List<ModCodeCommand> = emptyList(),
     val tools: List<ModTool> = emptyList(),
+    /** The events its hooks listen for. */
+    val events: Set<String> = emptySet(),
 )
+
+/** One line of a mod's dashboard chat (mod dashboards plan, phase 2). */
+data class ModChatLine(val fromUser: Boolean, val text: String, val time: Long)
 
 data class ModHostSnapshot(
     val engine: ModEngineState = ModEngineState.OFF,
@@ -593,6 +598,68 @@ class ModHost(
             value.optString("prompt").isNotBlank() -> ModCodeCommandOutcome.Prompt(value.optString("prompt").take(MAX_TEXT))
             value.optString("text").isNotBlank() -> ModCodeCommandOutcome.Reply(value.optString("text").take(MAX_TEXT))
             else -> ModCodeCommandOutcome.Nothing
+        }
+    }
+
+    private val _dashboardChats = MutableStateFlow<Map<String, List<ModChatLine>>>(emptyMap())
+    /** Each mod's dashboard chat, once something loaded it ([loadDashboardChat]). */
+    val dashboardChats: StateFlow<Map<String, List<ModChatLine>>> = _dashboardChats.asStateFlow()
+
+    /** Reads [modId]'s dashboard chat from its data folder, once. */
+    suspend fun loadDashboardChat(modId: String): Unit = withContext(hostContext) { chatLines(modId) }
+
+    /**
+     * The user wrote [text] in [modId]'s dashboard chat: its `dashboard.message` hooks answer with
+     * `{ text }`, kept in the chat. Answers null, or why there is no answer.
+     */
+    suspend fun dashboardMessage(modId: String, text: String): String? = withContext(hostContext) {
+        val message = text.trim().take(MAX_CHAT_TEXT)
+        if (message.isEmpty()) return@withContext null
+        addChatLine(modId, ModChatLine(true, message, System.currentTimeMillis()))
+        val loaded = running[modId]?.takeIf { it.ready && "dashboard.message" in it.events }
+            ?: return@withContext "${modName(modId)} isn't running, or doesn't answer messages."
+        val result = CompletableDeferred<JSONObject?>()
+        dispatch(loaded, "dashboard.message", JSONObject().put("text", message), limits.eventBudgetMs, result = result)
+        val answer = result.await() ?: return@withContext "${loaded.mod.manifest.name} didn't answer in time."
+        if (answer.has("error")) return@withContext "${loaded.mod.manifest.name} failed: ${firstLine(answer.optString("error"))}"
+        val reply = (answer.opt("value") as? JSONObject)?.optString("text")?.takeIf { it.isNotBlank() }
+            ?: (answer.opt("value") as? String)?.takeIf { it.isNotBlank() }
+        reply?.let { addChatLine(modId, ModChatLine(false, it.take(MAX_CHAT_TEXT), System.currentTimeMillis())) }
+        null
+    }
+
+    /** Forgets [modId]'s dashboard chat. */
+    suspend fun clearDashboardChat(modId: String): Unit = withContext(hostContext) {
+        _dashboardChats.value = _dashboardChats.value + (modId to emptyList())
+        withContext(ioContext) { runCatching { File(dataDir(modId), DASHBOARD_CHAT_FILE).delete() } }
+    }
+
+    private suspend fun chatLines(modId: String): List<ModChatLine> {
+        _dashboardChats.value[modId]?.let { return it }
+        val lines = withContext(ioContext) {
+            runCatching {
+                val array = JSONArray(File(dataDir(modId), DASHBOARD_CHAT_FILE).readText())
+                (0 until array.length()).map { i ->
+                    array.getJSONObject(i).let { ModChatLine(it.optBoolean("user"), it.optString("text"), it.optLong("time")) }
+                }
+            }.getOrDefault(emptyList())
+        }
+        _dashboardChats.value = _dashboardChats.value + (modId to lines)
+        return lines
+    }
+
+    private suspend fun addChatLine(modId: String, line: ModChatLine) {
+        val lines = (chatLines(modId) + line).takeLast(MAX_CHAT_LINES)
+        _dashboardChats.value = _dashboardChats.value + (modId to lines)
+        val json = JSONArray(lines.map { JSONObject().put("user", it.fromUser).put("text", it.text).put("time", it.time) }).toString()
+        withContext(ioContext) {
+            runCatching {
+                val dir = dataDir(modId).apply { mkdirs() }
+                val temp = File(dir, "$DASHBOARD_CHAT_FILE.tmp")
+                temp.writeText(json)
+                java.nio.file.Files.move(temp.toPath(), File(dir, DASHBOARD_CHAT_FILE).toPath(),
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            }
         }
     }
 
@@ -1111,7 +1178,7 @@ class ModHost(
         } else if (allowed(mod, ModCapability.ENGINE_MEMORY)) {
             addLog(mod.id, "info", "It has ${heap / MB} MB of memory: only ${limits.maxBigHeapMods} mods may have ${limits.bigHeapBytes / MB} MB at once.")
         }
-        setInfo(mod.id) { it.copy(state = ModRunState.RUNNING, message = null, commands = loaded.commands.values.toList()) }
+        setInfo(mod.id) { it.copy(state = ModRunState.RUNNING, message = null, commands = loaded.commands.values.toList(), events = events) }
         refreshListening()
         dispatch(loaded, "session.start", JSONObject(), limits.eventBudgetMs)
         slots.filter { (key, slot) -> key.first == mod.id && slot.holders.isNotEmpty() }.keys.forEach { requestRender(it.first, it.second) }
@@ -1493,6 +1560,12 @@ class ModHost(
                 // Dropped when no panel of the mod is open: panels ask for what they need when they start.
                 _panelMessages.tryEmit(ModPanelMessage(mod.id, panel, text))
                 null
+            }
+            ModOp.DASHBOARD_POST -> {
+                val text = text(args).trim()
+                require(text.isNotEmpty()) { "\$.dashboard.post(text) needs some text" }
+                addChatLine(mod.id, ModChatLine(false, text.take(MAX_CHAT_TEXT), System.currentTimeMillis()))
+                true
             }
             ModOp.UI_REDRAW -> {
                 val id = args.optString(0).takeIf { !args.isNull(0) && it.isNotBlank() }
@@ -2303,6 +2376,9 @@ class ModHost(
         const val MAX_MODEL_SYSTEM = 20_000
         const val MAX_MODEL_TOKENS = 4_096
         private const val MODEL_USAGE_FILE = "model-usage.json"
+        private const val DASHBOARD_CHAT_FILE = "dashboard-chat.json"
+        const val MAX_CHAT_LINES = 200
+        const val MAX_CHAT_TEXT = 8_000
         const val MAX_TOOLS = 16
         const val MAX_TOOL_SCHEMA = 8 * 1024
         const val MAX_TOOL_TEXT = 48_000
