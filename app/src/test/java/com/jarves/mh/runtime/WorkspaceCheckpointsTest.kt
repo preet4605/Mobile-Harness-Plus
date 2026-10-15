@@ -54,6 +54,52 @@ class WorkspaceCheckpointsTest {
     }
 
     @Test
+    fun `second snapshot reads only files that changed`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder("checkpoints_hash_cache"))
+        val workspace = checkpoints.ensureWorkspace("p")
+        val old = System.currentTimeMillis() - 60_000
+        val files = (1..20).map { index ->
+            File(workspace, "src/F$index.kt").apply {
+                parentFile.mkdirs()
+                writeText("fun f$index() = $index")
+                setLastModified(old)
+            }
+        }
+        val before = checkpoints.snapshot(workspace)
+        files[3].writeText("fun f4() = -4")
+        val reads = WorkspaceCheckpoints.fileHashReads.get()
+        assertEquals(listOf("src/F4.kt"), checkpoints.changedFiles(workspace, before))
+        assertEquals(1L, WorkspaceCheckpoints.fileHashReads.get() - reads)
+    }
+
+    @Test
+    fun `a same-size edit with the same timestamp right after hashing is still detected`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder("checkpoints_racy"))
+        val workspace = checkpoints.ensureWorkspace("p")
+        val file = File(workspace, "Racy.kt").apply { writeText("val a = 1") }
+        val stamp = file.lastModified()
+        val before = checkpoints.snapshot(workspace)
+        // Same size, and the clock tick did not advance: only the racy-window rule catches this.
+        file.writeText("val a = 2")
+        file.setLastModified(stamp)
+        assertEquals(listOf("Racy.kt"), checkpoints.changedFiles(workspace, before))
+    }
+
+    @Test
+    fun `checkpoint copy primes the hash of unchanged sources`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder("checkpoints_prime"))
+        val workspace = checkpoints.ensureWorkspace("p")
+        val old = System.currentTimeMillis() - 60_000
+        repeat(10) { index -> File(workspace, "A$index.txt").apply { writeText("a$index"); setLastModified(old) } }
+        checkpoints.createCheckpoint("p", workspace)
+        val reads = WorkspaceCheckpoints.fileHashReads.get()
+        val snapshot = checkpoints.snapshot(workspace)
+        assertEquals(0L, WorkspaceCheckpoints.fileHashReads.get() - reads)
+        // The primed hashes are the checkpoint's own fingerprints.
+        assertEquals(checkpoints.readMetadata("p")!!.fingerprints, snapshot)
+    }
+
+    @Test
     fun `hex matches the formatter it replaced`() {
         val bytes = ByteArray(256) { it.toByte() }
         assertEquals(bytes.joinToString("") { "%02x".format(it) }, WorkspaceCheckpoints.hex(bytes))

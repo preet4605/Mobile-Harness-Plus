@@ -5,6 +5,9 @@ import com.jarves.mh.model.DiffLine
 import com.jarves.mh.model.DiffLineType
 import com.jarves.mh.model.isAttachmentStoragePath
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -127,20 +130,28 @@ class WorkspaceCheckpoints(
                 if (isInternalRuntimePath(relative)) return@forEach
                 // Inventory first: skipped, unreadable and oversized originals are never new files.
                 originalPaths.add(relative)
-                if (java.nio.file.Files.isSymbolicLink(source.toPath()) || !source.isFile) return@forEach
-                require(source.canonicalFile.toPath().startsWith(workspacePath)) { "Unsafe checkpoint source" }
-                if (source.length() > MAX_CHECKPOINT_COPY_BYTES) {
-                    fingerprints[relative] = digest(source)
+                // One stat without following links. A regular file inside a directory the walk
+                // entered (each checked canonical above) cannot resolve outside the workspace.
+                val attributes = regularFileAttributes(source) ?: return@forEach
+                if (attributes.size() > MAX_CHECKPOINT_COPY_BYTES) {
+                    fingerprints[relative] = digest(source, attributes)
                     return@forEach
                 }
                 val destination = safeWorkspaceFile(backup, relative)
                 runCatching {
                     destination.parentFile?.mkdirs()
-                    source.copyTo(destination, overwrite = true)
-                    destination.setLastModified(source.lastModified())
+                    // Copy and hash in one read; the fingerprint is of the bytes the backup holds.
+                    val hashedAt = System.currentTimeMillis()
+                    val copiedHash = copyAndHash(source, destination)
+                    destination.setLastModified(attributes.lastModifiedTime().toMillis())
                     // Record only completed copies, with their actual backup fingerprint.
-                    fingerprints[relative] = digest(destination)
+                    val fingerprint = if (destination.length() > MAX_HASH_FILE_BYTES) digest(destination) else copiedHash
+                    fingerprints[relative] = fingerprint
                     backedUpFiles.add(relative)
+                    // The source is what was copied when it did not change during the copy.
+                    if (regularFileAttributes(source)?.let { statOf(it) } == statOf(attributes)) {
+                        rememberHash(source, attributes, fingerprint, hashedAt)
+                    }
                 }.onFailure {
                     destination.delete()
                     runCatching { digest(source) }.getOrNull()?.let { fingerprints[relative] = it }
@@ -717,9 +728,14 @@ class WorkspaceCheckpoints(
         return file
     }
 
+    /**
+     * Fingerprint of every tracked file. Files whose size and modified time match a recent hash are
+     * not read again (see [cachedHash]), so the second walk of a prompt reads only changed files.
+     */
     fun snapshot(root: File): Map<String, String> = PerfStats.time("mh.snapshot") {
         if (!root.isDirectory) return@time emptyMap()
         val rootPath = root.canonicalFile.toPath()
+        val fingerprints = LinkedHashMap<String, String>()
         root.walkTopDown()
             .onEnter { directory ->
                 if (directory == root) return@onEnter true
@@ -730,13 +746,16 @@ class WorkspaceCheckpoints(
                 if (java.nio.file.Files.isSymbolicLink(directory.toPath())) return@onEnter false
                 runCatching { directory.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
             }
-            .filter {
-                it.isFile &&
-                    !isInternalRuntimePath(it.relativeTo(root).invariantSeparatorsPath) &&
-                    !java.nio.file.Files.isSymbolicLink(it.toPath()) &&
-                    runCatching { it.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
+            .forEach { file ->
+                if (file == root) return@forEach
+                // Links and special files are skipped; a regular file in an entered (checked) directory
+                // is inside the root.
+                val attributes = regularFileAttributes(file) ?: return@forEach
+                val relative = file.relativeTo(root).invariantSeparatorsPath
+                if (isInternalRuntimePath(relative)) return@forEach
+                fingerprints[relative] = digest(file, attributes)
             }
-            .associate { it.relativeTo(root).invariantSeparatorsPath to digest(it) }
+        fingerprints
     }
 
     fun changedFiles(root: File, before: Map<String, String>): List<String> {
@@ -759,13 +778,41 @@ class WorkspaceCheckpoints(
         if (file.length() > MAX_HASH_FILE_BYTES) {
             return "${file.length()}_${file.lastModified()}"
         }
+        fileHashReads.incrementAndGet()
         val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            val buffer = ByteArray(HASH_BUFFER_BYTES)
             while (true) {
                 val read = input.read(buffer)
                 if (read < 0) break
                 digest.update(buffer, 0, read)
+            }
+        }
+        return hex(digest.digest())
+    }
+
+    /** [digest] of a regular file whose [attributes] were just read, reusing a still-valid cached hash. */
+    private fun digest(file: File, attributes: BasicFileAttributes): String {
+        if (attributes.size() > MAX_HASH_FILE_BYTES) return digest(file)
+        cachedHash(file, attributes)?.let { return it }
+        val hashedAt = System.currentTimeMillis()
+        val hash = digest(file)
+        if (regularFileAttributes(file)?.let { statOf(it) } == statOf(attributes)) rememberHash(file, attributes, hash, hashedAt)
+        return hash
+    }
+
+    /** Copies [source] over [destination] and returns the SHA-256 hex of the bytes copied. */
+    private fun copyAndHash(source: File, destination: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        source.inputStream().use { input ->
+            destination.outputStream().use { output ->
+                val buffer = ByteArray(HASH_BUFFER_BYTES)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    digest.update(buffer, 0, read)
+                    output.write(buffer, 0, read)
+                }
             }
         }
         return hex(digest.digest())
@@ -799,6 +846,45 @@ class WorkspaceCheckpoints(
         )
 
         private val HEX_DIGITS = "0123456789abcdef".toCharArray()
+        private const val HASH_BUFFER_BYTES = 64 * 1024
+
+        /**
+         * Hashes of workspace files by absolute path, shared by every bridge and the supervisor (each
+         * holds its own [WorkspaceCheckpoints]). An entry is used only while the file's size and
+         * modified time are unchanged AND the file was last modified at least [RACY_WINDOW_MS] before
+         * it was hashed, the rule git uses for "racily clean" files: an edit that lands within the
+         * filesystem's timestamp resolution of the hash can keep the same size and time, so such a
+         * file is always read again.
+         */
+        private val hashCache = ConcurrentHashMap<String, CachedHash>()
+        private const val RACY_WINDOW_MS = 2_000L
+        /** Whole-file hash reads (not copies), for tests. */
+        internal val fileHashReads = java.util.concurrent.atomic.AtomicLong()
+        private const val MAX_CACHED_HASHES = 200_000
+
+        private data class FileStat(val size: Long, val modifiedMillis: Long)
+        private class CachedHash(val stat: FileStat, val hash: String)
+
+        private fun statOf(attributes: BasicFileAttributes) =
+            FileStat(attributes.size(), attributes.lastModifiedTime().toMillis())
+
+        /** Attributes of [file] when it is a regular file, without following a final link; null otherwise. */
+        internal fun regularFileAttributes(file: File): BasicFileAttributes? = runCatching {
+            Files.readAttributes(file.toPath(), BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+        }.getOrNull()?.takeIf { it.isRegularFile }
+
+        private fun cachedHash(file: File, attributes: BasicFileAttributes): String? =
+            hashCache[file.absolutePath]?.takeIf { it.stat == statOf(attributes) }?.hash
+
+        private fun rememberHash(file: File, attributes: BasicFileAttributes, hash: String, hashedAtMillis: Long) {
+            val stat = statOf(attributes)
+            if (stat.modifiedMillis > hashedAtMillis - RACY_WINDOW_MS) {
+                hashCache.remove(file.absolutePath)
+                return
+            }
+            if (hashCache.size >= MAX_CACHED_HASHES) hashCache.clear()
+            hashCache[file.absolutePath] = CachedHash(stat, hash)
+        }
 
         /** Lowercase hex, as `"%02x".format` per byte gave, without a formatter per byte. */
         internal fun hex(bytes: ByteArray): String {
