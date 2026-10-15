@@ -73,6 +73,69 @@ class WorkspaceCheckpointsTest {
     }
 
     @Test
+    fun `the next checkpoint of a tag moves unchanged backups instead of copying them`() {
+        val filesDir = tempFolder.newFolder("checkpoints_reuse")
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = checkpoints.ensureWorkspace("p")
+        val old = System.currentTimeMillis() - 60_000
+        val files = (1..20).map { index ->
+            File(workspace, "src/F$index.kt").apply {
+                parentFile.mkdirs()
+                writeText("fun f$index() = $index")
+                setLastModified(old)
+            }
+        }
+        checkpoints.createCheckpoint("p", workspace, WorkspaceCheckpoints.TASK_BASELINE_TAG)
+        files[3].writeText("fun f4() = -4")
+        val reused = WorkspaceCheckpoints.reusedBackups.get()
+        checkpoints.createCheckpoint("p", workspace, WorkspaceCheckpoints.TASK_BASELINE_TAG)
+        assertEquals("every file but the edited one is moved", 19L, WorkspaceCheckpoints.reusedBackups.get() - reused)
+
+        val metadata = checkpoints.readMetadata("p", WorkspaceCheckpoints.TASK_BASELINE_TAG)!!
+        assertEquals(20, metadata.backedUpFiles.size)
+        val backup = File(checkpoints.checkpointDir("p", WorkspaceCheckpoints.TASK_BASELINE_TAG), "project")
+        files.forEach { file ->
+            val relative = file.relativeTo(workspace).invariantSeparatorsPath
+            assertEquals(file.readText(), File(backup, relative).readText())
+        }
+        assertFalse("nothing is left aside", File(filesDir, "checkpoint-reuse/p/${WorkspaceCheckpoints.TASK_BASELINE_TAG}").listFiles().orEmpty().isNotEmpty())
+
+        files.forEach { it.writeText("changed") }
+        assertTrue(checkpoints.restoreCheckpoint("p", workspace, WorkspaceCheckpoints.TASK_BASELINE_TAG))
+        assertEquals("fun f4() = -4", files[3].readText())
+        assertEquals("fun f1() = 1", files[0].readText())
+    }
+
+    @Test
+    fun `an old backup changed after it was written is copied again, not reused`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder("checkpoints_reuse_tampered"))
+        val workspace = checkpoints.ensureWorkspace("p")
+        val file = File(workspace, "a.txt").apply { writeText("original"); setLastModified(System.currentTimeMillis() - 60_000) }
+        checkpoints.createCheckpoint("p", workspace, "step-1")
+        File(checkpoints.checkpointDir("p", "step-1"), "project/a.txt").writeText("tampere")
+        val reused = WorkspaceCheckpoints.reusedBackups.get()
+        checkpoints.createCheckpoint("p", workspace, "step-1")
+        assertEquals(0L, WorkspaceCheckpoints.reusedBackups.get() - reused)
+        assertEquals("original", File(checkpoints.checkpointDir("p", "step-1"), "project/a.txt").readText())
+        file.writeText("edited")
+        assertTrue(checkpoints.restoreCheckpoint("p", workspace, "step-1"))
+        assertEquals("original", file.readText())
+    }
+
+    @Test
+    fun `a checkpoint left aside by a process that died is cleaned up and never listed`() {
+        val filesDir = tempFolder.newFolder("checkpoints_reuse_leftover")
+        val checkpoints = WorkspaceCheckpoints(filesDir)
+        val workspace = checkpoints.ensureWorkspace("p")
+        File(workspace, "a.txt").writeText("a")
+        val leftover = File(filesDir, "checkpoint-reuse/p/latest/123/project").apply { mkdirs() }
+        File(leftover, "a.txt").writeText("stale")
+        checkpoints.createCheckpoint("p", workspace)
+        assertFalse(leftover.exists())
+        assertEquals(listOf("latest"), checkpoints.listCheckpoints("p"))
+    }
+
+    @Test
     fun `a same-size edit with the same timestamp right after hashing is still detected`() {
         val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder("checkpoints_racy"))
         val workspace = checkpoints.ensureWorkspace("p")

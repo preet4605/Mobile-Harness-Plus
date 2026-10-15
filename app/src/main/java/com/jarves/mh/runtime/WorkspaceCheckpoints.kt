@@ -100,86 +100,166 @@ class WorkspaceCheckpoints(
             if (checkpointExists(projectId, checkpointTag) && File(checkpoint, "changes.json").isFile) return@time
         }
 
-        checkpoint.deleteRecursively()
-        require(checkpoint.mkdirs()) { "Cannot create checkpoint directory" }
-        val incomplete = File(checkpoint, INCOMPLETE_MARKER).apply { writeText("") }
-        val backup = File(checkpoint, "project").apply { mkdirs() }
-        val workspacePath = workspace.canonicalFile.toPath()
-        val originalPaths = mutableListOf<String>()
-        val excludedDirectories = mutableListOf<String>()
-        val fingerprints = mutableMapOf<String, String>()
-        val backedUpFiles = mutableListOf<String>()
-        require(workspace.isDirectory && backup.isDirectory) { "Cannot create workspace checkpoint" }
-        workspace.walkTopDown()
-            .onFail { _, exception -> throw exception }
-            .onEnter { directory ->
-                if (directory == workspace) return@onEnter true
-                val relative = directory.relativeTo(workspace).invariantSeparatorsPath
-                originalPaths.add(relative)
-                if (directory.name.lowercase(Locale.ROOT) in IGNORED_DIRECTORY_NAMES ||
-                    isInternalRuntimePath(relative) || java.nio.file.Files.isSymbolicLink(directory.toPath())) {
-                    excludedDirectories.add(relative)
-                    return@onEnter false
-                }
-                require(directory.canonicalFile.toPath().startsWith(workspacePath)) { "Unsafe checkpoint source" }
-                true
-            }
-            .forEach { source ->
-                if (source == workspace || source.isDirectory) return@forEach
-                val relative = source.relativeTo(workspace).invariantSeparatorsPath
-                if (isInternalRuntimePath(relative)) return@forEach
-                // Inventory first: skipped, unreadable and oversized originals are never new files.
-                originalPaths.add(relative)
-                // One stat without following links. A regular file inside a directory the walk
-                // entered (each checked canonical above) cannot resolve outside the workspace.
-                val attributes = regularFileAttributes(source) ?: return@forEach
-                if (attributes.size() > MAX_CHECKPOINT_COPY_BYTES) {
-                    fingerprints[relative] = digest(source, attributes)
-                    return@forEach
-                }
-                val destination = safeWorkspaceFile(backup, relative)
-                runCatching {
-                    destination.parentFile?.mkdirs()
-                    // Copy and hash in one read; the fingerprint is of the bytes the backup holds.
-                    val hashedAt = System.currentTimeMillis()
-                    val copiedHash = copyAndHash(source, destination)
-                    destination.setLastModified(attributes.lastModifiedTime().toMillis())
-                    // Record only completed copies, with their actual backup fingerprint.
-                    val fingerprint = if (destination.length() > MAX_HASH_FILE_BYTES) digest(destination) else copiedHash
-                    fingerprints[relative] = fingerprint
-                    backedUpFiles.add(relative)
-                    // The source is what was copied when it did not change during the copy.
-                    if (regularFileAttributes(source)?.let { statOf(it) } == statOf(attributes)) {
-                        rememberHash(source, attributes, fingerprint, hashedAt)
+        val previous = setAsideForReuse(projectId, checkpointTag, checkpoint)
+        try {
+            checkpoint.deleteRecursively()
+            require(checkpoint.mkdirs()) { "Cannot create checkpoint directory" }
+            val incomplete = File(checkpoint, INCOMPLETE_MARKER).apply { writeText("") }
+            val backup = File(checkpoint, "project").apply { mkdirs() }
+            val workspacePath = workspace.canonicalFile.toPath()
+            val originalPaths = mutableListOf<String>()
+            val excludedDirectories = mutableListOf<String>()
+            val fingerprints = mutableMapOf<String, String>()
+            val backedUpFiles = mutableListOf<String>()
+            require(workspace.isDirectory && backup.isDirectory) { "Cannot create workspace checkpoint" }
+            workspace.walkTopDown()
+                .onFail { _, exception -> throw exception }
+                .onEnter { directory ->
+                    if (directory == workspace) return@onEnter true
+                    val relative = directory.relativeTo(workspace).invariantSeparatorsPath
+                    originalPaths.add(relative)
+                    if (directory.name.lowercase(Locale.ROOT) in IGNORED_DIRECTORY_NAMES ||
+                        isInternalRuntimePath(relative) || java.nio.file.Files.isSymbolicLink(directory.toPath())) {
+                        excludedDirectories.add(relative)
+                        return@onEnter false
                     }
-                }.onFailure {
-                    destination.delete()
-                    runCatching { digest(source) }.getOrNull()?.let { fingerprints[relative] = it }
+                    require(directory.canonicalFile.toPath().startsWith(workspacePath)) { "Unsafe checkpoint source" }
+                    true
                 }
+                .forEach { source ->
+                    if (source == workspace || source.isDirectory) return@forEach
+                    val relative = source.relativeTo(workspace).invariantSeparatorsPath
+                    if (isInternalRuntimePath(relative)) return@forEach
+                    // Inventory first: skipped, unreadable and oversized originals are never new files.
+                    originalPaths.add(relative)
+                    // One stat without following links. A regular file inside a directory the walk
+                    // entered (each checked canonical above) cannot resolve outside the workspace.
+                    val attributes = regularFileAttributes(source) ?: return@forEach
+                    if (attributes.size() > MAX_CHECKPOINT_COPY_BYTES) {
+                        fingerprints[relative] = digest(source, attributes)
+                        return@forEach
+                    }
+                    val destination = safeWorkspaceFile(backup, relative)
+                    previous?.let { reuse(it, relative, source, attributes, destination) }?.let { fingerprint ->
+                        fingerprints[relative] = fingerprint
+                        backedUpFiles.add(relative)
+                        return@forEach
+                    }
+                    runCatching {
+                        destination.parentFile?.mkdirs()
+                        // Copy and hash in one read; the fingerprint is of the bytes the backup holds.
+                        val hashedAt = System.currentTimeMillis()
+                        val copiedHash = copyAndHash(source, destination)
+                        destination.setLastModified(attributes.lastModifiedTime().toMillis())
+                        // Record only completed copies, with their actual backup fingerprint.
+                        val fingerprint = if (destination.length() > MAX_HASH_FILE_BYTES) digest(destination) else copiedHash
+                        fingerprints[relative] = fingerprint
+                        backedUpFiles.add(relative)
+                        // The source is what was copied when it did not change during the copy.
+                        if (regularFileAttributes(source)?.let { statOf(it) } == statOf(attributes)) {
+                            rememberHash(source, attributes, fingerprint, hashedAt)
+                        }
+                        // The backup's own hash, so the next checkpoint of this tag can move it instead of copying.
+                        if (fingerprint == copiedHash) {
+                            regularFileAttributes(destination)?.let { rememberHash(destination, it, fingerprint, hashedAt) }
+                        }
+                    }.onFailure {
+                        destination.delete()
+                        runCatching { digest(source) }.getOrNull()?.let { fingerprints[relative] = it }
+                    }
+                }
+
+            val metadata = CheckpointMetadata(
+                projectId = projectId,
+                checkpointTag = checkpointTag,
+                createdAt = System.currentTimeMillis(),
+                backedUpFiles = backedUpFiles.sorted(),
+                fingerprints = fingerprints,
+                originalPaths = originalPaths.distinct().sorted(),
+                excludedDirectories = excludedDirectories.sorted(),
+                workspaceRoot = workspace.canonicalPath,
+                changes = readChangedPaths(projectId, checkpointTag),
+                taskId = taskId,
+                stepId = stepId,
+                attempt = attempt,
+            )
+            writeMetadata(checkpoint, metadata)
+            check(incomplete.delete()) { "Cannot finalize checkpoint" }
+
+            // Enforce step checkpoint retention if applicable
+            if (isStepTag(checkpointTag)) {
+                pruneStepCheckpoints(projectId)
             }
-
-        val metadata = CheckpointMetadata(
-            projectId = projectId,
-            checkpointTag = checkpointTag,
-            createdAt = System.currentTimeMillis(),
-            backedUpFiles = backedUpFiles.sorted(),
-            fingerprints = fingerprints,
-            originalPaths = originalPaths.distinct().sorted(),
-            excludedDirectories = excludedDirectories.sorted(),
-            workspaceRoot = workspace.canonicalPath,
-            changes = readChangedPaths(projectId, checkpointTag),
-            taskId = taskId,
-            stepId = stepId,
-            attempt = attempt,
-        )
-        writeMetadata(checkpoint, metadata)
-        check(incomplete.delete()) { "Cannot finalize checkpoint" }
-
-        // Enforce step checkpoint retention if applicable
-        if (isStepTag(checkpointTag)) {
-            pruneStepCheckpoints(projectId)
+        } finally {
+            previous?.directory?.deleteRecursively()
         }
     }
+
+    /** A replaced checkpoint moved aside while its successor is built; see [setAsideForReuse]. */
+    private class PreviousCheckpoint(
+        val directory: File,
+        /** Where its backup lived, which is what its files' cached hashes are keyed by. */
+        val originalBackup: File,
+        /** Fingerprints of the files it backed up. */
+        val fingerprints: Map<String, String>,
+    )
+
+    /**
+     * Moves the complete checkpoint that [checkpoint] is about to replace out of the checkpoints
+     * folder, marked incomplete first, so nothing reads it as a checkpoint any more. Its unchanged
+     * files are then moved into the new backup instead of copied again. Anything unexpected falls
+     * back to deleting it, as before.
+     */
+    private fun setAsideForReuse(projectId: String, checkpointTag: String, checkpoint: File): PreviousCheckpoint? {
+        val parking = File(filesDir, "$REUSE_DIRECTORY/$projectId/$checkpointTag")
+        // Leftovers of a run the process did not survive.
+        if (parking.exists()) parking.deleteRecursively()
+        if (!checkpoint.isDirectory || File(checkpoint, INCOMPLETE_MARKER).exists()) return null
+        val metadata = File(checkpoint, "metadata.json")
+        if (!metadata.isFile) return null
+        return runCatching {
+            val json = JSONObject(metadata.readText())
+            val files = json.optJSONArray("backedUpFiles") ?: return null
+            val stored = json.optJSONObject("fingerprints") ?: return null
+            val fingerprints = (0 until files.length()).map(files::getString)
+                .mapNotNull { path -> stored.optString(path).takeIf { it.isNotEmpty() }?.let { path to it } }
+                .toMap()
+            if (fingerprints.isEmpty()) return null
+            val originalBackup = File(checkpoint, "project")
+            File(checkpoint, INCOMPLETE_MARKER).writeText("")
+            val directory = File(parking, System.nanoTime().toString())
+            require(parking.mkdirs() || parking.isDirectory)
+            Files.move(checkpoint.toPath(), directory.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+            PreviousCheckpoint(directory, originalBackup, fingerprints)
+        }.getOrNull()
+    }
+
+    /**
+     * Moves [relative]'s backup from [previous] to [destination] when it provably holds the bytes
+     * [source] has now: the source's cached hash and the old backup's cached hash (both still
+     * valid for their size and modified time) equal the fingerprint the old checkpoint recorded.
+     * Returns that fingerprint, or null to copy the file as usual.
+     */
+    private fun reuse(
+        previous: PreviousCheckpoint,
+        relative: String,
+        source: File,
+        attributes: BasicFileAttributes,
+        destination: File,
+    ): String? = runCatching {
+        val fingerprint = previous.fingerprints[relative] ?: return null
+        if (cachedHash(source, attributes) != fingerprint) return null
+        val old = safeWorkspaceFile(File(previous.directory, "project"), relative)
+        val oldAttributes = regularFileAttributes(old) ?: return null
+        if (oldAttributes.size() != attributes.size()) return null
+        val oldKey = safeWorkspaceFile(previous.originalBackup, relative)
+        if (cachedHash(oldKey, oldAttributes) != fingerprint) return null
+        destination.parentFile?.mkdirs()
+        Files.move(old.toPath(), destination.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+        regularFileAttributes(destination)?.let { rememberHash(destination, it, fingerprint, System.currentTimeMillis()) }
+        reusedBackups.incrementAndGet()
+        fingerprint
+    }.getOrNull()
 
     fun restoreCheckpoint(projectId: String, checkpointTag: String = DEFAULT_CHECKPOINT_TAG): Boolean =
         restoreCheckpoint(projectId, ensureWorkspace(projectId), checkpointTag)
@@ -829,6 +909,8 @@ class WorkspaceCheckpoints(
         private val STEP_TAG_REGEX = Regex("^step[-_]?[0-9]+.*", RegexOption.IGNORE_CASE)
 
         private const val INCOMPLETE_MARKER = "incomplete"
+        /** Under the app's files folder: checkpoints being replaced, while their files are reused. */
+        private const val REUSE_DIRECTORY = "checkpoint-reuse"
         private const val MAX_DIFF_LINES = 2_000
         private const val MAX_RENDERED_DIFF_LINES = 600
         private const val DIFF_CONTEXT_LINES = 3
@@ -862,6 +944,8 @@ class WorkspaceCheckpoints(
         private const val RACY_WINDOW_MS = 2_000L
         /** Whole-file hash reads (not copies), for tests. */
         internal val fileHashReads = java.util.concurrent.atomic.AtomicLong()
+        /** Backups moved from the checkpoint they replace instead of copied, for tests. */
+        internal val reusedBackups = java.util.concurrent.atomic.AtomicLong()
         private const val MAX_CACHED_HASHES = 200_000
 
         private data class FileStat(val size: Long, val modifiedMillis: Long)

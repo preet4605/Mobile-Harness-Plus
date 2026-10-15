@@ -27,19 +27,23 @@ class PerfBenchmarkTest {
                     }
                 }
             }
+            // Files written a while ago, as in a real project (hashes of just-written files are not cached).
+            val old = System.currentTimeMillis() - 60_000
+            workspace.walkTopDown().filter { it.isFile }.forEach { it.setLastModified(old) }
             // Warm the JIT and the page cache once, as a phone would after the first prompt.
             checkpoints.snapshot(workspace)
-            val ms = time {
-                // The same calls one prompt makes: task baseline, step and bridge checkpoints, then a
-                // snapshot before and after the turn.
+            // The same calls one prompt makes: task baseline, step and bridge checkpoints, then a
+            // snapshot before and after the turn.
+            fun prompt(edit: Int) {
                 checkpoints.createCheckpoint("perf", workspace, WorkspaceCheckpoints.TASK_BASELINE_TAG)
                 checkpoints.createCheckpoint("perf", workspace, "step-1")
                 checkpoints.createCheckpoint("perf", workspace, WorkspaceCheckpoints.DEFAULT_CHECKPOINT_TAG)
                 val before = checkpoints.snapshot(workspace)
-                File(workspace, "src/module3/File7.kt").appendText("// edit\n")
+                File(workspace, "src/module3/File$edit.kt").appendText("// edit\n")
                 checkpoints.changedFiles(workspace, before)
             }
-            report("prompt checkpoints, 3000 files", ms)
+            report("prompt checkpoints, 3000 files", time { prompt(7) })
+            report("next prompt checkpoints, 3000 files", time { prompt(8) })
         } finally {
             files.deleteRecursively()
         }
