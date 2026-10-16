@@ -158,8 +158,12 @@ private fun Offset.isSpecified() = x.isFinite() && y.isFinite()
  */
 internal const val GlassBlurScale = 0.5f
 
-/** Saturation lift of the sample: enough to keep colour alive under the wash, not candy. */
-private const val GlassSaturation = 1.3f
+/**
+ * Saturation of the sample. Below 1, so glass chrome stays neutral: a lift (it was 1.3) turned
+ * green icons and orange buttons scrolling behind the bars into coloured glows on the chrome.
+ * The content's light and shape still show through.
+ */
+private const val GlassSaturation = 0.6f
 
 private val Vibrancy: ColorFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(GlassSaturation) })
 
