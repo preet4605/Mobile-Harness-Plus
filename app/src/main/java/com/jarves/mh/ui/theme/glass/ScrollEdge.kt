@@ -11,6 +11,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Brush
@@ -23,6 +24,7 @@ import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toIntSize
 
@@ -33,6 +35,11 @@ import androidx.compose.ui.unit.toIntSize
  *
  * Blur and Lens tiers blur the shared backdrop under a gradient mask; other tiers fade only.
  * Put it behind the bar, as a sibling of the scrolling source.
+ *
+ * [protectContent] makes it a backing instead of a scrim: opaque canvas over the whole box, so
+ * nothing reads through the bar, then a fade over [fadeLength]. The fade ends [overhang] beyond
+ * the box's far edge, so a bar can keep its own area fully opaque and still soften the content
+ * that meets it.
  */
 @Composable
 fun ScrollEdgeEffect(
@@ -40,6 +47,8 @@ fun ScrollEdgeEffect(
     fromTop: Boolean = true,
     scrim: Float = 1f,
     protectContent: Boolean = false,
+    fadeLength: Dp = 8.dp,
+    overhang: Dp = 0.dp,
     strength: () -> Float,
 ) {
     val config = LocalLiquidGlassConfig.current
@@ -90,12 +99,24 @@ fun ScrollEdgeEffect(
                     maskLayer.alpha = a
                     drawLayer(maskLayer)
                 }
-                // A workspace title needs opaque backing; only the bottom padding fades.
-                val fadeStart = (1f - 8.dp.toPx() / size.height).coerceIn(0f, 1f)
+                if (protectContent) {
+                    // Opaque up to the fade, which ends [overhang] past the far edge.
+                    val reach = size.height + overhang.toPx()
+                    val opaqueEnd = ((reach - fadeLength.toPx()) / reach).coerceIn(0f, 1f)
+                    val brush = Brush.verticalGradient(
+                        0f to canvas,
+                        opaqueEnd to canvas,
+                        1f to canvas.copy(alpha = 0f),
+                        startY = if (fromTop) 0f else size.height,
+                        endY = if (fromTop) reach else size.height - reach,
+                    )
+                    drawRect(brush, topLeft = Offset(0f, if (fromTop) 0f else size.height - reach), size = Size(size.width, reach))
+                    return@drawBehind
+                }
                 drawRect(
                     Brush.verticalGradient(
-                        0f to canvas.copy(alpha = if (protectContent) 1f else (0.78f * scrim * a).coerceAtMost(1f)),
-                        (if (protectContent) fadeStart else 0.6f) to canvas.copy(alpha = if (protectContent) 1f else (0.45f * scrim * a).coerceAtMost(1f)),
+                        0f to canvas.copy(alpha = (0.78f * scrim * a).coerceAtMost(1f)),
+                        0.6f to canvas.copy(alpha = (0.45f * scrim * a).coerceAtMost(1f)),
                         1f to canvas.copy(alpha = 0f),
                         startY = near,
                         endY = far,

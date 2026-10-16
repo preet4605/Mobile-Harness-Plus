@@ -319,7 +319,15 @@ private fun WorkspaceBar(
     run {
         val colors = PocketColors.current
         Box(modifier.fillMaxWidth()) {
-            ScrollEdgeEffect(Modifier.matchParentSize(), fromTop = true, protectContent = true, strength = scrolled)
+            // Opaque behind the whole bar; content fades in below it instead of meeting the subtitle.
+            ScrollEdgeEffect(
+                Modifier.matchParentSize(),
+                fromTop = true,
+                protectContent = true,
+                fadeLength = PocketSpacing.xxl,
+                overhang = PocketSpacing.lg,
+                strength = scrolled,
+            )
             Column(
                 Modifier
                     .fillMaxWidth()
@@ -1215,6 +1223,18 @@ internal fun WorkspaceScreen(
                                 }
                             }
                         }
+                    }
+                    if (selectedTab == WorkspaceTab.FILES) {
+                        // Files scroll under the tab bar: the same opaque backing as the chat's bottom controls.
+                        ScrollEdgeEffect(
+                            Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .height(bottomBar + PocketSpacing.lg),
+                            fromTop = false,
+                            protectContent = true,
+                            fadeLength = PocketSpacing.lg,
+                        ) { if (filesListState.canScrollForward) 1f else 0f }
                     }
                     WorkspaceBar(
                         title = activeChat?.title ?: "Chat",
@@ -2455,13 +2475,16 @@ private fun ChatTab(
             }
             approval?.let { request -> item(key = "approval") { ApprovalCard(request, onApproval) } }
         }
-        // Messages soften into the canvas under the composer, as they do under the top bar.
+        // Behind the composer, the tab bar and the gaps around them: opaque, so messages never read
+        // through the bottom controls, softening into the canvas just above the composer.
         ScrollEdgeEffect(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .height(bottomChromeClearance + PocketSpacing.xxl),
             fromTop = false,
+            protectContent = true,
+            fadeLength = PocketSpacing.xxl,
         ) { if (listState.canScrollForward) 1f else 0f }
         AnimatedVisibility(
             visible = !readerAtBottom,
