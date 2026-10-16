@@ -1620,6 +1620,14 @@ class MainViewModel(
         if (_state.value.projectTerminalRunning) return
         val startingCwd = _state.value.projectTerminalCwd
         val existingLines = _state.value.projectTerminalLines
+        // Full-screen programs need a real terminal device, which this terminal is not: say so instead of failing.
+        fullScreenProgramNotice(command)?.let { notice ->
+            val updatedLines = (existingLines + TerminalOutputLine(command = command, output = notice, exitCode = 1))
+                .takeLast(MAX_PROJECT_TERMINAL_HISTORY)
+            _state.update { it.copy(projectTerminalLines = updatedLines, pendingTerminalCommand = null) }
+            viewModelScope.launch(Dispatchers.IO) { saveProjectTerminal(project.id, startingCwd, updatedLines) }
+            return
+        }
         projectTerminalStopRequested = false
         val requestedPreviewUrl = detectServerUrl(command)
         _state.update {

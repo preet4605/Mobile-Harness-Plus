@@ -328,7 +328,11 @@ fun TerminalScreen(
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (lines.isEmpty()) {
                                 Text(
-                                    "Mobile Harness Terminal ready.\nType a bash command below or tap a quick command chip above.",
+                                    if (showQuickCommands) {
+                                        "Mobile Harness Terminal ready.\nType a bash command at the prompt below, or tap a quick command above."
+                                    } else {
+                                        "Terminal ready.\nType a bash command at the prompt below."
+                                    },
                                     style = PocketType.codeSmall,
                                     color = emptyStateColor,
                                 )

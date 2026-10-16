@@ -53,6 +53,10 @@ internal class QuickTerminalController(
             _terminalLines.value = emptyList()
             return
         }
+        fullScreenProgramNotice(command)?.let { notice ->
+            _terminalLines.update { (it + TerminalOutputLine(command = command, output = notice, exitCode = 1)).takeLast(maxHistory) }
+            return
+        }
         _isTerminalRunning.value = true
         _terminalCurrentCommand.value = command
         _terminalLiveOutput.value = ""

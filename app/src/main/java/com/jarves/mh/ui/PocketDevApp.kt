@@ -632,6 +632,9 @@ private fun RootScreenHost(
         onDismiss = { showQuickTerminal = false },
         visible = showQuickTerminal,
         title = "Terminal",
+        // Full height only: at the medium detent the panel is pushed below the screen edge, which
+        // hid the key row and left the prompt line off screen.
+        detents = listOf(SheetDetent.Large),
         anchor = terminalAnchor,
     ) {
         Box(Modifier.fillMaxSize()) {
