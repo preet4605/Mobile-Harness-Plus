@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectable
@@ -88,6 +87,9 @@ data class TabItem(
     val badge: Int = 0,
     val badgeDescription: String? = null,
 )
+
+/** How far a tab badge reaches into its symbol's corner. */
+private val BadgeOverlap: Dp = 6.dp
 
 /** Height of the floating tab bar and of its minimized circle and accessory button. */
 val TabBarHeight: Dp = 58.dp
@@ -250,14 +252,15 @@ fun FloatingTabBar(
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.Center,
                                 ) {
-                                    Box(contentAlignment = Alignment.TopEnd) {
+                                    // The badge takes no layout space, so a wide count never moves the symbol.
+                                    Box {
                                         Icon(
                                             if (selected) tab.selectedIcon else tab.icon,
                                             contentDescription = null,
                                             tint = tint,
                                             modifier = Modifier.size(22.dp),
                                         )
-                                        if (tab.badge > 0) TabBadge(tab.badge, accent)
+                                        if (tab.badge > 0) TabBadge(tab.badge, accent, Modifier.align(Alignment.TopEnd))
                                     }
                                     Spacer(Modifier.height(2.dp))
                                     Text(
@@ -300,13 +303,21 @@ fun FloatingTabBar(
     }
 }
 
-/** A small accent capsule with a count, on the upper-right corner of a tab symbol. */
+/**
+ * A small accent capsule with a count, outside the upper-right corner of a tab symbol: its
+ * lower-left corner overlaps the symbol by [BadgeOverlap] at most, so the symbol stays readable.
+ * Place it at the symbol's top-end corner; it reports no size of its own.
+ */
 @Composable
-private fun TabBadge(count: Int, color: androidx.compose.ui.graphics.Color) {
+private fun TabBadge(count: Int, color: androidx.compose.ui.graphics.Color, modifier: Modifier = Modifier) {
     Box(
-        Modifier
+        modifier
             .clearAndSetSemantics { }
-            .offset(x = 8.dp, y = (-6).dp)
+            .layout { measurable, _ ->
+                val placeable = measurable.measure(androidx.compose.ui.unit.Constraints())
+                val overlap = BadgeOverlap.roundToPx()
+                layout(0, 0) { placeable.placeRelative(-overlap, overlap - placeable.height) }
+            }
             .defaultMinSize(minWidth = 16.dp, minHeight = 16.dp)
             .clip(PocketShape.capsule)
             .background(color)

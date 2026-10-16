@@ -123,7 +123,13 @@ import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material.icons.outlined.Warning
+import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.rounded.Cancel
+import androidx.compose.material.icons.rounded.ChatBubble
+import androidx.compose.material.icons.rounded.Extension
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.RemoveCircle
 import androidx.compose.material3.Icon
@@ -182,6 +188,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
@@ -282,15 +291,33 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 
-/** The project's four views, switched from the tab bar at the bottom or the menu on the title. */
-internal enum class WorkspaceTab(val label: String, val icon: ImageVector) {
-    CHAT("Chat", Icons.Outlined.ChatBubbleOutline),
-    FILES("Files", Icons.Outlined.Folder),
-    TERMINAL("Terminal", Icons.Outlined.Terminal),
-    PREVIEW("Preview", Icons.Outlined.Preview),
+/**
+ * The project's four views, switched from the tab bar at the bottom or the menu on the title.
+ * Like the main tab bar: a line symbol while unselected, the filled form of the same symbol while
+ * selected.
+ */
+internal enum class WorkspaceTab(val label: String, val icon: ImageVector, val selectedIcon: ImageVector) {
+    CHAT("Chat", Icons.Outlined.ChatBubbleOutline, Icons.Rounded.ChatBubble),
+    FILES("Files", Icons.Outlined.Folder, Icons.Rounded.Folder),
+    TERMINAL("Terminal", TerminalLineIcon, Icons.Rounded.Terminal),
+    PREVIEW("Preview", Icons.Outlined.Visibility, Icons.Rounded.Visibility),
     /** Shown only while a mod has a panel switched on for projects. */
-    MODS("Mods", Icons.Outlined.Extension),
+    MODS("Mods", Icons.Outlined.Extension, Icons.Rounded.Extension),
 }
+
+/**
+ * A terminal window drawn in lines. The library's outlined terminal symbol has a solid title band,
+ * so beside the other line symbols in the tab bar it read as a filled block.
+ */
+private val TerminalLineIcon: ImageVector = ImageVector.Builder("TerminalLine", 24.dp, 24.dp, 24f, 24f)
+    .addPath(
+        pathData = addPathNodes("M5,4.5H19A1.5,1.5 0 0 1 20.5,6V18A1.5,1.5 0 0 1 19,19.5H5A1.5,1.5 0 0 1 3.5,18V6A1.5,1.5 0 0 1 5,4.5Z M7.5,9.5L10,12L7.5,14.5 M12.5,15H16.5"),
+        stroke = SolidColor(Color.Black),
+        strokeLineWidth = 2f,
+        strokeLineCap = StrokeCap.Round,
+        strokeLineJoin = StrokeJoin.Round,
+    )
+    .build()
 
 /** The composer never gets shorter than this, so it stays an easy target while typing. */
 private val ComposerMinHeight = 52.dp
@@ -491,7 +518,7 @@ private fun WorkspaceTabBar(
         ) {
             FloatingTabBar(
                 tabs = tabs.map {
-                    TabItem(it.label, it.icon, badge = if (it == WorkspaceTab.FILES) changeCount else 0,
+                    TabItem(it.label, it.icon, it.selectedIcon, badge = if (it == WorkspaceTab.FILES) changeCount else 0,
                         badgeDescription = if (it == WorkspaceTab.FILES && changeCount > 0) "$changeCount files awaiting review" else null)
                 },
                 selectedIndex = tabs.indexOf(selected).coerceAtLeast(0),
