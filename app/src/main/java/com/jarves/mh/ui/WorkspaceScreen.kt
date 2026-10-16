@@ -29,6 +29,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -179,6 +180,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -292,6 +294,11 @@ internal enum class WorkspaceTab(val label: String, val icon: ImageVector) {
 
 /** The composer never gets shorter than this, so it stays an easy target while typing. */
 private val ComposerMinHeight = 52.dp
+
+/** Body text centred in its line box, so the placeholder and typed text sit on the field's centre line. */
+private val ComposerTextStyle = PocketType.body.copy(
+    lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
+)
 
 /**
  * The workspace's floating bar, one row: a glass back button, the title between the actions
@@ -2748,24 +2755,32 @@ private fun Composer(
                 Modifier.fillMaxWidth().padding(start = PocketSpacing.lg, end = PocketSpacing.xs),
                 verticalAlignment = Alignment.Bottom,
             ) {
+                // The field is as tall as the send button's touch area (both with the same xxs inset),
+                // so one line of text sits on the same centre line as the button. Taller text grows
+                // the field and the button stays at the bottom.
                 BasicTextField(
                     value = input,
                     onValueChange = onInputChange,
                     modifier = Modifier
                         .weight(1f)
-                        .padding(vertical = PocketSpacing.md)
-                        .heightIn(min = 22.dp, max = 132.dp),
+                        .padding(vertical = PocketSpacing.xxs)
+                        .heightIn(max = 132.dp + PocketSpacing.sm * 2),
                     minLines = 1,
                     maxLines = 6,
-                    textStyle = PocketType.body.copy(color = MaterialTheme.colorScheme.onSurface),
+                    textStyle = ComposerTextStyle.copy(color = MaterialTheme.colorScheme.onSurface),
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
                     decorationBox = { innerTextField ->
-                        Box(contentAlignment = Alignment.CenterStart) {
+                        Box(
+                            Modifier
+                                .heightIn(min = LiquidGlassTokens.MinTouchTarget)
+                                .padding(vertical = PocketSpacing.sm),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
                             if (input.text.isEmpty()) {
                                 Text(
                                     text = "Message ${agentKind.title}…",
-                                    style = PocketType.body,
+                                    style = ComposerTextStyle,
                                     color = colors.secondaryLabel,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -2794,7 +2809,9 @@ private fun Composer(
                     if (!isRunning || canSend) {
                         ComposerActionButton(
                             contentDescription = if (isRunning) "Queue follow-up" else "Send",
-                            container = if (canSend) accent else colors.secondaryFill,
+                            // Disabled: a stronger grey and a ring, so it still reads as the send button.
+                            container = if (canSend) accent else colors.fill,
+                            outline = if (canSend) null else colors.tertiaryLabel,
                             enabled = canSend,
                             onClick = onSend,
                         ) {
@@ -2829,6 +2846,7 @@ private fun ComposerActionButton(
     container: Color,
     onClick: () -> Unit,
     enabled: Boolean = true,
+    outline: Color? = null,
     content: @Composable () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -2857,6 +2875,7 @@ private fun ComposerActionButton(
                 }
                 .clip(CircleShape)
                 .background(fill)
+                .then(if (outline != null) Modifier.border(1.dp, outline, CircleShape) else Modifier)
                 .clearAndSetSemantics { },
             contentAlignment = Alignment.Center,
         ) { content() }
