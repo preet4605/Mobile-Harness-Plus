@@ -2403,6 +2403,7 @@ private fun ChatTab(
         }
     }
     val safeMessages = remember(messages) { sanitizeChatTabMessages(messages) }
+    val durationShownBelow = remember(safeMessages) { repliesWithDurationShownBelow(safeMessages) }
     val density = LocalDensity.current
     val backdrop = LocalLiquidGlassBackdrop.current
     val colors = PocketColors.current
@@ -2492,7 +2493,7 @@ private fun ChatTab(
                     if (message.workItems.isNotEmpty()) {
                         WorkBlockCard(message)
                     } else {
-                        MessageBubble(message, onRunInTerminal, onOpenAttachment)
+                        MessageBubble(message, onRunInTerminal, onOpenAttachment, showDuration = message.id !in durationShownBelow)
                     }
                 }
             }
@@ -3290,7 +3291,12 @@ internal fun formatDuration(totalSeconds: Long): String = when {
 }
 
 @Composable
-private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Unit, onOpenAttachment: (ChatAttachment) -> Unit) {
+private fun MessageBubble(
+    message: ChatMessage,
+    onRunInTerminal: (String) -> Unit,
+    onOpenAttachment: (ChatAttachment) -> Unit,
+    showDuration: Boolean = true,
+) {
     val clipboardManager = LocalClipboardManager.current
     val hapticFeedback = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
@@ -3357,12 +3363,14 @@ private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Uni
         }
         if (message.text.isNotBlank() && !message.fromUser && message.workedMillis > 0L) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "Worked for ${formatDuration((message.workedMillis / 1_000L).coerceAtLeast(1L))}",
-                    style = PocketType.footnote,
-                    color = colors.secondaryLabel,
-                    modifier = Modifier.padding(start = PocketSpacing.xs),
-                )
+                if (showDuration) {
+                    Text(
+                        text = "Worked for ${formatDuration((message.workedMillis / 1_000L).coerceAtLeast(1L))}",
+                        style = PocketType.footnote,
+                        color = colors.secondaryLabel,
+                        modifier = Modifier.padding(start = PocketSpacing.xs),
+                    )
+                }
                 PocketIconButton(
                     icon = if (isCopied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
                     contentDescription = if (isCopied) "Message copied to clipboard" else "Copy entire message",

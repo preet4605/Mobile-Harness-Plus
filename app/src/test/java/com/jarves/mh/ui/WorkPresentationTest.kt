@@ -91,6 +91,19 @@ class WorkPresentationTest {
         assertEquals("View activity", workBlockHeadline(ChatMessage(fromUser = false, text = "")))
     }
 
+    @Test fun durationShowsOnceWhenTheTurnEndsInAStatusBlock() {
+        val reply = ChatMessage(fromUser = false, text = "Done.", workedMillis = 57_000)
+        val block = ChatMessage(fromUser = false, text = "", workItems = listOf(ActivityItem("Task completed", "ok")),
+            workStatus = WorkStatus.UNVERIFIED, workedMillis = 57_000)
+        val legacyReply = ChatMessage(fromUser = false, text = "Old answer", workedMillis = 9_000)
+        val messages = listOf(
+            ChatMessage(fromUser = true, text = "old"), legacyReply,
+            ChatMessage(fromUser = true, text = "analyse"), reply, block,
+        )
+        // The turn's block carries "· 57s"; the older reply has no block, so it keeps "Worked for".
+        assertEquals(setOf(reply.id), repliesWithDurationShownBelow(messages))
+    }
+
     @Test fun elapsedTimeFreezesAtFinishAndCannotGoNegative() {
         assertEquals(4L, elapsedWorkSeconds(1000L, 5000L, 99000L))
         assertEquals(5L, elapsedWorkSeconds(1000L, null, 6000L))

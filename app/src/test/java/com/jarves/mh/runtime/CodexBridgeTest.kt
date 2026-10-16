@@ -272,6 +272,21 @@ class CodexEventMapperTest {
     }
 
     @Test
+    fun goalNoteAfterAReplyIsAStatusRowNotPartOfTheAnswer() {
+        val mapper = CodexEventMapper(sid)
+        mapper.map(CodexEvent.AgentMessage("Analysis only; no changes made.", "item-1"))
+        assertEquals(
+            listOf<RuntimeEvent>(RuntimeEvent.RuntimeLog(sid, "Codex", "Native Codex goal cleared.")),
+            mapper.map(CodexEvent.AgentMessage("Native Codex goal cleared.", status = true)),
+        )
+        // Alone, the note is the answer (for example `/goal status`).
+        assertEquals(
+            listOf<RuntimeEvent>(RuntimeEvent.AssistantDelta(sid, "This native Codex thread has no goal.")),
+            CodexEventMapper(sid).map(CodexEvent.AgentMessage("This native Codex thread has no goal.", status = true)),
+        )
+    }
+
+    @Test
     fun reasoningBecomesFinalSummaryBlocksWithIncreasingIds() {
         val mapper = CodexEventMapper(sid)
         val first = mapper.map(CodexEvent.Reasoning("Plan\n  the   change")).single() as RuntimeEvent.ReasoningSummary

@@ -56,6 +56,23 @@ internal fun workBlockHeadline(message: ChatMessage): String = buildString {
     if (message.workedMillis > 0) append(" · ${formatDuration(message.workedMillis / 1000)}")
 }
 
+/**
+ * Replies whose duration is already in the status block that closes their turn ("Finished · 57s"),
+ * so the reply's own footer leaves it out instead of showing it twice.
+ */
+internal fun repliesWithDurationShownBelow(messages: List<ChatMessage>): Set<String> {
+    val ids = HashSet<String>()
+    var statusBlockFollows = false
+    for (message in messages.asReversed()) {
+        when {
+            message.fromUser -> statusBlockFollows = false
+            message.workItems.isNotEmpty() -> if (message.workStatus != null && message.workedMillis > 0) statusBlockFollows = true
+            statusBlockFollows && message.text.isNotBlank() && message.workedMillis > 0 -> ids += message.id
+        }
+    }
+    return ids
+}
+
 internal fun elapsedWorkSeconds(startedAt: Long, finishedAt: Long?, now: Long): Long =
     (((finishedAt ?: now) - startedAt).coerceAtLeast(0L) / 1000L)
 

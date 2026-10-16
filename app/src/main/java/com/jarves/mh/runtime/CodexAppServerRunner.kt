@@ -151,7 +151,7 @@ internal class CodexAppServerRunner(
                         (control?.kind != "compact" || compactionCompleted)
                     if (operationDone || (pausedByUser || clearedByUser) && activeTurn == null) {
                         if (goal != null || clearedByUser) emitGoal()
-                        if (control?.kind == "compact") emit(CodexEvent.AgentMessage("Native Codex context compaction completed."))
+                        if (control?.kind == "compact") emit(CodexEvent.AgentMessage("Native Codex context compaction completed.", status = true))
                         success = true
                         break
                     }
@@ -239,7 +239,7 @@ internal class CodexAppServerRunner(
     }
 
     private fun updateGoal(value: JSONObject?) { goal = value?.let(CodexNativeGoal::parse) }
-    private suspend fun emitGoal() = emit(CodexEvent.AgentMessage(goal?.describe() ?: if (clearedByUser) "Native Codex goal cleared." else "This native Codex thread has no goal."))
+    private suspend fun emitGoal() = emit(CodexEvent.AgentMessage(goal?.describe() ?: if (clearedByUser) "Native Codex goal cleared." else "This native Codex thread has no goal.", status = true))
 
     private fun send(obj: JSONObject) = io.writeInput(obj.toString() + "\n")
     private suspend fun rpc(method: String, params: JSONObject, allowStop: Boolean = false): JSONObject {

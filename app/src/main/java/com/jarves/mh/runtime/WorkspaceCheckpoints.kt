@@ -113,6 +113,7 @@ class WorkspaceCheckpoints(
             val fingerprints = mutableMapOf<String, String>()
             val backedUpFiles = mutableListOf<String>()
             require(workspace.isDirectory && backup.isDirectory) { "Cannot create workspace checkpoint" }
+            val ignore = WorkspaceIgnoreRules.load(workspace)
             workspace.walkTopDown()
                 .onFail { _, exception -> throw exception }
                 .onEnter { directory ->
@@ -120,7 +121,8 @@ class WorkspaceCheckpoints(
                     val relative = directory.relativeTo(workspace).invariantSeparatorsPath
                     originalPaths.add(relative)
                     if (directory.name.lowercase(Locale.ROOT) in IGNORED_DIRECTORY_NAMES ||
-                        isInternalRuntimePath(relative) || java.nio.file.Files.isSymbolicLink(directory.toPath())) {
+                        isInternalRuntimePath(relative) || ignore.isIgnoredDirectory(relative) ||
+                        java.nio.file.Files.isSymbolicLink(directory.toPath())) {
                         excludedDirectories.add(relative)
                         return@onEnter false
                     }
@@ -295,7 +297,10 @@ class WorkspaceCheckpoints(
             if (!backup.isDirectory) return false
             val originals = metadata.originalPaths?.toSet()
             val backedUp = metadata.backedUpFiles.toSet()
-            val actions = paths.filterNot(::isInternalRuntimePath).distinct().map { path ->
+            // Folders the project's .gitignore excludes are never restored or deleted, even when an
+            // older checkpoint (taken before those rules were read) still lists files in them.
+            val ignore = WorkspaceIgnoreRules.load(root)
+            val actions = paths.filterNot { isInternalRuntimePath(it) || ignore.isInIgnoredDirectory(it) }.distinct().map { path ->
                 require(path.split('/').none { it.isBlank() || it == "." || it == ".." }) { "Unsafe restore path" }
                 require(!path.contains('\\')) { "Unsafe restore path" }
                 val target = safeWorkspaceFile(root, path)
@@ -373,8 +378,9 @@ class WorkspaceCheckpoints(
         val checkpoint = checkpointDir(projectId, checkpointTag)
         val manifest = File(checkpoint, "changes.json")
         manifest.parentFile?.mkdirs()
+        val ignore = projectIgnoreRules(projectId)
         val merged = (readChangedPaths(projectId, checkpointTag) + paths)
-            .filterNot(::isInternalRuntimePath)
+            .filterNot { isInternalRuntimePath(it) || ignore.isInIgnoredDirectory(it) }
             .distinct()
             .sorted()
         manifest.writeText(JSONArray(merged).toString())
@@ -388,11 +394,17 @@ class WorkspaceCheckpoints(
         validateCheckpointTag(checkpointTag)
         val manifest = File(checkpointDir(projectId, checkpointTag), "changes.json")
         if (!manifest.isFile) return emptyList()
-        return runCatching {
+        val paths = runCatching {
             val array = JSONArray(manifest.readText())
             (0 until array.length()).map(array::getString)
         }.getOrDefault(emptyList())
+        // A list saved before the project's .gitignore was read can name files in ignored folders.
+        val ignore = projectIgnoreRules(projectId)
+        return if (ignore.isEmpty) paths else paths.filterNot(ignore::isInIgnoredDirectory)
     }
+
+    private fun projectIgnoreRules(projectId: String): WorkspaceIgnoreRules =
+        runCatching { WorkspaceIgnoreRules.load(ensureWorkspace(projectId)) }.getOrDefault(WorkspaceIgnoreRules.NONE)
 
     fun removeChangedPath(projectId: String, path: String) =
         removeChangedPath(projectId, path, DEFAULT_CHECKPOINT_TAG)
@@ -961,6 +973,7 @@ class WorkspaceCheckpoints(
         if (!root.isDirectory) return@time emptyMap()
         val rootPath = root.canonicalFile.toPath()
         val fingerprints = LinkedHashMap<String, String>()
+        val ignore = WorkspaceIgnoreRules.load(root)
         root.walkTopDown()
             .onEnter { directory ->
                 if (directory == root) return@onEnter true
@@ -968,6 +981,7 @@ class WorkspaceCheckpoints(
                 if (dirName in IGNORED_DIRECTORY_NAMES) return@onEnter false
                 val relative = directory.relativeTo(root).invariantSeparatorsPath
                 if (isInternalRuntimePath(relative)) return@onEnter false
+                if (ignore.isIgnoredDirectory(relative)) return@onEnter false
                 if (java.nio.file.Files.isSymbolicLink(directory.toPath())) return@onEnter false
                 runCatching { directory.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
             }

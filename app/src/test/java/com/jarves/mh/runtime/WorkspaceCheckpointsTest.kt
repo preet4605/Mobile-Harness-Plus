@@ -179,6 +179,39 @@ class WorkspaceCheckpointsTest {
     }
 
     @Test
+    fun `folders the project's gitignore excludes are never counted, undone or restored`() {
+        val checkpoints = WorkspaceCheckpoints(tempFolder.newFolder("checkpoints_gitignore"))
+        val workspace = checkpoints.ensureWorkspace("p")
+        File(workspace, ".gitignore").writeText(".gradle-home/\napp/checkpoints/\nlocal.properties\n")
+        File(workspace, "src/App.kt").apply { parentFile.mkdirs(); writeText("v1") }
+        File(workspace, "local.properties").writeText("sdk.dir=/sdk")
+        File(workspace, ".gradle-home/caches/old.bin").apply { parentFile.mkdirs(); writeText("old") }
+        checkpoints.createCheckpoint("p", workspace)
+        val before = checkpoints.snapshot(workspace)
+        assertFalse(before.keys.any { it.startsWith(".gradle-home/") })
+        assertTrue("an ignored single file stays tracked", "local.properties" in before)
+
+        // A build on the device fills ignored folders; the agent edits one source file.
+        repeat(50) { File(workspace, ".gradle-home/caches/f$it.txt").writeText("cache $it") }
+        File(workspace, "app/checkpoints/p/x.kt").apply { parentFile.mkdirs(); writeText("left by tests") }
+        File(workspace, "src/App.kt").writeText("v2")
+        val changed = checkpoints.changedFiles(workspace, before)
+        assertEquals(listOf("src/App.kt"), changed)
+
+        // A change list saved by an older version still names ignored files: they never surface.
+        checkpoints.saveChangedPaths("p", changed + ".gradle-home/caches/f1.txt" + "app/checkpoints/p/x.kt")
+        assertEquals(listOf("src/App.kt"), checkpoints.readChangedPaths("p"))
+        assertFalse(checkpoints.undoFileChange("p", ".gradle-home/caches/f1.txt"))
+
+        // Undo all restores the source file and leaves every ignored file alone.
+        assertTrue(checkpoints.undoLastChanges("p"))
+        assertEquals("v1", File(workspace, "src/App.kt").readText())
+        assertTrue(File(workspace, ".gradle-home/caches/f1.txt").isFile)
+        assertTrue(File(workspace, "app/checkpoints/p/x.kt").isFile)
+        assertEquals("old", File(workspace, ".gradle-home/caches/old.bin").readText())
+    }
+
+    @Test
     fun `snapshot and changedFiles ignores build directory changes`() {
         val filesDir = tempFolder.newFolder("app_files")
         val checkpoints = WorkspaceCheckpoints(filesDir)

@@ -24,7 +24,11 @@ internal data class CodexUsage(
 internal sealed interface CodexEvent {
     data class ThreadStarted(val threadId: String) : CodexEvent
     data object TurnStarted : CodexEvent
-    data class AgentMessage(val text: String, val itemId: String = "", val completed: Boolean = true) : CodexEvent
+    /**
+     * Assistant text. [status] marks the app's own notes about native state (goal status, context
+     * compaction): they are the answer when nothing else was said, otherwise a status row.
+     */
+    data class AgentMessage(val text: String, val itemId: String = "", val completed: Boolean = true, val status: Boolean = false) : CodexEvent
     data class Reasoning(val text: String, val itemId: String = "", val completed: Boolean = true) : CodexEvent
     data class CommandStarted(val itemId: String, val command: String) : CodexEvent
     data class CommandFinished(
@@ -274,7 +278,10 @@ internal class CodexEventMapper(private val sessionId: String, private val works
 
     fun map(event: CodexEvent): List<RuntimeEvent> = when (event) {
         is CodexEvent.AgentMessage -> {
-            if (event.itemId.isBlank()) {
+            if (event.status && messageCount > 0) {
+                // After a reply, a note such as "Native Codex goal cleared." is not part of the answer.
+                listOf(RuntimeEvent.RuntimeLog(sessionId, "Codex", event.text))
+            } else if (event.itemId.isBlank()) {
                 val text = if (messageCount++ == 0) event.text else "\n\n${event.text}"
                 listOf(RuntimeEvent.AssistantDelta(sessionId, text))
             } else {
